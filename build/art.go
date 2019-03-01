@@ -174,6 +174,18 @@ func hostFlags(ctx android.LoadHookContext) []string {
 	clang_path := filepath.Join(config.ClangDefaultBase, ctx.Config().PrebuiltOS(), config.ClangDefaultVersion)
 	cflags = append(cflags, "-DART_CLANG_PATH=\""+clang_path+"\"")
 
+	// The build assumes that all our x86/x86_64 hosts (such as buildbots and developer
+	// desktops) support at least sse4.2/popcount. This firstly implies that the ART
+	// runtime binary itself may exploit these features. Secondly, this implies that
+	// the ART runtime passes these feature flags to dex2oat and JIT by calling the
+	// method InstructionSetFeatures::FromCppDefines(). Since invoking dex2oat directly
+	// does not pick up these flags, cross-compiling from a x86/x86_64 host to a
+	// x86/x86_64 target should not be affected.
+	if !ctx.Config().IsEnvFalse("CPU_SSE42") {
+		cflags = append(cflags, "-msse4.2")
+		cflags = append(cflags, "-mpopcnt")
+	}
+
 	return cflags
 }
 
