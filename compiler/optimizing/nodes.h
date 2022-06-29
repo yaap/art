@@ -7248,6 +7248,10 @@ class HLoadMethodHandle final : public HInstruction {
     return SideEffects::CanTriggerGC();
   }
 
+  bool CanThrow() const override { return true; }
+
+  bool NeedsEnvironment() const override { return true; }
+
   DECLARE_INSTRUCTION(LoadMethodHandle);
 
  protected:
@@ -7291,6 +7295,10 @@ class HLoadMethodType final : public HInstruction {
   static SideEffects SideEffectsForArchRuntimeCalls() {
     return SideEffects::CanTriggerGC();
   }
+
+  bool CanThrow() const override { return true; }
+
+  bool NeedsEnvironment() const override { return true; }
 
   DECLARE_INSTRUCTION(LoadMethodType);
 
