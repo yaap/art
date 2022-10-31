@@ -99,6 +99,7 @@ enum class MethodCompilationStat {
   kNotInlinedNotCompilable,
   kNotInlinedNotVerified,
   kNotInlinedCodeItem,
+  kNotInlinedEndsWithThrow,
   kNotInlinedWont,
   kNotInlinedRecursiveBudget,
   kNotInlinedPolymorphicRecursiveBudget,
