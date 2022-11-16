@@ -47,7 +47,7 @@
 
 #define __ jni_asm->
 
-namespace art {
+namespace art HIDDEN {
 
 constexpr size_t kIRTCookieSize = JniCallingConvention::SavedLocalReferenceCookieSize();
 
