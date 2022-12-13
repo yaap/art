@@ -1692,8 +1692,6 @@ void ConcurrentCopying::CopyingPhase() {
     if (kVerboseMode) {
       LOG(INFO) << "SweepSystemWeaks done";
     }
-    // Free data for class loaders that we unloaded.
-    Runtime::Current()->GetClassLinker()->CleanupClassLoaders();
     // Marking is done. Disable marking.
     DisableMarking();
     CheckEmptyMarkStack();
@@ -2715,6 +2713,11 @@ void ConcurrentCopying::ReclaimPhase() {
     LOG(INFO) << "GC ReclaimPhase";
   }
   Thread* self = Thread::Current();
+
+  // Free data for class loaders that we unloaded. This includes removing
+  // dead methods from JIT's internal maps. This must be done before
+  // reclaiming the memory of the dead methods' declaring classes.
+  Runtime::Current()->GetClassLinker()->CleanupClassLoaders();
 
   {
     // Double-check that the mark stack is empty.
