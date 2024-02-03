@@ -683,6 +683,12 @@ art_cc_library {
         "test_broken_com.android.art",
     ],
     afdo: true,
+    target: {
+        android_arm64: {
+            cflags: ["-fsplit-machine-functions"],
+            ldflags: ["-fsplit-machine-functions"],
+        }
+    },
 }
 
 // "Broken" version of the ART runtime library, used only for testing.
