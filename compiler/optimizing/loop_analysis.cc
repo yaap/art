@@ -42,7 +42,7 @@ void LoopAnalysis::CalculateLoopBasicProperties(HLoopInformation* loop_info,
         // not cause loop peeling to happen as they either cannot be inside a loop, or by
         // definition cannot be loop exits (unconditional instructions), or are not beneficial for
         // the optimization.
-        HIf* hif = block->GetLastInstruction()->AsIf();
+        HIf* hif = block->GetLastInstruction()->AsIfOrNull();
         if (hif != nullptr && !loop_info->Contains(*hif->InputAt(0)->GetBlock())) {
           analysis_results->invariant_exits_num_++;
         }
@@ -221,9 +221,6 @@ class X86_64LoopHelper : public ArchDefaultLoopHelper {
         return 3;
       case HInstruction::InstructionKind::kIf:
         return 2;
-      case HInstruction::InstructionKind::kPredicatedInstanceFieldGet:
-        // test + cond-jump + IFieldGet
-        return 4;
       case HInstruction::InstructionKind::kInstanceFieldGet:
         return 2;
       case HInstruction::InstructionKind::kInstanceFieldSet:
@@ -259,7 +256,7 @@ class X86_64LoopHelper : public ArchDefaultLoopHelper {
       case HInstruction::InstructionKind::kVecReplicateScalar:
         return 2;
       case HInstruction::InstructionKind::kVecExtractScalar:
-       return 1;
+        return 1;
       case HInstruction::InstructionKind::kVecReduce:
         return 4;
       case HInstruction::InstructionKind::kVecNeg:

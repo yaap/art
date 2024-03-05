@@ -23,6 +23,7 @@
 #include <forward_list>
 #include <iosfwd>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -33,7 +34,9 @@
 #include "base/macros.h"
 #include "base/mem_map.h"
 #include "base/metrics/metrics.h"
+#include "base/os.h"
 #include "base/string_view_cpp20.h"
+#include "base/unix_file/fd_file.h"
 #include "compat_framework.h"
 #include "deoptimization_kind.h"
 #include "dex/dex_file_types.h"
@@ -217,6 +220,10 @@ class Runtime {
     return is_explicit_gc_disabled_;
   }
 
+  bool IsEagerlyReleaseExplicitGcDisabled() const {
+    return is_eagerly_release_explicit_gc_disabled_;
+  }
+
   std::string GetCompilerExecutable() const;
 
   const std::vector<std::string>& GetCompilerOptions() const {
@@ -305,6 +312,9 @@ class Runtime {
   // Detaches the current native thread from the runtime.
   void DetachCurrentThread(bool should_run_callbacks = true) REQUIRES(!Locks::mutator_lock_);
 
+  // If we are handling SIQQUIT return the time when we received it.
+  std::optional<uint64_t> SiqQuitNanoTime() const;
+
   void DumpDeoptimizations(std::ostream& os);
   void DumpForSigQuit(std::ostream& os);
   void DumpLockHolders(std::ostream& os);
@@ -343,21 +353,15 @@ class Runtime {
                             const std::string& location,
                             std::vector<std::unique_ptr<const art::DexFile>>&& dex_files);
 
-  const std::vector<int>& GetBootClassPathFds() const {
-    return boot_class_path_fds_;
+  ArrayRef<File> GetBootClassPathFiles() { return ArrayRef<File>(boot_class_path_files_); }
+
+  ArrayRef<File> GetBootClassPathImageFiles() {
+    return ArrayRef<File>(boot_class_path_image_files_);
   }
 
-  const std::vector<int>& GetBootClassPathImageFds() const {
-    return boot_class_path_image_fds_;
-  }
+  ArrayRef<File> GetBootClassPathVdexFiles() { return ArrayRef<File>(boot_class_path_vdex_files_); }
 
-  const std::vector<int>& GetBootClassPathVdexFds() const {
-    return boot_class_path_vdex_fds_;
-  }
-
-  const std::vector<int>& GetBootClassPathOatFds() const {
-    return boot_class_path_oat_fds_;
-  }
+  ArrayRef<File> GetBootClassPathOatFiles() { return ArrayRef<File>(boot_class_path_oat_files_); }
 
   // Returns the checksums for the boot image, extensions and extra boot class path dex files,
   // based on the image spaces and boot class path dex files loaded in memory.
@@ -1260,6 +1264,7 @@ class Runtime {
   bool must_relocate_;
   bool is_concurrent_gc_enabled_;
   bool is_explicit_gc_disabled_;
+  bool is_eagerly_release_explicit_gc_disabled_;
   bool image_dex2oat_enabled_;
 
   std::string compiler_executable_;
@@ -1270,10 +1275,10 @@ class Runtime {
   std::vector<std::string> boot_class_path_;
   std::vector<std::string> boot_class_path_locations_;
   std::string boot_class_path_checksums_;
-  std::vector<int> boot_class_path_fds_;
-  std::vector<int> boot_class_path_image_fds_;
-  std::vector<int> boot_class_path_vdex_fds_;
-  std::vector<int> boot_class_path_oat_fds_;
+  std::vector<File> boot_class_path_files_;
+  std::vector<File> boot_class_path_image_files_;
+  std::vector<File> boot_class_path_vdex_files_;
+  std::vector<File> boot_class_path_oat_files_;
   std::string class_path_string_;
   std::vector<std::string> properties_;
 

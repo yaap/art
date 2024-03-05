@@ -155,7 +155,7 @@ void ArmVIXLJNIMacroAssembler::RemoveFrame(size_t frame_size,
 
   // Pop LR to PC unless we need to emit some read barrier code just before returning.
   bool emit_code_before_return =
-      (gUseReadBarrier && kUseBakerReadBarrier) &&
+      kReserveMarkingRegister &&
       (may_suspend || (kIsDebugBuild && emit_run_time_checks_in_debug_mode_));
   if ((core_spill_mask & (1u << lr.GetCode())) != 0u && !emit_code_before_return) {
     DCHECK_EQ(core_spill_mask & (1u << pc.GetCode()), 0u);
@@ -197,18 +197,7 @@ void ArmVIXLJNIMacroAssembler::RemoveFrame(size_t frame_size,
 
   // Pop core callee saves.
   if (core_spill_mask != 0u) {
-    if (IsPowerOfTwo(core_spill_mask) &&
-        core_spill_mask != (1u << pc.GetCode()) &&
-        WhichPowerOf2(core_spill_mask) >= 8) {
-      // FIXME(vixl): vixl fails to transform a pop with single high register
-      // to a post-index STR (also known as POP encoding T3) and emits the LDMIA
-      // (also known as POP encoding T2) which is UNPREDICTABLE for 1 register.
-      // So we have to explicitly do the transformation here. Bug: 178048807
-      vixl32::Register reg(WhichPowerOf2(core_spill_mask));
-      ___ Ldr(reg, MemOperand(sp, kFramePointerSize, PostIndex));
-    } else {
-      ___ Pop(RegisterList(core_spill_mask));
-    }
+    ___ Pop(RegisterList(core_spill_mask));
     if ((core_spill_mask & (1u << pc.GetCode())) == 0u) {
       cfi().AdjustCFAOffset(-kFramePointerSize * POPCOUNT(core_spill_mask));
       cfi().RestoreMany(DWARFReg(r0), core_spill_mask);
@@ -344,13 +333,13 @@ void ArmVIXLJNIMacroAssembler::StoreStackPointerToThread(ThreadOffset32 thr_offs
   }
 }
 
-void ArmVIXLJNIMacroAssembler::SignExtend(ManagedRegister mreg ATTRIBUTE_UNUSED,
-                                          size_t size ATTRIBUTE_UNUSED) {
+void ArmVIXLJNIMacroAssembler::SignExtend([[maybe_unused]] ManagedRegister mreg,
+                                          [[maybe_unused]] size_t size) {
   UNIMPLEMENTED(FATAL) << "no sign extension necessary for arm";
 }
 
-void ArmVIXLJNIMacroAssembler::ZeroExtend(ManagedRegister mreg ATTRIBUTE_UNUSED,
-                                          size_t size ATTRIBUTE_UNUSED) {
+void ArmVIXLJNIMacroAssembler::ZeroExtend([[maybe_unused]] ManagedRegister mreg,
+                                          [[maybe_unused]] size_t size) {
   UNIMPLEMENTED(FATAL) << "no zero extension necessary for arm";
 }
 
@@ -720,7 +709,7 @@ void ArmVIXLJNIMacroAssembler::MoveArguments(ArrayRef<ArgumentLocation> dests,
 
 void ArmVIXLJNIMacroAssembler::Move(ManagedRegister mdst,
                                     ManagedRegister msrc,
-                                    size_t size  ATTRIBUTE_UNUSED) {
+                                    [[maybe_unused]] size_t size) {
   ArmManagedRegister dst = mdst.AsArm();
   if (kIsDebugBuild) {
     // Check that the destination is not a scratch register.
@@ -861,13 +850,13 @@ void ArmVIXLJNIMacroAssembler::DecodeJNITransitionOrLocalJObject(ManagedRegister
   ___ Ldr(reg, MemOperand(reg));
 }
 
-void ArmVIXLJNIMacroAssembler::VerifyObject(ManagedRegister src ATTRIBUTE_UNUSED,
-                                            bool could_be_null ATTRIBUTE_UNUSED) {
+void ArmVIXLJNIMacroAssembler::VerifyObject([[maybe_unused]] ManagedRegister src,
+                                            [[maybe_unused]] bool could_be_null) {
   // TODO: not validating references.
 }
 
-void ArmVIXLJNIMacroAssembler::VerifyObject(FrameOffset src ATTRIBUTE_UNUSED,
-                                            bool could_be_null ATTRIBUTE_UNUSED) {
+void ArmVIXLJNIMacroAssembler::VerifyObject([[maybe_unused]] FrameOffset src,
+                                            [[maybe_unused]] bool could_be_null) {
   // TODO: not validating references.
 }
 
@@ -1026,7 +1015,6 @@ void ArmVIXLJNIMacroAssembler::TestGcMarking(JNIMacroLabel* label, JNIMacroUnary
   UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
   vixl32::Register test_reg;
   DCHECK_EQ(Thread::IsGcMarkingSize(), 4u);
-  DCHECK(gUseReadBarrier);
   if (kUseBakerReadBarrier) {
     // TestGcMarking() is used in the JNI stub entry when the marking register is up to date.
     if (kIsDebugBuild && emit_run_time_checks_in_debug_mode_) {

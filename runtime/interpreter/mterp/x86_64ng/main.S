@@ -202,18 +202,12 @@
     movsd \_xmmreg, VREG_ADDRESS(\_vreg)
 .endm
 
-// An assembly entry that has a OatQuickMethodHeader prefix.
-.macro OAT_ENTRY name, end
+// An assembly entry for nterp.
+.macro OAT_ENTRY name
     FUNCTION_TYPE(\name)
     ASM_HIDDEN SYMBOL(\name)
     .global SYMBOL(\name)
     .balign 16
-    // Padding of 3 * 4 bytes to get 16 bytes alignment of code entry.
-    .long 0
-    .long 0
-    .long 0
-    // OatQuickMethodHeader. Note that the top two bits must be clear.
-    .long (SYMBOL(\end) - SYMBOL(\name))
 SYMBOL(\name):
 .endm
 
@@ -1696,22 +1690,25 @@ END_FUNCTION \name
  *  rest  method parameters
  */
 
-OAT_ENTRY ExecuteNterpWithClinitImpl, EndExecuteNterpWithClinitImpl
+OAT_ENTRY ExecuteNterpWithClinitImpl
+    .cfi_startproc
     // For simplicity, we don't do a read barrier here, but instead rely
     // on art_quick_resolution_trampoline to always have a suspend point before
     // calling back here.
     movl ART_METHOD_DECLARING_CLASS_OFFSET(%rdi), %r10d
-    cmpb  $$(MIRROR_CLASS_IS_VISIBLY_INITIALIZED_VALUE), MIRROR_CLASS_IS_VISIBLY_INITIALIZED_OFFSET(%r10d)
+    cmpl $$(MIRROR_CLASS_STATUS_VISIBLY_INITIALIZED_SHIFTED), MIRROR_CLASS_STATUS_OFFSET(%r10d)
     jae ExecuteNterpImpl
-    cmpb  $$(MIRROR_CLASS_IS_INITIALIZING_VALUE), MIRROR_CLASS_IS_VISIBLY_INITIALIZED_OFFSET(%r10d)
+    cmpl $$(MIRROR_CLASS_STATUS_INITIALIZING_SHIFTED), MIRROR_CLASS_STATUS_OFFSET(%r10d)
     jb art_quick_resolution_trampoline
     movl MIRROR_CLASS_CLINIT_THREAD_ID_OFFSET(%r10d), %r10d
     cmpl %r10d, rSELF:THREAD_TID_OFFSET
     je ExecuteNterpImpl
     jmp art_quick_resolution_trampoline
-EndExecuteNterpWithClinitImpl:
+    .cfi_endproc
+    .global SYMBOL(EndExecuteNterpWithClinitImpl)
+SYMBOL(EndExecuteNterpWithClinitImpl):
 
-OAT_ENTRY ExecuteNterpImpl, EndExecuteNterpImpl
+OAT_ENTRY ExecuteNterpImpl
     .cfi_startproc
     .cfi_def_cfa rsp, 8
     testq %rax, -STACK_OVERFLOW_RESERVED_BYTES(%rsp)
@@ -1985,6 +1982,7 @@ NterpPutObjectInstanceField:
    GET_VREG rINST, rINSTq                  # vB (object we're operating on)
    testl   rINST, rINST                    # is object null?
    je      common_errNullObject
+   POISON_HEAP_REF ecx
    movl %ecx, (rINSTq,%rax,1)
    testl %ecx, %ecx
    je 4f
@@ -2008,6 +2006,7 @@ NterpPutObjectInstanceField:
    testl   rINST, rINST                    # is object null?
    je      common_errNullObject
    negl %eax
+   POISON_HEAP_REF ecx
    movl %ecx, (rINSTq,%rax,1)
    testl %ecx, %ecx
    je 5f
@@ -2030,6 +2029,7 @@ NterpGetObjectInstanceField:
    testb $$READ_BARRIER_TEST_VALUE, GRAY_BYTE_OFFSET(%ecx)
    movl (%rcx,%rax,1), %eax
    jnz 3f
+   UNPOISON_HEAP_REF eax  // Affects flags, so we cannot unpoison before the jnz.
 4:
    andb    $$0xf,rINSTbl                   # rINST <- A
    SET_VREG_OBJECT %eax, rINSTq            # fp[A] <- value
@@ -2048,6 +2048,7 @@ NterpGetObjectInstanceField:
    negl %eax
    jmp 1b
 3:
+   UNPOISON_HEAP_REF eax
    // reg00 is eax
    call art_quick_read_barrier_mark_reg00
    jmp 4b
@@ -2062,6 +2063,7 @@ NterpPutObjectStaticField:
    cmpq $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
    jne 3f
 5:
+   POISON_HEAP_REF ebp
    movl %ebp, (%eax, %edx, 1)
    testl %ebp, %ebp
    je 4f
@@ -2087,6 +2089,7 @@ NterpPutObjectStaticField:
    cmpq $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
    jne 7f
 6:
+   POISON_HEAP_REF ebp
    movl %ebp, (%eax, %edx, 1)
    testl %ebp, %ebp
    je 8f
@@ -2115,6 +2118,7 @@ NterpGetObjectStaticField:
    testb $$READ_BARRIER_TEST_VALUE, GRAY_BYTE_OFFSET(%eax)
    movl (%eax, %edx, 1), %eax
    jnz 3f
+   UNPOISON_HEAP_REF eax  // Affects flags, so we cannot unpoison before the jnz.
 4:
    SET_VREG_OBJECT %eax, rINSTq            # fp[A] <- value
    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
@@ -2128,6 +2132,7 @@ NterpGetObjectStaticField:
    andq $$-2, %rax
    jmp 1b
 3:
+   UNPOISON_HEAP_REF eax
    call art_quick_read_barrier_mark_reg00
    jmp 4b
 5:

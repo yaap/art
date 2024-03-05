@@ -190,25 +190,23 @@ TEST_F(SigchainTest, sighold) {
   });
 }
 
-#if defined(__BIONIC__)
+#if !defined(__riscv)
 // Not exposed via headers, but the symbols are available if you declare them yourself.
 extern "C" int sigblock(int);
-extern "C" int sigsetmask(int);
-#endif
-
 TEST_F(SigchainTest, sigblock) {
   TestSignalBlocking([]() {
     int mask = ~0U;
     ASSERT_EQ(0, sigblock(mask));
   });
 }
-
+extern "C" int sigsetmask(int);
 TEST_F(SigchainTest, sigsetmask) {
   TestSignalBlocking([]() {
     int mask = ~0U;
     ASSERT_EQ(0, sigsetmask(mask));
   });
 }
+#endif
 
 #endif
 
@@ -267,8 +265,8 @@ DISABLE_HWASAN void fault_address_tag_impl() {
   ASSERT_EQ(0, sigaction(SIGSEGV, &action, nullptr));
 
   auto* tagged_null = reinterpret_cast<int*>(0x2bULL << 56);
-  EXPECT_EXIT({ volatile int load __attribute__((unused)) = *tagged_null; },
-              testing::ExitedWithCode(0), "");
+  EXPECT_EXIT(
+      { [[maybe_unused]] volatile int load = *tagged_null; }, testing::ExitedWithCode(0), "");
 
   // Our sigaction implementation always implements the "clear unknown bits"
   // semantics for oldact.sa_flags regardless of kernel version so we rely on it
@@ -277,8 +275,9 @@ DISABLE_HWASAN void fault_address_tag_impl() {
   ASSERT_EQ(0, sigaction(SIGSEGV, &action, nullptr));
   ASSERT_EQ(0, sigaction(SIGSEGV, nullptr, &action));
   if (action.sa_flags & SA_EXPOSE_TAGBITS) {
-    EXPECT_EXIT({ volatile int load __attribute__((unused)) = *tagged_null; },
-                testing::ExitedWithCode(0x2b), "");
+      EXPECT_EXIT({ [[maybe_unused]] volatile int load = *tagged_null; },
+                  testing::ExitedWithCode(0x2b),
+                  "");
   }
 }
 #endif

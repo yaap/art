@@ -141,7 +141,9 @@ struct WellKnownClasses {
   static ArtMethod* java_lang_invoke_MethodHandle_asType;
   static ArtMethod* java_lang_invoke_MethodHandle_invokeExact;
   static ArtMethod* java_lang_invoke_MethodHandles_lookup;
+  static ArtMethod* java_lang_invoke_MethodHandles_makeIdentity;
   static ArtMethod* java_lang_invoke_MethodHandles_Lookup_findConstructor;
+  static ArtMethod* java_lang_invoke_MethodType_makeImpl;
   static ArtMethod* java_lang_ref_FinalizerReference_add;
   static ArtMethod* java_lang_ref_ReferenceQueue_add;
   static ArtMethod* java_lang_reflect_InvocationTargetException_init;
@@ -169,6 +171,7 @@ struct WellKnownClasses {
   static ArtField* dalvik_system_VMRuntime_nonSdkApiUsageConsumer;
   static ArtField* java_io_FileDescriptor_descriptor;
   static ArtField* java_lang_ClassLoader_parent;
+  static ArtField* java_lang_String_EMPTY;
   static ArtField* java_lang_Thread_parkBlocker;
   static ArtField* java_lang_Thread_daemon;
   static ArtField* java_lang_Thread_group;
@@ -198,6 +201,7 @@ struct WellKnownClasses {
   static ArtField* java_nio_ByteBuffer_isReadOnly;
   static ArtField* java_nio_ByteBuffer_offset;
   static ArtField* java_util_Collections_EMPTY_LIST;
+  static ArtField* java_util_concurrent_ThreadLocalRandom_seeder;
   static ArtField* jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_buffer;
   static ArtField* jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer_image;
   static ArtField* libcore_util_EmptyArray_STACK_TRACE_ELEMENT;
@@ -205,6 +209,18 @@ struct WellKnownClasses {
   static ArtField* org_apache_harmony_dalvik_ddmc_Chunk_length;
   static ArtField* org_apache_harmony_dalvik_ddmc_Chunk_offset;
   static ArtField* org_apache_harmony_dalvik_ddmc_Chunk_type;
+
+  static ArtField* java_lang_Byte_ByteCache_cache;
+  static ArtField* java_lang_Character_CharacterCache_cache;
+  static ArtField* java_lang_Short_ShortCache_cache;
+  static ArtField* java_lang_Integer_IntegerCache_cache;
+  static ArtField* java_lang_Long_LongCache_cache;
+
+  static ArtField* java_lang_Byte_value;
+  static ArtField* java_lang_Character_value;
+  static ArtField* java_lang_Short_value;
+  static ArtField* java_lang_Integer_value;
+  static ArtField* java_lang_Long_value;
 
   static constexpr ClassFromField<&dalvik_system_BaseDexClassLoader_pathList>
       dalvik_system_BaseDexClassLoader;
@@ -242,6 +258,20 @@ struct WellKnownClasses {
   static constexpr ClassFromField<&java_util_Collections_EMPTY_LIST> java_util_Collections;
   static constexpr ClassFromField<&libcore_util_EmptyArray_STACK_TRACE_ELEMENT>
       libcore_util_EmptyArray;
+
+  static constexpr ClassFromField<&java_lang_Byte_ByteCache_cache> java_lang_Byte_ByteCache;
+  static constexpr ClassFromField<&java_lang_Character_CharacterCache_cache>
+      java_lang_Character_CharacterCache;
+  static constexpr ClassFromField<&java_lang_Short_ShortCache_cache> java_lang_Short_ShortCache;
+  static constexpr ClassFromField<&java_lang_Integer_IntegerCache_cache>
+      java_lang_Integer_IntegerCache;
+  static constexpr ClassFromField<&java_lang_Long_LongCache_cache> java_lang_Long_LongCache;
+
+  static constexpr ClassFromMethod<&java_lang_Byte_valueOf> java_lang_Byte;
+  static constexpr ClassFromMethod<&java_lang_Character_valueOf> java_lang_Character;
+  static constexpr ClassFromMethod<&java_lang_Short_valueOf> java_lang_Short;
+  static constexpr ClassFromMethod<&java_lang_Integer_valueOf> java_lang_Integer;
+  static constexpr ClassFromMethod<&java_lang_Long_valueOf> java_lang_Long;
 };
 
 }  // namespace art

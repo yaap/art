@@ -45,6 +45,15 @@ static void throwCommonRedefinitionError(jvmtiEnv* jvmti,
                                          jint num_targets,
                                          jclass* target,
                                          jvmtiError res) {
+  // Get the last error message which might give more details on what went wrong.
+  using GetLastError = jvmtiError (*)(jvmtiEnv* env, char** msg);
+  GetLastError get_last_error =
+      GetExtensionFunction<GetLastError>(env, jvmti, "com.android.art.misc.get_last_error_message");
+  char* error_msg = nullptr;
+  if (get_last_error != nullptr) {
+    get_last_error(jvmti_env, &error_msg);
+  }
+
   std::stringstream err;
   char* error = nullptr;
   jvmti->GetErrorName(res, &error);
@@ -65,8 +74,12 @@ static void throwCommonRedefinitionError(jvmtiEnv* jvmti,
     jvmti->Deallocate(reinterpret_cast<unsigned char*>(generic));
   }
   err << "> due to " << error;
+  if (error_msg != nullptr) {
+    err << " (" << error_msg << ")";
+  }
   std::string message = err.str();
   jvmti->Deallocate(reinterpret_cast<unsigned char*>(error));
+  jvmti->Deallocate(reinterpret_cast<unsigned char*>(error_msg));
   env->ThrowNew(env->FindClass("java/lang/Exception"), message.c_str());
 }
 
@@ -259,8 +272,8 @@ extern "C" JNIEXPORT void JNICALL Java_art_Redefinition_doCommonMultiClassRedefi
 
 // Get all capabilities except those related to retransformation.
 jint OnLoad(JavaVM* vm,
-            char* options ATTRIBUTE_UNUSED,
-            void* reserved ATTRIBUTE_UNUSED) {
+            [[maybe_unused]] char* options,
+            [[maybe_unused]] void* reserved) {
   if (vm->GetEnv(reinterpret_cast<void**>(&jvmti_env), JVMTI_VERSION_1_0)) {
     printf("Unable to get jvmti env!\n");
     return 1;
@@ -322,13 +335,13 @@ extern "C" JNIEXPORT void JNICALL Java_art_Redefinition_addCommonTransformationR
 
 // The hook we are using.
 void JNICALL CommonClassFileLoadHookRetransformable(jvmtiEnv* jvmti_env,
-                                                    JNIEnv* jni_env ATTRIBUTE_UNUSED,
-                                                    jclass class_being_redefined ATTRIBUTE_UNUSED,
-                                                    jobject loader ATTRIBUTE_UNUSED,
+                                                    [[maybe_unused]] JNIEnv* jni_env,
+                                                    [[maybe_unused]] jclass class_being_redefined,
+                                                    [[maybe_unused]] jobject loader,
                                                     const char* name,
-                                                    jobject protection_domain ATTRIBUTE_UNUSED,
-                                                    jint class_data_len ATTRIBUTE_UNUSED,
-                                                    const unsigned char* class_dat ATTRIBUTE_UNUSED,
+                                                    [[maybe_unused]] jobject protection_domain,
+                                                    [[maybe_unused]] jint class_data_len,
+                                                    [[maybe_unused]] const unsigned char* class_dat,
                                                     jint* new_class_data_len,
                                                     unsigned char** new_class_data) {
   std::string name_str(name);
@@ -435,8 +448,8 @@ extern "C" JNIEXPORT void JNICALL Java_art_Redefinition_doCommonClassRetransform
 
 // Get all capabilities except those related to retransformation.
 jint OnLoad(JavaVM* vm,
-            char* options ATTRIBUTE_UNUSED,
-            void* reserved ATTRIBUTE_UNUSED) {
+            [[maybe_unused]] char* options,
+            [[maybe_unused]] void* reserved) {
   if (vm->GetEnv(reinterpret_cast<void**>(&jvmti_env), JVMTI_VERSION_1_0)) {
     printf("Unable to get jvmti env!\n");
     return 1;
@@ -451,8 +464,8 @@ namespace common_transform {
 
 // Get all capabilities except those related to retransformation.
 jint OnLoad(JavaVM* vm,
-            char* options ATTRIBUTE_UNUSED,
-            void* reserved ATTRIBUTE_UNUSED) {
+            [[maybe_unused]] char* options,
+            [[maybe_unused]] void* reserved) {
   if (vm->GetEnv(reinterpret_cast<void**>(&jvmti_env), JVMTI_VERSION_1_0)) {
     printf("Unable to get jvmti env!\n");
     return 1;

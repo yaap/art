@@ -25,6 +25,7 @@
 #include "entrypoints/quick/quick_entrypoints.h"
 #include "heap_poisoning.h"
 #include "intrinsics.h"
+#include "intrinsic_objects.h"
 #include "intrinsics_utils.h"
 #include "lock_word.h"
 #include "mirror/array-inl.h"
@@ -35,6 +36,7 @@
 #include "thread-current-inl.h"
 #include "utils/x86_64/assembler_x86_64.h"
 #include "utils/x86_64/constants_x86_64.h"
+#include "well_known_classes.h"
 
 namespace art HIDDEN {
 
@@ -71,11 +73,10 @@ class ReadBarrierSystemArrayCopySlowPathX86_64 : public SlowPathCode {
  public:
   explicit ReadBarrierSystemArrayCopySlowPathX86_64(HInstruction* instruction)
       : SlowPathCode(instruction) {
-    DCHECK(gUseReadBarrier);
-    DCHECK(kUseBakerReadBarrier);
   }
 
   void EmitNativeCode(CodeGenerator* codegen) override {
+    DCHECK(codegen->EmitBakerReadBarrier());
     CodeGeneratorX86_64* x86_64_codegen = down_cast<CodeGeneratorX86_64*>(codegen);
     LocationSummary* locations = instruction_->GetLocations();
     DCHECK(locations->CanCall());
@@ -222,34 +223,34 @@ static void GenIsInfinite(LocationSummary* locations,
     double kPositiveInfinity = std::numeric_limits<double>::infinity();
     double kNegativeInfinity = -1 * kPositiveInfinity;
 
-     __ xorq(output, output);
-     __ comisd(input, codegen->LiteralDoubleAddress(kPositiveInfinity));
-     __ j(kNotEqual, &done1);
-     __ j(kParityEven, &done2);
-     __ movq(output, Immediate(1));
-     __ jmp(&done2);
-     __ Bind(&done1);
-     __ comisd(input, codegen->LiteralDoubleAddress(kNegativeInfinity));
-     __ j(kNotEqual, &done2);
-     __ j(kParityEven, &done2);
-     __ movq(output, Immediate(1));
-     __ Bind(&done2);
+    __ xorq(output, output);
+    __ comisd(input, codegen->LiteralDoubleAddress(kPositiveInfinity));
+    __ j(kNotEqual, &done1);
+    __ j(kParityEven, &done2);
+    __ movq(output, Immediate(1));
+    __ jmp(&done2);
+    __ Bind(&done1);
+    __ comisd(input, codegen->LiteralDoubleAddress(kNegativeInfinity));
+    __ j(kNotEqual, &done2);
+    __ j(kParityEven, &done2);
+    __ movq(output, Immediate(1));
+    __ Bind(&done2);
   } else {
     float kPositiveInfinity = std::numeric_limits<float>::infinity();
     float kNegativeInfinity = -1 * kPositiveInfinity;
 
-     __ xorl(output, output);
-     __ comiss(input, codegen->LiteralFloatAddress(kPositiveInfinity));
-     __ j(kNotEqual, &done1);
-     __ j(kParityEven, &done2);
-     __ movl(output, Immediate(1));
-     __ jmp(&done2);
-     __ Bind(&done1);
-     __ comiss(input, codegen->LiteralFloatAddress(kNegativeInfinity));
-     __ j(kNotEqual, &done2);
-     __ j(kParityEven, &done2);
-     __ movl(output, Immediate(1));
-     __ Bind(&done2);
+    __ xorl(output, output);
+    __ comiss(input, codegen->LiteralFloatAddress(kPositiveInfinity));
+    __ j(kNotEqual, &done1);
+    __ j(kParityEven, &done2);
+    __ movl(output, Immediate(1));
+    __ jmp(&done2);
+    __ Bind(&done1);
+    __ comiss(input, codegen->LiteralFloatAddress(kNegativeInfinity));
+    __ j(kNotEqual, &done2);
+    __ j(kParityEven, &done2);
+    __ movl(output, Immediate(1));
+    __ Bind(&done2);
   }
 }
 
@@ -617,8 +618,8 @@ void IntrinsicCodeGeneratorX86_64::VisitMathNextAfter(HInvoke* invoke) {
 static void CreateSystemArrayCopyLocations(HInvoke* invoke) {
   // Check to see if we have known failures that will cause us to have to bail out
   // to the runtime, and just generate the runtime call directly.
-  HIntConstant* src_pos = invoke->InputAt(1)->AsIntConstant();
-  HIntConstant* dest_pos = invoke->InputAt(3)->AsIntConstant();
+  HIntConstant* src_pos = invoke->InputAt(1)->AsIntConstantOrNull();
+  HIntConstant* dest_pos = invoke->InputAt(3)->AsIntConstantOrNull();
 
   // The positions must be non-negative.
   if ((src_pos != nullptr && src_pos->GetValue() < 0) ||
@@ -628,7 +629,7 @@ static void CreateSystemArrayCopyLocations(HInvoke* invoke) {
   }
 
   // The length must be > 0.
-  HIntConstant* length = invoke->InputAt(4)->AsIntConstant();
+  HIntConstant* length = invoke->InputAt(4)->AsIntConstantOrNull();
   if (length != nullptr) {
     int32_t len = length->GetValue();
     if (len < 0) {
@@ -836,7 +837,7 @@ void IntrinsicLocationsBuilderX86_64::VisitSystemArrayCopyInt(HInvoke* invoke) {
 void IntrinsicLocationsBuilderX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
   // The only read barrier implementation supporting the
   // SystemArrayCopy intrinsic is the Baker-style read barriers.
-  if (gUseReadBarrier && !kUseBakerReadBarrier) {
+  if (codegen_->EmitNonBakerReadBarrier()) {
     return;
   }
 
@@ -887,7 +888,7 @@ static void GenSystemArrayCopyAddresses(X86_64Assembler* assembler,
 void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
   // The only read barrier implementation supporting the
   // SystemArrayCopy intrinsic is the Baker-style read barriers.
-  DCHECK_IMPLIES(gUseReadBarrier, kUseBakerReadBarrier);
+  DCHECK_IMPLIES(codegen_->EmitReadBarrier(), kUseBakerReadBarrier);
 
   X86_64Assembler* assembler = GetAssembler();
   LocationSummary* locations = invoke->GetLocations();
@@ -1002,7 +1003,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
     // slow path.
 
     bool did_unpoison = false;
-    if (gUseReadBarrier && kUseBakerReadBarrier) {
+    if (codegen_->EmitBakerReadBarrier()) {
       // /* HeapReference<Class> */ temp1 = dest->klass_
       codegen_->GenerateFieldLoadWithBakerReadBarrier(
           invoke, temp1_loc, dest, class_offset, /* needs_null_check= */ false);
@@ -1014,9 +1015,8 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
       // /* HeapReference<Class> */ temp2 = src->klass_
       codegen_->GenerateFieldLoadWithBakerReadBarrier(
           invoke, temp2_loc, src, class_offset, /* needs_null_check= */ false);
-      // If heap poisoning is enabled, `temp1` and `temp2` have been
-      // unpoisoned by the the previous calls to
-      // GenerateFieldLoadWithBakerReadBarrier.
+      // If heap poisoning is enabled, `temp1` and `temp2` have been unpoisoned
+      // by the previous calls to GenerateFieldLoadWithBakerReadBarrier.
     } else {
       // /* HeapReference<Class> */ temp1 = dest->klass_
       __ movl(temp1, Address(dest, class_offset));
@@ -1034,14 +1034,14 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
 
     if (!optimizations.GetDestinationIsNonPrimitiveArray()) {
       // Bail out if the destination is not a non primitive array.
-      if (gUseReadBarrier && kUseBakerReadBarrier) {
+      if (codegen_->EmitBakerReadBarrier()) {
         // /* HeapReference<Class> */ TMP = temp1->component_type_
         codegen_->GenerateFieldLoadWithBakerReadBarrier(
             invoke, TMP_loc, temp1, component_offset, /* needs_null_check= */ false);
         __ testl(CpuRegister(TMP), CpuRegister(TMP));
         __ j(kEqual, intrinsic_slow_path->GetEntryLabel());
         // If heap poisoning is enabled, `TMP` has been unpoisoned by
-        // the the previous call to GenerateFieldLoadWithBakerReadBarrier.
+        // the previous call to GenerateFieldLoadWithBakerReadBarrier.
       } else {
         // /* HeapReference<Class> */ TMP = temp1->component_type_
         __ movl(CpuRegister(TMP), Address(temp1, component_offset));
@@ -1055,7 +1055,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
 
     if (!optimizations.GetSourceIsNonPrimitiveArray()) {
       // Bail out if the source is not a non primitive array.
-      if (gUseReadBarrier && kUseBakerReadBarrier) {
+      if (codegen_->EmitBakerReadBarrier()) {
         // For the same reason given earlier, `temp1` is not trashed by the
         // read barrier emitted by GenerateFieldLoadWithBakerReadBarrier below.
         // /* HeapReference<Class> */ TMP = temp2->component_type_
@@ -1064,7 +1064,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
         __ testl(CpuRegister(TMP), CpuRegister(TMP));
         __ j(kEqual, intrinsic_slow_path->GetEntryLabel());
         // If heap poisoning is enabled, `TMP` has been unpoisoned by
-        // the the previous call to GenerateFieldLoadWithBakerReadBarrier.
+        // the previous call to GenerateFieldLoadWithBakerReadBarrier.
       } else {
         // /* HeapReference<Class> */ TMP = temp2->component_type_
         __ movl(CpuRegister(TMP), Address(temp2, component_offset));
@@ -1081,7 +1081,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
     if (optimizations.GetDestinationIsTypedObjectArray()) {
       NearLabel do_copy;
       __ j(kEqual, &do_copy);
-      if (gUseReadBarrier && kUseBakerReadBarrier) {
+      if (codegen_->EmitBakerReadBarrier()) {
         // /* HeapReference<Class> */ temp1 = temp1->component_type_
         codegen_->GenerateFieldLoadWithBakerReadBarrier(
             invoke, temp1_loc, temp1, component_offset, /* needs_null_check= */ false);
@@ -1109,7 +1109,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
   } else if (!optimizations.GetSourceIsNonPrimitiveArray()) {
     DCHECK(optimizations.GetDestinationIsNonPrimitiveArray());
     // Bail out if the source is not a non primitive array.
-    if (gUseReadBarrier && kUseBakerReadBarrier) {
+    if (codegen_->EmitBakerReadBarrier()) {
       // /* HeapReference<Class> */ temp1 = src->klass_
       codegen_->GenerateFieldLoadWithBakerReadBarrier(
           invoke, temp1_loc, src, class_offset, /* needs_null_check= */ false);
@@ -1141,7 +1141,7 @@ void IntrinsicCodeGeneratorX86_64::VisitSystemArrayCopy(HInvoke* invoke) {
   GenSystemArrayCopyAddresses(
       GetAssembler(), type, src, src_pos, dest, dest_pos, length, temp1, temp2, temp3);
 
-  if (gUseReadBarrier && kUseBakerReadBarrier) {
+  if (codegen_->EmitBakerReadBarrier()) {
     // SystemArrayCopy implementation for Baker read barriers (see
     // also CodeGeneratorX86_64::GenerateReferenceLoadWithBakerReadBarrier):
     //
@@ -1424,7 +1424,7 @@ static void GenerateStringIndexOf(HInvoke* invoke,
   HInstruction* code_point = invoke->InputAt(1);
   if (code_point->IsIntConstant()) {
     if (static_cast<uint32_t>(code_point->AsIntConstant()->GetValue()) >
-    std::numeric_limits<uint16_t>::max()) {
+        std::numeric_limits<uint16_t>::max()) {
       // Always needs the slow-path. We could directly dispatch to it, but this case should be
       // rare, so for simplicity just put the full slow-path down and branch unconditionally.
       slow_path = new (codegen->GetScopedAllocator()) IntrinsicSlowPathX86_64(invoke);
@@ -1655,7 +1655,7 @@ void IntrinsicCodeGeneratorX86_64::VisitStringGetCharsNoCheck(HInvoke* invoke) {
   CpuRegister obj = locations->InAt(0).AsRegister<CpuRegister>();
   Location srcBegin = locations->InAt(1);
   int srcBegin_value =
-    srcBegin.IsConstant() ? srcBegin.GetConstant()->AsIntConstant()->GetValue() : 0;
+      srcBegin.IsConstant() ? srcBegin.GetConstant()->AsIntConstant()->GetValue() : 0;
   CpuRegister srcEnd = locations->InAt(2).AsRegister<CpuRegister>();
   CpuRegister dst = locations->InAt(3).AsRegister<CpuRegister>();
   CpuRegister dstBegin = locations->InAt(4).AsRegister<CpuRegister>();
@@ -1871,7 +1871,7 @@ void IntrinsicCodeGeneratorX86_64::VisitThreadCurrentThread(HInvoke* invoke) {
 
 static void GenUnsafeGet(HInvoke* invoke,
                          DataType::Type type,
-                         bool is_volatile ATTRIBUTE_UNUSED,
+                         [[maybe_unused]] bool is_volatile,
                          CodeGeneratorX86_64* codegen) {
   X86_64Assembler* assembler = down_cast<X86_64Assembler*>(codegen->GetAssembler());
   LocationSummary* locations = invoke->GetLocations();
@@ -1883,12 +1883,16 @@ static void GenUnsafeGet(HInvoke* invoke,
   CpuRegister output = output_loc.AsRegister<CpuRegister>();
 
   switch (type) {
+    case DataType::Type::kInt8:
+      __ movsxb(output, Address(base, offset, ScaleFactor::TIMES_1, 0));
+      break;
+
     case DataType::Type::kInt32:
       __ movl(output, Address(base, offset, ScaleFactor::TIMES_1, 0));
       break;
 
     case DataType::Type::kReference: {
-      if (gUseReadBarrier) {
+      if (codegen->EmitReadBarrier()) {
         if (kUseBakerReadBarrier) {
           Address src(base, offset, ScaleFactor::TIMES_1, 0);
           codegen->GenerateReferenceLoadWithBakerReadBarrier(
@@ -1915,22 +1919,10 @@ static void GenUnsafeGet(HInvoke* invoke,
   }
 }
 
-static bool UnsafeGetIntrinsicOnCallList(Intrinsics intrinsic) {
-  switch (intrinsic) {
-    case Intrinsics::kUnsafeGetObject:
-    case Intrinsics::kUnsafeGetObjectVolatile:
-    case Intrinsics::kJdkUnsafeGetObject:
-    case Intrinsics::kJdkUnsafeGetObjectVolatile:
-    case Intrinsics::kJdkUnsafeGetObjectAcquire:
-      return true;
-    default:
-      break;
-  }
-  return false;
-}
-
-static void CreateIntIntIntToIntLocations(ArenaAllocator* allocator, HInvoke* invoke) {
-  bool can_call = gUseReadBarrier && UnsafeGetIntrinsicOnCallList(invoke->GetIntrinsic());
+static void CreateIntIntIntToIntLocations(ArenaAllocator* allocator,
+                                          HInvoke* invoke,
+                                          CodeGeneratorX86_64* codegen) {
+  bool can_call = codegen->EmitReadBarrier() && IsUnsafeGetReference(invoke);
   LocationSummary* locations =
       new (allocator) LocationSummary(invoke,
                                       can_call
@@ -1960,40 +1952,45 @@ void IntrinsicLocationsBuilderX86_64::VisitUnsafeGetLongVolatile(HInvoke* invoke
   VisitJdkUnsafeGetLongVolatile(invoke);
 }
 void IntrinsicLocationsBuilderX86_64::VisitUnsafeGetObject(HInvoke* invoke) {
-  VisitJdkUnsafeGetObject(invoke);
+  VisitJdkUnsafeGetReference(invoke);
 }
 void IntrinsicLocationsBuilderX86_64::VisitUnsafeGetObjectVolatile(HInvoke* invoke) {
-  VisitJdkUnsafeGetObjectVolatile(invoke);
+  VisitJdkUnsafeGetReferenceVolatile(invoke);
+}
+void IntrinsicLocationsBuilderX86_64::VisitUnsafeGetByte(HInvoke* invoke) {
+  VisitJdkUnsafeGetByte(invoke);
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGet(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke);
+  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetVolatile(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke);
+  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetAcquire(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke);
+  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetLong(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke);
+  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetLongVolatile(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke);
+  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
 }
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetLongAcquire(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke);
+  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
 }
-void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetObject(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke);
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetReference(HInvoke* invoke) {
+  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
 }
-void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetObjectVolatile(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke);
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetReferenceVolatile(HInvoke* invoke) {
+  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
 }
-void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetObjectAcquire(HInvoke* invoke) {
-  CreateIntIntIntToIntLocations(allocator_, invoke);
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetReferenceAcquire(HInvoke* invoke) {
+  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
 }
-
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetByte(HInvoke* invoke) {
+  CreateIntIntIntToIntLocations(allocator_, invoke, codegen_);
+}
 
 void IntrinsicCodeGeneratorX86_64::VisitUnsafeGet(HInvoke* invoke) {
   VisitJdkUnsafeGet(invoke);
@@ -2008,10 +2005,13 @@ void IntrinsicCodeGeneratorX86_64::VisitUnsafeGetLongVolatile(HInvoke* invoke) {
   VisitJdkUnsafeGetLongVolatile(invoke);
 }
 void IntrinsicCodeGeneratorX86_64::VisitUnsafeGetObject(HInvoke* invoke) {
-  VisitJdkUnsafeGetObject(invoke);
+  VisitJdkUnsafeGetReference(invoke);
 }
 void IntrinsicCodeGeneratorX86_64::VisitUnsafeGetObjectVolatile(HInvoke* invoke) {
-  VisitJdkUnsafeGetObjectVolatile(invoke);
+  VisitJdkUnsafeGetReferenceVolatile(invoke);
+}
+void IntrinsicCodeGeneratorX86_64::VisitUnsafeGetByte(HInvoke* invoke) {
+  VisitJdkUnsafeGetByte(invoke);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGet(HInvoke* invoke) {
@@ -2032,16 +2032,18 @@ void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetLongVolatile(HInvoke* invoke
 void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetLongAcquire(HInvoke* invoke) {
   GenUnsafeGet(invoke, DataType::Type::kInt64, /*is_volatile=*/ true, codegen_);
 }
-void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetObject(HInvoke* invoke) {
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetReference(HInvoke* invoke) {
   GenUnsafeGet(invoke, DataType::Type::kReference, /*is_volatile=*/ false, codegen_);
 }
-void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetObjectVolatile(HInvoke* invoke) {
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetReferenceVolatile(HInvoke* invoke) {
   GenUnsafeGet(invoke, DataType::Type::kReference, /*is_volatile=*/ true, codegen_);
 }
-void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetObjectAcquire(HInvoke* invoke) {
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetReferenceAcquire(HInvoke* invoke) {
   GenUnsafeGet(invoke, DataType::Type::kReference, /*is_volatile=*/ true, codegen_);
 }
-
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetByte(HInvoke* invoke) {
+  GenUnsafeGet(invoke, DataType::Type::kInt8, /*is_volatile=*/false, codegen_);
+}
 
 static void CreateIntIntIntIntToVoidPlusTempsLocations(ArenaAllocator* allocator,
                                                        DataType::Type type,
@@ -2069,13 +2071,13 @@ void IntrinsicLocationsBuilderX86_64::VisitUnsafePutVolatile(HInvoke* invoke) {
   VisitJdkUnsafePutVolatile(invoke);
 }
 void IntrinsicLocationsBuilderX86_64::VisitUnsafePutObject(HInvoke* invoke) {
-  VisitJdkUnsafePutObject(invoke);
+  VisitJdkUnsafePutReference(invoke);
 }
 void IntrinsicLocationsBuilderX86_64::VisitUnsafePutObjectOrdered(HInvoke* invoke) {
   VisitJdkUnsafePutObjectOrdered(invoke);
 }
 void IntrinsicLocationsBuilderX86_64::VisitUnsafePutObjectVolatile(HInvoke* invoke) {
-  VisitJdkUnsafePutObjectVolatile(invoke);
+  VisitJdkUnsafePutReferenceVolatile(invoke);
 }
 void IntrinsicLocationsBuilderX86_64::VisitUnsafePutLong(HInvoke* invoke) {
   VisitJdkUnsafePutLong(invoke);
@@ -2085,6 +2087,9 @@ void IntrinsicLocationsBuilderX86_64::VisitUnsafePutLongOrdered(HInvoke* invoke)
 }
 void IntrinsicLocationsBuilderX86_64::VisitUnsafePutLongVolatile(HInvoke* invoke) {
   VisitJdkUnsafePutLongVolatile(invoke);
+}
+void IntrinsicLocationsBuilderX86_64::VisitUnsafePutByte(HInvoke* invoke) {
+  VisitJdkUnsafePut(invoke);
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePut(HInvoke* invoke) {
@@ -2099,16 +2104,16 @@ void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutVolatile(HInvoke* invoke)
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutRelease(HInvoke* invoke) {
   CreateIntIntIntIntToVoidPlusTempsLocations(allocator_, DataType::Type::kInt32, invoke);
 }
-void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutObject(HInvoke* invoke) {
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutReference(HInvoke* invoke) {
   CreateIntIntIntIntToVoidPlusTempsLocations(allocator_, DataType::Type::kReference, invoke);
 }
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutObjectOrdered(HInvoke* invoke) {
   CreateIntIntIntIntToVoidPlusTempsLocations(allocator_, DataType::Type::kReference, invoke);
 }
-void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutObjectVolatile(HInvoke* invoke) {
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutReferenceVolatile(HInvoke* invoke) {
   CreateIntIntIntIntToVoidPlusTempsLocations(allocator_, DataType::Type::kReference, invoke);
 }
-void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutObjectRelease(HInvoke* invoke) {
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutReferenceRelease(HInvoke* invoke) {
   CreateIntIntIntIntToVoidPlusTempsLocations(allocator_, DataType::Type::kReference, invoke);
 }
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutLong(HInvoke* invoke) {
@@ -2122,6 +2127,9 @@ void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutLongVolatile(HInvoke* inv
 }
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutLongRelease(HInvoke* invoke) {
   CreateIntIntIntIntToVoidPlusTempsLocations(allocator_, DataType::Type::kInt64, invoke);
+}
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafePutByte(HInvoke* invoke) {
+  CreateIntIntIntIntToVoidPlusTempsLocations(allocator_, DataType::Type::kUint8, invoke);
 }
 
 // We don't care for ordered: it requires an AnyStore barrier, which is already given by the x86
@@ -2168,13 +2176,13 @@ void IntrinsicCodeGeneratorX86_64::VisitUnsafePutVolatile(HInvoke* invoke) {
   VisitJdkUnsafePutVolatile(invoke);
 }
 void IntrinsicCodeGeneratorX86_64::VisitUnsafePutObject(HInvoke* invoke) {
-  VisitJdkUnsafePutObject(invoke);
+  VisitJdkUnsafePutReference(invoke);
 }
 void IntrinsicCodeGeneratorX86_64::VisitUnsafePutObjectOrdered(HInvoke* invoke) {
   VisitJdkUnsafePutObjectOrdered(invoke);
 }
 void IntrinsicCodeGeneratorX86_64::VisitUnsafePutObjectVolatile(HInvoke* invoke) {
-  VisitJdkUnsafePutObjectVolatile(invoke);
+  VisitJdkUnsafePutReferenceVolatile(invoke);
 }
 void IntrinsicCodeGeneratorX86_64::VisitUnsafePutLong(HInvoke* invoke) {
   VisitJdkUnsafePutLong(invoke);
@@ -2184,6 +2192,9 @@ void IntrinsicCodeGeneratorX86_64::VisitUnsafePutLongOrdered(HInvoke* invoke) {
 }
 void IntrinsicCodeGeneratorX86_64::VisitUnsafePutLongVolatile(HInvoke* invoke) {
   VisitJdkUnsafePutLongVolatile(invoke);
+}
+void IntrinsicCodeGeneratorX86_64::VisitUnsafePutByte(HInvoke* invoke) {
+  VisitJdkUnsafePutByte(invoke);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePut(HInvoke* invoke) {
@@ -2198,7 +2209,7 @@ void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutVolatile(HInvoke* invoke) {
 void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutRelease(HInvoke* invoke) {
   GenUnsafePut(invoke->GetLocations(), DataType::Type::kInt32, /* is_volatile= */ true, codegen_);
 }
-void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutObject(HInvoke* invoke) {
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutReference(HInvoke* invoke) {
   GenUnsafePut(
       invoke->GetLocations(), DataType::Type::kReference, /*is_volatile=*/ false, codegen_);
 }
@@ -2206,11 +2217,11 @@ void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutObjectOrdered(HInvoke* invok
   GenUnsafePut(
       invoke->GetLocations(), DataType::Type::kReference, /*is_volatile=*/ false, codegen_);
 }
-void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutObjectVolatile(HInvoke* invoke) {
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutReferenceVolatile(HInvoke* invoke) {
   GenUnsafePut(
       invoke->GetLocations(), DataType::Type::kReference, /*is_volatile=*/ true, codegen_);
 }
-void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutObjectRelease(HInvoke* invoke) {
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutReferenceRelease(HInvoke* invoke) {
   GenUnsafePut(
       invoke->GetLocations(), DataType::Type::kReference, /*is_volatile=*/ true, codegen_);
 }
@@ -2226,13 +2237,15 @@ void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutLongVolatile(HInvoke* invoke
 void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutLongRelease(HInvoke* invoke) {
   GenUnsafePut(invoke->GetLocations(), DataType::Type::kInt64, /*is_volatile=*/ true, codegen_);
 }
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafePutByte(HInvoke* invoke) {
+  GenUnsafePut(invoke->GetLocations(), DataType::Type::kInt8, /*is_volatile=*/false, codegen_);
+}
 
 static void CreateUnsafeCASLocations(ArenaAllocator* allocator,
-                                     DataType::Type type,
-                                     HInvoke* invoke) {
-  const bool can_call = gUseReadBarrier &&
-                        kUseBakerReadBarrier &&
-                        IsUnsafeCASObject(invoke);
+                                     HInvoke* invoke,
+                                     CodeGeneratorX86_64* codegen,
+                                     DataType::Type type) {
+  const bool can_call = codegen->EmitBakerReadBarrier() && IsUnsafeCASReference(invoke);
   LocationSummary* locations =
       new (allocator) LocationSummary(invoke,
                                       can_call
@@ -2253,7 +2266,7 @@ static void CreateUnsafeCASLocations(ArenaAllocator* allocator,
     // Need two temporaries for MarkGCCard.
     locations->AddTemp(Location::RequiresRegister());  // Possibly used for reference poisoning too.
     locations->AddTemp(Location::RequiresRegister());
-    if (gUseReadBarrier) {
+    if (codegen->EmitReadBarrier()) {
       // Need three temporaries for GenerateReferenceLoadWithBakerReadBarrier.
       DCHECK(kUseBakerReadBarrier);
       locations->AddTemp(Location::RequiresRegister());
@@ -2285,24 +2298,24 @@ void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeCASLong(HInvoke* invoke) {
 
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeCASObject(HInvoke* invoke) {
   // `jdk.internal.misc.Unsafe.compareAndSwapObject` has compare-and-set semantics (see javadoc).
-  VisitJdkUnsafeCompareAndSetObject(invoke);
+  VisitJdkUnsafeCompareAndSetReference(invoke);
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeCompareAndSetInt(HInvoke* invoke) {
-  CreateUnsafeCASLocations(allocator_, DataType::Type::kInt32, invoke);
+  CreateUnsafeCASLocations(allocator_, invoke, codegen_, DataType::Type::kInt32);
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeCompareAndSetLong(HInvoke* invoke) {
-  CreateUnsafeCASLocations(allocator_, DataType::Type::kInt64, invoke);
+  CreateUnsafeCASLocations(allocator_, invoke, codegen_, DataType::Type::kInt64);
 }
 
-void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeCompareAndSetObject(HInvoke* invoke) {
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeCompareAndSetReference(HInvoke* invoke) {
   // The only supported read barrier implementation is the Baker-style read barriers.
-  if (gUseReadBarrier && !kUseBakerReadBarrier) {
+  if (codegen_->EmitNonBakerReadBarrier()) {
     return;
   }
 
-  CreateUnsafeCASLocations(allocator_, DataType::Type::kReference, invoke);
+  CreateUnsafeCASLocations(allocator_, invoke, codegen_, DataType::Type::kReference);
 }
 
 // Convert ZF into the Boolean result.
@@ -2438,7 +2451,7 @@ static void GenCompareAndSetOrExchangeRef(CodeGeneratorX86_64* codegen,
                                           CpuRegister temp3,
                                           bool is_cmpxchg) {
   // The only supported read barrier implementation is the Baker-style read barriers.
-  DCHECK_IMPLIES(gUseReadBarrier, kUseBakerReadBarrier);
+  DCHECK_IMPLIES(codegen->EmitReadBarrier(), kUseBakerReadBarrier);
 
   X86_64Assembler* assembler = down_cast<X86_64Assembler*>(codegen->GetAssembler());
 
@@ -2447,7 +2460,7 @@ static void GenCompareAndSetOrExchangeRef(CodeGeneratorX86_64* codegen,
   codegen->MarkGCCard(temp1, temp2, base, value, value_can_be_null);
 
   Address field_addr(base, offset, TIMES_1, 0);
-  if (gUseReadBarrier && kUseBakerReadBarrier) {
+  if (codegen->EmitBakerReadBarrier()) {
     // Need to make sure the reference stored in the field is a to-space
     // one before attempting the CAS or the CAS could fail incorrectly.
     codegen->GenerateReferenceLoadWithBakerReadBarrier(
@@ -2556,7 +2569,7 @@ static void GenCompareAndSetOrExchange(CodeGeneratorX86_64* codegen,
       CpuRegister new_value_reg = new_value.AsRegister<CpuRegister>();
       CpuRegister temp1 = locations->GetTemp(temp1_index).AsRegister<CpuRegister>();
       CpuRegister temp2 = locations->GetTemp(temp2_index).AsRegister<CpuRegister>();
-      CpuRegister temp3 = gUseReadBarrier
+      CpuRegister temp3 = codegen->EmitReadBarrier()
           ? locations->GetTemp(temp3_index).AsRegister<CpuRegister>()
           : CpuRegister(kNoRegister);
       DCHECK(RegsAreAllDifferent({base, offset, temp1, temp2, temp3}));
@@ -2611,7 +2624,7 @@ void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeCASLong(HInvoke* invoke) {
 
 void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeCASObject(HInvoke* invoke) {
   // `jdk.internal.misc.Unsafe.compareAndSwapObject` has compare-and-set semantics (see javadoc).
-  VisitJdkUnsafeCompareAndSetObject(invoke);
+  VisitJdkUnsafeCompareAndSetReference(invoke);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeCompareAndSetInt(HInvoke* invoke) {
@@ -2622,11 +2635,193 @@ void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeCompareAndSetLong(HInvoke* invo
   GenCAS(DataType::Type::kInt64, invoke, codegen_);
 }
 
-void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeCompareAndSetObject(HInvoke* invoke) {
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeCompareAndSetReference(HInvoke* invoke) {
   // The only supported read barrier implementation is the Baker-style read barriers.
-  DCHECK_IMPLIES(gUseReadBarrier, kUseBakerReadBarrier);
+  DCHECK_IMPLIES(codegen_->EmitReadBarrier(), kUseBakerReadBarrier);
 
   GenCAS(DataType::Type::kReference, invoke, codegen_);
+}
+
+static void CreateUnsafeGetAndUpdateLocations(ArenaAllocator* allocator,
+                                              HInvoke* invoke,
+                                              CodeGeneratorX86_64* codegen) {
+  const bool can_call = codegen->EmitReadBarrier() && IsUnsafeGetAndSetReference(invoke);
+  LocationSummary* locations =
+      new (allocator) LocationSummary(invoke,
+                                      can_call
+                                          ? LocationSummary::kCallOnSlowPath
+                                          : LocationSummary::kNoCall,
+                                      kIntrinsified);
+  if (can_call && kUseBakerReadBarrier) {
+    locations->SetCustomSlowPathCallerSaves(RegisterSet::Empty());  // No caller-save registers.
+  }
+  locations->SetInAt(0, Location::NoLocation());        // Unused receiver.
+  locations->SetInAt(1, Location::RequiresRegister());
+  locations->SetInAt(2, Location::RequiresRegister());
+  // Use the same register for both the output and the new value or addend
+  // to take advantage of XCHG or XADD. Arbitrarily pick RAX.
+  locations->SetInAt(3, Location::RegisterLocation(RAX));
+  locations->SetOut(Location::RegisterLocation(RAX));
+}
+
+void IntrinsicLocationsBuilderX86_64::VisitUnsafeGetAndAddInt(HInvoke* invoke) {
+  VisitJdkUnsafeGetAndAddInt(invoke);
+}
+
+void IntrinsicLocationsBuilderX86_64::VisitUnsafeGetAndAddLong(HInvoke* invoke) {
+  VisitJdkUnsafeGetAndAddLong(invoke);
+}
+
+void IntrinsicLocationsBuilderX86_64::VisitUnsafeGetAndSetInt(HInvoke* invoke) {
+  VisitJdkUnsafeGetAndSetInt(invoke);
+}
+
+void IntrinsicLocationsBuilderX86_64::VisitUnsafeGetAndSetLong(HInvoke* invoke) {
+  VisitJdkUnsafeGetAndSetLong(invoke);
+}
+
+void IntrinsicLocationsBuilderX86_64::VisitUnsafeGetAndSetObject(HInvoke* invoke) {
+  VisitJdkUnsafeGetAndSetReference(invoke);
+}
+
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetAndAddInt(HInvoke* invoke) {
+  CreateUnsafeGetAndUpdateLocations(allocator_, invoke, codegen_);
+}
+
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetAndAddLong(HInvoke* invoke) {
+  CreateUnsafeGetAndUpdateLocations(allocator_, invoke, codegen_);
+}
+
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetAndSetInt(HInvoke* invoke) {
+  CreateUnsafeGetAndUpdateLocations(allocator_, invoke, codegen_);
+}
+
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetAndSetLong(HInvoke* invoke) {
+  CreateUnsafeGetAndUpdateLocations(allocator_, invoke, codegen_);
+}
+
+void IntrinsicLocationsBuilderX86_64::VisitJdkUnsafeGetAndSetReference(HInvoke* invoke) {
+  // The only supported read barrier implementation is the Baker-style read barriers.
+  if (codegen_->EmitNonBakerReadBarrier()) {
+    return;
+  }
+
+  CreateUnsafeGetAndUpdateLocations(allocator_, invoke, codegen_);
+  invoke->GetLocations()->AddRegisterTemps(3);
+}
+
+enum class GetAndUpdateOp {
+  kSet,
+  kAdd,
+  kBitwiseAnd,
+  kBitwiseOr,
+  kBitwiseXor
+};
+
+static void GenUnsafeGetAndUpdate(HInvoke* invoke,
+                                  DataType::Type type,
+                                  CodeGeneratorX86_64* codegen,
+                                  GetAndUpdateOp get_and_update_op) {
+  X86_64Assembler* assembler = down_cast<X86_64Assembler*>(codegen->GetAssembler());
+  LocationSummary* locations = invoke->GetLocations();
+
+  CpuRegister out = locations->Out().AsRegister<CpuRegister>();       // Result.
+  CpuRegister base = locations->InAt(1).AsRegister<CpuRegister>();    // Object pointer.
+  CpuRegister offset = locations->InAt(2).AsRegister<CpuRegister>();  // Long offset.
+  DCHECK_EQ(out, locations->InAt(3).AsRegister<CpuRegister>());       // New value or addend.
+  Address field_address(base, offset, TIMES_1, 0);
+
+  if (type == DataType::Type::kInt32) {
+    if (get_and_update_op == GetAndUpdateOp::kAdd) {
+      __ LockXaddl(field_address, out);
+    } else {
+      DCHECK(get_and_update_op == GetAndUpdateOp::kSet);
+      __ xchgl(out, field_address);
+    }
+  } else if (type == DataType::Type::kInt64) {
+    if (get_and_update_op == GetAndUpdateOp::kAdd) {
+      __ LockXaddq(field_address, out);
+    } else {
+      DCHECK(get_and_update_op == GetAndUpdateOp::kSet);
+      __ xchgq(out, field_address);
+    }
+  } else {
+    DCHECK_EQ(type, DataType::Type::kReference);
+    DCHECK(get_and_update_op == GetAndUpdateOp::kSet);
+    CpuRegister temp1 = locations->GetTemp(0).AsRegister<CpuRegister>();
+    CpuRegister temp2 = locations->GetTemp(1).AsRegister<CpuRegister>();
+    CpuRegister temp3 = locations->GetTemp(2).AsRegister<CpuRegister>();
+
+    if (codegen->EmitReadBarrier()) {
+      DCHECK(kUseBakerReadBarrier);
+      // Ensure that the field contains a to-space reference.
+      codegen->GenerateReferenceLoadWithBakerReadBarrier(
+          invoke,
+          Location::RegisterLocation(temp3.AsRegister()),
+          base,
+          field_address,
+          /*needs_null_check=*/ false,
+          /*always_update_field=*/ true,
+          &temp1,
+          &temp2);
+    }
+
+    // Mark card for object as a new value shall be stored.
+    bool new_value_can_be_null = true;  // TODO: Worth finding out this information?
+    codegen->MarkGCCard(temp1, temp2, base, /*value=*/ out, new_value_can_be_null);
+
+    if (kPoisonHeapReferences) {
+      // Use a temp to avoid poisoning base of the field address, which might happen if `out`
+      // is the same as `base` (for code like `unsafe.getAndSet(obj, offset, obj)`).
+      __ movl(temp1, out);
+      __ PoisonHeapReference(temp1);
+      __ xchgl(temp1, field_address);
+      __ UnpoisonHeapReference(temp1);
+      __ movl(out, temp1);
+    } else {
+      __ xchgl(out, field_address);
+    }
+  }
+}
+
+void IntrinsicCodeGeneratorX86_64::VisitUnsafeGetAndAddInt(HInvoke* invoke) {
+  VisitJdkUnsafeGetAndAddInt(invoke);
+}
+
+void IntrinsicCodeGeneratorX86_64::VisitUnsafeGetAndAddLong(HInvoke* invoke) {
+  VisitJdkUnsafeGetAndAddLong(invoke);
+}
+
+void IntrinsicCodeGeneratorX86_64::VisitUnsafeGetAndSetInt(HInvoke* invoke) {
+  VisitJdkUnsafeGetAndSetInt(invoke);
+}
+
+void IntrinsicCodeGeneratorX86_64::VisitUnsafeGetAndSetLong(HInvoke* invoke) {
+  VisitJdkUnsafeGetAndSetLong(invoke);
+}
+
+void IntrinsicCodeGeneratorX86_64::VisitUnsafeGetAndSetObject(HInvoke* invoke) {
+  VisitJdkUnsafeGetAndSetReference(invoke);
+}
+
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetAndAddInt(HInvoke* invoke) {
+  GenUnsafeGetAndUpdate(invoke, DataType::Type::kInt32, codegen_, GetAndUpdateOp::kAdd);
+}
+
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetAndAddLong(HInvoke* invoke) {
+  GenUnsafeGetAndUpdate(invoke, DataType::Type::kInt64, codegen_, GetAndUpdateOp::kAdd);
+}
+
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetAndSetInt(HInvoke* invoke) {
+  GenUnsafeGetAndUpdate(invoke, DataType::Type::kInt32, codegen_, GetAndUpdateOp::kSet);
+}
+
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetAndSetLong(HInvoke* invoke) {
+  GenUnsafeGetAndUpdate(invoke, DataType::Type::kInt64, codegen_, GetAndUpdateOp::kSet);
+}
+
+void IntrinsicCodeGeneratorX86_64::VisitJdkUnsafeGetAndSetReference(HInvoke* invoke) {
+  GenUnsafeGetAndUpdate(invoke, DataType::Type::kReference, codegen_, GetAndUpdateOp::kSet);
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitIntegerReverse(HInvoke* invoke) {
@@ -3053,18 +3248,60 @@ void IntrinsicCodeGeneratorX86_64::VisitLongNumberOfTrailingZeros(HInvoke* invok
   GenTrailingZeros(GetAssembler(), codegen_, invoke, /* is_long= */ true);
 }
 
-void IntrinsicLocationsBuilderX86_64::VisitIntegerValueOf(HInvoke* invoke) {
-  InvokeRuntimeCallingConvention calling_convention;
-  IntrinsicVisitor::ComputeIntegerValueOfLocations(
-      invoke,
-      codegen_,
-      Location::RegisterLocation(RAX),
-      Location::RegisterLocation(calling_convention.GetRegisterAt(0)));
+#define VISIT_INTRINSIC(name, low, high, type, start_index) \
+  void IntrinsicLocationsBuilderX86_64::Visit ##name ##ValueOf(HInvoke* invoke) { \
+    InvokeRuntimeCallingConvention calling_convention; \
+    IntrinsicVisitor::ComputeValueOfLocations( \
+        invoke, \
+        codegen_, \
+        low, \
+        high - low + 1, \
+        Location::RegisterLocation(RAX), \
+        Location::RegisterLocation(calling_convention.GetRegisterAt(0))); \
+  } \
+  void IntrinsicCodeGeneratorX86_64::Visit ##name ##ValueOf(HInvoke* invoke) { \
+    IntrinsicVisitor::ValueOfInfo info = \
+        IntrinsicVisitor::ComputeValueOfInfo( \
+            invoke, \
+            codegen_->GetCompilerOptions(), \
+            WellKnownClasses::java_lang_ ##name ##_value, \
+            low, \
+            high - low + 1, \
+            start_index); \
+    HandleValueOf(invoke, info, type); \
+  }
+  BOXED_TYPES(VISIT_INTRINSIC)
+#undef VISIT_INTRINSIC
+
+template <typename T>
+static void Store(X86_64Assembler* assembler,
+                  DataType::Type primitive_type,
+                  const Address& address,
+                  const T& operand) {
+  switch (primitive_type) {
+    case DataType::Type::kInt8:
+    case DataType::Type::kUint8: {
+      __ movb(address, operand);
+      break;
+    }
+    case DataType::Type::kInt16:
+    case DataType::Type::kUint16: {
+      __ movw(address, operand);
+      break;
+    }
+    case DataType::Type::kInt32: {
+      __ movl(address, operand);
+      break;
+    }
+    default: {
+      LOG(FATAL) << "Unrecognized ValueOf type " << primitive_type;
+    }
+  }
 }
 
-void IntrinsicCodeGeneratorX86_64::VisitIntegerValueOf(HInvoke* invoke) {
-  IntrinsicVisitor::IntegerValueOfInfo info =
-      IntrinsicVisitor::ComputeIntegerValueOfInfo(invoke, codegen_->GetCompilerOptions());
+void IntrinsicCodeGeneratorX86_64::HandleValueOf(HInvoke* invoke,
+                                                 const IntrinsicVisitor::ValueOfInfo& info,
+                                                 DataType::Type type) {
   LocationSummary* locations = invoke->GetLocations();
   X86_64Assembler* assembler = GetAssembler();
 
@@ -3079,16 +3316,16 @@ void IntrinsicCodeGeneratorX86_64::VisitIntegerValueOf(HInvoke* invoke) {
   if (invoke->InputAt(0)->IsIntConstant()) {
     int32_t value = invoke->InputAt(0)->AsIntConstant()->GetValue();
     if (static_cast<uint32_t>(value - info.low) < info.length) {
-      // Just embed the j.l.Integer in the code.
-      DCHECK_NE(info.value_boot_image_reference, IntegerValueOfInfo::kInvalidReference);
+      // Just embed the object in the code.
+      DCHECK_NE(info.value_boot_image_reference, ValueOfInfo::kInvalidReference);
       codegen_->LoadBootImageAddress(out, info.value_boot_image_reference);
     } else {
       DCHECK(locations->CanCall());
-      // Allocate and initialize a new j.l.Integer.
-      // TODO: If we JIT, we could allocate the j.l.Integer now, and store it in the
+      // Allocate and initialize a new object.
+      // TODO: If we JIT, we could allocate the boxed value now, and store it in the
       // JIT object table.
       allocate_instance();
-      __ movl(Address(out, info.value_offset), Immediate(value));
+      Store(assembler, type, Address(out, info.value_offset), Immediate(value));
     }
   } else {
     DCHECK(locations->CanCall());
@@ -3098,7 +3335,7 @@ void IntrinsicCodeGeneratorX86_64::VisitIntegerValueOf(HInvoke* invoke) {
     __ cmpl(out, Immediate(info.length));
     NearLabel allocate, done;
     __ j(kAboveEqual, &allocate);
-    // If the value is within the bounds, load the j.l.Integer directly from the array.
+    // If the value is within the bounds, load the boxed value directly from the array.
     DCHECK_NE(out.AsRegister(), argument.AsRegister());
     codegen_->LoadBootImageAddress(argument, info.array_data_boot_image_reference);
     static_assert((1u << TIMES_4) == sizeof(mirror::HeapReference<mirror::Object>),
@@ -3107,9 +3344,9 @@ void IntrinsicCodeGeneratorX86_64::VisitIntegerValueOf(HInvoke* invoke) {
     __ MaybeUnpoisonHeapReference(out);
     __ jmp(&done);
     __ Bind(&allocate);
-    // Otherwise allocate and initialize a new j.l.Integer.
+    // Otherwise allocate and initialize a new object.
     allocate_instance();
-    __ movl(Address(out, info.value_offset), in);
+    Store(assembler, type, Address(out, info.value_offset), in);
     __ Bind(&done);
   }
 }
@@ -3128,7 +3365,7 @@ void IntrinsicCodeGeneratorX86_64::VisitReferenceGetReferent(HInvoke* invoke) {
   SlowPathCode* slow_path = new (GetAllocator()) IntrinsicSlowPathX86_64(invoke);
   codegen_->AddSlowPath(slow_path);
 
-  if (gUseReadBarrier) {
+  if (codegen_->EmitReadBarrier()) {
     // Check self->GetWeakRefAccessEnabled().
     ThreadOffset64 offset = Thread::WeakRefAccessEnabledOffset<kX86_64PointerSize>();
     __ gs()->cmpl(Address::Absolute(offset, /* no_rip= */ true),
@@ -3150,7 +3387,7 @@ void IntrinsicCodeGeneratorX86_64::VisitReferenceGetReferent(HInvoke* invoke) {
 
   // Load the value from the field.
   uint32_t referent_offset = mirror::Reference::ReferentOffset().Uint32Value();
-  if (gUseReadBarrier && kUseBakerReadBarrier) {
+  if (codegen_->EmitBakerReadBarrier()) {
     codegen_->GenerateFieldLoadWithBakerReadBarrier(invoke,
                                                     out,
                                                     obj.AsRegister<CpuRegister>(),
@@ -3169,7 +3406,7 @@ void IntrinsicCodeGeneratorX86_64::VisitReferenceGetReferent(HInvoke* invoke) {
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitReferenceRefersTo(HInvoke* invoke) {
-  IntrinsicVisitor::CreateReferenceRefersToLocations(invoke);
+  IntrinsicVisitor::CreateReferenceRefersToLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitReferenceRefersTo(HInvoke* invoke) {
@@ -3191,7 +3428,7 @@ void IntrinsicCodeGeneratorX86_64::VisitReferenceRefersTo(HInvoke* invoke) {
 
   __ cmpl(out, other);
 
-  if (gUseReadBarrier) {
+  if (codegen_->EmitReadBarrier()) {
     DCHECK(kUseBakerReadBarrier);
 
     NearLabel calculate_result;
@@ -3249,7 +3486,7 @@ void IntrinsicLocationsBuilderX86_64::VisitReachabilityFence(HInvoke* invoke) {
   locations->SetInAt(0, Location::Any());
 }
 
-void IntrinsicCodeGeneratorX86_64::VisitReachabilityFence(HInvoke* invoke ATTRIBUTE_UNUSED) { }
+void IntrinsicCodeGeneratorX86_64::VisitReachabilityFence([[maybe_unused]] HInvoke* invoke) {}
 
 static void CreateDivideUnsignedLocations(HInvoke* invoke, ArenaAllocator* allocator) {
   LocationSummary* locations =
@@ -3331,14 +3568,6 @@ void IntrinsicCodeGeneratorX86_64::VisitMathMultiplyHigh(HInvoke* invoke) {
 
   __ imulq(y);
 }
-
-enum class GetAndUpdateOp {
-  kSet,
-  kAdd,
-  kBitwiseAnd,
-  kBitwiseOr,
-  kBitwiseXor
-};
 
 class VarHandleSlowPathX86_64 : public IntrinsicSlowPathX86_64 {
  public:
@@ -3510,7 +3739,7 @@ static void GenerateVarHandleAccessModeAndVarTypeChecks(HInvoke* invoke,
   __ movl(temp, Address(varhandle, var_type_offset));
   __ MaybeUnpoisonHeapReference(temp);
 
-  // Check check the varType.primitiveType field against the type we're trying to retrieve.
+  // Check the varType.primitiveType field against the type we're trying to use.
   __ cmpw(Address(temp, primitive_type_offset), Immediate(static_cast<uint16_t>(primitive_type)));
   __ j(kNotEqual, slow_path->GetEntryLabel());
 
@@ -3754,24 +3983,24 @@ static void GenerateVarHandleTarget(HInvoke* invoke,
       __ movl(CpuRegister(target.offset), Immediate(target_field->GetOffset().Uint32Value()));
     } else {
       // For static fields, we need to fill the `target.object` with the declaring class,
-      // so we can use `target.object` as temporary for the `ArtMethod*`. For instance fields,
-      // we do not need the declaring class, so we can forget the `ArtMethod*` when
-      // we load the `target.offset`, so use the `target.offset` to hold the `ArtMethod*`.
-      CpuRegister method((expected_coordinates_count == 0) ? target.object : target.offset);
+      // so we can use `target.object` as temporary for the `ArtField*`. For instance fields,
+      // we do not need the declaring class, so we can forget the `ArtField*` when
+      // we load the `target.offset`, so use the `target.offset` to hold the `ArtField*`.
+      CpuRegister field((expected_coordinates_count == 0) ? target.object : target.offset);
 
       const MemberOffset art_field_offset = mirror::FieldVarHandle::ArtFieldOffset();
       const MemberOffset offset_offset = ArtField::OffsetOffset();
 
-      // Load the ArtField, the offset and, if needed, declaring class.
-      __ movq(method, Address(varhandle, art_field_offset));
-      __ movl(CpuRegister(target.offset), Address(method, offset_offset));
+      // Load the ArtField*, the offset and, if needed, declaring class.
+      __ movq(field, Address(varhandle, art_field_offset));
+      __ movl(CpuRegister(target.offset), Address(field, offset_offset));
       if (expected_coordinates_count == 0u) {
         InstructionCodeGeneratorX86_64* instr_codegen = codegen->GetInstructionCodegen();
         instr_codegen->GenerateGcRootFieldLoad(invoke,
                                                Location::RegisterLocation(target.object),
-                                               Address(method, ArtField::DeclaringClassOffset()),
-                                               /*fixup_label=*/ nullptr,
-                                               gCompilerReadBarrierOption);
+                                               Address(field, ArtField::DeclaringClassOffset()),
+                                               /*fixup_label=*/nullptr,
+                                               codegen->GetCompilerReadBarrierOption());
       }
     }
   } else {
@@ -3788,9 +4017,9 @@ static void GenerateVarHandleTarget(HInvoke* invoke,
   }
 }
 
-static bool HasVarHandleIntrinsicImplementation(HInvoke* invoke) {
+static bool HasVarHandleIntrinsicImplementation(HInvoke* invoke, CodeGeneratorX86_64* codegen) {
   // The only supported read barrier implementation is the Baker-style read barriers.
-  if (gUseReadBarrier && !kUseBakerReadBarrier) {
+  if (codegen->EmitNonBakerReadBarrier()) {
     return false;
   }
 
@@ -3839,8 +4068,8 @@ static LocationSummary* CreateVarHandleCommonLocations(HInvoke* invoke) {
   return locations;
 }
 
-static void CreateVarHandleGetLocations(HInvoke* invoke) {
-  if (!HasVarHandleIntrinsicImplementation(invoke)) {
+static void CreateVarHandleGetLocations(HInvoke* invoke, CodeGeneratorX86_64* codegen) {
+  if (!HasVarHandleIntrinsicImplementation(invoke, codegen)) {
     return;
   }
 
@@ -3876,7 +4105,7 @@ static void GenerateVarHandleGet(HInvoke* invoke,
   Location out = locations->Out();
 
   if (type == DataType::Type::kReference) {
-    if (gUseReadBarrier) {
+    if (codegen->EmitReadBarrier()) {
       DCHECK(kUseBakerReadBarrier);
       codegen->GenerateReferenceLoadWithBakerReadBarrier(
           invoke, out, CpuRegister(target.object), src, /* needs_null_check= */ false);
@@ -3900,7 +4129,7 @@ static void GenerateVarHandleGet(HInvoke* invoke,
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGet(HInvoke* invoke) {
-  CreateVarHandleGetLocations(invoke);
+  CreateVarHandleGetLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGet(HInvoke* invoke) {
@@ -3908,7 +4137,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGet(HInvoke* invoke) {
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAcquire(HInvoke* invoke) {
-  CreateVarHandleGetLocations(invoke);
+  CreateVarHandleGetLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAcquire(HInvoke* invoke) {
@@ -3917,7 +4146,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAcquire(HInvoke* invoke) {
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetOpaque(HInvoke* invoke) {
-  CreateVarHandleGetLocations(invoke);
+  CreateVarHandleGetLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetOpaque(HInvoke* invoke) {
@@ -3926,7 +4155,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetOpaque(HInvoke* invoke) {
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetVolatile(HInvoke* invoke) {
-  CreateVarHandleGetLocations(invoke);
+  CreateVarHandleGetLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetVolatile(HInvoke* invoke) {
@@ -3934,8 +4163,8 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetVolatile(HInvoke* invoke) {
   GenerateVarHandleGet(invoke, codegen_);
 }
 
-static void CreateVarHandleSetLocations(HInvoke* invoke) {
-  if (!HasVarHandleIntrinsicImplementation(invoke)) {
+static void CreateVarHandleSetLocations(HInvoke* invoke, CodeGeneratorX86_64* codegen) {
+  if (!HasVarHandleIntrinsicImplementation(invoke, codegen)) {
     return;
   }
 
@@ -4008,7 +4237,7 @@ static void GenerateVarHandleSet(HInvoke* invoke,
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleSet(HInvoke* invoke) {
-  CreateVarHandleSetLocations(invoke);
+  CreateVarHandleSetLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleSet(HInvoke* invoke) {
@@ -4016,7 +4245,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleSet(HInvoke* invoke) {
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleSetOpaque(HInvoke* invoke) {
-  CreateVarHandleSetLocations(invoke);
+  CreateVarHandleSetLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleSetOpaque(HInvoke* invoke) {
@@ -4024,7 +4253,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleSetOpaque(HInvoke* invoke) {
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleSetRelease(HInvoke* invoke) {
-  CreateVarHandleSetLocations(invoke);
+  CreateVarHandleSetLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleSetRelease(HInvoke* invoke) {
@@ -4032,15 +4261,16 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleSetRelease(HInvoke* invoke) {
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleSetVolatile(HInvoke* invoke) {
-  CreateVarHandleSetLocations(invoke);
+  CreateVarHandleSetLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleSetVolatile(HInvoke* invoke) {
   GenerateVarHandleSet(invoke, codegen_, /*is_volatile=*/ true, /*is_atomic=*/ true);
 }
 
-static void CreateVarHandleCompareAndSetOrExchangeLocations(HInvoke* invoke) {
-  if (!HasVarHandleIntrinsicImplementation(invoke)) {
+static void CreateVarHandleCompareAndSetOrExchangeLocations(HInvoke* invoke,
+                                                            CodeGeneratorX86_64* codegen) {
+  if (!HasVarHandleIntrinsicImplementation(invoke, codegen)) {
     return;
   }
 
@@ -4073,7 +4303,7 @@ static void CreateVarHandleCompareAndSetOrExchangeLocations(HInvoke* invoke) {
       // Need two temporaries for MarkGCCard.
       locations->AddTemp(Location::RequiresRegister());
       locations->AddTemp(Location::RequiresRegister());
-      if (gUseReadBarrier) {
+      if (codegen->EmitReadBarrier()) {
         // Need three temporaries for GenerateReferenceLoadWithBakerReadBarrier.
         DCHECK(kUseBakerReadBarrier);
         locations->AddTemp(Location::RequiresRegister());
@@ -4088,7 +4318,7 @@ static void GenerateVarHandleCompareAndSetOrExchange(HInvoke* invoke,
                                                      CodeGeneratorX86_64* codegen,
                                                      bool is_cmpxchg,
                                                      bool byte_swap = false) {
-  DCHECK_IMPLIES(gUseReadBarrier, kUseBakerReadBarrier);
+  DCHECK_IMPLIES(codegen->EmitReadBarrier(), kUseBakerReadBarrier);
 
   X86_64Assembler* assembler = codegen->GetAssembler();
   LocationSummary* locations = invoke->GetLocations();
@@ -4133,7 +4363,7 @@ static void GenerateVarHandleCompareAndSetOrExchange(HInvoke* invoke,
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleCompareAndSet(HInvoke* invoke) {
-  CreateVarHandleCompareAndSetOrExchangeLocations(invoke);
+  CreateVarHandleCompareAndSetOrExchangeLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleCompareAndSet(HInvoke* invoke) {
@@ -4141,7 +4371,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleCompareAndSet(HInvoke* invoke) 
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleWeakCompareAndSet(HInvoke* invoke) {
-  CreateVarHandleCompareAndSetOrExchangeLocations(invoke);
+  CreateVarHandleCompareAndSetOrExchangeLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleWeakCompareAndSet(HInvoke* invoke) {
@@ -4149,7 +4379,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleWeakCompareAndSet(HInvoke* invo
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleWeakCompareAndSetPlain(HInvoke* invoke) {
-  CreateVarHandleCompareAndSetOrExchangeLocations(invoke);
+  CreateVarHandleCompareAndSetOrExchangeLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleWeakCompareAndSetPlain(HInvoke* invoke) {
@@ -4157,7 +4387,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleWeakCompareAndSetPlain(HInvoke*
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleWeakCompareAndSetAcquire(HInvoke* invoke) {
-  CreateVarHandleCompareAndSetOrExchangeLocations(invoke);
+  CreateVarHandleCompareAndSetOrExchangeLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleWeakCompareAndSetAcquire(HInvoke* invoke) {
@@ -4165,7 +4395,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleWeakCompareAndSetAcquire(HInvok
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleWeakCompareAndSetRelease(HInvoke* invoke) {
-  CreateVarHandleCompareAndSetOrExchangeLocations(invoke);
+  CreateVarHandleCompareAndSetOrExchangeLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleWeakCompareAndSetRelease(HInvoke* invoke) {
@@ -4173,7 +4403,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleWeakCompareAndSetRelease(HInvok
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleCompareAndExchange(HInvoke* invoke) {
-  CreateVarHandleCompareAndSetOrExchangeLocations(invoke);
+  CreateVarHandleCompareAndSetOrExchangeLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleCompareAndExchange(HInvoke* invoke) {
@@ -4181,7 +4411,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleCompareAndExchange(HInvoke* inv
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleCompareAndExchangeAcquire(HInvoke* invoke) {
-  CreateVarHandleCompareAndSetOrExchangeLocations(invoke);
+  CreateVarHandleCompareAndSetOrExchangeLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleCompareAndExchangeAcquire(HInvoke* invoke) {
@@ -4189,15 +4419,15 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleCompareAndExchangeAcquire(HInvo
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleCompareAndExchangeRelease(HInvoke* invoke) {
-  CreateVarHandleCompareAndSetOrExchangeLocations(invoke);
+  CreateVarHandleCompareAndSetOrExchangeLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleCompareAndExchangeRelease(HInvoke* invoke) {
   GenerateVarHandleCompareAndSetOrExchange(invoke, codegen_, /*is_cmpxchg=*/ true);
 }
 
-static void CreateVarHandleGetAndSetLocations(HInvoke* invoke) {
-  if (!HasVarHandleIntrinsicImplementation(invoke)) {
+static void CreateVarHandleGetAndSetLocations(HInvoke* invoke, CodeGeneratorX86_64* codegen) {
+  if (!HasVarHandleIntrinsicImplementation(invoke, codegen)) {
     return;
   }
 
@@ -4221,7 +4451,7 @@ static void CreateVarHandleGetAndSetLocations(HInvoke* invoke) {
       // Need two temporaries for MarkGCCard.
       locations->AddTemp(Location::RequiresRegister());
       locations->AddTemp(Location::RequiresRegister());
-      if (gUseReadBarrier) {
+      if (codegen->EmitReadBarrier()) {
         // Need a third temporary for GenerateReferenceLoadWithBakerReadBarrier.
         DCHECK(kUseBakerReadBarrier);
         locations->AddTemp(Location::RequiresRegister());
@@ -4270,7 +4500,7 @@ static void GenerateVarHandleGetAndSet(HInvoke* invoke,
     CpuRegister temp2 = locations->GetTemp(temp_count - 2).AsRegister<CpuRegister>();
     CpuRegister valreg = value.AsRegister<CpuRegister>();
 
-    if (gUseReadBarrier && kUseBakerReadBarrier) {
+    if (codegen->EmitBakerReadBarrier()) {
       codegen->GenerateReferenceLoadWithBakerReadBarrier(
           invoke,
           locations->GetTemp(temp_count - 3),
@@ -4339,8 +4569,8 @@ static void GenerateVarHandleGetAndSet(HInvoke* invoke,
   }
 }
 
-static void CreateVarHandleGetAndBitwiseOpLocations(HInvoke* invoke) {
-  if (!HasVarHandleIntrinsicImplementation(invoke)) {
+static void CreateVarHandleGetAndBitwiseOpLocations(HInvoke* invoke, CodeGeneratorX86_64* codegen) {
+  if (!HasVarHandleIntrinsicImplementation(invoke, codegen)) {
     return;
   }
 
@@ -4478,8 +4708,8 @@ static void GenerateVarHandleGetAndOp(HInvoke* invoke,
   }
 }
 
-static void CreateVarHandleGetAndAddLocations(HInvoke* invoke) {
-  if (!HasVarHandleIntrinsicImplementation(invoke)) {
+static void CreateVarHandleGetAndAddLocations(HInvoke* invoke, CodeGeneratorX86_64* codegen) {
+  if (!HasVarHandleIntrinsicImplementation(invoke, codegen)) {
     return;
   }
 
@@ -4650,7 +4880,7 @@ static void GenerateVarHandleGetAndUpdate(HInvoke* invoke,
                                           bool need_any_store_barrier,
                                           bool need_any_any_barrier,
                                           bool byte_swap = false) {
-  DCHECK_IMPLIES(gUseReadBarrier, kUseBakerReadBarrier);
+  DCHECK_IMPLIES(codegen->EmitReadBarrier(), kUseBakerReadBarrier);
 
   X86_64Assembler* assembler = codegen->GetAssembler();
   LocationSummary* locations = invoke->GetLocations();
@@ -4705,7 +4935,7 @@ static void GenerateVarHandleGetAndUpdate(HInvoke* invoke,
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndSet(HInvoke* invoke) {
-  CreateVarHandleGetAndSetLocations(invoke);
+  CreateVarHandleGetAndSetLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndSet(HInvoke* invoke) {
@@ -4718,7 +4948,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndSet(HInvoke* invoke) {
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndSetAcquire(HInvoke* invoke) {
-  CreateVarHandleGetAndSetLocations(invoke);
+  CreateVarHandleGetAndSetLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndSetAcquire(HInvoke* invoke) {
@@ -4731,7 +4961,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndSetAcquire(HInvoke* invok
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndSetRelease(HInvoke* invoke) {
-  CreateVarHandleGetAndSetLocations(invoke);
+  CreateVarHandleGetAndSetLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndSetRelease(HInvoke* invoke) {
@@ -4744,7 +4974,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndSetRelease(HInvoke* invok
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndAdd(HInvoke* invoke) {
-  CreateVarHandleGetAndAddLocations(invoke);
+  CreateVarHandleGetAndAddLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndAdd(HInvoke* invoke) {
@@ -4757,7 +4987,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndAdd(HInvoke* invoke) {
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndAddAcquire(HInvoke* invoke) {
-  CreateVarHandleGetAndAddLocations(invoke);
+  CreateVarHandleGetAndAddLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndAddAcquire(HInvoke* invoke) {
@@ -4770,7 +5000,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndAddAcquire(HInvoke* invok
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndAddRelease(HInvoke* invoke) {
-  CreateVarHandleGetAndAddLocations(invoke);
+  CreateVarHandleGetAndAddLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndAddRelease(HInvoke* invoke) {
@@ -4783,7 +5013,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndAddRelease(HInvoke* invok
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndBitwiseAnd(HInvoke* invoke) {
-  CreateVarHandleGetAndBitwiseOpLocations(invoke);
+  CreateVarHandleGetAndBitwiseOpLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseAnd(HInvoke* invoke) {
@@ -4796,7 +5026,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseAnd(HInvoke* invok
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndBitwiseAndAcquire(HInvoke* invoke) {
-  CreateVarHandleGetAndBitwiseOpLocations(invoke);
+  CreateVarHandleGetAndBitwiseOpLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseAndAcquire(HInvoke* invoke) {
@@ -4809,7 +5039,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseAndAcquire(HInvoke
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndBitwiseAndRelease(HInvoke* invoke) {
-  CreateVarHandleGetAndBitwiseOpLocations(invoke);
+  CreateVarHandleGetAndBitwiseOpLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseAndRelease(HInvoke* invoke) {
@@ -4822,7 +5052,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseAndRelease(HInvoke
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndBitwiseOr(HInvoke* invoke) {
-  CreateVarHandleGetAndBitwiseOpLocations(invoke);
+  CreateVarHandleGetAndBitwiseOpLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseOr(HInvoke* invoke) {
@@ -4835,7 +5065,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseOr(HInvoke* invoke
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndBitwiseOrAcquire(HInvoke* invoke) {
-  CreateVarHandleGetAndBitwiseOpLocations(invoke);
+  CreateVarHandleGetAndBitwiseOpLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseOrAcquire(HInvoke* invoke) {
@@ -4848,7 +5078,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseOrAcquire(HInvoke*
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndBitwiseOrRelease(HInvoke* invoke) {
-  CreateVarHandleGetAndBitwiseOpLocations(invoke);
+  CreateVarHandleGetAndBitwiseOpLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseOrRelease(HInvoke* invoke) {
@@ -4861,7 +5091,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseOrRelease(HInvoke*
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndBitwiseXor(HInvoke* invoke) {
-  CreateVarHandleGetAndBitwiseOpLocations(invoke);
+  CreateVarHandleGetAndBitwiseOpLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseXor(HInvoke* invoke) {
@@ -4874,7 +5104,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseXor(HInvoke* invok
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndBitwiseXorAcquire(HInvoke* invoke) {
-  CreateVarHandleGetAndBitwiseOpLocations(invoke);
+  CreateVarHandleGetAndBitwiseOpLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseXorAcquire(HInvoke* invoke) {
@@ -4887,7 +5117,7 @@ void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseXorAcquire(HInvoke
 }
 
 void IntrinsicLocationsBuilderX86_64::VisitVarHandleGetAndBitwiseXorRelease(HInvoke* invoke) {
-  CreateVarHandleGetAndBitwiseOpLocations(invoke);
+  CreateVarHandleGetAndBitwiseOpLocations(invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorX86_64::VisitVarHandleGetAndBitwiseXorRelease(HInvoke* invoke) {

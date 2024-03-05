@@ -96,7 +96,9 @@ ArtMethod* WellKnownClasses::java_lang_ThreadGroup_threadTerminated;
 ArtMethod* WellKnownClasses::java_lang_invoke_MethodHandle_asType;
 ArtMethod* WellKnownClasses::java_lang_invoke_MethodHandle_invokeExact;
 ArtMethod* WellKnownClasses::java_lang_invoke_MethodHandles_lookup;
+ArtMethod* WellKnownClasses::java_lang_invoke_MethodHandles_makeIdentity;
 ArtMethod* WellKnownClasses::java_lang_invoke_MethodHandles_Lookup_findConstructor;
+ArtMethod* WellKnownClasses::java_lang_invoke_MethodType_makeImpl;
 ArtMethod* WellKnownClasses::java_lang_ref_FinalizerReference_add;
 ArtMethod* WellKnownClasses::java_lang_ref_ReferenceQueue_add;
 ArtMethod* WellKnownClasses::java_lang_reflect_InvocationTargetException_init;
@@ -124,6 +126,7 @@ ArtField* WellKnownClasses::dalvik_system_DexPathList__Element_dexFile;
 ArtField* WellKnownClasses::dalvik_system_VMRuntime_nonSdkApiUsageConsumer;
 ArtField* WellKnownClasses::java_io_FileDescriptor_descriptor;
 ArtField* WellKnownClasses::java_lang_ClassLoader_parent;
+ArtField* WellKnownClasses::java_lang_String_EMPTY;
 ArtField* WellKnownClasses::java_lang_Thread_parkBlocker;
 ArtField* WellKnownClasses::java_lang_Thread_daemon;
 ArtField* WellKnownClasses::java_lang_Thread_group;
@@ -153,6 +156,7 @@ ArtField* WellKnownClasses::java_nio_ByteBuffer_hb;
 ArtField* WellKnownClasses::java_nio_ByteBuffer_isReadOnly;
 ArtField* WellKnownClasses::java_nio_ByteBuffer_offset;
 ArtField* WellKnownClasses::java_util_Collections_EMPTY_LIST;
+ArtField* WellKnownClasses::java_util_concurrent_ThreadLocalRandom_seeder;
 ArtField* WellKnownClasses::jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_buffer;
 ArtField* WellKnownClasses::jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer_image;
 ArtField* WellKnownClasses::libcore_util_EmptyArray_STACK_TRACE_ELEMENT;
@@ -160,6 +164,18 @@ ArtField* WellKnownClasses::org_apache_harmony_dalvik_ddmc_Chunk_data;
 ArtField* WellKnownClasses::org_apache_harmony_dalvik_ddmc_Chunk_length;
 ArtField* WellKnownClasses::org_apache_harmony_dalvik_ddmc_Chunk_offset;
 ArtField* WellKnownClasses::org_apache_harmony_dalvik_ddmc_Chunk_type;
+
+ArtField* WellKnownClasses::java_lang_Byte_ByteCache_cache;
+ArtField* WellKnownClasses::java_lang_Character_CharacterCache_cache;
+ArtField* WellKnownClasses::java_lang_Short_ShortCache_cache;
+ArtField* WellKnownClasses::java_lang_Integer_IntegerCache_cache;
+ArtField* WellKnownClasses::java_lang_Long_LongCache_cache;
+
+ArtField* WellKnownClasses::java_lang_Byte_value;
+ArtField* WellKnownClasses::java_lang_Character_value;
+ArtField* WellKnownClasses::java_lang_Short_value;
+ArtField* WellKnownClasses::java_lang_Integer_value;
+ArtField* WellKnownClasses::java_lang_Long_value;
 
 static ObjPtr<mirror::Class> FindSystemClass(ClassLinker* class_linker,
                                              Thread* self,
@@ -223,6 +239,24 @@ static ArtMethod* CachePrimitiveBoxingMethod(ClassLinker* class_linker,
   PointerSize pointer_size = class_linker->GetImagePointerSize();
   std::string signature = android::base::StringPrintf("(%c)%s", prim_name, boxed_name);
   return CacheMethod(boxed_class, /*is_static=*/ true, "valueOf", signature.c_str(), pointer_size);
+}
+
+static ArtField* CacheBoxingCacheField(ClassLinker* class_linker,
+                                       Thread* self,
+                                       const char* class_name,
+                                       const char* cache_type)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  ObjPtr<mirror::Class> boxed_class = FindSystemClass(class_linker, self, class_name);
+  return CacheField(boxed_class, /*is_static=*/ true, "cache", cache_type);
+}
+
+static ArtField* CacheValueInBoxField(ClassLinker* class_linker,
+                                      Thread* self,
+                                      const char* class_name,
+                                      const char* cache_type)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  ObjPtr<mirror::Class> boxed_class = FindSystemClass(class_linker, self, class_name);
+  return CacheField(boxed_class, /*is_static=*/ false, "value", cache_type);
 }
 
 #define STRING_INIT_LIST(V) \
@@ -361,7 +395,29 @@ void WellKnownClasses::InitFieldsAndMethodsOnly(JNIEnv* env) {
   java_lang_Short_valueOf =
       CachePrimitiveBoxingMethod(class_linker, self, 'S', "Ljava/lang/Short;");
 
-  StackHandleScope<42u> hs(self);
+  java_lang_Byte_ByteCache_cache = CacheBoxingCacheField(
+      class_linker, self, "Ljava/lang/Byte$ByteCache;", "[Ljava/lang/Byte;");
+  java_lang_Character_CharacterCache_cache = CacheBoxingCacheField(
+      class_linker, self, "Ljava/lang/Character$CharacterCache;", "[Ljava/lang/Character;");
+  java_lang_Short_ShortCache_cache = CacheBoxingCacheField(
+      class_linker, self, "Ljava/lang/Short$ShortCache;", "[Ljava/lang/Short;");
+  java_lang_Integer_IntegerCache_cache = CacheBoxingCacheField(
+      class_linker, self, "Ljava/lang/Integer$IntegerCache;", "[Ljava/lang/Integer;");
+  java_lang_Long_LongCache_cache = CacheBoxingCacheField(
+      class_linker, self, "Ljava/lang/Long$LongCache;", "[Ljava/lang/Long;");
+
+  java_lang_Byte_value = CacheValueInBoxField(
+      class_linker, self, "Ljava/lang/Byte;", "B");
+  java_lang_Character_value = CacheValueInBoxField(
+      class_linker, self, "Ljava/lang/Character;", "C");
+  java_lang_Short_value = CacheValueInBoxField(
+      class_linker, self, "Ljava/lang/Short;", "S");
+  java_lang_Integer_value = CacheValueInBoxField(
+      class_linker, self, "Ljava/lang/Integer;", "I");
+  java_lang_Long_value = CacheValueInBoxField(
+      class_linker, self, "Ljava/lang/Long;", "J");
+
+  StackHandleScope<44u> hs(self);
   Handle<mirror::Class> d_s_bdcl =
       hs.NewHandle(FindSystemClass(class_linker, self, "Ldalvik/system/BaseDexClassLoader;"));
   Handle<mirror::Class> d_s_dlcl =
@@ -412,6 +468,8 @@ void WellKnownClasses::InitFieldsAndMethodsOnly(JNIEnv* env) {
       hs.NewHandle(FindSystemClass(class_linker, self, "Ljava/lang/invoke/MethodHandles;"));
   Handle<mirror::Class> j_l_i_MethodHandles_Lookup =
       hs.NewHandle(FindSystemClass(class_linker, self, "Ljava/lang/invoke/MethodHandles$Lookup;"));
+  Handle<mirror::Class> j_l_i_MethodType =
+      hs.NewHandle(FindSystemClass(class_linker, self, "Ljava/lang/invoke/MethodType;"));
   Handle<mirror::Class> j_l_r_fr =
       hs.NewHandle(FindSystemClass(class_linker, self, "Ljava/lang/ref/FinalizerReference;"));
   Handle<mirror::Class> j_l_r_rq =
@@ -428,6 +486,8 @@ void WellKnownClasses::InitFieldsAndMethodsOnly(JNIEnv* env) {
       hs.NewHandle(FindSystemClass(class_linker, self, "Ljava/nio/DirectByteBuffer;"));
   Handle<mirror::Class> j_u_c =
       hs.NewHandle(FindSystemClass(class_linker, self, "Ljava/util/Collections;"));
+  Handle<mirror::Class> j_u_c_tlr =
+      hs.NewHandle(FindSystemClass(class_linker, self, "Ljava/util/concurrent/ThreadLocalRandom;"));
   Handle<mirror::Class> j_u_f_c =
       hs.NewHandle(FindSystemClass(class_linker, self, "Ljava/util/function/Consumer;"));
   Handle<mirror::Class> j_i_m_fd =
@@ -576,11 +636,23 @@ void WellKnownClasses::InitFieldsAndMethodsOnly(JNIEnv* env) {
       "lookup",
       "()Ljava/lang/invoke/MethodHandles$Lookup;",
       pointer_size);
+  java_lang_invoke_MethodHandles_makeIdentity = CacheMethod(
+      j_l_i_MethodHandles.Get(),
+      /*is_static=*/ true,
+      "makeIdentity",
+      "(Ljava/lang/Class;)Ljava/lang/invoke/MethodHandle;",
+      pointer_size);
   java_lang_invoke_MethodHandles_Lookup_findConstructor = CacheMethod(
       j_l_i_MethodHandles_Lookup.Get(),
       /*is_static=*/ false,
       "findConstructor",
       "(Ljava/lang/Class;Ljava/lang/invoke/MethodType;)Ljava/lang/invoke/MethodHandle;",
+      pointer_size);
+  java_lang_invoke_MethodType_makeImpl = CacheMethod(
+      j_l_i_MethodType.Get(),
+      /* is_static=*/ true,
+      "makeImpl",
+      "(Ljava/lang/Class;[Ljava/lang/Class;Z)Ljava/lang/invoke/MethodType;",
       pointer_size);
 
   java_lang_ref_FinalizerReference_add = CacheMethod(
@@ -686,6 +758,8 @@ void WellKnownClasses::InitFieldsAndMethodsOnly(JNIEnv* env) {
   java_lang_ClassLoader_parent = CacheField(
       j_l_cl.Get(), /*is_static=*/ false, "parent", "Ljava/lang/ClassLoader;");
 
+  java_lang_String_EMPTY =
+      CacheField(j_l_String, /*is_static=*/true, "EMPTY", "Ljava/lang/String;");
   java_lang_Thread_parkBlocker =
       CacheField(j_l_Thread.Get(), /*is_static=*/ false, "parkBlocker", "Ljava/lang/Object;");
   java_lang_Thread_daemon = CacheField(j_l_Thread.Get(), /*is_static=*/ false, "daemon", "Z");
@@ -741,6 +815,9 @@ void WellKnownClasses::InitFieldsAndMethodsOnly(JNIEnv* env) {
 
   java_util_Collections_EMPTY_LIST =
       CacheField(j_u_c.Get(), /*is_static=*/ true, "EMPTY_LIST", "Ljava/util/List;");
+
+  java_util_concurrent_ThreadLocalRandom_seeder = CacheField(
+      j_u_c_tlr.Get(), /*is_static=*/ true, "seeder", "Ljava/util/concurrent/atomic/AtomicLong;");
 
   jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_buffer =
       CacheField(j_i_m_fd_btab.Get(), /*is_static=*/ false, "buffer", "[C");
@@ -847,7 +924,9 @@ void WellKnownClasses::Clear() {
   java_lang_invoke_MethodHandle_asType = nullptr;
   java_lang_invoke_MethodHandle_invokeExact = nullptr;
   java_lang_invoke_MethodHandles_lookup = nullptr;
+  java_lang_invoke_MethodHandles_makeIdentity = nullptr;
   java_lang_invoke_MethodHandles_Lookup_findConstructor = nullptr;
+  java_lang_invoke_MethodType_makeImpl = nullptr;
   java_lang_ref_FinalizerReference_add = nullptr;
   java_lang_ref_ReferenceQueue_add = nullptr;
   java_lang_reflect_InvocationTargetException_init = nullptr;
@@ -871,6 +950,7 @@ void WellKnownClasses::Clear() {
   dalvik_system_DexPathList__Element_dexFile = nullptr;
   dalvik_system_VMRuntime_nonSdkApiUsageConsumer = nullptr;
   java_lang_ClassLoader_parent = nullptr;
+  java_lang_String_EMPTY = nullptr;
   java_lang_Thread_parkBlocker = nullptr;
   java_lang_Thread_daemon = nullptr;
   java_lang_Thread_group = nullptr;
@@ -897,6 +977,7 @@ void WellKnownClasses::Clear() {
   java_nio_ByteBuffer_isReadOnly = nullptr;
   java_nio_ByteBuffer_offset = nullptr;
   java_util_Collections_EMPTY_LIST = nullptr;
+  java_util_concurrent_ThreadLocalRandom_seeder = nullptr;
   jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_buffer = nullptr;
   jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer_image = nullptr;
   libcore_util_EmptyArray_STACK_TRACE_ELEMENT = nullptr;
@@ -904,6 +985,18 @@ void WellKnownClasses::Clear() {
   org_apache_harmony_dalvik_ddmc_Chunk_length = nullptr;
   org_apache_harmony_dalvik_ddmc_Chunk_offset = nullptr;
   org_apache_harmony_dalvik_ddmc_Chunk_type = nullptr;
+
+  java_lang_Byte_ByteCache_cache = nullptr;
+  java_lang_Character_CharacterCache_cache = nullptr;
+  java_lang_Short_ShortCache_cache = nullptr;
+  java_lang_Integer_IntegerCache_cache = nullptr;
+  java_lang_Long_LongCache_cache = nullptr;
+
+  java_lang_Byte_value = nullptr;
+  java_lang_Character_value = nullptr;
+  java_lang_Short_value = nullptr;
+  java_lang_Integer_value = nullptr;
+  java_lang_Long_value = nullptr;
 }
 
 ObjPtr<mirror::Class> WellKnownClasses::ToClass(jclass global_jclass) {

@@ -49,7 +49,6 @@
 #include "mirror/object_array-inl.h"
 #include "mirror/string.h"
 #include "oat_file-inl.h"
-#include "quicken_info.h"
 #include "runtime_callbacks.h"
 #include "scoped_thread_state_change-inl.h"
 #include "vdex_file.h"
@@ -227,11 +226,11 @@ InvokeType ArtMethod::GetInvokeType() {
   }
 }
 
-size_t ArtMethod::NumArgRegisters(const char* shorty) {
-  CHECK_NE(shorty[0], '\0');
+size_t ArtMethod::NumArgRegisters(std::string_view shorty) {
+  CHECK(!shorty.empty());
   uint32_t num_registers = 0;
-  for (const char* s = shorty + 1; *s != '\0'; ++s) {
-    if (*s == 'D' || *s == 'J') {
+  for (char c : shorty.substr(1u)) {
+    if (c == 'D' || c == 'J') {
       num_registers += 2;
     } else {
       num_registers += 1;
@@ -606,11 +605,13 @@ const OatQuickMethodHeader* ArtMethod::GetOatQuickMethodHeader(uintptr_t pc) {
   // methods or proxy invoke handlers which are handled earlier.
   DCHECK_NE(pc, 0u) << "PC 0 for " << PrettyMethod();
 
-  // Check whether the current entry point contains this pc.
+  // Check whether the current entry point contains this pc. We need to manually
+  // check some entrypoints in case they are trampolines in the oat file.
   if (!class_linker->IsQuickGenericJniStub(existing_entry_point) &&
       !class_linker->IsQuickResolutionStub(existing_entry_point) &&
       !class_linker->IsQuickToInterpreterBridge(existing_entry_point) &&
-      existing_entry_point != GetInvokeObsoleteMethodStub()) {
+      !OatQuickMethodHeader::IsStub(
+          reinterpret_cast<const uint8_t*>(existing_entry_point)).value_or(true)) {
     OatQuickMethodHeader* method_header =
         OatQuickMethodHeader::FromEntryPoint(existing_entry_point);
 
@@ -632,12 +633,16 @@ const OatQuickMethodHeader* ArtMethod::GetOatQuickMethodHeader(uintptr_t pc) {
       DCHECK(method_header->Contains(pc));
       return method_header;
     } else {
-      DCHECK(!code_cache->ContainsPc(reinterpret_cast<const void*>(pc)))
-          << PrettyMethod()
-          << ", pc=" << std::hex << pc
-          << ", entry_point=" << std::hex << reinterpret_cast<uintptr_t>(existing_entry_point)
-          << ", copy=" << std::boolalpha << IsCopied()
-          << ", proxy=" << std::boolalpha << IsProxyMethod();
+      if (kIsDebugBuild && code_cache->ContainsPc(reinterpret_cast<const void*>(pc))) {
+        code_cache->DumpAllCompiledMethods(LOG_STREAM(FATAL_WITHOUT_ABORT));
+        LOG(FATAL)
+            << PrettyMethod()
+            << ", pc=" << std::hex << pc
+            << ", entry_point=" << std::hex << reinterpret_cast<uintptr_t>(existing_entry_point)
+            << ", copy=" << std::boolalpha << IsCopied()
+            << ", proxy=" << std::boolalpha << IsProxyMethod()
+            << ", is_native=" << std::boolalpha << IsNative();
+      }
     }
   }
 
@@ -646,12 +651,21 @@ const OatQuickMethodHeader* ArtMethod::GetOatQuickMethodHeader(uintptr_t pc) {
   OatFile::OatMethod oat_method =
       FindOatMethodFor(this, class_linker->GetImagePointerSize(), &found);
   if (!found) {
-    CHECK(IsNative());
+    if (!IsNative()) {
+      PrintFileToLog("/proc/self/maps", LogSeverity::FATAL_WITHOUT_ABORT);
+      MemMap::DumpMaps(LOG_STREAM(FATAL_WITHOUT_ABORT), /* terse= */ true);
+      LOG(FATAL)
+          << PrettyMethod()
+          << " pc=" << pc
+          << ", entrypoint= " << std::hex << reinterpret_cast<uintptr_t>(existing_entry_point)
+          << ", jit= " << jit;
+    }
     // We are running the GenericJNI stub. The entrypoint may point
     // to different entrypoints or to a JIT-compiled JNI stub.
     DCHECK(class_linker->IsQuickGenericJniStub(existing_entry_point) ||
            class_linker->IsQuickResolutionStub(existing_entry_point) ||
            (jit != nullptr && jit->GetCodeCache()->ContainsPc(existing_entry_point)))
+        << " method: " << PrettyMethod()
         << " entrypoint: " << existing_entry_point
         << " size: " << OatQuickMethodHeader::FromEntryPoint(existing_entry_point)->GetCodeSize()
         << " pc: " << reinterpret_cast<const void*>(pc);
@@ -659,7 +673,21 @@ const OatQuickMethodHeader* ArtMethod::GetOatQuickMethodHeader(uintptr_t pc) {
   }
   const void* oat_entry_point = oat_method.GetQuickCode();
   if (oat_entry_point == nullptr || class_linker->IsQuickGenericJniStub(oat_entry_point)) {
-    DCHECK(IsNative()) << PrettyMethod();
+    if (kIsDebugBuild && !IsNative()) {
+      PrintFileToLog("/proc/self/maps", LogSeverity::FATAL_WITHOUT_ABORT);
+      MemMap::DumpMaps(LOG_STREAM(FATAL_WITHOUT_ABORT), /* terse= */ true);
+      LOG(FATAL)
+          << PrettyMethod()
+          << std::hex
+          << " pc=" << pc
+          << ", entrypoint= " << reinterpret_cast<uintptr_t>(existing_entry_point)
+          << ", jit= " << jit
+          << ", nterp_start= "
+          << reinterpret_cast<uintptr_t>(OatQuickMethodHeader::NterpImpl.data())
+          << ", nterp_end= "
+          << reinterpret_cast<uintptr_t>(
+                 OatQuickMethodHeader::NterpImpl.data() + OatQuickMethodHeader::NterpImpl.size());
+    }
     return nullptr;
   }
 

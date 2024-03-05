@@ -15,6 +15,7 @@
 -->
 <configuration description="Runs art_standalone_libdexfile_tests.">
     <option name="config-descriptor:metadata" key="mainline-param" value="com.google.android.art.apex" />
+    <option name="config-descriptor:metadata" key="mainline-param" value="com.android.art.apex" />
     <target_preparer class="com.android.compatibility.common.tradefed.targetprep.FilePusher">
         <option name="cleanup" value="true" />
         <option name="push" value="art_standalone_libdexfile_tests->/data/local/tmp/art_standalone_libdexfile_tests/art_standalone_libdexfile_tests" />
@@ -30,6 +31,7 @@
         <option name="push" value="art-gtest-jars-MultiDex.jar->/data/local/tmp/art_standalone_libdexfile_tests/art-gtest-jars-MultiDex.jar" />
         <option name="push" value="art-gtest-jars-Nested.jar->/data/local/tmp/art_standalone_libdexfile_tests/art-gtest-jars-Nested.jar" />
         <option name="push" value="art-gtest-jars-VerifierDeps.dex->/data/local/tmp/art_standalone_libdexfile_tests/art-gtest-jars-VerifierDeps.dex" />
+        <option name="push" value="fuzzer_corpus.zip->/data/local/tmp/art_standalone_libdexfile_tests/fuzzer_corpus.zip" />
     </target_preparer>
 
     <test class="com.android.tradefed.testtype.GTest" >

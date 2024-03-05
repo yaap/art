@@ -215,11 +215,18 @@ known_failing_tests = frozenset([
   "993-breakpoints-non-debuggable",
   "2243-single-step-default",
   "2262-miranda-methods",
-  "2262-default-conflict-methods"
+  "2262-default-conflict-methods",
+  # 2247-checker-write-barrier-elimination: Disabled while we investigate failures
+  "2247-checker-write-barrier-elimination"
+])
+
+# These tests are new and have not had enough post-submit runs to meet
+# pre-submit SLOs. Monitor their post-submit runs before removing them
+# from this set (in order to promote them to presubmits).
+postsubmit_only_tests = frozenset([
 ])
 
 known_failing_on_hwasan_tests = frozenset([
-  "BootImageProfileTest", # b/232012605
   "CtsJdwpTestCases", # times out
 ])
 
@@ -431,7 +438,7 @@ class Generator:
               """.join(libraries)
     return f"""
           {library_type}: [
-              {libraries_joined}
+              {libraries_joined},
           ],"""
 
   def gen_libs_list(self, libraries):
@@ -528,11 +535,9 @@ class Generator:
     src_library_rules = []
     test_libraries = []
     if os.path.isdir(os.path.join(run_test_path, "src2")):
-      src_library_rules.append(self.gen_java_library_rule(
-          f"{run_test_module_name}-{source_dir}",
-          source_dir,
-          test_libraries))
-      test_libraries.append(f"\"{run_test_module_name}-src\"")
+      test_library = f"{run_test_module_name}-{source_dir}"
+      src_library_rules.append(self.gen_java_library_rule(test_library, source_dir, test_libraries))
+      test_libraries.append(f"\"{test_library}\"")
       source_dir = "src2"
 
     with open(bp_file, "w") as f:
@@ -562,33 +567,66 @@ class Generator:
               ":{run_test_module_name}-expected-stderr",
           ],{test_suites}{include_src}
       }}
-
-      // Test's expected standard output.
-      genrule {{
-          name: "{run_test_module_name}-expected-stdout",
-          out: ["{run_test_module_name}-expected-stdout.txt"],
-          srcs: ["expected-stdout.txt"],
-          cmd: "cp -f $(in) $(out)",
-      }}
-
-      // Test's expected standard error.
-      genrule {{
-          name: "{run_test_module_name}-expected-stderr",
-          out: ["{run_test_module_name}-expected-stderr.txt"],
-          srcs: ["expected-stderr.txt"],
-          cmd: "cp -f $(in) $(out)",
-      }}
       """))
+
+      def add_expected_output_genrule(type_str):
+        type_str_long = "standard output" if type_str == "stdout" else "standard error"
+        in_file = os.path.join(run_test_path, f"expected-{type_str}.txt")
+        if os.path.islink(in_file):
+          # Genrules are sandboxed, so if we just added the symlink to the srcs list, it would
+          # be a dangling symlink in the sandbox. Instead, if we see a symlink, depend on the
+          # genrule from the test that the symlink is pointing to instead of the symlink itself.
+          link_target = os.readlink(in_file)
+          basename = os.path.basename(in_file)
+          match = re.fullmatch('\.\./([a-zA-Z0-9_-]+)/' + re.escape(basename), link_target)
+          if not match:
+            sys.exit(f"Error: expected symlink to be '../something/{basename}', got {link_target}")
+          f.write(textwrap.dedent(f"""\
+
+            // Test's expected {type_str_long}.
+            genrule {{
+                name: "{run_test_module_name}-expected-{type_str}",
+                out: ["{run_test_module_name}-expected-{type_str}.txt"],
+                srcs: [":{ART_RUN_TEST_MODULE_NAME_PREFIX}{match.group(1)}-expected-{type_str}"],
+                cmd: "cp -f $(in) $(out)",
+            }}
+          """))
+        else:
+          f.write(textwrap.dedent(f"""\
+
+            // Test's expected {type_str_long}.
+            genrule {{
+                name: "{run_test_module_name}-expected-{type_str}",
+                out: ["{run_test_module_name}-expected-{type_str}.txt"],
+                srcs: ["expected-{type_str}.txt"],
+                cmd: "cp -f $(in) $(out)",
+            }}
+          """))
+
+      add_expected_output_genrule("stdout")
+      add_expected_output_genrule("stderr")
+
 
   def regen_test_mapping_file(self, art_run_tests):
     """Regenerate ART's `TEST_MAPPING`."""
 
-    run_test_module_names = [ART_RUN_TEST_MODULE_NAME_PREFIX + t for t in art_run_tests]
+    # See go/test-mapping#attributes and
+    # https://source.android.com/docs/core/tests/development/test-mapping
+    # for more information about Test Mapping test groups.
+
+    # ART run-tests used in `*presubmit` test groups, used both in pre- and post-submit runs.
+    presubmit_run_test_module_names = [ART_RUN_TEST_MODULE_NAME_PREFIX + t
+                                       for t in art_run_tests
+                                       if t not in postsubmit_only_tests]
+    # ART run-tests used in the `postsubmit` test group, used in post-submit runs only.
+    postsubmit_run_test_module_names = [ART_RUN_TEST_MODULE_NAME_PREFIX + t
+                                        for t in art_run_tests
+                                        if t in postsubmit_only_tests]
 
     # Mainline presubmits.
     mainline_presubmit_apex_suffix = "[com.google.android.art.apex]"
     mainline_other_presubmit_tests = []
-    mainline_presubmit_tests = (mainline_other_presubmit_tests + run_test_module_names +
+    mainline_presubmit_tests = (mainline_other_presubmit_tests + presubmit_run_test_module_names +
                                 art_gtests_mainline_presubmit_module_names)
     mainline_presubmit_tests_dict = [
         ({"name": t + mainline_presubmit_apex_suffix,
@@ -613,10 +651,15 @@ class Generator:
         "art-apex-update-rollback",
         "art_standalone_dexpreopt_tests",
     ]
-    presubmit_tests = other_presubmit_tests + run_test_module_names + art_gtest_module_names
+    presubmit_tests = (other_presubmit_tests + presubmit_run_test_module_names +
+                       art_gtest_module_names)
     presubmit_tests_dict = [{"name": t} for t in presubmit_tests]
     hwasan_presubmit_tests_dict = [{"name": t} for t in presubmit_tests
                                    if t not in known_failing_on_hwasan_tests]
+
+    # Postsubmits.
+    postsubmit_tests = postsubmit_run_test_module_names
+    postsubmit_tests_dict = [{"name": t} for t in postsubmit_tests]
 
     # Use an `OrderedDict` container to preserve the order in which items are inserted.
     # Do not produce an entry for a test group if it is empty.
@@ -628,6 +671,7 @@ class Generator:
             ("presubmit", presubmit_tests_dict),
             ("hwasan-presubmit", hwasan_presubmit_tests_dict),
             ("avf-presubmit", avf_presubmit_tests_dict),
+            ("postsubmit", postsubmit_tests_dict),
         ]
         if test_group_dict
     ])
@@ -750,6 +794,15 @@ class Generator:
         configuration.appendChild(xml_comment)
       for t in self.tests:
         append_module_controller_configuration(t)
+      for t in self.tests:
+        if t in ["CtsLibcoreTestCases", "CtsLibcoreOjTestCases"]:
+          xml_comment = root.createComment(
+            " core-test-mode=mts tells ExpectationBasedFilter to exclude @NonMts Tests ")
+          configuration.appendChild(xml_comment)
+          option = root.createElement("option")
+          option.setAttribute("name", "compatibility:module-arg")
+          option.setAttribute("value", f"{t}:instrumentation-arg:core-test-mode:=mts")
+          configuration.appendChild(option)
 
       xml_str = root.toprettyxml(indent = XML_INDENT, encoding = "utf-8")
 
@@ -847,6 +900,7 @@ class Generator:
         "CtsLibcoreOjTestCases",
         "CtsLibcoreWycheproofBCTestCases",
         "MtsLibcoreOkHttpTestCases",
+        "MtsLibcoreBouncyCastleTestCases",
     ]
     other_cts_libcore_tests_shard = self.create_mts_test_shard(
         "CTS Libcore OJ tests", other_cts_libcore_tests_shard_tests,
@@ -901,36 +955,52 @@ class Generator:
     # -------------------------------
 
     # Note: We only include ART run-tests expected to succeed for now.
+    num_expected_succeeding_tests = len(expected_succeeding_tests)
 
-    num_presubmit_run_tests = len(expected_succeeding_tests)
-    num_mainline_presubmit_run_tests = len(expected_succeeding_tests)
+    presubmit_run_tests = set(expected_succeeding_tests).difference(postsubmit_only_tests)
+    num_presubmit_run_tests = len(presubmit_run_tests)
+    presubmit_run_tests_percentage = int(
+        num_presubmit_run_tests * 100 / num_expected_succeeding_tests)
+
+    num_mainline_presubmit_run_tests = num_presubmit_run_tests
+    mainline_presubmit_run_tests_percentage = presubmit_run_tests_percentage
+
+    postsubmit_run_tests = set(expected_succeeding_tests).intersection(postsubmit_only_tests)
+    num_postsubmit_run_tests = len(postsubmit_run_tests)
+    postsubmit_run_tests_percentage = int(
+        num_postsubmit_run_tests * 100 / num_expected_succeeding_tests)
 
     self.regen_test_mapping_file(expected_succeeding_tests)
 
     expected_succeeding_tests_percentage = int(
-        len(expected_succeeding_tests) * 100 / len(run_tests))
+        num_expected_succeeding_tests * 100 / len(run_tests))
 
     mainline_presubmit_gtests_percentage = int(
         len(art_gtests_mainline_presubmit_module_names) * 100 / len(art_gtest_module_names))
 
-    print(f"Generated TEST_MAPPING entries for {len(expected_succeeding_tests)} ART run-tests out"
+    print(f"Generated TEST_MAPPING entries for {num_expected_succeeding_tests} ART run-tests out"
           f" of {len(run_tests)} ({expected_succeeding_tests_percentage}%):")
     for (num_tests, test_kind, tests_percentage, test_group_name) in [
-        (num_mainline_presubmit_run_tests, "ART run-tests", 100, "mainline-presubmit"),
+        (num_mainline_presubmit_run_tests, "ART run-tests", mainline_presubmit_run_tests_percentage,
+         "mainline-presubmit"),
         (len(art_gtests_mainline_presubmit_module_names), "ART gtests",
          mainline_presubmit_gtests_percentage, "mainline-presubmit"),
-        (num_presubmit_run_tests, "ART run-tests", 100, "presubmit"),
+        (num_presubmit_run_tests, "ART run-tests", presubmit_run_tests_percentage, "presubmit"),
+        (num_postsubmit_run_tests, "ART run-tests", postsubmit_run_tests_percentage, "postsubmit"),
         (len(art_gtest_module_names), "ART gtests", 100, "presubmit"),
     ]:
       print(
           f"  {num_tests:3d} {test_kind} ({tests_percentage}%) in `{test_group_name}` test group.")
+    print("""  Note: Tests in `*presubmit` test groups are executed in pre- and
+        post-submit test runs. Tests in the `postsubmit` test group
+        are only executed in post-submit test runs.""")
 
     # Regenerate ART MTS definition (optional).
     # -----------------------------------------
 
     if regen_art_mts:
       self.regen_art_mts_files(expected_succeeding_tests)
-      print(f"Generated ART MTS entries for {len(expected_succeeding_tests)} ART run-tests out"
+      print(f"Generated ART MTS entries for {num_expected_succeeding_tests} ART run-tests out"
             f" of {len(run_tests)} ({expected_succeeding_tests_percentage}%).")
 
 def main():

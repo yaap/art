@@ -51,7 +51,8 @@ void StackMapStream::BeginMethod(size_t frame_size_in_bytes,
                                  size_t fp_spill_mask,
                                  uint32_t num_dex_registers,
                                  bool baseline,
-                                 bool debuggable) {
+                                 bool debuggable,
+                                 bool has_should_deoptimize_flag) {
   DCHECK(!in_method_) << "Mismatched Begin/End calls";
   in_method_ = true;
   DCHECK_EQ(packed_frame_size_, 0u) << "BeginMethod was already called";
@@ -63,6 +64,7 @@ void StackMapStream::BeginMethod(size_t frame_size_in_bytes,
   num_dex_registers_ = num_dex_registers;
   baseline_ = baseline;
   debuggable_ = debuggable;
+  has_should_deoptimize_flag_ = has_should_deoptimize_flag;
 
   if (kVerifyStackMaps) {
     dchecks_.emplace_back([=](const CodeInfo& code_info) {
@@ -152,8 +154,10 @@ void StackMapStream::BeginStackMapEntry(
     // Create lambda method, which will be executed at the very end to verify data.
     // Parameters and local variables will be captured(stored) by the lambda "[=]".
     dchecks_.emplace_back([=](const CodeInfo& code_info) {
+      // The `native_pc_offset` may have been overridden using `SetStackMapNativePcOffset(.)`.
+      uint32_t final_native_pc_offset = GetStackMapNativePcOffset(stack_map_index);
       if (kind == StackMap::Kind::Default || kind == StackMap::Kind::OSR) {
-        StackMap stack_map = code_info.GetStackMapForNativePcOffset(native_pc_offset,
+        StackMap stack_map = code_info.GetStackMapForNativePcOffset(final_native_pc_offset,
                                                                     instruction_set_);
         CHECK_EQ(stack_map.Row(), stack_map_index);
       } else if (kind == StackMap::Kind::Catch) {
@@ -162,7 +166,7 @@ void StackMapStream::BeginStackMapEntry(
         CHECK_EQ(stack_map.Row(), stack_map_index);
       }
       StackMap stack_map = code_info.GetStackMapAt(stack_map_index);
-      CHECK_EQ(stack_map.GetNativePcOffset(instruction_set_), native_pc_offset);
+      CHECK_EQ(stack_map.GetNativePcOffset(instruction_set_), final_native_pc_offset);
       CHECK_EQ(stack_map.GetKind(), static_cast<uint32_t>(kind));
       CHECK_EQ(stack_map.GetDexPc(), dex_pc);
       CHECK_EQ(code_info.GetRegisterMaskOf(stack_map), register_mask);
@@ -374,10 +378,12 @@ ScopedArenaVector<uint8_t> StackMapStream::Encode() {
   DCHECK(in_stack_map_ == false) << "Mismatched Begin/End calls";
   DCHECK(in_inline_info_ == false) << "Mismatched Begin/End calls";
 
-  uint32_t flags = (inline_infos_.size() > 0) ? CodeInfo::kHasInlineInfo : 0;
+  uint32_t flags = 0;
+  flags |= (inline_infos_.size() > 0) ? CodeInfo::kHasInlineInfo : 0;
   flags |= baseline_ ? CodeInfo::kIsBaseline : 0;
   flags |= debuggable_ ? CodeInfo::kIsDebuggable : 0;
-  DCHECK_LE(flags, kVarintMax);  // Ensure flags can be read directly as byte.
+  flags |= has_should_deoptimize_flag_ ? CodeInfo::kHasShouldDeoptimizeFlag : 0;
+
   uint32_t bit_table_flags = 0;
   ForEachBitTable([&bit_table_flags](size_t i, auto bit_table) {
     if (bit_table->size() != 0) {  // Record which bit-tables are stored.
@@ -409,6 +415,8 @@ ScopedArenaVector<uint8_t> StackMapStream::Encode() {
   CHECK_EQ(code_info.GetNumberOfStackMaps(), stack_maps_.size());
   CHECK_EQ(CodeInfo::HasInlineInfo(buffer.data()), inline_infos_.size() > 0);
   CHECK_EQ(CodeInfo::IsBaseline(buffer.data()), baseline_);
+  CHECK_EQ(CodeInfo::IsDebuggable(buffer.data()), debuggable_);
+  CHECK_EQ(CodeInfo::HasShouldDeoptimizeFlag(buffer.data()), has_should_deoptimize_flag_);
 
   // Verify all written data (usually only in debug builds).
   if (kVerifyStackMaps) {

@@ -31,7 +31,10 @@ class Riscv64InstructionSetFeatures final : public InstructionSetFeatures {
   enum {
     kExtGeneric = (1 << 0),     // G extension covers the basic set IMAFD
     kExtCompressed = (1 << 1),  // C extension adds compressed instructions
-    kExtVector = (1 << 2)       // V extension adds vector instructions
+    kExtVector = (1 << 2),      // V extension adds vector instructions
+    kExtZba = (1 << 3),         // Zba adds address generation bit-manipulation instructions
+    kExtZbb = (1 << 4),         // Zbb adds basic bit-manipulation instructions
+    kExtZbs = (1 << 5),         // Zbs adds single-bit bit-manipulation instructions
   };
 
   static Riscv64FeaturesUniquePtr FromVariant(const std::string& variant, std::string* error_msg);
@@ -64,9 +67,26 @@ class Riscv64InstructionSetFeatures final : public InstructionSetFeatures {
 
   std::string GetFeatureString() const override;
 
+  bool HasCompressed() const { return (bits_ & kExtCompressed) != 0; }
+
+  bool HasVector() const { return (bits_ & kExtVector) != 0; }
+
+  bool HasZba() const { return (bits_ & kExtZba) != 0; }
+
+  bool HasZbb() const { return (bits_ & kExtZbb) != 0; }
+
+  bool HasZbs() const { return (bits_ & kExtZbs) != 0; }
+
   virtual ~Riscv64InstructionSetFeatures() {}
 
  protected:
+  // If `features` is empty, this method doesn't add/remove anything from the
+  // existing set of features.
+  // If `features` is not empty, this method expects it to have exactly one value
+  // which is assumed to be a complete and valid features string. In this case, the
+  // new features will override the old ones. For example, if the existing set of
+  // features were `rv64gcv_zba_zbb_zbs` but `features` is `{"rv64gcv"}`, then the
+  // new features will not have the bits set for Zba, Zbb, or Zbs.
   std::unique_ptr<const InstructionSetFeatures> AddFeaturesFromSplitString(
       const std::vector<std::string>& features, std::string* error_msg) const override;
 

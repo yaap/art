@@ -789,22 +789,20 @@ void DexWriter::GenerateAndWriteMapItems(Stream* stream) {
 }
 
 void DexWriter::WriteHeader(Stream* stream) {
-  StandardDexFile::Header header;
+  StandardDexFile::HeaderV41 header{};
   if (CompactDexFile::IsMagicValid(header_->Magic())) {
-    StandardDexFile::WriteMagic(header.magic_);
+    StandardDexFile::WriteMagic(header.magic_.data());
     if (header_->SupportDefaultMethods()) {
-      StandardDexFile::WriteCurrentVersion(header.magic_);
+      StandardDexFile::WriteCurrentVersion(header.magic_.data());
     } else {
-      StandardDexFile::WriteVersionBeforeDefaultMethods(header.magic_);
+      StandardDexFile::WriteVersionBeforeDefaultMethods(header.magic_.data());
     }
   } else {
     // Standard dex -> standard dex, just reuse the same header.
-    static constexpr size_t kMagicAndVersionLen =
-        StandardDexFile::kDexMagicSize + StandardDexFile::kDexVersionLen;
-    std::copy_n(header_->Magic(), kMagicAndVersionLen, header.magic_);
+    header.magic_ = header_->Magic();
   }
   header.checksum_ = header_->Checksum();
-  std::copy_n(header_->Signature(), DexFile::kSha1DigestSize, header.signature_);
+  header.signature_ = header_->Signature();
   header.file_size_ = header_->FileSize();
   header.header_size_ = GetHeaderSize();
   header.endian_tag_ = header_->EndianTag();
@@ -825,15 +823,17 @@ void DexWriter::WriteHeader(Stream* stream) {
   header.class_defs_off_ = header_->ClassDefs().GetOffset();
   header.data_size_ = header_->DataSize();
   header.data_off_ = header_->DataOffset();
+  header.SetDexContainer(0, header_->FileSize());
 
-  CHECK_EQ(sizeof(header), GetHeaderSize());
-  static_assert(sizeof(header) == 0x70, "Size doesn't match dex spec");
+  static_assert(sizeof(header) == 0x78, "Size doesn't match dex spec");
   stream->Seek(0);
-  stream->Overwrite(reinterpret_cast<uint8_t*>(&header), sizeof(header));
+  stream->Overwrite(reinterpret_cast<uint8_t*>(&header), GetHeaderSize());
 }
 
 size_t DexWriter::GetHeaderSize() const {
-  return sizeof(StandardDexFile::Header);
+  return header_->Magic() == DexFile::Magic{'d', 'e', 'x', '\n', '0', '4', '1', '\0'} ?
+             sizeof(StandardDexFile::HeaderV41) :
+             sizeof(StandardDexFile::Header);
 }
 
 bool DexWriter::Write(DexContainer* output, std::string* error_msg) {

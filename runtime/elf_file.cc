@@ -1056,8 +1056,8 @@ bool ElfFileImpl<ElfTypes>::GetLoadedAddressRange(/*out*/uint8_t** vaddr_begin,
       max_vaddr = end_vaddr;
     }
   }
-  min_vaddr = RoundDown(min_vaddr, kPageSize);
-  max_vaddr = RoundUp(max_vaddr, kPageSize);
+  min_vaddr = RoundDown(min_vaddr, kElfSegmentAlignment);
+  max_vaddr = RoundUp(max_vaddr, kElfSegmentAlignment);
   CHECK_LT(min_vaddr, max_vaddr) << file_path_;
   // Check that the range fits into the runtime address space.
   if (UNLIKELY(max_vaddr - 1u > std::numeric_limits<size_t>::max())) {
@@ -1076,7 +1076,7 @@ bool ElfFileImpl<ElfTypes>::GetLoadedAddressRange(/*out*/uint8_t** vaddr_begin,
 }
 
 static InstructionSet GetInstructionSetFromELF(uint16_t e_machine,
-                                               uint32_t e_flags ATTRIBUTE_UNUSED) {
+                                               [[maybe_unused]] uint32_t e_flags) {
   switch (e_machine) {
     case EM_ARM:
       return InstructionSet::kArm;
@@ -1205,7 +1205,7 @@ bool ElfFileImpl<ElfTypes>::Load(File* file,
       return false;
     }
     if (program_header->p_filesz < program_header->p_memsz &&
-        !IsAligned<kPageSize>(program_header->p_filesz)) {
+        !IsAligned<kElfSegmentAlignment>(program_header->p_filesz)) {
       *error_msg = StringPrintf("Unsupported unaligned p_filesz < p_memsz (%" PRIu64
                                 " < %" PRIu64 "): %s",
                                 static_cast<uint64_t>(program_header->p_filesz),

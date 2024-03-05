@@ -18,6 +18,7 @@ package com.android.server.art.model;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.app.job.JobScheduler;
 
@@ -28,6 +29,7 @@ import com.android.server.pm.PackageManagerLocal;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.List;
 
 /** @hide */
 @SystemApi(client = SystemApi.Client.SYSTEM_SERVER)
@@ -78,6 +80,21 @@ public class ArtFlags {
      * sys_storage_threshold_max_bytes}.
      */
     public static final int FLAG_SKIP_IF_STORAGE_LOW = 1 << 6;
+    /**
+     * If set, no profile will be used by dexopt. I.e., if the compiler filter is a profile-guided
+     * one, such as "speed-profile", it will be adjusted to "verify". This option is especially
+     * useful when the compiler filter is not explicitly specified (i.e., is inferred from the
+     * compilation reason).
+     */
+    @SuppressLint("UnflaggedApi") // Flag support for mainline is not available.
+    public static final int FLAG_IGNORE_PROFILE = 1 << 7;
+    /**
+     * Whether to force merge profiles even if the difference between before and after the merge
+     * is not significant.
+     *
+     * @hide
+     */
+    public static final int FLAG_FORCE_MERGE_PROFILE = 1 << 8;
 
     /**
      * Flags for {@link
@@ -118,6 +135,8 @@ public class ArtFlags {
         FLAG_FORCE,
         FLAG_FOR_SINGLE_SPLIT,
         FLAG_SKIP_IF_STORAGE_LOW,
+        FLAG_IGNORE_PROFILE,
+        FLAG_FORCE_MERGE_PROFILE,
     })
     // clang-format on
     @Retention(RetentionPolicy.SOURCE)
@@ -217,6 +236,52 @@ public class ArtFlags {
     // clang-format on
     @Retention(RetentionPolicy.SOURCE)
     public @interface ScheduleStatus {}
+
+    /**
+     * The downgrade pass, run before the main pass. Only applicable to bg-dexopt.
+     *
+     * @hide
+     */
+    public static final int PASS_DOWNGRADE = 0;
+
+    /**
+     * The main pass.
+     *
+     * @hide
+     */
+    public static final int PASS_MAIN = 1;
+
+    /**
+     * The supplementary pass, run after the main pass, to take the opportunity to dexopt more
+     * packages. Compared to the main pass, it uses different criteria to determine whether dexopt
+     * is needed or not, but iterates over the same packages in the same order as the main pass (so
+     * the logic in {@link ArtManagerLocal#getDefaultPackages} and {@link
+     * ArtManagerLocal.BatchDexoptStartCallback} controls the packages here too.)
+     *
+     * Only applicable to bg-dexopt.
+     *
+     * @hide
+     */
+    public static final int PASS_SUPPLEMENTARY = 2;
+
+    /**
+     * Indicates the pass of a batch dexopt run.
+     *
+     * @hide
+     */
+    // clang-format off
+    @IntDef(prefix = "PASS_", value = {
+        PASS_DOWNGRADE,
+        PASS_MAIN,
+        PASS_SUPPLEMENTARY,
+    })
+    // clang-format on
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface BatchDexoptPass {}
+
+    /** @hide */
+    public static final List<Integer> BATCH_DEXOPT_PASSES =
+            List.of(PASS_DOWNGRADE, PASS_MAIN, PASS_SUPPLEMENTARY);
 
     private ArtFlags() {}
 }

@@ -654,7 +654,7 @@ static void dumpFileHeader(const DexFile* pDexFile) {
   const DexFile::Header& pHeader = pDexFile->GetHeader();
   char sanitized[sizeof(pHeader.magic_) * 2 + 1];
   fprintf(gOutFile, "DEX file header:\n");
-  asciify(sanitized, pHeader.magic_, sizeof(pHeader.magic_));
+  asciify(sanitized, pHeader.magic_.data(), pHeader.magic_.size());
   fprintf(gOutFile, "magic               : '%s'\n", sanitized);
   fprintf(gOutFile, "checksum            : %08x\n", pHeader.checksum_);
   fprintf(gOutFile, "signature           : %02x%02x...%02x%02x\n",
@@ -1890,6 +1890,8 @@ static void dumpCallSite(const DexFile* pDexFile, u4 idx) {
         type = "boolean";
         value = it.GetJavaValue().z ? "true" : "false";
         break;
+      case EncodedArrayValueIterator::ValueType::kEndOfInput:
+        UNREACHABLE();
     }
 
     if (gOptions.outputFormat == OUTPUT_PLAIN) {
@@ -1899,6 +1901,37 @@ static void dumpCallSite(const DexFile* pDexFile, u4 idx) {
     it.Next();
     argument++;
   }
+}
+
+/*
+ * Used to decide if we want to print or skip a string from string_ids
+ */
+static int isPrintable(const char* s) {
+  for (size_t i = 0; i < strlen(s); i++) {
+    if (!isprint((s[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/*
+ * Show all printable string in the string_ids section
+ */
+static void dumpStrings(const DexFile* pDexFile) {
+  const DexFile::Header& pHeader = pDexFile->GetHeader();
+  fprintf(gOutFile, "\nDisplaying %u strings from string_ids:\n", pHeader.string_ids_size_);
+
+  for (uint32_t i = 0; i < pHeader.string_ids_size_; i++) {
+    dex::StringIndex idx = static_cast<dex::StringIndex>(i);
+    const char* string = pDexFile->StringDataByIdx(idx);
+    if (!isPrintable(string)) {
+      string = "skipped (not printable)";
+    }
+    fprintf(gOutFile, "  string[%06u] - '%s'\n", i, string);
+  }
+
+  fprintf(gOutFile, "\n");
 }
 
 /*
@@ -1912,12 +1945,17 @@ static void processDexFile(const char* fileName,
     if (n > 1) {
       fprintf(gOutFile, ":%s", DexFileLoader::GetMultiDexClassesDexName(i).c_str());
     }
-    fprintf(gOutFile, "', DEX version '%.3s'\n", pDexFile->GetHeader().magic_ + 4);
+    fprintf(gOutFile, "', DEX version '%.3s'\n", pDexFile->GetHeader().magic_.data() + 4);
   }
 
   // Headers.
   if (gOptions.showFileHeaders) {
     dumpFileHeader(pDexFile);
+  }
+
+  // Strings.
+  if (gOptions.showAllStrings) {
+    dumpStrings(pDexFile);
   }
 
   // Iterate over all classes.

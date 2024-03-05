@@ -144,11 +144,6 @@ bool HInliner::Run() {
   }
 
   bool did_inline = false;
-  // The inliner is the only phase that sets invokes as `always throwing`, and since we only run the
-  // inliner once per graph this value should always be false at the beginning of the inlining
-  // phase. This is important since we use `HasAlwaysThrowingInvokes` to know whether the inliner
-  // phase performed a relevant change in the graph.
-  DCHECK(!graph_->HasAlwaysThrowingInvokes());
 
   // Initialize the number of instructions for the method being compiled. Recursive calls
   // to HInliner::Run have already updated the instruction count.
@@ -180,7 +175,7 @@ bool HInliner::Run() {
   for (HBasicBlock* block : blocks) {
     for (HInstruction* instruction = block->GetFirstInstruction(); instruction != nullptr;) {
       HInstruction* next = instruction->GetNext();
-      HInvoke* call = instruction->AsInvoke();
+      HInvoke* call = instruction->AsInvokeOrNull();
       // As long as the call is not intrinsified, it is worth trying to inline.
       if (call != nullptr && !codegen_->IsImplementedIntrinsic(call)) {
         if (honor_noinline_directives) {
@@ -210,6 +205,16 @@ bool HInliner::Run() {
 
   // We return true if we either inlined at least one method, or we marked one of our methods as
   // always throwing.
+  // To check if we added an always throwing method we can either:
+  //   1) Pass a boolean throughout the pipeline and get an accurate result, or
+  //   2) Just check that the `HasAlwaysThrowingInvokes()` flag is true now. This is not 100%
+  //     accurate but the only other part where we set `HasAlwaysThrowingInvokes` is constant
+  //     folding the DivideUnsigned intrinsics for when the divisor is known to be 0. This case is
+  //     rare enough that changing the pipeline for this is not worth it. In the case of the false
+  //     positive (i.e. A) we didn't inline at all, B) the graph already had an always throwing
+  //     invoke, and C) we didn't set any new always throwing invokes), we will be running constant
+  //     folding, instruction simplifier, and dead code elimination one more time even though it
+  //     shouldn't change things. There's no false negative case.
   return did_inline || graph_->HasAlwaysThrowingInvokes();
 }
 
@@ -336,8 +341,8 @@ static dex::TypeIndex FindClassIndexIn(ObjPtr<mirror::Class> cls,
 
 HInliner::InlineCacheType HInliner::GetInlineCacheType(
     const StackHandleScope<InlineCache::kIndividualCacheSize>& classes) {
-  DCHECK_EQ(classes.NumberOfReferences(), InlineCache::kIndividualCacheSize);
-  uint8_t number_of_types = InlineCache::kIndividualCacheSize - classes.RemainingSlots();
+  DCHECK_EQ(classes.Capacity(), InlineCache::kIndividualCacheSize);
+  uint8_t number_of_types = classes.Size();
   if (number_of_types == 0) {
     return kInlineCacheUninitialized;
   } else if (number_of_types == 1) {
@@ -669,8 +674,8 @@ HInliner::InlineCacheType HInliner::GetInlineCacheJIT(
 HInliner::InlineCacheType HInliner::GetInlineCacheAOT(
     HInvoke* invoke_instruction,
     /*out*/StackHandleScope<InlineCache::kIndividualCacheSize>* classes) {
-  DCHECK_EQ(classes->NumberOfReferences(), InlineCache::kIndividualCacheSize);
-  DCHECK_EQ(classes->RemainingSlots(), InlineCache::kIndividualCacheSize);
+  DCHECK_EQ(classes->Capacity(), InlineCache::kIndividualCacheSize);
+  DCHECK_EQ(classes->Size(), 0u);
 
   const ProfileCompilationInfo* pci = codegen_->GetCompilerOptions().GetProfileCompilationInfo();
   if (pci == nullptr) {
@@ -702,19 +707,21 @@ HInliner::InlineCacheType HInliner::GetInlineCacheAOT(
   // Walk over the class descriptors and look up the actual classes.
   // If we cannot find a type we return kInlineCacheMissingTypes.
   ClassLinker* class_linker = caller_compilation_unit_.GetClassLinker();
+  Thread* self = Thread::Current();
   for (const dex::TypeIndex& type_index : dex_pc_data.classes) {
     const DexFile* dex_file = caller_compilation_unit_.GetDexFile();
     const char* descriptor = pci->GetTypeDescriptor(dex_file, type_index);
-    ObjPtr<mirror::ClassLoader> class_loader = caller_compilation_unit_.GetClassLoader().Get();
-    ObjPtr<mirror::Class> clazz = class_linker->LookupResolvedType(descriptor, class_loader);
+    ObjPtr<mirror::Class> clazz =
+        class_linker->FindClass(self, descriptor, caller_compilation_unit_.GetClassLoader());
     if (clazz == nullptr) {
+      self->ClearException();  // Clean up the exception left by type resolution.
       VLOG(compiler) << "Could not find class from inline cache in AOT mode "
           << invoke_instruction->GetMethodReference().PrettyMethod()
           << " : "
           << descriptor;
       return kInlineCacheMissingTypes;
     }
-    DCHECK_NE(classes->RemainingSlots(), 0u);
+    DCHECK_LT(classes->Size(), classes->Capacity());
     classes->NewHandle(clazz);
   }
 
@@ -965,8 +972,8 @@ bool HInliner::TryInlinePolymorphicCall(
 
   bool all_targets_inlined = true;
   bool one_target_inlined = false;
-  DCHECK_EQ(classes.NumberOfReferences(), InlineCache::kIndividualCacheSize);
-  uint8_t number_of_types = InlineCache::kIndividualCacheSize - classes.RemainingSlots();
+  DCHECK_EQ(classes.Capacity(), InlineCache::kIndividualCacheSize);
+  uint8_t number_of_types = classes.Size();
   for (size_t i = 0; i != number_of_types; ++i) {
     DCHECK(classes.GetReference(i) != nullptr);
     Handle<mirror::Class> handle =
@@ -1152,8 +1159,8 @@ bool HInliner::TryInlinePolymorphicCallToSameTarget(
 
   // Check whether we are actually calling the same method among
   // the different types seen.
-  DCHECK_EQ(classes.NumberOfReferences(), InlineCache::kIndividualCacheSize);
-  uint8_t number_of_types = InlineCache::kIndividualCacheSize - classes.RemainingSlots();
+  DCHECK_EQ(classes.Capacity(), InlineCache::kIndividualCacheSize);
+  uint8_t number_of_types = classes.Size();
   for (size_t i = 0; i != number_of_types; ++i) {
     DCHECK(classes.GetReference(i) != nullptr);
     ArtMethod* new_method = nullptr;

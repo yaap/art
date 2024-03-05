@@ -24,6 +24,7 @@ import functools
 import glob
 import os
 import pathlib
+import re
 import shlex
 import shutil
 import subprocess
@@ -31,9 +32,9 @@ import sys
 import zipfile
 
 from argparse import ArgumentParser
+from concurrent.futures import ThreadPoolExecutor
 from fcntl import lockf, LOCK_EX, LOCK_NB
 from importlib.machinery import SourceFileLoader
-from concurrent.futures import ThreadPoolExecutor
 from os import environ, getcwd, chdir, cpu_count, chmod
 from os.path import relpath
 from pathlib import Path
@@ -48,10 +49,15 @@ USE_RBE = 100  # Percentage of tests that can use RBE (between 0 and 100)
 
 lock_file = None  # Keep alive as long as this process is alive.
 
+RBE_COMPARE = False  # Debugging: Check that RBE and local output are identical.
+
 RBE_D8_DISABLED_FOR = {
   "952-invoke-custom",        # b/228312861: RBE uses wrong inputs.
   "979-const-method-handle",  # b/228312861: RBE uses wrong inputs.
 }
+
+# Debug option. Report commands that are taking a lot of user CPU time.
+REPORT_SLOW_COMMANDS = False
 
 class BuildTestContext:
   def __init__(self, args, android_build_top, test_dir):
@@ -68,12 +74,15 @@ class BuildTestContext:
     self.java_home = Path(os.environ.get("JAVA_HOME")).absolute()
     self.java_path = self.java_home / "bin/java"
     self.javac_path = self.java_home / "bin/javac"
-    self.javac_args = "-g -Xlint:-options -source 1.8 -target 1.8"
+    self.javac_args = "-g -Xlint:-options"
 
     # Helper functions to execute tools.
+    self.d8_path = args.d8.absolute()
     self.d8 = functools.partial(self.run, args.d8.absolute())
     self.jasmin = functools.partial(self.run, args.jasmin.absolute())
     self.javac = functools.partial(self.run, self.javac_path)
+    self.smali_path = args.smali.absolute()
+    self.rbe_rewrapper = args.rewrapper.absolute()
     self.smali = functools.partial(self.run, args.smali.absolute())
     self.soong_zip = functools.partial(self.run, args.soong_zip.absolute())
     self.zipalign = functools.partial(self.run, args.zipalign.absolute())
@@ -83,8 +92,11 @@ class BuildTestContext:
     # RBE wrapper for some of the tools.
     if "RBE_server_address" in os.environ and USE_RBE > (hash(self.test_name) % 100):
       self.rbe_exec_root = os.environ.get("RBE_exec_root")
-      self.rbe_rewrapper = self.android_build_top / "prebuilts/remoteexecution-client/live/rewrapper"
-      if self.test_name not in RBE_D8_DISABLED_FOR:
+
+      # TODO(b/307932183) Regression: RBE produces wrong output for D8 in ART
+      disable_d8 = any((self.test_dir / n).exists() for n in ["classes", "src2", "src-art"])
+
+      if self.test_name not in RBE_D8_DISABLED_FOR and not disable_d8:
         self.d8 = functools.partial(self.rbe_d8, args.d8.absolute())
       self.javac = functools.partial(self.rbe_javac, self.javac_path)
       self.smali = functools.partial(self.rbe_smali, args.smali.absolute())
@@ -114,6 +126,8 @@ class BuildTestContext:
   def run(self, executable: pathlib.Path, args: List[Union[pathlib.Path, str]]):
     assert isinstance(executable, pathlib.Path), executable
     cmd: List[Union[pathlib.Path, str]] = []
+    if REPORT_SLOW_COMMANDS:
+      cmd += ["/usr/bin/time"]
     if executable.suffix == ".sh":
       cmd += ["/bin/bash"]
     cmd += [executable]
@@ -136,6 +150,14 @@ class BuildTestContext:
                        env=self.bash_env,
                        stderr=subprocess.STDOUT,
                        stdout=subprocess.PIPE)
+    if REPORT_SLOW_COMMANDS:
+      m = re.search("([0-9\.]+)user", p.stdout)
+      assert m, p.stdout
+      t = float(m.group(1))
+      if t > 1.0:
+        cmd_text = " ".join(map(str, cmd[1:]))[:100]
+        print(f"[{self.test_name}] Command took {t:.2f}s: {cmd_text}")
+
     if p.returncode != 0:
       raise Exception("Command failed with exit code {}\n$ {}\n{}".format(
                       p.returncode, " ".join(map(str, cmd)), p.stdout))
@@ -144,6 +166,8 @@ class BuildTestContext:
   def rbe_wrap(self, args, inputs: Set[pathlib.Path]=None):
     with NamedTemporaryFile(mode="w+t") as input_list:
       inputs = inputs or set()
+      for i in inputs:
+        assert i.exists(), i
       for i, arg in enumerate(args):
         if isinstance(arg, pathlib.Path):
           assert arg.absolute(), arg
@@ -153,10 +177,11 @@ class BuildTestContext:
           inputs.update(arg)
       input_list.writelines([relpath(i, self.rbe_exec_root)+"\n" for i in inputs])
       input_list.flush()
+      dbg_args = ["-compare", "-num_local_reruns=1", "-num_remote_reruns=1"] if RBE_COMPARE else []
       return self.run(self.rbe_rewrapper, [
         "--platform=" + os.environ["RBE_platform"],
         "--input_list_paths=" + input_list.name,
-      ] + args)
+      ] + dbg_args + args)
 
   def rbe_javac(self, javac_path:Path, args):
     output = relpath(Path(args[args.index("-d") + 1]), self.rbe_exec_root)
@@ -171,12 +196,38 @@ class BuildTestContext:
       d8_path] + args, inputs)
 
   def rbe_smali(self, smali_path:Path, args):
-    inputs = set([smali_path.parent.parent / "framework/smali.jar"])
-    output = relpath(Path(args[args.index("--output") + 1]), self.rbe_exec_root)
-    return self.rbe_wrap([
-      "--output_files", output,
+    # The output of smali is non-deterministic, so create wrapper script,
+    # which runs D8 on the output to normalize it.
+    api = args[args.index("--api") + 1]
+    output = Path(args[args.index("--output") + 1])
+    wrapper = output.with_suffix(".sh")
+    wrapper.write_text('''
+      set -e
+      {smali} $@
+      mkdir dex_normalize
+      {d8} --min-api {api} --output dex_normalize {output}
+      cp dex_normalize/classes.dex {output}
+      rm -rf dex_normalize
+    '''.strip().format(
+      smali=relpath(self.smali_path, self.test_dir),
+      d8=relpath(self.d8_path, self.test_dir),
+      api=api,
+      output=relpath(output, self.test_dir),
+    ))
+
+    inputs = set([
+      wrapper,
+      self.smali_path,
+      self.smali_path.parent.parent / "framework/android-smali.jar",
+      self.d8_path,
+      self.d8_path.parent.parent / "framework/d8.jar",
+    ])
+    res = self.rbe_wrap([
+      "--output_files", relpath(output, self.rbe_exec_root),
       "--toolchain_inputs=prebuilts/jdk/jdk17/linux-x86/bin/java",
-      smali_path] + args, inputs)
+      "/bin/bash", wrapper] + args, inputs)
+    wrapper.unlink()
+    return res
 
   def build(self) -> None:
     script = self.test_dir / "build.py"
@@ -198,9 +249,12 @@ class BuildTestContext:
       javac_args=[],
       javac_classpath: List[Path]=[],
       d8_flags=[],
+      d8_dex_container=True,
       smali_args=[],
       use_smali=True,
       use_jasmin=True,
+      javac_source_arg="1.8",
+      javac_target_arg="1.8"
     ):
     javac_classpath = javac_classpath.copy()  # Do not modify default value.
 
@@ -225,6 +279,7 @@ class BuildTestContext:
         "agents": 26,
         "method-handles": 26,
         "var-handles": 28,
+        "const-method-type": 28,
       }
       api_level = API_LEVEL[api_level]
     assert isinstance(api_level, int), api_level
@@ -256,8 +311,9 @@ class BuildTestContext:
     def make_smali(dst_dex: Path, src_dir: Path) -> Optional[Path]:
       if not use_smali or not src_dir.exists():
         return None  # No sources to compile.
-      self.smali(["-JXmx512m", "assemble"] + smali_args + ["--api", str(api_level)] +
-                 ["--output", dst_dex] + sorted(src_dir.glob("**/*.smali")))
+      p = self.smali(["-JXmx512m", "assemble"] + smali_args + ["--api", str(api_level)] +
+                     ["--output", dst_dex] + sorted(src_dir.glob("**/*.smali")))
+      assert dst_dex.exists(), p.stdout  # NB: smali returns 0 exit code even on failure.
       return dst_dex
 
     def make_java(dst_dir: Path, *src_dirs: Path) -> Optional[Path]:
@@ -266,7 +322,8 @@ class BuildTestContext:
       dst_dir.mkdir(exist_ok=True)
       args = self.javac_args.split(" ") + javac_args
       args += ["-implicit:none", "-encoding", "utf8", "-d", dst_dir]
-      if not self.jvm:
+      args += ["-source", javac_source_arg, "-target", javac_target_arg]
+      if not self.jvm and float(javac_target_arg) < 17.0:
         args += ["-bootclasspath", self.bootclasspath]
       if javac_classpath:
         args += ["-classpath", javac_classpath]
@@ -283,7 +340,10 @@ class BuildTestContext:
     # packaged in a jar file.
     def make_dex(src_dir: Path):
       dst_jar = Path(src_dir.name + ".jar")
-      args = d8_flags + ["--min-api", str(api_level), "--output", dst_jar]
+      args = []
+      if d8_dex_container:
+        args += ["-JDcom.android.tools.r8.dexContainerExperiment"]
+      args += d8_flags + ["--min-api", str(api_level), "--output", dst_jar]
       args += ["--lib", self.bootclasspath] if use_desugar else ["--no-desugaring"]
       args += sorted(src_dir.glob("**/*.class"))
       self.d8(args)
@@ -306,7 +366,11 @@ class BuildTestContext:
       # It is useful to normalize non-deterministic smali output.
       tmp_dir = self.test_dir / "dexmerge"
       tmp_dir.mkdir()
-      self.d8(["--min-api", str(api_level), "--output", tmp_dir] + srcs)
+      flags = []
+      if d8_dex_container:
+        flags += ["-JDcom.android.tools.r8.dexContainerExperiment"]
+      flags += ["--min-api", str(api_level), "--output", tmp_dir]
+      self.d8(flags + srcs)
       assert not (tmp_dir / "classes2.dex").exists()
       for src_file in srcs:
         src_file.unlink()
@@ -475,6 +539,7 @@ def main() -> None:
   parser.add_argument("--d8", type=Path)
   parser.add_argument("--hiddenapi", type=Path)
   parser.add_argument("--jasmin", type=Path)
+  parser.add_argument("--rewrapper", type=Path)
   parser.add_argument("--smali", type=Path)
   parser.add_argument("--soong_zip", type=Path)
   parser.add_argument("--zipalign", type=Path)

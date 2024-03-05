@@ -22,6 +22,8 @@
 
 namespace art HIDDEN {
 
+class CodeGenerator;
+
 namespace helpers {
 
 inline bool CanFitInShifterOperand(HInstruction* instruction) {
@@ -54,7 +56,7 @@ inline bool HasShifterOperand(HInstruction* instr, InstructionSet isa) {
 //   t3 = Sub(*, t2)
 inline bool IsSubRightSubLeftShl(HSub *sub) {
   HInstruction* right = sub->GetRight();
-  return right->IsSub() && right->AsSub()->GetLeft()->IsShl();;
+  return right->IsSub() && right->AsSub()->GetLeft()->IsShl();
 }
 
 }  // namespace helpers
@@ -64,7 +66,8 @@ bool TryCombineMultiplyAccumulate(HMul* mul, InstructionSet isa);
 // a negated bitwise instruction.
 bool TryMergeNegatedInput(HBinaryOperation* op);
 
-bool TryExtractArrayAccessAddress(HInstruction* access,
+bool TryExtractArrayAccessAddress(CodeGenerator* codegen,
+                                  HInstruction* access,
                                   HInstruction* array,
                                   HInstruction* index,
                                   size_t data_offset);

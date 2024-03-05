@@ -180,6 +180,10 @@ inline const char* DexFile::GetMethodShorty(const dex::MethodId& method_id, uint
   return StringDataAndUtf16LengthByIdx(GetProtoId(method_id.proto_idx_).shorty_idx_, length);
 }
 
+inline std::string_view DexFile::GetMethodShortyView(const dex::MethodId& method_id) const {
+  return GetShortyView(method_id.proto_idx_);
+}
+
 inline const char* DexFile::GetClassDescriptor(const dex::ClassDef& class_def) const {
   return StringByTypeIdx(class_def.class_idx_);
 }
@@ -194,12 +198,16 @@ inline const char* DexFile::GetShorty(dex::ProtoIndex proto_idx) const {
 }
 
 ALWAYS_INLINE
+inline std::string_view DexFile::GetShortyView(dex::ProtoIndex proto_idx) const {
+  return GetShortyView(GetProtoId(proto_idx));
+}
+
+ALWAYS_INLINE
 inline std::string_view DexFile::GetShortyView(const dex::ProtoId& proto_id) const {
-  uint32_t lhs_shorty_len;
-  const char* lhs_shorty_data =
-      StringDataAndUtf16LengthByIdx(proto_id.shorty_idx_, &lhs_shorty_len);
-  DCHECK_EQ(lhs_shorty_data[lhs_shorty_len], '\0');  // For a shorty utf16 length == mutf8 length.
-  return std::string_view(lhs_shorty_data, lhs_shorty_len);
+  uint32_t shorty_len;
+  const char* shorty_data = StringDataAndUtf16LengthByIdx(proto_id.shorty_idx_, &shorty_len);
+  DCHECK_EQ(shorty_data[shorty_len], '\0');  // For a shorty utf16 length == mutf8 length.
+  return std::string_view(shorty_data, shorty_len);
 }
 
 inline const dex::TryItem* DexFile::GetTryItems(const DexInstructionIterator& code_item_end,
@@ -319,7 +327,14 @@ bool DexFile::DecodeDebugLocalInfo(const uint8_t* stream,
         // Emit what was previously there, if anything
         if (local_in_reg[reg].is_live_) {
           local_in_reg[reg].end_address_ = address;
-          new_local_callback(local_in_reg[reg]);
+          // Parameters with generic types cannot be encoded in the debug_info_item header. So d8
+          // encodes it as null in the header with start and end address as 0. There will be a
+          // START_LOCAL_EXTENDED that will declare the parameter with correct signature
+          // Debuggers get confused when they see empty ranges. So don't emit them.
+          // See b/297843934 for more details.
+          if (local_in_reg[reg].end_address_ != 0) {
+            new_local_callback(local_in_reg[reg]);
+          }
         }
 
         local_in_reg[reg].name_ = index_to_string_data(name_idx);

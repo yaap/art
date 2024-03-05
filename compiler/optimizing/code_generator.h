@@ -59,9 +59,6 @@ static int32_t constexpr kPrimIntMax = 0x7fffffff;
 // Maximum value for a primitive long.
 static int64_t constexpr kPrimLongMax = INT64_C(0x7fffffffffffffff);
 
-static const ReadBarrierOption gCompilerReadBarrierOption =
-    gUseReadBarrier ? kWithReadBarrier : kWithoutReadBarrier;
-
 constexpr size_t status_lsb_position = SubtypeCheckBits::BitStructSizeOf();
 constexpr size_t status_byte_offset =
     mirror::Class::StatusOffset().SizeValue() + (status_lsb_position / kBitsPerByte);
@@ -73,6 +70,7 @@ constexpr uint32_t shifted_initialized_value =
     enum_cast<uint32_t>(ClassStatus::kInitialized) << (status_lsb_position % kBitsPerByte);
 
 class Assembler;
+class CodeGenerationData;
 class CodeGenerator;
 class CompilerOptions;
 class StackMapStream;
@@ -81,18 +79,6 @@ class ParallelMoveResolver;
 namespace linker {
 class LinkerPatch;
 }  // namespace linker
-
-class CodeAllocator {
- public:
-  CodeAllocator() {}
-  virtual ~CodeAllocator() {}
-
-  virtual uint8_t* Allocate(size_t size) = 0;
-  virtual ArrayRef<const uint8_t> GetMemory() const = 0;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(CodeAllocator);
-};
 
 class SlowPathCode : public DeletableArenaObject<kArenaAllocSlowPaths> {
  public:
@@ -200,7 +186,7 @@ class FieldAccessCallingConvention {
 class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
  public:
   // Compiles the graph to executable instructions.
-  void Compile(CodeAllocator* allocator);
+  void Compile();
   static std::unique_ptr<CodeGenerator> Create(HGraph* graph,
                                                const CompilerOptions& compiler_options,
                                                OptimizingCompilerStats* stats = nullptr);
@@ -221,7 +207,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   }
 
   virtual void Initialize() = 0;
-  virtual void Finalize(CodeAllocator* allocator);
+  virtual void Finalize();
   virtual void EmitLinkerPatches(ArenaVector<linker::LinkerPatch>* linker_patches);
   virtual bool NeedsThunkCode(const linker::LinkerPatch& patch) const;
   virtual void EmitThunkCode(const linker::LinkerPatch& patch,
@@ -278,19 +264,9 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
     fpu_spill_mask_ = allocated_registers_.GetFloatingPointRegisters() & fpu_callee_save_mask_;
   }
 
-  static uint32_t ComputeRegisterMask(const int* registers, size_t length) {
-    uint32_t mask = 0;
-    for (size_t i = 0, e = length; i < e; ++i) {
-      mask |= (1 << registers[i]);
-    }
-    return mask;
-  }
-
   virtual void DumpCoreRegister(std::ostream& stream, int reg) const = 0;
   virtual void DumpFloatingPointRegister(std::ostream& stream, int reg) const = 0;
   virtual InstructionSet GetInstructionSet() const = 0;
-
-  const CompilerOptions& GetCompilerOptions() const { return compiler_options_; }
 
   // Saves the register in the stack. Returns the size taken on stack.
   virtual size_t SaveCoreRegister(size_t stack_index, uint32_t reg_id) = 0;
@@ -398,6 +374,12 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   // TODO: Replace with a catch-entering instruction that records the environment.
   void RecordCatchBlockInfo();
 
+  const CompilerOptions& GetCompilerOptions() const { return compiler_options_; }
+  bool EmitReadBarrier() const;
+  bool EmitBakerReadBarrier() const;
+  bool EmitNonBakerReadBarrier() const;
+  ReadBarrierOption GetCompilerReadBarrierOption() const;
+
   // Get the ScopedArenaAllocator used for codegen memory allocation.
   ScopedArenaAllocator* GetScopedAllocator();
 
@@ -469,7 +451,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
                          Location to2,
                          DataType::Type type2);
 
-  static bool InstanceOfNeedsReadBarrier(HInstanceOf* instance_of) {
+  bool InstanceOfNeedsReadBarrier(HInstanceOf* instance_of) {
     // Used only for kExactCheck, kAbstractClassCheck, kClassHierarchyCheck and kArrayObjectCheck.
     DCHECK(instance_of->GetTypeCheckKind() == TypeCheckKind::kExactCheck ||
            instance_of->GetTypeCheckKind() == TypeCheckKind::kAbstractClassCheck ||
@@ -479,14 +461,14 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
     // If the target class is in the boot image, it's non-moveable and it doesn't matter
     // if we compare it with a from-space or to-space reference, the result is the same.
     // It's OK to traverse a class hierarchy jumping between from-space and to-space.
-    return gUseReadBarrier && !instance_of->GetTargetClass()->IsInBootImage();
+    return EmitReadBarrier() && !instance_of->GetTargetClass()->IsInBootImage();
   }
 
-  static ReadBarrierOption ReadBarrierOptionForInstanceOf(HInstanceOf* instance_of) {
+  ReadBarrierOption ReadBarrierOptionForInstanceOf(HInstanceOf* instance_of) {
     return InstanceOfNeedsReadBarrier(instance_of) ? kWithReadBarrier : kWithoutReadBarrier;
   }
 
-  static bool IsTypeCheckSlowPathFatal(HCheckCast* check_cast) {
+  bool IsTypeCheckSlowPathFatal(HCheckCast* check_cast) {
     switch (check_cast->GetTypeCheckKind()) {
       case TypeCheckKind::kExactCheck:
       case TypeCheckKind::kAbstractClassCheck:
@@ -494,7 +476,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
       case TypeCheckKind::kArrayObjectCheck:
       case TypeCheckKind::kInterfaceCheck: {
         bool needs_read_barrier =
-            gUseReadBarrier && !check_cast->GetTargetClass()->IsInBootImage();
+            EmitReadBarrier() && !check_cast->GetTargetClass()->IsInBootImage();
         // We do not emit read barriers for HCheckCast, so we can get false negatives
         // and the slow path shall re-check and simply return if the cast is actually OK.
         return !needs_read_barrier;
@@ -509,7 +491,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
     UNREACHABLE();
   }
 
-  static LocationSummary::CallKind GetCheckCastCallKind(HCheckCast* check_cast) {
+  LocationSummary::CallKind GetCheckCastCallKind(HCheckCast* check_cast) {
     return (IsTypeCheckSlowPathFatal(check_cast) && !check_cast->CanThrowIntoCatchBlock())
         ? LocationSummary::kNoCall  // In fact, call on a fatal (non-returning) slow path.
         : LocationSummary::kCallOnSlowPath;
@@ -613,7 +595,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
       if (kIsDebugBuild) {
         uint32_t shorty_len;
         const char* shorty = GetCriticalNativeShorty(invoke, &shorty_len);
-        DCHECK_EQ(GetCriticalNativeDirectCallFrameSize(shorty, shorty_len), out_frame_size);
+        CHECK_EQ(GetCriticalNativeDirectCallFrameSize(shorty, shorty_len), out_frame_size);
       }
       if (out_frame_size != 0u) {
         FinishCriticalNativeFrameSetup(out_frame_size, &parallel_move);
@@ -667,7 +649,8 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   static uint32_t GetBootImageOffset(ClassRoot class_root);
   static uint32_t GetBootImageOffsetOfIntrinsicDeclaringClass(HInvoke* invoke);
 
-  static void CreateSystemArrayCopyLocationSummary(HInvoke* invoke);
+  static LocationSummary* CreateSystemArrayCopyLocationSummary(
+      HInvoke* invoke, int32_t length_threshold = -1, size_t num_temps = 3);
 
   void SetDisassemblyInformation(DisassemblyInformation* info) { disasm_info_ = info; }
   DisassemblyInformation* GetDisassemblyInformation() const { return disasm_info_; }
@@ -687,7 +670,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   virtual HLoadClass::LoadKind GetSupportedLoadClassKind(
       HLoadClass::LoadKind desired_class_load_kind) = 0;
 
-  static LocationSummary::CallKind GetLoadStringCallKind(HLoadString* load) {
+  LocationSummary::CallKind GetLoadStringCallKind(HLoadString* load) {
     switch (load->GetLoadKind()) {
       case HLoadString::LoadKind::kBssEntry:
         DCHECK(load->NeedsEnvironment());
@@ -697,7 +680,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
         return LocationSummary::kCallOnMainOnly;
       case HLoadString::LoadKind::kJitTableAddress:
         DCHECK(!load->NeedsEnvironment());
-        return gUseReadBarrier
+        return EmitReadBarrier()
             ? LocationSummary::kCallOnSlowPath
             : LocationSummary::kNoCall;
         break;
@@ -769,6 +752,11 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   static QuickEntrypointEnum GetArrayAllocationEntrypoint(HNewArray* new_array);
   static ScaleFactor ScaleFactorForType(DataType::Type type);
 
+  ArrayRef<const uint8_t> GetCode() const {
+    return ArrayRef<const uint8_t>(GetAssembler().CodeBufferBaseAddress(),
+                                   GetAssembler().CodeSize());
+  }
+
  protected:
   // Patch info used for recording locations of required linker patches and their targets,
   // i.e. target method, string, type or code identified by their dex file and index,
@@ -798,6 +786,15 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   virtual HGraphVisitor* GetLocationBuilder() = 0;
   virtual HGraphVisitor* GetInstructionVisitor() = 0;
+
+  template <typename RegType>
+  static uint32_t ComputeRegisterMask(const RegType* registers, size_t length) {
+    uint32_t mask = 0;
+    for (size_t i = 0, e = length; i < e; ++i) {
+      mask |= (1 << registers[i]);
+    }
+    return mask;
+  }
 
   // Returns the location of the first spilled entry for floating point registers,
   // relative to the stack pointer.
@@ -852,6 +849,10 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   StackMapStream* GetStackMapStream();
 
+  CodeGenerationData* GetCodeGenerationData() {
+    return code_generation_data_.get();
+  }
+
   void ReserveJitStringRoot(StringReference string_reference, Handle<mirror::String> string);
   uint64_t GetJitStringRootIndex(StringReference string_reference);
   void ReserveJitClassRoot(TypeReference type_reference, Handle<mirror::Class> klass);
@@ -886,8 +887,6 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   DisassemblyInformation* disasm_info_;
 
  private:
-  class CodeGenerationData;
-
   void InitializeCodeGenerationData();
   size_t GetStackOffsetOfSavedRegister(size_t index);
   void GenerateSlowPaths();

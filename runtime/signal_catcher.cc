@@ -25,6 +25,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <optional>
 #include <sstream>
 
 #include <android-base/file.h>
@@ -89,8 +90,12 @@ SignalCatcher::~SignalCatcher() {
   // Since we know the thread is just sitting around waiting for signals
   // to arrive, send it one.
   SetHaltFlag(true);
-  CHECK_PTHREAD_CALL(pthread_kill, (pthread_, SIGQUIT), "signal catcher shutdown");
-  CHECK_PTHREAD_CALL(pthread_join, (pthread_, nullptr), "signal catcher shutdown");
+  CHECK_PTHREAD_CALL(pthread_kill,
+                     (pthread_, SIGQUIT),
+                     android::base::StringPrintf("signal catcher shutdown: %lu", pthread_));
+  CHECK_PTHREAD_CALL(pthread_join,
+                     (pthread_, nullptr),
+                     android::base::StringPrintf("signal catcher shutdown: %lu", pthread_));
 }
 
 void SignalCatcher::SetHaltFlag(bool new_value) {
@@ -115,6 +120,7 @@ void SignalCatcher::Output(const std::string& s) {
 }
 
 void SignalCatcher::HandleSigQuit() {
+  sigquit_nanotime_ = NanoTime();
   Runtime* runtime = Runtime::Current();
   std::ostringstream os;
   os << "\n"
@@ -140,6 +146,7 @@ void SignalCatcher::HandleSigQuit() {
   }
   os << "----- end " << getpid() << " -----\n";
   Output(os.str());
+  sigquit_nanotime_ = std::nullopt;
 }
 
 void SignalCatcher::HandleSigUsr1() {

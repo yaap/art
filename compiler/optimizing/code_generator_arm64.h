@@ -26,6 +26,7 @@
 #include "dex/string_reference.h"
 #include "dex/type_reference.h"
 #include "driver/compiler_options.h"
+#include "jit_patches_arm64.h"
 #include "nodes.h"
 #include "parallel_move_resolver.h"
 #include "utils/arm64/assembler_arm64.h"
@@ -51,30 +52,29 @@ class CodeGeneratorARM64;
 // Use a local definition to prevent copying mistakes.
 static constexpr size_t kArm64WordSize = static_cast<size_t>(kArm64PointerSize);
 
-// These constants are used as an approximate margin when emission of veneer and literal pools
+// This constant is used as an approximate margin when emission of veneer and literal pools
 // must be blocked.
 static constexpr int kMaxMacroInstructionSizeInBytes = 15 * vixl::aarch64::kInstructionSize;
-static constexpr int kInvokeCodeMarginSizeInBytes = 6 * kMaxMacroInstructionSizeInBytes;
 
 static const vixl::aarch64::Register kParameterCoreRegisters[] = {
-  vixl::aarch64::x1,
-  vixl::aarch64::x2,
-  vixl::aarch64::x3,
-  vixl::aarch64::x4,
-  vixl::aarch64::x5,
-  vixl::aarch64::x6,
-  vixl::aarch64::x7
+    vixl::aarch64::x1,
+    vixl::aarch64::x2,
+    vixl::aarch64::x3,
+    vixl::aarch64::x4,
+    vixl::aarch64::x5,
+    vixl::aarch64::x6,
+    vixl::aarch64::x7
 };
 static constexpr size_t kParameterCoreRegistersLength = arraysize(kParameterCoreRegisters);
 static const vixl::aarch64::VRegister kParameterFPRegisters[] = {
-  vixl::aarch64::d0,
-  vixl::aarch64::d1,
-  vixl::aarch64::d2,
-  vixl::aarch64::d3,
-  vixl::aarch64::d4,
-  vixl::aarch64::d5,
-  vixl::aarch64::d6,
-  vixl::aarch64::d7
+    vixl::aarch64::d0,
+    vixl::aarch64::d1,
+    vixl::aarch64::d2,
+    vixl::aarch64::d3,
+    vixl::aarch64::d4,
+    vixl::aarch64::d5,
+    vixl::aarch64::d6,
+    vixl::aarch64::d7
 };
 static constexpr size_t kParameterFPRegistersLength = arraysize(kParameterFPRegisters);
 
@@ -117,7 +117,7 @@ const vixl::aarch64::CPURegList callee_saved_core_registers(
     vixl::aarch64::CPURegister::kRegister,
     vixl::aarch64::kXRegSize,
     (kReserveMarkingRegister ? vixl::aarch64::x21.GetCode() : vixl::aarch64::x20.GetCode()),
-     vixl::aarch64::x30.GetCode());
+    vixl::aarch64::x30.GetCode());
 const vixl::aarch64::CPURegList callee_saved_fp_registers(vixl::aarch64::CPURegister::kVRegister,
                                                           vixl::aarch64::kDRegSize,
                                                           vixl::aarch64::d8.GetCode(),
@@ -145,19 +145,8 @@ Location ARM64ReturnLocation(DataType::Type return_type);
   V(SystemArrayCopyByte)                      \
   V(SystemArrayCopyInt)                       \
   /* 1.8 */                                   \
-  V(UnsafeGetAndAddInt)                       \
-  V(UnsafeGetAndAddLong)                      \
-  V(UnsafeGetAndSetInt)                       \
-  V(UnsafeGetAndSetLong)                      \
-  V(UnsafeGetAndSetObject)                    \
   V(MethodHandleInvokeExact)                  \
-  V(MethodHandleInvoke)                       \
-  /* OpenJDK 11 */                            \
-  V(JdkUnsafeGetAndAddInt)                    \
-  V(JdkUnsafeGetAndAddLong)                   \
-  V(JdkUnsafeGetAndSetInt)                    \
-  V(JdkUnsafeGetAndSetLong)                   \
-  V(JdkUnsafeGetAndSetObject)
+  V(MethodHandleInvoke)
 
 class SlowPathCodeARM64 : public SlowPathCode {
  public:
@@ -193,34 +182,34 @@ class JumpTableARM64 : public DeletableArenaObject<kArenaAllocSwitchTable> {
   DISALLOW_COPY_AND_ASSIGN(JumpTableARM64);
 };
 
-static const vixl::aarch64::Register kRuntimeParameterCoreRegisters[] =
-    { vixl::aarch64::x0,
-      vixl::aarch64::x1,
-      vixl::aarch64::x2,
-      vixl::aarch64::x3,
-      vixl::aarch64::x4,
-      vixl::aarch64::x5,
-      vixl::aarch64::x6,
-      vixl::aarch64::x7 };
+static const vixl::aarch64::Register kRuntimeParameterCoreRegisters[] = {
+    vixl::aarch64::x0,
+    vixl::aarch64::x1,
+    vixl::aarch64::x2,
+    vixl::aarch64::x3,
+    vixl::aarch64::x4,
+    vixl::aarch64::x5,
+    vixl::aarch64::x6,
+    vixl::aarch64::x7
+};
 static constexpr size_t kRuntimeParameterCoreRegistersLength =
     arraysize(kRuntimeParameterCoreRegisters);
-static const vixl::aarch64::VRegister kRuntimeParameterFpuRegisters[] =
-    { vixl::aarch64::d0,
-      vixl::aarch64::d1,
-      vixl::aarch64::d2,
-      vixl::aarch64::d3,
-      vixl::aarch64::d4,
-      vixl::aarch64::d5,
-      vixl::aarch64::d6,
-      vixl::aarch64::d7 };
+static const vixl::aarch64::VRegister kRuntimeParameterFpuRegisters[] = {
+    vixl::aarch64::d0,
+    vixl::aarch64::d1,
+    vixl::aarch64::d2,
+    vixl::aarch64::d3,
+    vixl::aarch64::d4,
+    vixl::aarch64::d5,
+    vixl::aarch64::d6,
+    vixl::aarch64::d7
+};
 static constexpr size_t kRuntimeParameterFpuRegistersLength =
     arraysize(kRuntimeParameterCoreRegisters);
 
 class InvokeRuntimeCallingConvention : public CallingConvention<vixl::aarch64::Register,
                                                                 vixl::aarch64::VRegister> {
  public:
-  static constexpr size_t kParameterCoreRegistersLength = arraysize(kParameterCoreRegisters);
-
   InvokeRuntimeCallingConvention()
       : CallingConvention(kRuntimeParameterCoreRegisters,
                           kRuntimeParameterCoreRegistersLength,
@@ -305,16 +294,16 @@ class FieldAccessCallingConventionARM64 : public FieldAccessCallingConvention {
   Location GetFieldIndexLocation() const override {
     return helpers::LocationFrom(vixl::aarch64::x0);
   }
-  Location GetReturnLocation(DataType::Type type ATTRIBUTE_UNUSED) const override {
+  Location GetReturnLocation([[maybe_unused]] DataType::Type type) const override {
     return helpers::LocationFrom(vixl::aarch64::x0);
   }
-  Location GetSetValueLocation(DataType::Type type ATTRIBUTE_UNUSED,
+  Location GetSetValueLocation([[maybe_unused]] DataType::Type type,
                                bool is_instance) const override {
     return is_instance
         ? helpers::LocationFrom(vixl::aarch64::x2)
         : helpers::LocationFrom(vixl::aarch64::x1);
   }
-  Location GetFpuLocation(DataType::Type type ATTRIBUTE_UNUSED) const override {
+  Location GetFpuLocation([[maybe_unused]] DataType::Type type) const override {
     return helpers::LocationFrom(vixl::aarch64::d0);
   }
 
@@ -552,12 +541,31 @@ class InstructionCodeGeneratorARM64Sve : public InstructionCodeGeneratorARM64 {
   // register size (full SIMD register is used).
   void ValidateVectorLength(HVecOperation* instr) const;
 
-  // Returns default predicate register which is used as governing vector predicate
-  // to implement predicated loop execution.
+  vixl::aarch64::PRegister GetVecGoverningPReg(HVecOperation* instr) {
+    return GetVecPredSetFixedOutPReg(instr->GetGoverningPredicate());
+  }
+
+  // Returns a fixed p-reg for predicate setting instruction.
   //
-  // TODO: This is a hack to be addressed when register allocator supports SIMD types.
-  static vixl::aarch64::PRegister LoopPReg() {
-    return vixl::aarch64::p0;
+  // Currently we only support diamond CF loops for predicated vectorization; also we don't have
+  // register allocator support for vector predicates. Thus we use fixed P-regs for loop main,
+  // True and False predicates as a temporary solution.
+  //
+  // TODO: Support SIMD types and registers in ART.
+  static vixl::aarch64::PRegister GetVecPredSetFixedOutPReg(HVecPredSetOperation* instr) {
+    if (instr->IsVecPredWhile() || instr->IsVecPredSetAll()) {
+      // VecPredWhile and VecPredSetAll live ranges never overlap due to the current vectorization
+      // scheme: the former only is live inside a vectorized loop and the later is never in a
+      // loop and never spans across loops.
+      return vixl::aarch64::p0;
+    } else if (instr->IsVecPredNot()) {
+      // This relies on the fact that we only use PredNot manually in the autovectorizer,
+      // so there is only one of them in each loop.
+      return vixl::aarch64::p1;
+    } else {
+      DCHECK(instr->IsVecCondition());
+      return vixl::aarch64::p2;
+    }
   }
 };
 
@@ -712,7 +720,7 @@ class CodeGeneratorARM64 : public CodeGenerator {
     return jump_tables_.back().get();
   }
 
-  void Finalize(CodeAllocator* allocator) override;
+  void Finalize() override;
 
   // Code generation helpers.
   void MoveConstant(vixl::aarch64::CPURegister destination, HConstant* constant);
@@ -751,9 +759,7 @@ class CodeGeneratorARM64 : public CodeGenerator {
 
   ParallelMoveResolverARM64* GetMoveResolver() override { return &move_resolver_; }
 
-  bool NeedsTwoRegisters(DataType::Type type ATTRIBUTE_UNUSED) const override {
-    return false;
-  }
+  bool NeedsTwoRegisters([[maybe_unused]] DataType::Type type) const override { return false; }
 
   // Check if the desired_string_load_kind is supported. If it is, return it,
   // otherwise return a fall-back kind that should be used instead.
@@ -852,13 +858,21 @@ class CodeGeneratorARM64 : public CodeGenerator {
   // the associated patch for AOT or slow path for JIT.
   void EmitBakerReadBarrierCbnz(uint32_t custom_data);
 
-  vixl::aarch64::Literal<uint32_t>* DeduplicateBootImageAddressLiteral(uint64_t address);
+  vixl::aarch64::Literal<uint32_t>* DeduplicateBootImageAddressLiteral(uint64_t address) {
+    return jit_patches_.DeduplicateBootImageAddressLiteral(address);
+  }
   vixl::aarch64::Literal<uint32_t>* DeduplicateJitStringLiteral(const DexFile& dex_file,
                                                                 dex::StringIndex string_index,
-                                                                Handle<mirror::String> handle);
+                                                                Handle<mirror::String> handle) {
+    return jit_patches_.DeduplicateJitStringLiteral(
+        dex_file, string_index, handle, GetCodeGenerationData());
+  }
   vixl::aarch64::Literal<uint32_t>* DeduplicateJitClassLiteral(const DexFile& dex_file,
-                                                               dex::TypeIndex string_index,
-                                                               Handle<mirror::Class> handle);
+                                                               dex::TypeIndex class_index,
+                                                               Handle<mirror::Class> handle) {
+    return jit_patches_.DeduplicateJitClassLiteral(
+        dex_file, class_index, handle, GetCodeGenerationData());
+  }
 
   void EmitAdrpPlaceholder(vixl::aarch64::Label* fixup_label, vixl::aarch64::Register reg);
   void EmitAddPlaceholder(vixl::aarch64::Label* fixup_label,
@@ -893,9 +907,9 @@ class CodeGeneratorARM64 : public CodeGenerator {
                                uint32_t offset,
                                vixl::aarch64::Label* fixup_label,
                                ReadBarrierOption read_barrier_option);
-  // Generate MOV for the `old_value` in intrinsic CAS and mark it with Baker read barrier.
-  void GenerateIntrinsicCasMoveWithBakerReadBarrier(vixl::aarch64::Register marked_old_value,
-                                                    vixl::aarch64::Register old_value);
+  // Generate MOV for the `old_value` in intrinsic and mark it with Baker read barrier.
+  void GenerateIntrinsicMoveWithBakerReadBarrier(vixl::aarch64::Register marked_old_value,
+                                                 vixl::aarch64::Register old_value);
   // Fast path implementation of ReadBarrier::Barrier for a heap
   // reference field load when Baker's read barriers are used.
   // Overload suitable for Unsafe.getObject/-Volatile() intrinsic.
@@ -1088,18 +1102,6 @@ class CodeGeneratorARM64 : public CodeGenerator {
                                     uint32_t encoded_data,
                                     /*out*/ std::string* debug_name);
 
-  using Uint64ToLiteralMap = ArenaSafeMap<uint64_t, vixl::aarch64::Literal<uint64_t>*>;
-  using Uint32ToLiteralMap = ArenaSafeMap<uint32_t, vixl::aarch64::Literal<uint32_t>*>;
-  using StringToLiteralMap = ArenaSafeMap<StringReference,
-                                          vixl::aarch64::Literal<uint32_t>*,
-                                          StringReferenceValueComparator>;
-  using TypeToLiteralMap = ArenaSafeMap<TypeReference,
-                                        vixl::aarch64::Literal<uint32_t>*,
-                                        TypeReferenceValueComparator>;
-
-  vixl::aarch64::Literal<uint32_t>* DeduplicateUint32Literal(uint32_t value);
-  vixl::aarch64::Literal<uint64_t>* DeduplicateUint64Literal(uint64_t value);
-
   // The PcRelativePatchInfo is used for PC-relative addressing of methods/strings/types,
   // whether through .data.bimg.rel.ro, .bss, or directly in the boot image.
   struct PcRelativePatchInfo : PatchInfo<vixl::aarch64::Label> {
@@ -1173,14 +1175,7 @@ class CodeGeneratorARM64 : public CodeGenerator {
   // Baker read barrier patch info.
   ArenaDeque<BakerReadBarrierPatchInfo> baker_read_barrier_patches_;
 
-  // Deduplication map for 32-bit literals, used for JIT for boot image addresses.
-  Uint32ToLiteralMap uint32_literals_;
-  // Deduplication map for 64-bit literals, used for JIT for method address or method code.
-  Uint64ToLiteralMap uint64_literals_;
-  // Patches for string literals in JIT compiled code.
-  StringToLiteralMap jit_string_patches_;
-  // Patches for class literals in JIT compiled code.
-  TypeToLiteralMap jit_class_patches_;
+  JitPatchesARM64 jit_patches_;
 
   // Baker read barrier slow paths, mapping custom data (uint32_t) to label.
   // Wrap the label to work around vixl::aarch64::Label being non-copyable

@@ -33,6 +33,7 @@
 #include "log/log.h"
 #include "odr_common.h"
 #include "odrefresh/odrefresh.h"
+#include "tools/system_properties.h"
 
 namespace art {
 namespace odrefresh {
@@ -71,11 +72,14 @@ struct SystemPropertyConfig {
 // default value should not trigger re-compilation. This is to comply with the phenotype flag
 // requirement (go/platform-experiments-flags#pre-requisites).
 const android::base::NoDestructor<std::vector<SystemPropertyConfig>> kSystemProperties{
-    {SystemPropertyConfig{.name = "persist.device_config.runtime_native_boot.enable_uffd_gc",
-                          .default_value = ""},
+    {SystemPropertyConfig{.name = "persist.device_config.runtime_native_boot.force_disable_uffd_gc",
+                          .default_value = "false"},
      SystemPropertyConfig{.name = kPhDisableCompactDex, .default_value = "false"},
      SystemPropertyConfig{.name = kSystemPropertySystemServerCompilerFilterOverride,
-                          .default_value = ""}}};
+                          .default_value = ""},
+     // For testing only (cf. odsign_e2e_tests_full).
+     SystemPropertyConfig{.name = "persist.device_config.runtime_native_boot.odrefresh_test_toggle",
+                          .default_value = "false"}}};
 
 // An enumeration of the possible zygote configurations on Android.
 enum class ZygoteKind : uint8_t {
@@ -87,6 +91,26 @@ enum class ZygoteKind : uint8_t {
   kZygote64_32 = 2,
   // 64-bit primary zygote, no secondary zygote.
   kZygote64 = 3
+};
+
+class OdrSystemProperties : public tools::SystemProperties {
+ public:
+  explicit OdrSystemProperties(
+      const std::unordered_map<std::string, std::string>* system_properties)
+      : system_properties_(system_properties) {}
+
+  // For supporting foreach loops.
+  auto begin() const { return system_properties_->begin(); }
+  auto end() const { return system_properties_->end(); }
+
+ protected:
+  std::string GetProperty(const std::string& key) const override {
+    auto it = system_properties_->find(key);
+    return it != system_properties_->end() ? it->second : "";
+  }
+
+ private:
+  const std::unordered_map<std::string, std::string>* system_properties_;
 };
 
 // Configuration class for odrefresh. Exists to enable abstracting environment variables and
@@ -115,17 +139,20 @@ class OdrConfig final {
   // The current values of system properties listed in `kSystemProperties`.
   std::unordered_map<std::string, std::string> system_properties_;
 
+  // A helper for reading from `system_properties_`.
+  OdrSystemProperties odr_system_properties_;
+
   // Staging directory for artifacts. The directory must exist and will be automatically removed
   // after compilation. If empty, use the default directory.
   std::string staging_dir_;
 
  public:
   explicit OdrConfig(const char* program_name)
-    : dry_run_(false),
-      isa_(InstructionSet::kNone),
-      program_name_(android::base::Basename(program_name)),
-      artifact_dir_(GetApexDataDalvikCacheDirectory(InstructionSet::kNone)) {
-  }
+      : dry_run_(false),
+        isa_(InstructionSet::kNone),
+        program_name_(android::base::Basename(program_name)),
+        artifact_dir_(GetApexDataDalvikCacheDirectory(InstructionSet::kNone)),
+        odr_system_properties_(&system_properties_) {}
 
   const std::string& GetApexInfoListFile() const { return apex_info_list_file_; }
 
@@ -209,9 +236,7 @@ class OdrConfig final {
   }
   bool GetCompilationOsMode() const { return compilation_os_mode_; }
   bool GetMinimal() const { return minimal_; }
-  const std::unordered_map<std::string, std::string>& GetSystemProperties() const {
-    return system_properties_;
-  }
+  const OdrSystemProperties& GetSystemProperties() const { return odr_system_properties_; }
 
   void SetApexInfoListFile(const std::string& file_path) { apex_info_list_file_ = file_path; }
   void SetArtBinDir(const std::string& art_bin_dir) { art_bin_dir_ = art_bin_dir; }

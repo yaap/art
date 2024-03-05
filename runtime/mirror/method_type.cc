@@ -18,10 +18,12 @@
 
 #include "class-alloc-inl.h"
 #include "class_root-inl.h"
+#include "handle_scope-inl.h"
 #include "method_handles.h"
 #include "obj_ptr-inl.h"
 #include "object_array-alloc-inl.h"
 #include "object_array-inl.h"
+#include "well_known_classes.h"
 
 namespace art {
 namespace mirror {
@@ -36,35 +38,45 @@ ObjPtr<ObjectArray<Class>> AllocatePTypesArray(Thread* self, int count)
 
 }  // namespace
 
-ObjPtr<MethodType> MethodType::Create(Thread* const self,
+ObjPtr<MethodType> MethodType::Create(Thread* self,
                                       Handle<Class> return_type,
                                       Handle<ObjectArray<Class>> parameter_types) {
-  StackHandleScope<1> hs(self);
-  Handle<MethodType> mt(
-      hs.NewHandle(ObjPtr<MethodType>::DownCast(GetClassRoot<MethodType>()->AllocObject(self))));
+  ArtMethod* make_impl = WellKnownClasses::java_lang_invoke_MethodType_makeImpl;
 
-  if (mt == nullptr) {
-    self->AssertPendingOOMException();
+  const bool is_trusted = true;
+  ObjPtr<MethodType> mt = ObjPtr<MethodType>::DownCast(make_impl->InvokeStatic<'L', 'L', 'L', 'Z'>(
+      self, return_type.Get(), parameter_types.Get(), is_trusted));
+
+  if (self->IsExceptionPending()) {
     return nullptr;
   }
 
-  // We're initializing a newly allocated object, so we do not need to record that under
-  // a transaction. If the transaction is aborted, the whole object shall be unreachable.
-  mt->SetFieldObject</*kTransactionActive=*/ false, /*kCheckTransaction=*/ false>(
-      FormOffset(), nullptr);
-  mt->SetFieldObject</*kTransactionActive=*/ false, /*kCheckTransaction=*/ false>(
-      MethodDescriptorOffset(), nullptr);
-  mt->SetFieldObject</*kTransactionActive=*/ false, /*kCheckTransaction=*/ false>(
-      RTypeOffset(), return_type.Get());
-  mt->SetFieldObject</*kTransactionActive=*/ false, /*kCheckTransaction=*/ false>(
-      PTypesOffset(), parameter_types.Get());
-  mt->SetFieldObject</*kTransactionActive=*/ false, /*kCheckTransaction=*/ false>(
-      WrapAltOffset(), nullptr);
-
-  return mt.Get();
+  return mt;
 }
 
-ObjPtr<MethodType> MethodType::CloneWithoutLeadingParameter(Thread* const self,
+ObjPtr<MethodType> MethodType::Create(Thread* self, RawMethodType method_type) {
+  Handle<mirror::Class> return_type = method_type.GetRTypeHandle();
+  RawPTypesAccessor p_types(method_type);
+  int32_t num_method_args = p_types.GetLength();
+
+  // Create the argument types array.
+  StackHandleScope<1u> hs(self);
+  Handle<mirror::ObjectArray<mirror::Class>> method_params = hs.NewHandle(
+      mirror::ObjectArray<mirror::Class>::Alloc(
+          self, GetClassRoot<mirror::ObjectArray<mirror::Class>>(), num_method_args));
+  if (method_params == nullptr) {
+    DCHECK(self->IsExceptionPending());
+    return nullptr;
+  }
+
+  for (int32_t i = 0; i != num_method_args; ++i) {
+    method_params->Set(i, p_types.Get(i));
+  }
+
+  return Create(self, return_type, method_params);
+}
+
+ObjPtr<MethodType> MethodType::CloneWithoutLeadingParameter(Thread* self,
                                                             ObjPtr<MethodType> method_type) {
   StackHandleScope<3> hs(self);
   Handle<ObjectArray<Class>> src_ptypes = hs.NewHandle(method_type->GetPTypes());
@@ -104,20 +116,39 @@ ObjPtr<MethodType> MethodType::CollectTrailingArguments(Thread* self,
   return Create(self, dst_rtype, dst_ptypes);
 }
 
-size_t MethodType::NumberOfVRegs() {
-  const ObjPtr<ObjectArray<Class>> p_types = GetPTypes();
-  const int32_t p_types_length = p_types->GetLength();
+template <typename MethodTypeType>
+size_t NumberOfVRegsImpl(MethodTypeType method_type) REQUIRES_SHARED(Locks::mutator_lock_) {
+  auto p_types = MethodType::GetPTypes(method_type);
+  const int32_t p_types_length = p_types.GetLength();
 
   // Initialize |num_vregs| with number of parameters and only increment it for
   // types requiring a second vreg.
   size_t num_vregs = static_cast<size_t>(p_types_length);
   for (int32_t i = 0; i < p_types_length; ++i) {
-    ObjPtr<Class> klass = p_types->GetWithoutChecks(i);
+    ObjPtr<Class> klass = p_types.Get(i);
     if (klass->IsPrimitiveLong() || klass->IsPrimitiveDouble()) {
       ++num_vregs;
     }
   }
   return num_vregs;
+}
+
+size_t MethodType::NumberOfVRegs() {
+  return NumberOfVRegs(this);
+}
+
+size_t MethodType::NumberOfVRegs(ObjPtr<mirror::MethodType> method_type) {
+  DCHECK(method_type != nullptr);
+  return NumberOfVRegsImpl(method_type);
+}
+
+size_t MethodType::NumberOfVRegs(Handle<mirror::MethodType> method_type) {
+  return NumberOfVRegs(method_type.Get());
+}
+
+size_t MethodType::NumberOfVRegs(RawMethodType method_type) {
+  DCHECK(method_type.IsValid());
+  return NumberOfVRegsImpl(method_type);
 }
 
 bool MethodType::IsExactMatch(ObjPtr<MethodType> target) {
@@ -212,23 +243,45 @@ bool MethodType::IsInPlaceConvertible(ObjPtr<MethodType> target) {
          IsParameterInPlaceConvertible(target->GetRType(), GetRType());
 }
 
-std::string MethodType::PrettyDescriptor() {
+template <typename MethodTypeType>
+std::string PrettyDescriptorImpl(MethodTypeType method_type)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  auto p_types = MethodType::GetPTypes(method_type);
+  ObjPtr<mirror::Class> r_type = MethodType::GetRType(method_type);
+
   std::ostringstream ss;
   ss << "(";
 
-  const ObjPtr<ObjectArray<Class>> p_types = GetPTypes();
-  const int32_t params_length = p_types->GetLength();
+  const int32_t params_length = p_types.GetLength();
   for (int32_t i = 0; i < params_length; ++i) {
-    ss << p_types->GetWithoutChecks(i)->PrettyDescriptor();
+    ss << p_types.Get(i)->PrettyDescriptor();
     if (i != (params_length - 1)) {
       ss << ", ";
     }
   }
 
   ss << ")";
-  ss << GetRType()->PrettyDescriptor();
+  ss << r_type->PrettyDescriptor();
 
   return ss.str();
+}
+
+std::string MethodType::PrettyDescriptor() {
+  return PrettyDescriptor(this);
+}
+
+std::string MethodType::PrettyDescriptor(ObjPtr<mirror::MethodType> method_type) {
+  DCHECK(method_type != nullptr);
+  return PrettyDescriptorImpl(method_type);
+}
+
+std::string MethodType::PrettyDescriptor(Handle<MethodType> method_type) {
+  return PrettyDescriptor(method_type.Get());
+}
+
+std::string MethodType::PrettyDescriptor(RawMethodType method_type) {
+  DCHECK(method_type.IsValid());
+  return PrettyDescriptorImpl(method_type);
 }
 
 }  // namespace mirror

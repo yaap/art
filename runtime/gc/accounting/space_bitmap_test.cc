@@ -118,7 +118,7 @@ TEST_F(SpaceBitmapTest, ClearRange) {
     for (uintptr_t i = 0; i < range.first; i += kObjectAlignment) {
       EXPECT_TRUE(bitmap.Test(reinterpret_cast<mirror::Object*>(heap_begin + i)));
     }
-    for (uintptr_t i = range.second; i < range.second + kPageSize; i += kObjectAlignment) {
+    for (uintptr_t i = range.second; i < range.second + gPageSize; i += kObjectAlignment) {
       EXPECT_TRUE(bitmap.Test(reinterpret_cast<mirror::Object*>(heap_begin + i)));
     }
     // Everything inside should be cleared.
@@ -134,9 +134,7 @@ class SimpleCounter {
  public:
   explicit SimpleCounter(size_t* counter) : count_(counter) {}
 
-  void operator()(mirror::Object* obj ATTRIBUTE_UNUSED) const {
-    (*count_)++;
-  }
+  void operator()([[maybe_unused]] mirror::Object* obj) const { (*count_)++; }
 
   size_t* const count_;
 };
@@ -153,8 +151,8 @@ class RandGen {
   uint32_t val_;
 };
 
-template <size_t kAlignment, typename TestFn>
-static void RunTest(TestFn&& fn) NO_THREAD_SAFETY_ANALYSIS {
+template <typename TestFn>
+static void RunTest(size_t alignment, TestFn&& fn) NO_THREAD_SAFETY_ANALYSIS {
   uint8_t* heap_begin = reinterpret_cast<uint8_t*>(0x10000000);
   size_t heap_capacity = 16 * MB;
 
@@ -166,7 +164,7 @@ static void RunTest(TestFn&& fn) NO_THREAD_SAFETY_ANALYSIS {
         ContinuousSpaceBitmap::Create("test bitmap", heap_begin, heap_capacity));
 
     for (int j = 0; j < 10000; ++j) {
-      size_t offset = RoundDown(r.next() % heap_capacity, kAlignment);
+      size_t offset = RoundDown(r.next() % heap_capacity, alignment);
       bool set = r.next() % 2 == 1;
 
       if (set) {
@@ -177,12 +175,12 @@ static void RunTest(TestFn&& fn) NO_THREAD_SAFETY_ANALYSIS {
     }
 
     for (int j = 0; j < 50; ++j) {
-      const size_t offset = RoundDown(r.next() % heap_capacity, kAlignment);
+      const size_t offset = RoundDown(r.next() % heap_capacity, alignment);
       const size_t remain = heap_capacity - offset;
-      const size_t end = offset + RoundDown(r.next() % (remain + 1), kAlignment);
+      const size_t end = offset + RoundDown(r.next() % (remain + 1), alignment);
 
       size_t manual = 0;
-      for (uintptr_t k = offset; k < end; k += kAlignment) {
+      for (uintptr_t k = offset; k < end; k += alignment) {
         if (space_bitmap.Test(reinterpret_cast<mirror::Object*>(heap_begin + k))) {
           manual++;
         }
@@ -196,32 +194,28 @@ static void RunTest(TestFn&& fn) NO_THREAD_SAFETY_ANALYSIS {
   }
 }
 
-template <size_t kAlignment>
-static void RunTestCount() {
+static void RunTestCount(size_t alignment) {
   auto count_test_fn = [](ContinuousSpaceBitmap* space_bitmap,
                           uintptr_t range_begin,
                           uintptr_t range_end,
                           size_t manual_count) {
     size_t count = 0;
-    auto count_fn = [&count](mirror::Object* obj ATTRIBUTE_UNUSED) {
-      count++;
-    };
+    auto count_fn = [&count]([[maybe_unused]] mirror::Object* obj) { count++; };
     space_bitmap->VisitMarkedRange(range_begin, range_end, count_fn);
     EXPECT_EQ(count, manual_count);
   };
-  RunTest<kAlignment>(count_test_fn);
+  RunTest(alignment, count_test_fn);
 }
 
 TEST_F(SpaceBitmapTest, VisitorObjectAlignment) {
-  RunTestCount<kObjectAlignment>();
+  RunTestCount(kObjectAlignment);
 }
 
 TEST_F(SpaceBitmapTest, VisitorPageAlignment) {
-  RunTestCount<kPageSize>();
+  RunTestCount(gPageSize);
 }
 
-template <size_t kAlignment>
-void RunTestOrder() {
+void RunTestOrder(size_t alignment) {
   auto order_test_fn = [](ContinuousSpaceBitmap* space_bitmap,
                           uintptr_t range_begin,
                           uintptr_t range_end,
@@ -246,15 +240,15 @@ void RunTestOrder() {
       EXPECT_NE(nullptr, last_ptr);
     }
   };
-  RunTest<kAlignment>(order_test_fn);
+  RunTest(alignment, order_test_fn);
 }
 
 TEST_F(SpaceBitmapTest, OrderObjectAlignment) {
-  RunTestOrder<kObjectAlignment>();
+  RunTestOrder(kObjectAlignment);
 }
 
 TEST_F(SpaceBitmapTest, OrderPageAlignment) {
-  RunTestOrder<kPageSize>();
+  RunTestOrder(gPageSize);
 }
 
 }  // namespace accounting

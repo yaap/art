@@ -99,7 +99,12 @@ class Artd : public aidl::com::android::server::art::BnArtd {
       const aidl::com::android::server::art::ProfilePath& in_src,
       aidl::com::android::server::art::OutputProfile* in_dst,
       const std::string& in_dexFile,
-      bool* _aidl_return) override;
+      aidl::com::android::server::art::CopyAndRewriteProfileResult* _aidl_return) override;
+
+  ndk::ScopedAStatus copyAndRewriteEmbeddedProfile(
+      aidl::com::android::server::art::OutputProfile* in_dst,
+      const std::string& in_dexFile,
+      aidl::com::android::server::art::CopyAndRewriteProfileResult* _aidl_return) override;
 
   ndk::ScopedAStatus commitTmpProfile(
       const aidl::com::android::server::art::ProfilePath::TmpProfilePath& in_profile) override;
@@ -162,10 +167,15 @@ class Artd : public aidl::com::android::server::art::BnArtd {
       const std::vector<aidl::com::android::server::art::ProfilePath>& in_profilesToKeep,
       const std::vector<aidl::com::android::server::art::ArtifactsPath>& in_artifactsToKeep,
       const std::vector<aidl::com::android::server::art::VdexPath>& in_vdexFilesToKeep,
+      const std::vector<aidl::com::android::server::art::RuntimeArtifactsPath>&
+          in_runtimeArtifactsToKeep,
       int64_t* _aidl_return) override;
 
-  ndk::ScopedAStatus isIncrementalFsPath(const std::string& in_dexFile,
-                                         bool* _aidl_return) override;
+  ndk::ScopedAStatus isInDalvikCache(const std::string& in_dexFile, bool* _aidl_return) override;
+
+  ndk::ScopedAStatus deleteRuntimeArtifacts(
+      const aidl::com::android::server::art::RuntimeArtifactsPath& in_runtimeArtifactsPath,
+      int64_t* _aidl_return) override;
 
   android::base::Result<void> Start();
 
@@ -215,6 +225,12 @@ class Artd : public aidl::com::android::server::art::BnArtd {
                           /*out*/ art::tools::CmdlineBuilder& args);
 
   android::base::Result<struct stat> Fstat(const art::File& file) const;
+
+  ndk::ScopedAStatus CopyAndRewriteProfileImpl(
+      File src,
+      aidl::com::android::server::art::OutputProfile* dst_aidl,
+      const std::string& dex_path,
+      aidl::com::android::server::art::CopyAndRewriteProfileResult* aidl_return);
 
   std::mutex cache_mu_;
   std::optional<std::vector<std::string>> cached_boot_image_locations_ GUARDED_BY(cache_mu_);

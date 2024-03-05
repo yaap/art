@@ -211,7 +211,8 @@ static_assert(enum_cast<uint32_t>(IndirectRefKind::kLastKind) < alignof(LrtEntry
 static constexpr size_t kInitialLrtBytes = 512;  // Number of bytes in an initial local table.
 static constexpr size_t kSmallLrtEntries = kInitialLrtBytes / sizeof(LrtEntry);
 static_assert(IsPowerOfTwo(kInitialLrtBytes));
-static_assert(kPageSize % kInitialLrtBytes == 0);
+
+static_assert(kMinPageSize % kInitialLrtBytes == 0);
 static_assert(kInitialLrtBytes % sizeof(LrtEntry) == 0);
 
 // A minimal stopgap allocator for initial small local LRT tables.
@@ -226,8 +227,6 @@ class SmallLrtAllocator {
   void Deallocate(LrtEntry* unneeded, size_t size) REQUIRES(!lock_);
 
  private:
-  static constexpr size_t kNumSlots = WhichPowerOf2(kPageSize / kInitialLrtBytes);
-
   static size_t GetIndex(size_t size);
 
   // Free lists of small chunks linked through the first word.
@@ -333,7 +332,7 @@ class LocalReferenceTable {
 
   void SetSegmentState(LRTSegmentState new_state);
 
-  static Offset SegmentStateOffset(size_t pointer_size ATTRIBUTE_UNUSED) {
+  static Offset SegmentStateOffset([[maybe_unused]] size_t pointer_size) {
     // Note: Currently segment_state_ is at offset 0. We're testing the expected value in
     //       jni_internal_test to make sure it stays correct. It is not OFFSETOF_MEMBER, as that
     //       is not pointer-size-safe.
@@ -400,8 +399,8 @@ class LocalReferenceTable {
     return 1u + WhichPowerOf2(size / kSmallLrtEntries);
   }
 
-  static constexpr size_t MaxSmallTables() {
-    return NumTablesForSize(kPageSize / sizeof(LrtEntry));
+  static size_t MaxSmallTables() {
+    return NumTablesForSize(gPageSize / sizeof(LrtEntry));
   }
 
   LrtEntry* GetEntry(size_t entry_index) const {

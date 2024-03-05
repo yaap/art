@@ -18,6 +18,7 @@
 #include "interpreter/cfi_asm_support.h"
 
 #include "arch/quick_alloc_entrypoints.S"
+#include "arch/quick_field_entrypoints.S"
 
 MACRO0(ASSERT_USE_READ_BARRIER)
 #if !defined(USE_READ_BARRIER)
@@ -84,8 +85,7 @@ MACRO1(SETUP_SAVE_EVERYTHING_FRAME_R14_R15_SAVED, runtime_method_offset = RUNTIM
     PUSH rcx
     PUSH rax
     // Create space for FPRs and stack alignment padding.
-    subq MACRO_LITERAL(8 + 16 * 8), %rsp
-    CFI_ADJUST_CFA_OFFSET(8 + 16 * 8)
+    INCREASE_FRAME 8 + 16 * 8
     // R10 := Runtime::Current()
     LOAD_RUNTIME_INSTANCE r10
     // Save FPRs.
@@ -180,8 +180,7 @@ MACRO0(RESTORE_SAVE_EVERYTHING_FRAME)
     RESTORE_SAVE_EVERYTHING_FRAME_FRPS
 
     // Remove save everything callee save method, stack alignment padding and FPRs.
-    addq MACRO_LITERAL(16 + 16 * 8), %rsp
-    CFI_ADJUST_CFA_OFFSET(-(16 + 16 * 8))
+    DECREASE_FRAME 16 + 16 * 8
 
     POP rax
     RESTORE_SAVE_EVERYTHING_FRAME_GPRS_EXCEPT_RAX
@@ -191,8 +190,7 @@ MACRO0(RESTORE_SAVE_EVERYTHING_FRAME_KEEP_RAX)
     RESTORE_SAVE_EVERYTHING_FRAME_FRPS
 
     // Remove save everything callee save method, stack alignment padding and FPRs, skip RAX.
-    addq MACRO_LITERAL(16 + 16 * 8 + 8), %rsp
-    CFI_ADJUST_CFA_OFFSET(-(16 + 16 * 8 + 8))
+    DECREASE_FRAME 16 + 16 * 8 + 8
 
     RESTORE_SAVE_EVERYTHING_FRAME_GPRS_EXCEPT_RAX
 END_MACRO
@@ -687,39 +685,6 @@ MACRO3(FOUR_ARG_DOWNCALL, c_name, cxx_name, return_macro)
     END_FUNCTION VAR(c_name)
 END_MACRO
 
-MACRO3(ONE_ARG_REF_DOWNCALL, c_name, cxx_name, return_macro)
-    DEFINE_FUNCTION VAR(c_name)
-    SETUP_SAVE_REFS_ONLY_FRAME
-                                        // arg0 is in rdi
-    movq %gs:THREAD_SELF_OFFSET, %rsi   // pass Thread::Current()
-    call CALLVAR(cxx_name)              // cxx_name(arg0, Thread*)
-    RESTORE_SAVE_REFS_ONLY_FRAME        // restore frame up to return address
-    CALL_MACRO(return_macro)
-    END_FUNCTION VAR(c_name)
-END_MACRO
-
-MACRO3(TWO_ARG_REF_DOWNCALL, c_name, cxx_name, return_macro)
-    DEFINE_FUNCTION VAR(c_name)
-    SETUP_SAVE_REFS_ONLY_FRAME
-                                        // arg0 and arg1 are in rdi/rsi
-    movq %gs:THREAD_SELF_OFFSET, %rdx   // pass Thread::Current()
-    call CALLVAR(cxx_name)              // (arg0, arg1, Thread*)
-    RESTORE_SAVE_REFS_ONLY_FRAME        // restore frame up to return address
-    CALL_MACRO(return_macro)
-    END_FUNCTION VAR(c_name)
-END_MACRO
-
-MACRO3(THREE_ARG_REF_DOWNCALL, c_name, cxx_name, return_macro)
-    DEFINE_FUNCTION VAR(c_name)
-    SETUP_SAVE_REFS_ONLY_FRAME
-                                        // arg0, arg1, and arg2 are in rdi/rsi/rdx
-    movq %gs:THREAD_SELF_OFFSET, %rcx   // pass Thread::Current()
-    call CALLVAR(cxx_name)              // cxx_name(arg0, arg1, arg2, Thread*)
-    RESTORE_SAVE_REFS_ONLY_FRAME        // restore frame up to return address
-    CALL_MACRO(return_macro)            // return or deliver exception
-    END_FUNCTION VAR(c_name)
-END_MACRO
-
     /*
      * Macro for resolution and initialization of indexed DEX file
      * constants such as classes and strings.
@@ -743,7 +708,7 @@ MACRO2(ONE_ARG_SAVE_EVERYTHING_DOWNCALL_FOR_CLINIT, c_name, cxx_name)
     ONE_ARG_SAVE_EVERYTHING_DOWNCALL \c_name, \cxx_name, RUNTIME_SAVE_EVERYTHING_FOR_CLINIT_METHOD_OFFSET
 END_MACRO
 
-MACRO0(RETURN_IF_RESULT_IS_NON_ZERO_OR_DEOPT_OR_DELIVER)
+MACRO0(RETURN_OR_DEOPT_IF_RESULT_IS_NON_NULL_OR_DELIVER)
     testq %rax, %rax               // rax == 0 ?
     jz  1f                         // if rax == 0 goto 1
     DEOPT_OR_RETURN /*is_ref=*/1   // Check if deopt is required
@@ -752,13 +717,17 @@ MACRO0(RETURN_IF_RESULT_IS_NON_ZERO_OR_DEOPT_OR_DELIVER)
 END_MACRO
 
 
-MACRO0(RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION)
+MACRO1(RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION, is_ref = 0)
     movq %gs:THREAD_EXCEPTION_OFFSET, %rcx // get exception field
     testq %rcx, %rcx               // rcx == 0 ?
     jnz 1f                         // if rcx != 0 goto 1
-    DEOPT_OR_RETURN                // Check if deopt is required
+    DEOPT_OR_RETURN \is_ref        // Check if deopt is required
 1:                                 // deliver exception on current thread
     DELIVER_PENDING_EXCEPTION
+END_MACRO
+
+MACRO0(RETURN_REF_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION)
+    RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION /*is_ref=*/1
 END_MACRO
 
 MACRO1(DEOPT_OR_RETURN, is_ref = 0)
@@ -771,20 +740,18 @@ MACRO1(DEOPT_OR_RETURN, is_ref = 0)
   movq %rax, %rsi                      // pass the result
   movq %gs:THREAD_SELF_OFFSET, %rdi    // pass Thread::Current
   call SYMBOL(artDeoptimizeIfNeeded)
-  CFI_REMEMBER_STATE
   RESTORE_SAVE_EVERYTHING_FRAME
   ret
-  CFI_RESTORE_STATE_AND_DEF_CFA rsp, FRAME_SIZE_SAVE_EVERYTHING
 END_MACRO
 
 MACRO1(DEOPT_OR_RESTORE_SAVE_EVERYTHING_FRAME_AND_RETURN_RAX, is_ref = 0)
   cmpl LITERAL(0), %gs:THREAD_DEOPT_CHECK_REQUIRED_OFFSET
-  jne 2f
   CFI_REMEMBER_STATE
+  jne 2f
   RESTORE_SAVE_EVERYTHING_FRAME_KEEP_RAX
   ret
-  CFI_RESTORE_STATE_AND_DEF_CFA rsp, FRAME_SIZE_SAVE_EVERYTHING
 2:
+  CFI_RESTORE_STATE_AND_DEF_CFA rsp, FRAME_SIZE_SAVE_EVERYTHING
   movq %rax, SAVE_EVERYTHING_FRAME_RAX_OFFSET(%rsp) // update result in the frame
   movq LITERAL(\is_ref), %rdx                       // pass if result is a reference
   movq %rax, %rsi                                   // pass the result
@@ -798,7 +765,7 @@ END_MACRO
 
 
 
-MACRO0(RETURN_IF_EAX_ZERO)
+MACRO0(RETURN_OR_DEOPT_IF_INT_RESULT_IS_ZERO_OR_DELIVER)
     testl %eax, %eax               // eax == 0 ?
     jnz  1f                        // if eax != 0 goto 1
     DEOPT_OR_RETURN                // Check if we need a deopt
@@ -903,7 +870,7 @@ MACRO2(ART_QUICK_ALLOC_OBJECT_ROSALLOC, c_name, cxx_name)
     movq %gs:THREAD_SELF_OFFSET, %rsi                      // pass Thread::Current()
     call CALLVAR(cxx_name)                                 // cxx_name(arg0, Thread*)
     RESTORE_SAVE_REFS_ONLY_FRAME                           // restore frame up to return address
-    RETURN_IF_RESULT_IS_NON_ZERO_OR_DEOPT_OR_DELIVER       // return or deliver exception
+    RETURN_OR_DEOPT_IF_RESULT_IS_NON_NULL_OR_DELIVER       // return or deliver exception
     END_FUNCTION VAR(c_name)
 END_MACRO
 
@@ -935,7 +902,6 @@ MACRO1(ALLOC_OBJECT_INITIALIZED_TLAB_FAST_PATH, slowPathLabel)
     cmpq THREAD_LOCAL_END_OFFSET(%r8), %rcx                    // Check if it fits.
     ja   RAW_VAR(slowPathLabel)
     movq %rcx, THREAD_LOCAL_POS_OFFSET(%r8)                    // Update thread_local_pos.
-    incq THREAD_LOCAL_OBJECTS_OFFSET(%r8)                      // Increase thread_local_objects.
                                                                // Store the class pointer in the
                                                                // header.
                                                                // No fence needed for x86.
@@ -957,7 +923,6 @@ MACRO1(ALLOC_ARRAY_TLAB_FAST_PATH_RESOLVED_WITH_SIZE, slowPathLabel)
     cmpq THREAD_LOCAL_END_OFFSET(%rcx), %r9                    // Check if it fits.
     ja   RAW_VAR(slowPathLabel)
     movq %r9, THREAD_LOCAL_POS_OFFSET(%rcx)                    // Update thread_local_pos.
-    addq LITERAL(1), THREAD_LOCAL_OBJECTS_OFFSET(%rcx)         // Increase thread_local_objects.
                                                                // Store the class pointer in the
                                                                // header.
                                                                // No fence needed for x86.
@@ -975,7 +940,7 @@ MACRO1(ALLOC_OBJECT_TLAB_SLOW_PATH, cxx_name)
     movq %gs:THREAD_SELF_OFFSET, %rsi                      // pass Thread::Current()
     call CALLVAR(cxx_name)                                 // cxx_name(arg0, Thread*)
     RESTORE_SAVE_REFS_ONLY_FRAME                           // restore frame up to return address
-    RETURN_IF_RESULT_IS_NON_ZERO_OR_DEOPT_OR_DELIVER       // return or deliver exception
+    RETURN_OR_DEOPT_IF_RESULT_IS_NON_NULL_OR_DELIVER       // return or deliver exception
 END_MACRO
 
 // A hand-written override for GENERATE_ALLOC_ENTRYPOINTS_ALLOC_OBJECT_RESOLVED(_tlab, TLAB). May be
@@ -1063,7 +1028,7 @@ MACRO3(GENERATE_ALLOC_ARRAY_TLAB, c_entrypoint, cxx_name, size_setup)
     movq %gs:THREAD_SELF_OFFSET, %rdx                          // pass Thread::Current()
     call CALLVAR(cxx_name)                                     // cxx_name(arg0, arg1, Thread*)
     RESTORE_SAVE_REFS_ONLY_FRAME                               // restore frame up to return address
-    RETURN_IF_RESULT_IS_NON_ZERO_OR_DEOPT_OR_DELIVER           // return or deliver exception
+    RETURN_OR_DEOPT_IF_RESULT_IS_NON_NULL_OR_DELIVER           // return or deliver exception
     END_FUNCTION VAR(c_entrypoint)
 END_MACRO
 
@@ -1110,7 +1075,9 @@ ONE_ARG_SAVE_EVERYTHING_DOWNCALL art_quick_resolve_method_handle, artResolveMeth
 ONE_ARG_SAVE_EVERYTHING_DOWNCALL art_quick_resolve_method_type, artResolveMethodTypeFromCode
 ONE_ARG_SAVE_EVERYTHING_DOWNCALL art_quick_resolve_string, artResolveStringFromCode
 
-TWO_ARG_REF_DOWNCALL art_quick_handle_fill_data, artHandleFillArrayDataFromCode, RETURN_IF_EAX_ZERO
+TWO_ARG_DOWNCALL art_quick_handle_fill_data, \
+                 artHandleFillArrayDataFromCode, \
+                 RETURN_OR_DEOPT_IF_INT_RESULT_IS_ZERO_OR_DELIVER
 
     /*
      * Entry from managed code that tries to lock the object in a fast path and
@@ -1133,7 +1100,7 @@ DEFINE_FUNCTION art_quick_lock_object_no_inline
     movq %gs:THREAD_SELF_OFFSET, %rsi     // pass Thread::Current()
     call SYMBOL(artLockObjectFromCode)    // artLockObjectFromCode(object, Thread*)
     RESTORE_SAVE_REFS_ONLY_FRAME          // restore frame up to return address
-    RETURN_IF_EAX_ZERO
+    RETURN_OR_DEOPT_IF_INT_RESULT_IS_ZERO_OR_DELIVER
 END_FUNCTION art_quick_lock_object_no_inline
 
     /*
@@ -1158,7 +1125,7 @@ DEFINE_FUNCTION art_quick_unlock_object_no_inline
     movq %gs:THREAD_SELF_OFFSET, %rsi     // pass Thread::Current()
     call SYMBOL(artUnlockObjectFromCode)  // artUnlockObjectFromCode(object, Thread*)
     RESTORE_SAVE_REFS_ONLY_FRAME          // restore frame up to return address
-    RETURN_IF_EAX_ZERO
+    RETURN_OR_DEOPT_IF_INT_RESULT_IS_ZERO_OR_DELIVER
 END_FUNCTION art_quick_unlock_object_no_inline
 
 DEFINE_FUNCTION art_quick_check_instance_of
@@ -1174,15 +1141,15 @@ DEFINE_FUNCTION art_quick_check_instance_of
     SETUP_FP_CALLEE_SAVE_FRAME
     call SYMBOL(artInstanceOfFromCode)  // (Object* obj, Class* ref_klass)
     testq %rax, %rax
-    jz .Lthrow_class_cast_exception   // jump forward if not assignable
     CFI_REMEMBER_STATE
+    jz .Lthrow_class_cast_exception   // jump forward if not assignable
     RESTORE_FP_CALLEE_SAVE_FRAME
     addq LITERAL(24), %rsp            // pop arguments
     CFI_ADJUST_CFA_OFFSET(-24)
     ret
-    CFI_RESTORE_STATE_AND_DEF_CFA rsp, 64  // Reset unwind info so following code unwinds.
 
 .Lthrow_class_cast_exception:
+    CFI_RESTORE_STATE_AND_DEF_CFA rsp, 64  // Reset unwind info so following code unwinds.
     RESTORE_FP_CALLEE_SAVE_FRAME
     addq LITERAL(8), %rsp             // pop padding
     CFI_ADJUST_CFA_OFFSET(-8)
@@ -1200,8 +1167,7 @@ END_FUNCTION art_quick_check_instance_of
 // Restore reg's value if reg is not the same as exclude_reg, otherwise just adjust stack.
 MACRO2(POP_REG_NE, reg, exclude_reg)
     .ifc RAW_VAR(reg), RAW_VAR(exclude_reg)
-      addq MACRO_LITERAL(8), %rsp
-      CFI_ADJUST_CFA_OFFSET(-8)
+      DECREASE_FRAME 8
     .else
       POP RAW_VAR(reg)
     .endif
@@ -1214,6 +1180,7 @@ DEFINE_FUNCTION art_quick_aput_obj
     UNPOISON_HEAP_REF ecx
 #ifdef USE_READ_BARRIER
     cmpl LITERAL(0), %gs:THREAD_IS_GC_MARKING_OFFSET
+    CFI_REMEMBER_STATE
     jnz .Laput_obj_gc_marking
 #endif  // USE_READ_BARRIER
     movl MIRROR_CLASS_COMPONENT_TYPE_OFFSET(%rcx), %ecx
@@ -1256,9 +1223,6 @@ DEFINE_FUNCTION art_quick_aput_obj
     ret
 
 .Laput_obj_throw_array_store_exception:
-#ifdef USE_READ_BARRIER
-    CFI_REMEMBER_STATE
-#endif  // USE_READ_BARRIER
     SETUP_SAVE_ALL_CALLEE_SAVES_FRAME  // Save all registers as basis for long jump context.
     // Outgoing argument set up.
     movq %rdx, %rsi                         // Pass arg 2 = value.
@@ -1268,8 +1232,8 @@ DEFINE_FUNCTION art_quick_aput_obj
     UNREACHABLE
 
 #ifdef USE_READ_BARRIER
-    CFI_RESTORE_STATE_AND_DEF_CFA rsp, 4
 .Laput_obj_gc_marking:
+    CFI_RESTORE_STATE_AND_DEF_CFA rsp, 8
     // We need to align stack for `art_quick_read_barrier_mark_regNN`.
     INCREASE_FRAME 8                        // Stack alignment.
     call SYMBOL(art_quick_read_barrier_mark_reg01)  // Mark ECX
@@ -1314,36 +1278,7 @@ UNIMPLEMENTED art_quick_lshl
 UNIMPLEMENTED art_quick_lshr
 UNIMPLEMENTED art_quick_lushr
 
-// Note: Functions `art{Get,Set}<Kind>{Static,Instance}FromCompiledCode` are
-// defined with a macro in runtime/entrypoints/quick/quick_field_entrypoints.cc.
-
-THREE_ARG_REF_DOWNCALL art_quick_set8_instance, artSet8InstanceFromCompiledCode, RETURN_IF_EAX_ZERO
-THREE_ARG_REF_DOWNCALL art_quick_set16_instance, artSet16InstanceFromCompiledCode, RETURN_IF_EAX_ZERO
-THREE_ARG_REF_DOWNCALL art_quick_set32_instance, artSet32InstanceFromCompiledCode, RETURN_IF_EAX_ZERO
-THREE_ARG_REF_DOWNCALL art_quick_set64_instance, artSet64InstanceFromCompiledCode, RETURN_IF_EAX_ZERO
-THREE_ARG_REF_DOWNCALL art_quick_set_obj_instance, artSetObjInstanceFromCompiledCode, RETURN_IF_EAX_ZERO
-
-TWO_ARG_REF_DOWNCALL art_quick_get_byte_instance, artGetByteInstanceFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-TWO_ARG_REF_DOWNCALL art_quick_get_boolean_instance, artGetBooleanInstanceFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-TWO_ARG_REF_DOWNCALL art_quick_get_short_instance, artGetShortInstanceFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-TWO_ARG_REF_DOWNCALL art_quick_get_char_instance, artGetCharInstanceFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-TWO_ARG_REF_DOWNCALL art_quick_get32_instance, artGet32InstanceFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-TWO_ARG_REF_DOWNCALL art_quick_get64_instance, artGet64InstanceFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-TWO_ARG_REF_DOWNCALL art_quick_get_obj_instance, artGetObjInstanceFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-
-TWO_ARG_REF_DOWNCALL art_quick_set8_static, artSet8StaticFromCompiledCode, RETURN_IF_EAX_ZERO
-TWO_ARG_REF_DOWNCALL art_quick_set16_static, artSet16StaticFromCompiledCode, RETURN_IF_EAX_ZERO
-TWO_ARG_REF_DOWNCALL art_quick_set32_static, artSet32StaticFromCompiledCode, RETURN_IF_EAX_ZERO
-TWO_ARG_REF_DOWNCALL art_quick_set64_static, artSet64StaticFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-TWO_ARG_REF_DOWNCALL art_quick_set_obj_static, artSetObjStaticFromCompiledCode, RETURN_IF_EAX_ZERO
-
-ONE_ARG_REF_DOWNCALL art_quick_get_byte_static, artGetByteStaticFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-ONE_ARG_REF_DOWNCALL art_quick_get_boolean_static, artGetBooleanStaticFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-ONE_ARG_REF_DOWNCALL art_quick_get_short_static, artGetShortStaticFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-ONE_ARG_REF_DOWNCALL art_quick_get_char_static, artGetCharStaticFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-ONE_ARG_REF_DOWNCALL art_quick_get32_static, artGet32StaticFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-ONE_ARG_REF_DOWNCALL art_quick_get64_static, artGet64StaticFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
-ONE_ARG_REF_DOWNCALL art_quick_get_obj_static, artGetObjStaticFromCompiledCode, RETURN_OR_DEOPT_OR_DELIVER_PENDING_EXCEPTION
+GENERATE_FIELD_ENTRYPOINTS
 
 DEFINE_FUNCTION art_quick_proxy_invoke_handler
     SETUP_SAVE_REFS_AND_ARGS_FRAME_WITH_METHOD_IN_RDI
@@ -1560,11 +1495,11 @@ DEFINE_FUNCTION art_quick_generic_jni_trampoline
 
     LOAD_RUNTIME_INSTANCE rcx
     cmpb MACRO_LITERAL(0), RUN_EXIT_HOOKS_OFFSET_FROM_RUNTIME_INSTANCE(%rcx)
+    CFI_REMEMBER_STATE
     jne .Lcall_method_exit_hook
 .Lcall_method_exit_hook_done:
 
     // Tear down the callee-save frame.
-    CFI_REMEMBER_STATE
     CFI_DEF_CFA_REGISTER(rsp)
     // Load callee-save FPRs. Skip FP args.
     movq 80(%rsp), %xmm12
@@ -1583,13 +1518,11 @@ DEFINE_FUNCTION art_quick_generic_jni_trampoline
     POP r15  // Callee save.
     ret
 
-    // Undo the unwinding information from above since it doesn't apply below.
-    CFI_RESTORE_STATE_AND_DEF_CFA rbp, 208
-
 .Lcall_method_exit_hook:
-   movq LITERAL(FRAME_SIZE_SAVE_REFS_AND_ARGS), %r8
-   call art_quick_method_exit_hook
-   jmp .Lcall_method_exit_hook_done
+    CFI_RESTORE_STATE_AND_DEF_CFA rbp, 208
+    movq LITERAL(FRAME_SIZE_SAVE_REFS_AND_ARGS), %r8
+    call art_quick_method_exit_hook
+    jmp .Lcall_method_exit_hook_done
 
 .Lexception_in_native:
     pushq %gs:THREAD_TOP_QUICK_FRAME_OFFSET
@@ -1751,7 +1684,7 @@ DEFINE_FUNCTION art_quick_string_builder_append
     movq %gs:THREAD_SELF_OFFSET, %rdx         // pass Thread::Current()
     call artStringBuilderAppend               // (uint32_t, const unit32_t*, Thread*)
     RESTORE_SAVE_REFS_ONLY_FRAME              // restore frame up to return address
-    RETURN_IF_RESULT_IS_NON_ZERO_OR_DEOPT_OR_DELIVER  // return or deopt or deliver exception
+    RETURN_OR_DEOPT_IF_RESULT_IS_NON_NULL_OR_DELIVER  // return or deopt or deliver exception
 END_FUNCTION art_quick_string_builder_append
 
 // Create a function `name` calling the ReadBarrier::Mark routine,
@@ -1780,6 +1713,7 @@ MACRO2(READ_BARRIER_MARK_REG, name, reg)
     // Jump if the addl caused eax to unsigned overflow. The only case where it overflows is the
     // forwarding address one.
     // Taken ~25% of the time.
+    CFI_REMEMBER_STATE
     jnae .Lret_forwarding_address\name
 
     // Save all potentially live caller-save core registers.
@@ -1793,8 +1727,7 @@ MACRO2(READ_BARRIER_MARK_REG, name, reg)
     PUSH r10
     PUSH r11
     // Create space for caller-save floating-point registers.
-    subq MACRO_LITERAL(12 * 8), %rsp
-    CFI_ADJUST_CFA_OFFSET(12 * 8)
+    INCREASE_FRAME 12 * 8
     // Save all potentially live caller-save floating-point registers.
     movq %xmm0, 0(%rsp)
     movq %xmm1, 8(%rsp)
@@ -1833,8 +1766,7 @@ MACRO2(READ_BARRIER_MARK_REG, name, reg)
     movq 80(%rsp), %xmm10
     movq 88(%rsp), %xmm11
     // Remove floating-point registers.
-    addq MACRO_LITERAL(12 * 8), %rsp
-    CFI_ADJUST_CFA_OFFSET(-(12 * 8))
+    DECREASE_FRAME 12 * 8
     // Restore core regs, except `reg`, as it is used to return the
     // result of this function (simply remove it from the stack instead).
     POP_REG_NE r11, RAW_VAR(reg)
@@ -1849,6 +1781,7 @@ MACRO2(READ_BARRIER_MARK_REG, name, reg)
 .Lret_rb_\name:
     ret
 .Lret_forwarding_address\name:
+    CFI_RESTORE_STATE_AND_DEF_CFA rsp, 16
     // The overflow cleared the top bits.
     sall LITERAL(LOCK_WORD_STATE_FORWARDING_ADDRESS_SHIFT), %eax
     movq %rax, REG_VAR(reg)
@@ -1928,8 +1861,8 @@ DEFINE_FUNCTION art_quick_osr_stub
     movl %esi, %ecx               // rcx := size of stack
     movq %rdi, %rsi               // rsi := stack to copy
     movq %rsp, %rbp               // Save stack pointer to RBP for CFI use in .Losr_entry.
-    call .Losr_entry
     CFI_REMEMBER_STATE
+    call .Losr_entry
 
     // Restore stack and callee-saves.
     addq LITERAL(8), %rsp

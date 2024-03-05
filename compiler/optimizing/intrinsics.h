@@ -19,6 +19,7 @@
 
 #include "base/macros.h"
 #include "code_generator.h"
+#include "intrinsics_list.h"
 #include "nodes.h"
 #include "optimization.h"
 #include "parallel_move_resolver.h"
@@ -48,9 +49,7 @@ class IntrinsicVisitor : public ValueObject {
       case Intrinsics::k ## Name: \
         Visit ## Name(invoke);    \
         return;
-#include "intrinsics_list.h"
-        INTRINSICS_LIST(OPTIMIZING_INTRINSICS)
-#undef INTRINSICS_LIST
+        ART_INTRINSICS_LIST(OPTIMIZING_INTRINSICS)
 #undef OPTIMIZING_INTRINSICS
 
       // Do not put a default case. That way the compiler will complain if we missed a case.
@@ -60,11 +59,8 @@ class IntrinsicVisitor : public ValueObject {
   // Define visitor methods.
 
 #define OPTIMIZING_INTRINSICS(Name, ...) \
-  virtual void Visit ## Name(HInvoke* invoke ATTRIBUTE_UNUSED) { \
-  }
-#include "intrinsics_list.h"
-  INTRINSICS_LIST(OPTIMIZING_INTRINSICS)
-#undef INTRINSICS_LIST
+  virtual void Visit##Name([[maybe_unused]] HInvoke* invoke) {}
+  ART_INTRINSICS_LIST(OPTIMIZING_INTRINSICS)
 #undef OPTIMIZING_INTRINSICS
 
   static void MoveArguments(HInvoke* invoke,
@@ -99,19 +95,20 @@ class IntrinsicVisitor : public ValueObject {
     codegen->GetMoveResolver()->EmitNativeCode(&parallel_move);
   }
 
-  static void ComputeIntegerValueOfLocations(HInvoke* invoke,
-                                             CodeGenerator* codegen,
-                                             Location return_location,
-                                             Location first_argument_location);
+  static void ComputeValueOfLocations(HInvoke* invoke,
+                                      CodeGenerator* codegen,
+                                      int32_t low,
+                                      int32_t length,
+                                      Location return_location,
+                                      Location first_argument_location);
 
-  // Temporary data structure for holding Integer.valueOf data for generating code.
-  // We only use it if the boot image contains the IntegerCache objects.
-  struct IntegerValueOfInfo {
+  // Temporary data structure for holding BoxedType.valueOf data for generating code.
+  struct ValueOfInfo {
     static constexpr uint32_t kInvalidReference = static_cast<uint32_t>(-1);
 
-    IntegerValueOfInfo();
+    ValueOfInfo();
 
-    // Offset of the Integer.value field for initializing a newly allocated instance.
+    // Offset of the value field of the boxed object for initializing a newly allocated instance.
     uint32_t value_offset;
     // The low value in the cache.
     int32_t low;
@@ -134,13 +131,18 @@ class IntrinsicVisitor : public ValueObject {
     };
   };
 
-  static IntegerValueOfInfo ComputeIntegerValueOfInfo(
-      HInvoke* invoke, const CompilerOptions& compiler_options);
+  static ValueOfInfo ComputeValueOfInfo(
+      HInvoke* invoke,
+      const CompilerOptions& compiler_options,
+      ArtField* value_field,
+      int32_t low,
+      int32_t length,
+      size_t base);
 
   static MemberOffset GetReferenceDisableIntrinsicOffset();
   static MemberOffset GetReferenceSlowPathEnabledOffset();
   static void CreateReferenceGetReferentLocations(HInvoke* invoke, CodeGenerator* codegen);
-  static void CreateReferenceRefersToLocations(HInvoke* invoke);
+  static void CreateReferenceRefersToLocations(HInvoke* invoke, CodeGenerator* codegen);
 
  protected:
   IntrinsicVisitor() {}
@@ -220,6 +222,7 @@ class SystemArrayCopyOptimizations : public IntrinsicOptimizations {
   INTRINSIC_OPTIMIZATION(DestinationIsPrimitiveArray, 8);
   INTRINSIC_OPTIMIZATION(SourceIsNonPrimitiveArray, 9);
   INTRINSIC_OPTIMIZATION(SourceIsPrimitiveArray, 10);
+  INTRINSIC_OPTIMIZATION(SourcePositionIsDestinationPosition, 11);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(SystemArrayCopyOptimizations);
@@ -254,11 +257,9 @@ class VarHandleOptimizations : public IntrinsicOptimizations {
 // intrinsic to exploit e.g. no side-effects or exceptions, but otherwise not handled
 // by this architecture-specific intrinsics code generator. Eventually it is implemented
 // as a true method call.
-#define UNIMPLEMENTED_INTRINSIC(Arch, Name)                                               \
-void IntrinsicLocationsBuilder ## Arch::Visit ## Name(HInvoke* invoke ATTRIBUTE_UNUSED) { \
-}                                                                                         \
-void IntrinsicCodeGenerator ## Arch::Visit ## Name(HInvoke* invoke ATTRIBUTE_UNUSED) {    \
-}
+#define UNIMPLEMENTED_INTRINSIC(Arch, Name)                                              \
+  void IntrinsicLocationsBuilder##Arch::Visit##Name([[maybe_unused]] HInvoke* invoke) {} \
+  void IntrinsicCodeGenerator##Arch::Visit##Name([[maybe_unused]] HInvoke* invoke) {}
 
 // Defines a list of unreached intrinsics: that is, method calls that are recognized as
 // an intrinsic, and then always converted into HIR instructions before they reach any
@@ -333,6 +334,11 @@ bool IsCallFreeIntrinsic(HInvoke* invoke, Codegenerator* codegen) {
   }
   return false;
 }
+
+// Insert a `Float.floatToRawIntBits()` or `Double.doubleToRawLongBits()` intrinsic for a
+// given input. These fake calls are needed on arm and riscv64 to satisfy type consistency
+// checks while passing certain FP args in core registers for direct @CriticalNative calls.
+void InsertFpToIntegralIntrinsic(HInvokeStaticOrDirect* invoke, size_t input_index);
 
 }  // namespace art
 

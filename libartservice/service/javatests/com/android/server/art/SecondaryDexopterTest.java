@@ -165,25 +165,13 @@ public class SecondaryDexopterTest {
                 .comparingElementsUsing(TestingUtils.<DexContainerFileDexoptResult>deepEquality())
                 .containsExactly(
                         DexContainerFileDexoptResult.create(DEX_1, true /* isPrimaryAbi */,
-                                "arm64-v8a", "speed-profile", DexoptResult.DEXOPT_PERFORMED,
-                                0 /* dex2oatWallTimeMillis */, 0 /* dex2oatCpuTimeMillis */,
-                                0 /* sizeBytes */, 0 /* sizeBeforeBytes */,
-                                false /* isSkippedDueToStorageLow */),
+                                "arm64-v8a", "speed-profile", DexoptResult.DEXOPT_PERFORMED),
                         DexContainerFileDexoptResult.create(DEX_2, true /* isPrimaryAbi */,
-                                "arm64-v8a", "speed", DexoptResult.DEXOPT_PERFORMED,
-                                0 /* dex2oatWallTimeMillis */, 0 /* dex2oatCpuTimeMillis */,
-                                0 /* sizeBytes */, 0 /* sizeBeforeBytes */,
-                                false /* isSkippedDueToStorageLow */),
+                                "arm64-v8a", "speed", DexoptResult.DEXOPT_PERFORMED),
                         DexContainerFileDexoptResult.create(DEX_2, false /* isPrimaryAbi */,
-                                "armeabi-v7a", "speed", DexoptResult.DEXOPT_PERFORMED,
-                                0 /* dex2oatWallTimeMillis */, 0 /* dex2oatCpuTimeMillis */,
-                                0 /* sizeBytes */, 0 /* sizeBeforeBytes */,
-                                false /* isSkippedDueToStorageLow */),
+                                "armeabi-v7a", "speed", DexoptResult.DEXOPT_PERFORMED),
                         DexContainerFileDexoptResult.create(DEX_3, true /* isPrimaryAbi */,
-                                "arm64-v8a", "verify", DexoptResult.DEXOPT_PERFORMED,
-                                0 /* dex2oatWallTimeMillis */, 0 /* dex2oatCpuTimeMillis */,
-                                0 /* sizeBytes */, 0 /* sizeBeforeBytes */,
-                                false /* isSkippedDueToStorageLow */));
+                                "arm64-v8a", "verify", DexoptResult.DEXOPT_PERFORMED));
 
         // It should use profile for dex 1.
 
@@ -297,6 +285,11 @@ public class SecondaryDexopterTest {
                 .thenReturn(FileVisibility.NOT_OTHER_READABLE);
 
         lenient().when(mArtd.mergeProfiles(any(), any(), any(), any(), any())).thenReturn(true);
+
+        // By default, none of the embedded profiles are usable.
+        lenient()
+                .when(mArtd.copyAndRewriteEmbeddedProfile(any(), any()))
+                .thenReturn(TestingUtils.createCopyAndRewriteProfileNoProfile());
     }
 
     private GetDexoptNeededResult dexoptIsNeeded() {
@@ -304,6 +297,7 @@ public class SecondaryDexopterTest {
         result.isDexoptNeeded = true;
         result.artifactsLocation = ArtifactsLocation.NONE_OR_ERROR;
         result.isVdexUsable = false;
+        result.hasDexCode = true;
         return result;
     }
 
@@ -324,7 +318,7 @@ public class SecondaryDexopterTest {
                 dexPath, isa, false /* isInDalvikCache */, permissionSettings);
         artd.dexopt(deepEq(outputArtifacts), eq(dexPath), eq(isa), eq(classLoaderContext),
                 eq("speed-profile"), deepEq(profile), any(), isNull() /* dmFile */, anyInt(),
-                argThat(dexoptOptions -> dexoptOptions.generateAppImage == false), any());
+                argThat(dexoptOptions -> dexoptOptions.generateAppImage == true), any());
     }
 
     private void checkDexoptWithNoProfile(IArtd artd, String dexPath, String isa,

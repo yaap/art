@@ -39,7 +39,7 @@ namespace jit {
 
 // Data cache will be half of the capacity
 // Code cache will be the other half of the capacity.
-// TODO: Make this variable?
+// TODO: Make this adjustable. Currently must be 2. JitCodeCache relies on that.
 static constexpr size_t kCodeAndDataCapacityDivider = 2;
 
 bool JitMemoryRegion::Initialize(size_t initial_capacity,
@@ -52,8 +52,8 @@ bool JitMemoryRegion::Initialize(size_t initial_capacity,
   CHECK_GE(max_capacity, initial_capacity);
   CHECK(max_capacity <= 1 * GB) << "The max supported size for JIT code cache is 1GB";
   // Align both capacities to page size, as that's the unit mspaces use.
-  initial_capacity_ = RoundDown(initial_capacity, 2 * kPageSize);
-  max_capacity_ = RoundDown(max_capacity, 2 * kPageSize);
+  initial_capacity_ = RoundDown(initial_capacity, 2 * gPageSize);
+  max_capacity_ = RoundDown(max_capacity, 2 * gPageSize);
   current_capacity_ = initial_capacity,
   data_end_ = initial_capacity / kCodeAndDataCapacityDivider;
   exec_end_ = initial_capacity - data_end_;
@@ -276,7 +276,7 @@ bool JitMemoryRegion::Initialize(size_t initial_capacity,
 
   // Allow mspace to use the full data capacity.
   // It will still only use as litle memory as possible and ask for MoreCore as needed.
-  CHECK(IsAlignedParam(data_capacity, kPageSize));
+  CHECK(IsAlignedParam(data_capacity, gPageSize));
   mspace_set_footprint_limit(data_mspace_, data_capacity);
 
   // Initialize the code heap.
@@ -304,7 +304,7 @@ bool JitMemoryRegion::Initialize(size_t initial_capacity,
 
 void JitMemoryRegion::SetFootprintLimit(size_t new_footprint) {
   size_t data_space_footprint = new_footprint / kCodeAndDataCapacityDivider;
-  DCHECK(IsAlignedParam(data_space_footprint, kPageSize));
+  DCHECK(IsAlignedParam(data_space_footprint, gPageSize));
   DCHECK_EQ(data_space_footprint * kCodeAndDataCapacityDivider, new_footprint);
   if (HasCodeMapping()) {
     ScopedCodeCacheWrite scc(*this);
@@ -355,8 +355,7 @@ void* JitMemoryRegion::MoreCore(const void* mspace, intptr_t increment) NO_THREA
 
 const uint8_t* JitMemoryRegion::CommitCode(ArrayRef<const uint8_t> reserved_code,
                                            ArrayRef<const uint8_t> code,
-                                           const uint8_t* stack_map,
-                                           bool has_should_deoptimize_flag) {
+                                           const uint8_t* stack_map) {
   DCHECK(IsInExecSpace(reserved_code.data()));
   ScopedCodeCacheWrite scc(*this);
 
@@ -382,9 +381,6 @@ const uint8_t* JitMemoryRegion::CommitCode(ArrayRef<const uint8_t> reserved_code
   OatQuickMethodHeader* method_header =
       OatQuickMethodHeader::FromCodePointer(w_memory + header_size);
   new (method_header) OatQuickMethodHeader((stack_map != nullptr) ? result - stack_map : 0u);
-  if (has_should_deoptimize_flag) {
-    method_header->SetHasShouldDeoptimizeFlag();
-  }
 
   // Both instruction and data caches need flushing to the point of unification where both share
   // a common view of memory. Flushing the data cache ensures the dirty cachelines from the
@@ -590,8 +586,8 @@ int JitMemoryRegion::CreateZygoteMemory(size_t capacity, std::string* error_msg)
   return fd;
 }
 
-bool JitMemoryRegion::ProtectZygoteMemory(int fd ATTRIBUTE_UNUSED,
-                                          std::string* error_msg ATTRIBUTE_UNUSED) {
+bool JitMemoryRegion::ProtectZygoteMemory([[maybe_unused]] int fd,
+                                          [[maybe_unused]] std::string* error_msg) {
   return true;
 }
 

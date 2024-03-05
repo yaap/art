@@ -89,7 +89,11 @@ class MemMapContainer : public DexFileContainer {
   bool IsReadOnly() const override { return GetPermissions() == PROT_READ; }
 
   bool EnableWrite() override {
-    CHECK(IsReadOnly());
+    if (!IsReadOnly()) {
+      // We can already write to the container.
+      // This method may be called multiple times by tests if DexFiles share container.
+      return true;
+    }
     if (!mem_map_.IsValid()) {
       return false;
     } else {
@@ -120,6 +124,8 @@ class MemMapContainer : public DexFileContainer {
 
 }  // namespace
 
+const File DexFileLoader::kInvalidFile;
+
 bool DexFileLoader::IsMagicValid(uint32_t magic) {
   return IsMagicValid(reinterpret_cast<uint8_t*>(&magic));
 }
@@ -139,8 +145,8 @@ bool DexFileLoader::IsVersionAndMagicValid(const uint8_t* magic) {
   return false;
 }
 
-bool DexFileLoader::IsMultiDexLocation(const char* location) {
-  return strrchr(location, kMultiDexSeparator) != nullptr;
+bool DexFileLoader::IsMultiDexLocation(std::string_view location) {
+  return location.find(kMultiDexSeparator) != std::string_view::npos;
 }
 
 std::string DexFileLoader::GetMultiDexClassesDexName(size_t index) {
@@ -148,9 +154,72 @@ std::string DexFileLoader::GetMultiDexClassesDexName(size_t index) {
 }
 
 std::string DexFileLoader::GetMultiDexLocation(size_t index, const char* dex_location) {
-  return (index == 0)
-      ? dex_location
-      : StringPrintf("%s%cclasses%zu.dex", dex_location, kMultiDexSeparator, index + 1);
+  DCHECK(!IsMultiDexLocation(dex_location));
+  if (index == 0) {
+    return dex_location;
+  }
+  return StringPrintf("%s%cclasses%zu.dex", dex_location, kMultiDexSeparator, index + 1);
+}
+
+bool DexFileLoader::GetMultiDexChecksum(std::optional<uint32_t>* checksum,
+                                        std::string* error_msg,
+                                        bool* only_contains_uncompressed_dex) {
+  CHECK(checksum != nullptr);
+  checksum->reset();  // Return nullopt for an empty zip archive.
+
+  uint32_t magic;
+  if (!InitAndReadMagic(/*header_offset=*/0, &magic, error_msg)) {
+    return false;
+  }
+
+  if (IsZipMagic(magic)) {
+    std::unique_ptr<ZipArchive> zip_archive(
+        file_->IsValid() ?
+            ZipArchive::OpenFromOwnedFd(file_->Fd(), location_.c_str(), error_msg) :
+            ZipArchive::OpenFromMemory(
+                root_container_->Begin(), root_container_->Size(), location_.c_str(), error_msg));
+    if (zip_archive.get() == nullptr) {
+      DCHECK(!error_msg->empty());
+      return false;
+    }
+    if (only_contains_uncompressed_dex != nullptr) {
+      *only_contains_uncompressed_dex = true;
+    }
+    for (size_t i = 0;; ++i) {
+      std::string name = GetMultiDexClassesDexName(i);
+      std::unique_ptr<ZipEntry> zip_entry(zip_archive->Find(name.c_str(), error_msg));
+      if (zip_entry == nullptr) {
+        break;
+      }
+      if (only_contains_uncompressed_dex != nullptr) {
+        if (!(zip_entry->IsUncompressed() && zip_entry->IsAlignedTo(alignof(DexFile::Header)))) {
+          *only_contains_uncompressed_dex = false;
+        }
+      }
+      *checksum = checksum->value_or(kEmptyMultiDexChecksum) ^ zip_entry->GetCrc32();
+    }
+    return true;
+  }
+  if (!MapRootContainer(error_msg)) {
+    return false;
+  }
+  const uint8_t* begin = root_container_->Begin();
+  const uint8_t* end = root_container_->End();
+  for (const uint8_t* ptr = begin; ptr < end;) {
+    const auto* header = reinterpret_cast<const DexFile::Header*>(ptr);
+    size_t size = dchecked_integral_cast<size_t>(end - ptr);
+    if (size < sizeof(*header) || !IsMagicValid(ptr)) {
+      *error_msg = StringPrintf("Invalid dex header: '%s'", filename_.c_str());
+      return false;
+    }
+    if (size < header->file_size_) {
+      *error_msg = StringPrintf("Truncated dex file: '%s'", filename_.c_str());
+      return false;
+    }
+    *checksum = checksum->value_or(kEmptyMultiDexChecksum) ^ header->checksum_;
+    ptr += header->file_size_;
+  }
+  return true;
 }
 
 std::string DexFileLoader::GetDexCanonicalLocation(const char* dex_location) {
@@ -187,22 +256,24 @@ DexFileLoader::DexFileLoader(std::vector<uint8_t>&& memory, const std::string& l
 DexFileLoader::DexFileLoader(MemMap&& mem_map, const std::string& location)
     : DexFileLoader(std::make_shared<MemMapContainer>(std::move(mem_map)), location) {}
 
-std::unique_ptr<const DexFile> DexFileLoader::Open(uint32_t location_checksum,
-                                                   const OatDexFile* oat_dex_file,
-                                                   bool verify,
-                                                   bool verify_checksum,
-                                                   std::string* error_msg) {
+std::unique_ptr<const DexFile> DexFileLoader::OpenOne(size_t header_offset,
+                                                      uint32_t location_checksum,
+                                                      const OatDexFile* oat_dex_file,
+                                                      bool verify,
+                                                      bool verify_checksum,
+                                                      std::string* error_msg) {
   DEXFILE_SCOPED_TRACE(std::string("Open dex file ") + location_);
 
   uint32_t magic;
-  if (!InitAndReadMagic(&magic, error_msg) || !MapRootContainer(error_msg)) {
+  if (!InitAndReadMagic(header_offset, &magic, error_msg) || !MapRootContainer(error_msg)) {
     DCHECK(!error_msg->empty());
     return {};
   }
   DCHECK(root_container_ != nullptr);
+  DCHECK_LE(header_offset, root_container_->Size());
   std::unique_ptr<const DexFile> dex_file = OpenCommon(root_container_,
-                                                       root_container_->Begin(),
-                                                       root_container_->Size(),
+                                                       root_container_->Begin() + header_offset,
+                                                       root_container_->Size() - header_offset,
                                                        location_,
                                                        location_checksum,
                                                        oat_dex_file,
@@ -213,23 +284,28 @@ std::unique_ptr<const DexFile> DexFileLoader::Open(uint32_t location_checksum,
   return dex_file;
 }
 
-bool DexFileLoader::InitAndReadMagic(uint32_t* magic, std::string* error_msg) {
+bool DexFileLoader::InitAndReadMagic(size_t header_offset,
+                                     uint32_t* magic,
+                                     std::string* error_msg) {
   if (root_container_ != nullptr) {
-    if (root_container_->Size() < sizeof(uint32_t)) {
+    if (root_container_->Size() < header_offset ||
+        root_container_->Size() - header_offset < sizeof(uint32_t)) {
       *error_msg = StringPrintf("Unable to open '%s' : Size is too small", location_.c_str());
       return false;
     }
-    *magic = *reinterpret_cast<const uint32_t*>(root_container_->Begin());
+    *magic = *reinterpret_cast<const uint32_t*>(root_container_->Begin() + header_offset);
   } else {
     // Open the file if we have not been given the file-descriptor directly before.
-    if (!file_.has_value()) {
+    if (!file_->IsValid()) {
       CHECK(!filename_.empty());
-      file_.emplace(filename_, O_RDONLY, /* check_usage= */ false);
-      if (file_->Fd() == -1) {
+      owned_file_ = File(filename_, O_RDONLY, /* check_usage= */ false);
+      if (!owned_file_->IsValid()) {
         *error_msg = StringPrintf("Unable to open '%s' : %s", filename_.c_str(), strerror(errno));
         return false;
       }
+      file_ = &owned_file_.value();
     }
+    CHECK_EQ(header_offset, 0u);  // We always expect to read from the start of physical file.
     if (!ReadMagicAndReset(file_->Fd(), magic, error_msg)) {
       return false;
     }
@@ -243,7 +319,7 @@ bool DexFileLoader::MapRootContainer(std::string* error_msg) {
   }
 
   CHECK(MemMap::IsInitialized());
-  CHECK(file_.has_value());
+  CHECK(file_->IsValid());
   struct stat sbuf;
   memset(&sbuf, 0, sizeof(sbuf));
   if (fstat(file_->Fd(), &sbuf) == -1) {
@@ -281,13 +357,13 @@ bool DexFileLoader::Open(bool verify,
   DCHECK(dex_files != nullptr) << "DexFile::Open: out-param is nullptr";
 
   uint32_t magic;
-  if (!InitAndReadMagic(&magic, error_msg)) {
+  if (!InitAndReadMagic(/*header_offset=*/0, &magic, error_msg)) {
     return false;
   }
 
   if (IsZipMagic(magic)) {
     std::unique_ptr<ZipArchive> zip_archive(
-        file_.has_value() ?
+        file_->IsValid() ?
             ZipArchive::OpenFromOwnedFd(file_->Fd(), location_.c_str(), error_msg) :
             ZipArchive::OpenFromMemory(
                 root_container_->Begin(), root_container_->Size(), location_.c_str(), error_msg));
@@ -295,14 +371,15 @@ bool DexFileLoader::Open(bool verify,
       DCHECK(!error_msg->empty());
       return false;
     }
+    size_t multidex_count = 0;
     for (size_t i = 0;; ++i) {
       std::string name = GetMultiDexClassesDexName(i);
-      std::string multidex_location = GetMultiDexLocation(i, location_.c_str());
       bool ok = OpenFromZipEntry(*zip_archive,
                                  name.c_str(),
-                                 multidex_location,
+                                 location_,
                                  verify,
                                  verify_checksum,
+                                 &multidex_count,
                                  error_code,
                                  error_msg,
                                  dex_files);
@@ -326,23 +403,32 @@ bool DexFileLoader::Open(bool verify,
       return false;
     }
     DCHECK(root_container_ != nullptr);
-    std::unique_ptr<const DexFile> dex_file =
-        OpenCommon(root_container_,
-                   root_container_->Begin(),
-                   root_container_->Size(),
-                   location_,
-                   /*location_checksum*/ {},  // Use default checksum from dex header.
-                   /*oat_dex_file=*/nullptr,
-                   verify,
-                   verify_checksum,
-                   error_msg,
-                   nullptr);
-    if (dex_file.get() != nullptr) {
+    size_t header_offset = 0;
+    for (size_t i = 0;; i++) {
+      std::string multidex_location = GetMultiDexLocation(i, location_.c_str());
+      std::unique_ptr<const DexFile> dex_file =
+          OpenCommon(root_container_,
+                     root_container_->Begin() + header_offset,
+                     root_container_->Size() - header_offset,
+                     multidex_location,
+                     /*location_checksum*/ {},  // Use default checksum from dex header.
+                     /*oat_dex_file=*/nullptr,
+                     verify,
+                     verify_checksum,
+                     error_msg,
+                     error_code);
+      if (dex_file == nullptr) {
+        return false;
+      }
       dex_files->push_back(std::move(dex_file));
-      return true;
-    } else {
-      return false;
+      size_t file_size = dex_files->back()->GetHeader().file_size_;
+      CHECK_LE(file_size, root_container_->Size() - header_offset);
+      header_offset += file_size;
+      if (dex_files->back()->IsDexContainerLastEntry()) {
+        break;
+      }
     }
+    return true;
   }
   *error_msg = StringPrintf("Expected valid zip or dex file");
   return false;
@@ -350,7 +436,7 @@ bool DexFileLoader::Open(bool verify,
 
 std::unique_ptr<DexFile> DexFileLoader::OpenCommon(std::shared_ptr<DexFileContainer> container,
                                                    const uint8_t* base,
-                                                   size_t size,
+                                                   size_t app_compat_size,
                                                    const std::string& location,
                                                    std::optional<uint32_t> location_checksum,
                                                    const OatDexFile* oat_dex_file,
@@ -360,8 +446,11 @@ std::unique_ptr<DexFile> DexFileLoader::OpenCommon(std::shared_ptr<DexFileContai
                                                    DexFileLoaderErrorCode* error_code) {
   if (container == nullptr) {
     // We should never pass null here, but use reasonable default for app compat anyway.
-    container = std::make_shared<MemoryDexFileContainer>(base, size);
+    container = std::make_shared<MemoryDexFileContainer>(base, app_compat_size);
   }
+  CHECK_GE(base, container->Begin());
+  CHECK_LE(base, container->End());
+  const size_t size = container->End() - base;
   if (error_code != nullptr) {
     *error_code = DexFileLoaderErrorCode::kDexFileError;
   }
@@ -369,10 +458,10 @@ std::unique_ptr<DexFile> DexFileLoader::OpenCommon(std::shared_ptr<DexFileContai
   auto header = reinterpret_cast<const DexFile::Header*>(base);
   if (size >= sizeof(StandardDexFile::Header) && StandardDexFile::IsMagicValid(base)) {
     uint32_t checksum = location_checksum.value_or(header->checksum_);
-    dex_file.reset(new StandardDexFile(base, size, location, checksum, oat_dex_file, container));
+    dex_file.reset(new StandardDexFile(base, location, checksum, oat_dex_file, container));
   } else if (size >= sizeof(CompactDexFile::Header) && CompactDexFile::IsMagicValid(base)) {
     uint32_t checksum = location_checksum.value_or(header->checksum_);
-    dex_file.reset(new CompactDexFile(base, size, location, checksum, oat_dex_file, container));
+    dex_file.reset(new CompactDexFile(base, location, checksum, oat_dex_file, container));
   } else {
     *error_msg = StringPrintf("Invalid or truncated dex file '%s'", location.c_str());
   }
@@ -406,6 +495,7 @@ bool DexFileLoader::OpenFromZipEntry(const ZipArchive& zip_archive,
                                      const std::string& location,
                                      bool verify,
                                      bool verify_checksum,
+                                     size_t* multidex_count,
                                      DexFileLoaderErrorCode* error_code,
                                      std::string* error_msg,
                                      std::vector<std::unique_ptr<const DexFile>>* dex_files) const {
@@ -424,7 +514,7 @@ bool DexFileLoader::OpenFromZipEntry(const ZipArchive& zip_archive,
   CHECK(MemMap::IsInitialized());
   MemMap map;
   bool is_file_map = false;
-  if (file_.has_value() && zip_entry->IsUncompressed()) {
+  if (file_->IsValid() && zip_entry->IsUncompressed()) {
     if (!zip_entry->IsAlignedTo(alignof(DexFile::Header))) {
       // Do not mmap unaligned ZIP entries because
       // doing so would fail dex verification which requires 4 byte alignment.
@@ -463,21 +553,37 @@ bool DexFileLoader::OpenFromZipEntry(const ZipArchive& zip_archive,
     return false;
   }
 
-  std::unique_ptr<const DexFile> dex_file = OpenCommon(container,
-                                                       container->Begin(),
-                                                       container->Size(),
-                                                       location,
-                                                       zip_entry->GetCrc32(),
-                                                       /*oat_dex_file=*/nullptr,
-                                                       verify,
-                                                       verify_checksum,
-                                                       error_msg,
-                                                       error_code);
-  if (dex_file == nullptr) {
-    return false;
+  size_t header_offset = 0;
+  for (size_t i = 0;; i++) {
+    std::string multidex_location = GetMultiDexLocation(*multidex_count, location.c_str());
+    ++(*multidex_count);
+    uint32_t multidex_checksum = zip_entry->GetCrc32() + i;
+    std::unique_ptr<const DexFile> dex_file = OpenCommon(container,
+                                                         container->Begin() + header_offset,
+                                                         container->Size() - header_offset,
+                                                         multidex_location,
+                                                         multidex_checksum,
+                                                         /*oat_dex_file=*/nullptr,
+                                                         verify,
+                                                         verify_checksum,
+                                                         error_msg,
+                                                         error_code);
+    if (dex_file == nullptr) {
+      return false;
+    }
+    if (dex_file->IsCompactDexFile()) {
+      *error_msg = StringPrintf("Can not open compact dex file from zip '%s'", location.c_str());
+      return false;
+    }
+    CHECK(dex_file->IsReadOnly()) << multidex_location;
+    dex_files->push_back(std::move(dex_file));
+    size_t file_size = dex_files->back()->GetHeader().file_size_;
+    CHECK_LE(file_size, container->Size() - header_offset);
+    header_offset += file_size;
+    if (dex_files->back()->IsDexContainerLastEntry()) {
+      break;
+    }
   }
-  CHECK(dex_file->IsReadOnly()) << location;
-  dex_files->push_back(std::move(dex_file));
   return true;
 }
 

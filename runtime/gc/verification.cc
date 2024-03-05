@@ -33,6 +33,21 @@ std::string Verification::DumpRAMAroundAddress(uintptr_t addr, uintptr_t bytes) 
   uintptr_t* dump_end = reinterpret_cast<uintptr_t*>(addr + bytes);
   std::ostringstream oss;
   oss << " adjacent_ram=";
+
+  {
+    // Check if the RAM is accessible.
+    android::base::unique_fd read_fd, write_fd;
+    if (!android::base::Pipe(&read_fd, &write_fd)) {
+      LOG(WARNING) << "Could not create pipe, RAM being dumped may be unaccessible";
+    } else {
+      size_t count = 2 * bytes;
+      if (write(write_fd.get(), dump_start, count) != static_cast<ssize_t>(count)) {
+        oss << "unaccessible";
+        dump_start = dump_end;
+      }
+    }
+  }
+
   for (const uintptr_t* p = dump_start; p < dump_end; ++p) {
     if (p == reinterpret_cast<uintptr_t*>(addr)) {
       // Marker of where the address is.
@@ -133,7 +148,7 @@ class Verification::BFSFindReachable {
  public:
   explicit BFSFindReachable(ObjectSet* visited) : visited_(visited) {}
 
-  void operator()(mirror::Object* obj, MemberOffset offset, bool is_static ATTRIBUTE_UNUSED) const
+  void operator()(mirror::Object* obj, MemberOffset offset, [[maybe_unused]] bool is_static) const
       REQUIRES_SHARED(Locks::mutator_lock_) {
     ArtField* field = obj->FindFieldByOffset(offset);
     Visit(obj->GetFieldObject<mirror::Object>(offset),

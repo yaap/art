@@ -306,19 +306,4 @@ target_config = {
     'art-golem-linux-x64': {
         'golem' : 'linux-x64'
     },
-    'art-linux-bionic-x64': {
-        'build': '{ANDROID_BUILD_TOP}/art/tools/build_linux_bionic_tests.sh {MAKE_OPTIONS}',
-        'run-test': ['--run-test-option=--bionic',
-                     '--host',
-                     '--64',
-                     '--no-build-dependencies'],
-    },
-    'art-linux-bionic-x64-zipapex': {
-        'build': '{ANDROID_BUILD_TOP}/art/tools/build_linux_bionic_tests.sh {MAKE_OPTIONS} com.android.art.host',
-        'run-test': ['--run-test-option=--bionic',
-                     "--runtime-zipapex={SOONG_OUT_DIR}/host/linux_bionic-x86/apex/com.android.art.host.zipapex",
-                     '--host',
-                     '--64',
-                     '--no-build-dependencies'],
-    },
 }

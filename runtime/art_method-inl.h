@@ -52,7 +52,7 @@ namespace detail {
 
 template <> struct ShortyTraits<'V'> {
   using Type = void;
-  static Type Get(const JValue& value ATTRIBUTE_UNUSED) {}
+  static Type Get([[maybe_unused]] const JValue& value) {}
   // `kVRegCount` and `Set()` are not defined.
 };
 
@@ -152,8 +152,8 @@ constexpr size_t NumberOfVRegs() {
 }
 
 template <char... ArgType>
-inline ALWAYS_INLINE void FillVRegs(uint32_t* vregs ATTRIBUTE_UNUSED,
-                                    typename ShortyTraits<ArgType>::Type... args ATTRIBUTE_UNUSED)
+inline ALWAYS_INLINE void FillVRegs([[maybe_unused]] uint32_t* vregs,
+                                    [[maybe_unused]] typename ShortyTraits<ArgType>::Type... args)
     REQUIRES_SHARED(Locks::mutator_lock_) {}
 
 template <char FirstArgType, char... ArgType>
@@ -184,7 +184,11 @@ ArtMethod::InvokeStatic(Thread* self, typename detail::ShortyTraits<ArgType>::Ty
   JValue result;
   constexpr auto shorty = detail::MaterializeShorty<ReturnType, ArgType...>();
   auto vregs = detail::MaterializeVRegs<ArgType...>(args...);
-  Invoke(self, vregs.data(), sizeof(vregs), &result, shorty.data());
+  Invoke(self,
+         vregs.empty() ? nullptr : vregs.data(),
+         vregs.size() * sizeof(typename decltype(vregs)::value_type),
+         &result,
+         shorty.data());
   return detail::ShortyTraits<ReturnType>::Get(result);
 }
 
@@ -198,7 +202,11 @@ ArtMethod::InvokeInstance(Thread* self,
   JValue result;
   constexpr auto shorty = detail::MaterializeShorty<ReturnType, ArgType...>();
   auto vregs = detail::MaterializeVRegs<'L', ArgType...>(receiver, args...);
-  Invoke(self, vregs.data(), sizeof(vregs), &result, shorty.data());
+  Invoke(self,
+         vregs.data(),
+         vregs.size() * sizeof(typename decltype(vregs)::value_type),
+         &result,
+         shorty.data());
   return detail::ShortyTraits<ReturnType>::Get(result);
 }
 
@@ -394,6 +402,12 @@ inline const char* ArtMethod::GetShorty(uint32_t* out_length) {
   DCHECK(!IsProxyMethod());
   const DexFile* dex_file = GetDexFile();
   return dex_file->GetMethodShorty(dex_file->GetMethodId(GetDexMethodIndex()), out_length);
+}
+
+inline std::string_view ArtMethod::GetShortyView() {
+  DCHECK(!IsProxyMethod());
+  const DexFile* dex_file = GetDexFile();
+  return dex_file->GetMethodShortyView(dex_file->GetMethodId(GetDexMethodIndex()));
 }
 
 inline const Signature ArtMethod::GetSignature() {

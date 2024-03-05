@@ -24,7 +24,6 @@
 #include "base/hex_dump.h"
 #include "base/logging.h"  // For VLOG.
 #include "base/macros.h"
-#include "base/safe_copy.h"
 #include "oat_quick_method_header.h"
 #include "runtime_globals.h"
 #include "thread-current-inl.h"
@@ -259,7 +258,7 @@ static uint32_t GetInstructionSize(const uint8_t* pc, size_t bytes) {
 #undef FETCH_OR_SKIP_BYTE
 }
 
-uintptr_t FaultManager::GetFaultPc(siginfo_t* siginfo ATTRIBUTE_UNUSED, void* context) {
+uintptr_t FaultManager::GetFaultPc([[maybe_unused]] siginfo_t* siginfo, void* context) {
   ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
   if (uc->CTX_ESP == 0) {
     VLOG(signals) << "Missing SP";

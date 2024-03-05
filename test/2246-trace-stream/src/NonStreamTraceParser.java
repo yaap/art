@@ -19,7 +19,8 @@ import java.io.IOException;
 
 public class NonStreamTraceParser extends BaseTraceParser {
 
-    public void CheckTraceFileFormat(File file, int expectedVersion) throws Exception {
+    public void CheckTraceFileFormat(File file,
+        int expectedVersion, String threadName) throws Exception {
         InitializeParser(file);
 
         // On non-streaming formats, the file starts with information about options and threads and
@@ -65,7 +66,7 @@ public class NonStreamTraceParser extends BaseTraceParser {
         line = readLine();
         while (!line.startsWith(START_SECTION_ID)) {
             String[] methodInfo = line.split("\t", 2);
-            methodIdMap.put(Integer.decode(methodInfo[0]), methodInfo[1]);
+            methodIdMap.put(Integer.decode(methodInfo[0]), methodInfo[1].replace('\t', ' '));
             line = readLine();
         }
 
@@ -79,11 +80,11 @@ public class NonStreamTraceParser extends BaseTraceParser {
         boolean hasEntries = true;
         boolean seenStopTracingMethod = false;
         for (int i = 0; i < numEntries; i++) {
-            int threadId = GetEntryHeader();
+            int threadId = GetThreadID();
             String eventString = ProcessEventEntry(threadId);
             // Ignore daemons (ex: heap task daemon, reference queue daemon) because they may not
             // be deterministic.
-            if (ShouldIgnoreThread(threadId)) {
+            if (!ShouldCheckThread(threadId, threadName)) {
                 continue;
             }
             // Ignore events after method tracing was stopped. The code that is executed

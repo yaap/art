@@ -157,10 +157,10 @@ class CommonArtTestImpl {
   // Gets the paths of the libcore dex files.
   std::vector<std::string> GetLibCoreDexFileNames() const;
 
-  // Gets the locations of the libcore dex files for given modules.
+  // Gets the on-host or on-device locations of the libcore dex files for given modules.
   std::vector<std::string> GetLibCoreDexLocations(const std::vector<std::string>& modules) const;
 
-  // Gets the locations of the libcore dex files.
+  // Gets the on-host or on-device locations of the libcore dex files.
   std::vector<std::string> GetLibCoreDexLocations() const;
 
   static std::string GetClassPathOption(const char* option,
@@ -183,9 +183,15 @@ class CommonArtTestImpl {
     const std::unique_ptr<const DexFile>& dex = dex_files[0];
     CHECK(dex->EnableWrite()) << "Failed to enable write";
     DexFile* dex_file = const_cast<DexFile*>(dex.get());
+    size_t original_size = dex_file->Size();
     mutator(dex_file);
-    const_cast<DexFile::Header&>(dex_file->GetHeader()).checksum_ = dex_file->CalculateChecksum();
-    if (!output_dex->WriteFully(dex->Begin(), dex->Size())) {
+    // NB: mutation might have changed the DEX size in the header.
+    std::vector<uint8_t> copy(dex_file->Begin(), dex_file->Begin() + original_size);
+    copy.resize(dex_file->Size());  // Shrink/expand to new size.
+    uint32_t checksum = DexFile::CalculateChecksum(copy.data(), copy.size());
+    CHECK_GE(copy.size(), sizeof(DexFile::Header));
+    reinterpret_cast<DexFile::Header*>(copy.data())->checksum_ = checksum;
+    if (!output_dex->WriteFully(copy.data(), copy.size())) {
       return false;
     }
     if (output_dex->Flush() != 0) {
@@ -297,41 +303,60 @@ using CommonArtTestWithParam = CommonArtTestBase<testing::TestWithParam<Param>>;
 // matches the given name.
 std::vector<pid_t> GetPidByName(const std::string& process_name);
 
-#define TEST_DISABLED_FOR_TARGET() \
-  if (kIsTargetBuild) { \
-    printf("WARNING: TEST DISABLED FOR TARGET\n"); \
-    return; \
+#define TEST_DISABLED_FOR_TARGET()                       \
+  if (kIsTargetBuild) {                                  \
+    GTEST_SKIP() << "WARNING: TEST DISABLED FOR TARGET"; \
   }
 
-#define TEST_DISABLED_FOR_HOST() \
-  if (!kIsTargetBuild) { \
-    printf("WARNING: TEST DISABLED FOR HOST\n"); \
-    return; \
+#define TEST_DISABLED_FOR_HOST()                       \
+  if (!kIsTargetBuild) {                               \
+    GTEST_SKIP() << "WARNING: TEST DISABLED FOR HOST"; \
   }
 
-#define TEST_DISABLED_FOR_NON_STATIC_HOST_BUILDS() \
-  if (!kHostStaticBuildEnabled) { \
-    printf("WARNING: TEST DISABLED FOR NON-STATIC HOST BUILDS\n"); \
-    return; \
+#define TEST_DISABLED_FOR_NON_STATIC_HOST_BUILDS()                       \
+  if (!kHostStaticBuildEnabled) {                                        \
+    GTEST_SKIP() << "WARNING: TEST DISABLED FOR NON-STATIC HOST BUILDS"; \
   }
 
-#define TEST_DISABLED_FOR_MEMORY_TOOL() \
-  if (kRunningOnMemoryTool) { \
-    printf("WARNING: TEST DISABLED FOR MEMORY TOOL\n"); \
-    return; \
+#define TEST_DISABLED_FOR_DEBUG_BUILD()                       \
+  if (kIsDebugBuild) {                                        \
+    GTEST_SKIP() << "WARNING: TEST DISABLED FOR DEBUG BUILD"; \
   }
 
-#define TEST_DISABLED_FOR_HEAP_POISONING() \
-  if (kPoisonHeapReferences) { \
-    printf("WARNING: TEST DISABLED FOR HEAP POISONING\n"); \
-    return; \
+#define TEST_DISABLED_FOR_MEMORY_TOOL()                       \
+  if (kRunningOnMemoryTool) {                                 \
+    GTEST_SKIP() << "WARNING: TEST DISABLED FOR MEMORY TOOL"; \
+  }
+
+#define TEST_DISABLED_FOR_HEAP_POISONING()                       \
+  if (kPoisonHeapReferences) {                                   \
+    GTEST_SKIP() << "WARNING: TEST DISABLED FOR HEAP POISONING"; \
   }
 }  // namespace art
 
-#define TEST_DISABLED_FOR_MEMORY_TOOL_WITH_HEAP_POISONING() \
-  if (kRunningOnMemoryTool && kPoisonHeapReferences) { \
-    printf("WARNING: TEST DISABLED FOR MEMORY TOOL WITH HEAP POISONING\n"); \
-    return; \
+#define TEST_DISABLED_FOR_MEMORY_TOOL_WITH_HEAP_POISONING()                       \
+  if (kRunningOnMemoryTool && kPoisonHeapReferences) {                            \
+    GTEST_SKIP() << "WARNING: TEST DISABLED FOR MEMORY TOOL WITH HEAP POISONING"; \
+  }
+
+#define TEST_DISABLED_FOR_RISCV64()                       \
+  if (kRuntimeISA == InstructionSet::kRiscv64) {          \
+    GTEST_SKIP() << "WARNING: TEST DISABLED FOR RISCV64"; \
+  }
+
+// Don't print messages on setup to avoid getting multiple "test disabled" messages for one test.
+// Setup phase may need to be disabled as some test rely on having boot image / compiler / other
+// things that are not implemented for RISC-V.
+#define TEST_SETUP_DISABLED_FOR_RISCV64()        \
+  if (kRuntimeISA == InstructionSet::kRiscv64) { \
+    GTEST_SKIP();                                \
+  }
+
+// Don't print messages on teardown to avoid getting multiple "test disabled" messages for one test.
+// Teardown phase may need to be disabled to match the disabled setup phase for some tests.
+#define TEST_TEARDOWN_DISABLED_FOR_RISCV64()     \
+  if (kRuntimeISA == InstructionSet::kRiscv64) { \
+    GTEST_SKIP();                                \
   }
 
 #endif  // ART_LIBARTBASE_BASE_COMMON_ART_TEST_H_

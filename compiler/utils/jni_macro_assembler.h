@@ -92,7 +92,7 @@ class JNIMacroAssembler : public DeletableArenaObject<kArenaAllocAssembler> {
   virtual size_t CodeSize() const = 0;
 
   // Copy instructions out of assembly buffer into the given region of memory
-  virtual void FinalizeInstructions(const MemoryRegion& region) = 0;
+  virtual void CopyInstructions(const MemoryRegion& region) = 0;
 
   // Emit code that will create an activation on the stack
   virtual void BuildFrame(size_t frame_size,
@@ -129,8 +129,13 @@ class JNIMacroAssembler : public DeletableArenaObject<kArenaAllocAssembler> {
   // Load routines
   virtual void Load(ManagedRegister dest, FrameOffset src, size_t size) = 0;
   virtual void Load(ManagedRegister dest, ManagedRegister base, MemberOffset offs, size_t size) = 0;
-
   virtual void LoadRawPtrFromThread(ManagedRegister dest, ThreadOffset<kPointerSize> offs) = 0;
+
+  // Load reference from a `GcRoot<>`. The default is to load as `jint`. Some architectures
+  // (say, RISC-V) override this to provide a different sign- or zero-extension.
+  virtual void LoadGcRootWithoutReadBarrier(ManagedRegister dest,
+                                            ManagedRegister base,
+                                            MemberOffset offs);
 
   // Copying routines
 
@@ -266,8 +271,8 @@ class JNIMacroAssemblerFwd : public JNIMacroAssembler<kPointerSize> {
     return asm_.CodeSize();
   }
 
-  void FinalizeInstructions(const MemoryRegion& region) override {
-    asm_.FinalizeInstructions(region);
+  void CopyInstructions(const MemoryRegion& region) override {
+    asm_.CopyInstructions(region);
   }
 
   DebugFrameOpCodeWriterForAssembler& cfi() override {

@@ -118,6 +118,7 @@ size_t ArenaStack::ApproximatePeakBytes() {
 ScopedArenaAllocator::ScopedArenaAllocator(ScopedArenaAllocator&& other) noexcept
     : DebugStackReference(std::move(other)),
       DebugStackRefCounter(),
+      // NOLINTBEGIN(bugprone-use-after-move) - the accessed fields are still valid after the move
       ArenaAllocatorStats(other),
       arena_stack_(other.arena_stack_),
       mark_arena_(other.mark_arena_),
@@ -125,6 +126,7 @@ ScopedArenaAllocator::ScopedArenaAllocator(ScopedArenaAllocator&& other) noexcep
       mark_end_(other.mark_end_) {
   other.DebugStackRefCounter::CheckNoRefs();
   other.arena_stack_ = nullptr;
+  // NOLINTEND(bugprone-use-after-move)
 }
 
 ScopedArenaAllocator::ScopedArenaAllocator(ArenaStack* arena_stack)

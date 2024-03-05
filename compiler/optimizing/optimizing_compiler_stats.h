@@ -47,6 +47,7 @@ enum class MethodCompilationStat {
   kUnresolvedFieldNotAFastAccess,
   kRemovedCheckedCast,
   kRemovedDeadInstruction,
+  kRemovedDeadPhi,
   kRemovedTry,
   kRemovedNullCheck,
   kNotCompiledSkipped,
@@ -130,8 +131,6 @@ enum class MethodCompilationStat {
   kPartialLSEPossible,
   kPartialStoreRemoved,
   kPartialAllocationMoved,
-  kPredicatedLoadAdded,
-  kPredicatedStoreAdded,
   kDevirtualized,
   kLastStat
 };

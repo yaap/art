@@ -63,7 +63,6 @@ class ReferenceTypePropagation::RTPVisitor final : public HGraphDelegateVisitor 
   void VisitLoadException(HLoadException* instr) override;
   void VisitNewArray(HNewArray* instr) override;
   void VisitParameterValue(HParameterValue* instr) override;
-  void VisitPredicatedInstanceFieldGet(HPredicatedInstanceFieldGet* instr) override;
   void VisitInstanceFieldGet(HInstanceFieldGet* instr) override;
   void VisitStaticFieldGet(HStaticFieldGet* instr) override;
   void VisitUnresolvedInstanceFieldGet(HUnresolvedInstanceFieldGet* instr) override;
@@ -254,7 +253,7 @@ static void BoundTypeForClassCheck(HInstruction* check) {
   HInstruction* input_two = compare->InputAt(1);
   HLoadClass* load_class = input_one->IsLoadClass()
       ? input_one->AsLoadClass()
-      : input_two->AsLoadClass();
+      : input_two->AsLoadClassOrNull();
   if (load_class == nullptr) {
     return;
   }
@@ -266,7 +265,7 @@ static void BoundTypeForClassCheck(HInstruction* check) {
   }
 
   HInstruction* field_get = (load_class == input_one) ? input_two : input_one;
-  if (!field_get->IsInstanceFieldGet() && !field_get->IsPredicatedInstanceFieldGet()) {
+  if (!field_get->IsInstanceFieldGet()) {
     return;
   }
   HInstruction* receiver = field_get->InputAt(0);
@@ -335,7 +334,7 @@ void ReferenceTypePropagation::RTPVisitor::VisitBasicBlock(HBasicBlock* block) {
 }
 
 void ReferenceTypePropagation::RTPVisitor::BoundTypeForIfNotNull(HBasicBlock* block) {
-  HIf* ifInstruction = block->GetLastInstruction()->AsIf();
+  HIf* ifInstruction = block->GetLastInstruction()->AsIfOrNull();
   if (ifInstruction == nullptr) {
     return;
   }
@@ -453,7 +452,7 @@ static bool MatchIfInstanceOf(HIf* ifInstruction,
 // If that's the case insert an HBoundType instruction to bound the type of `x`
 // to `ClassX` in the scope of the dominated blocks.
 void ReferenceTypePropagation::RTPVisitor::BoundTypeForIfInstanceOf(HBasicBlock* block) {
-  HIf* ifInstruction = block->GetLastInstruction()->AsIf();
+  HIf* ifInstruction = block->GetLastInstruction()->AsIfOrNull();
   if (ifInstruction == nullptr) {
     return;
   }
@@ -539,9 +538,14 @@ void ReferenceTypePropagation::RTPVisitor::UpdateReferenceTypeInfo(HInstruction*
   DCHECK_EQ(instr->GetType(), DataType::Type::kReference);
 
   ScopedObjectAccess soa(Thread::Current());
-  ObjPtr<mirror::DexCache> dex_cache = FindDexCacheWithHint(soa.Self(), dex_file, hint_dex_cache_);
-  ObjPtr<mirror::Class> klass = Runtime::Current()->GetClassLinker()->LookupResolvedType(
-      type_idx, dex_cache, dex_cache->GetClassLoader());
+  StackHandleScope<2> hs(soa.Self());
+  Handle<mirror::DexCache> dex_cache =
+      hs.NewHandle(FindDexCacheWithHint(soa.Self(), dex_file, hint_dex_cache_));
+  Handle<mirror::ClassLoader> loader = hs.NewHandle(dex_cache->GetClassLoader());
+  ObjPtr<mirror::Class> klass = Runtime::Current()->GetClassLinker()->ResolveType(
+      type_idx, dex_cache, loader);
+  DCHECK_EQ(klass == nullptr, soa.Self()->IsExceptionPending());
+  soa.Self()->ClearException();  // Clean up the exception left by type resolution if any.
   SetClassAsTypeInfo(instr, klass, is_exact);
 }
 
@@ -580,11 +584,6 @@ void ReferenceTypePropagation::RTPVisitor::UpdateFieldAccessTypeInfo(HInstructio
   }
 
   SetClassAsTypeInfo(instr, klass, /* is_exact= */ false);
-}
-
-void ReferenceTypePropagation::RTPVisitor::VisitPredicatedInstanceFieldGet(
-    HPredicatedInstanceFieldGet* instr) {
-  UpdateFieldAccessTypeInfo(instr, instr->GetFieldInfo());
 }
 
 void ReferenceTypePropagation::RTPVisitor::VisitInstanceFieldGet(HInstanceFieldGet* instr) {
@@ -704,7 +703,7 @@ void ReferenceTypePropagation::RTPVisitor::VisitBoundType(HBoundType* instr) {
 }
 
 void ReferenceTypePropagation::RTPVisitor::VisitCheckCast(HCheckCast* check_cast) {
-  HBoundType* bound_type = check_cast->GetNext()->AsBoundType();
+  HBoundType* bound_type = check_cast->GetNext()->AsBoundTypeOrNull();
   if (bound_type == nullptr || bound_type->GetUpperBound().IsValid()) {
     // The next instruction is not an uninitialized BoundType. This must be
     // an RTP pass after SsaBuilder and we do not need to do anything.

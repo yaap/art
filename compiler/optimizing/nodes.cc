@@ -35,7 +35,9 @@
 #include "class_root-inl.h"
 #include "code_generator.h"
 #include "common_dominator.h"
+#include "intrinsic_objects.h"
 #include "intrinsics.h"
+#include "intrinsics_list.h"
 #include "mirror/class-inl.h"
 #include "scoped_thread_state_change-inl.h"
 #include "ssa_builder.h"
@@ -252,6 +254,14 @@ GraphAnalysisResult HGraph::BuildDominatorTree() {
   ComputeTryBlockInformation();
 
   return kAnalysisSuccess;
+}
+
+GraphAnalysisResult HGraph::RecomputeDominatorTree() {
+  DCHECK(!HasIrreducibleLoops()) << "Recomputing loop information in graphs with irreducible loops "
+                                 << "is unsupported, as it could lead to loop header changes";
+  ClearLoopInformation();
+  ClearDominanceInformation();
+  return BuildDominatorTree();
 }
 
 void HGraph::ClearDominanceInformation() {
@@ -1488,11 +1498,11 @@ bool HInstructionList::FoundBefore(const HInstruction* instruction1,
                                    const HInstruction* instruction2) const {
   DCHECK_EQ(instruction1->GetBlock(), instruction2->GetBlock());
   for (HInstructionIterator it(*this); !it.Done(); it.Advance()) {
-    if (it.Current() == instruction1) {
-      return true;
-    }
     if (it.Current() == instruction2) {
       return false;
+    }
+    if (it.Current() == instruction1) {
+      return true;
     }
   }
   LOG(FATAL) << "Did not find an order between two instructions of the same block.";
@@ -1815,10 +1825,12 @@ void HGraphVisitor::VisitBasicBlock(HBasicBlock* block) {
   }
 }
 
-HConstant* HTypeConversion::TryStaticEvaluation() const {
-  HGraph* graph = GetBlock()->GetGraph();
-  if (GetInput()->IsIntConstant()) {
-    int32_t value = GetInput()->AsIntConstant()->GetValue();
+HConstant* HTypeConversion::TryStaticEvaluation() const { return TryStaticEvaluation(GetInput()); }
+
+HConstant* HTypeConversion::TryStaticEvaluation(HInstruction* input) const {
+  HGraph* graph = input->GetBlock()->GetGraph();
+  if (input->IsIntConstant()) {
+    int32_t value = input->AsIntConstant()->GetValue();
     switch (GetResultType()) {
       case DataType::Type::kInt8:
         return graph->GetIntConstant(static_cast<int8_t>(value), GetDexPc());
@@ -1837,8 +1849,8 @@ HConstant* HTypeConversion::TryStaticEvaluation() const {
       default:
         return nullptr;
     }
-  } else if (GetInput()->IsLongConstant()) {
-    int64_t value = GetInput()->AsLongConstant()->GetValue();
+  } else if (input->IsLongConstant()) {
+    int64_t value = input->AsLongConstant()->GetValue();
     switch (GetResultType()) {
       case DataType::Type::kInt8:
         return graph->GetIntConstant(static_cast<int8_t>(value), GetDexPc());
@@ -1857,8 +1869,8 @@ HConstant* HTypeConversion::TryStaticEvaluation() const {
       default:
         return nullptr;
     }
-  } else if (GetInput()->IsFloatConstant()) {
-    float value = GetInput()->AsFloatConstant()->GetValue();
+  } else if (input->IsFloatConstant()) {
+    float value = input->AsFloatConstant()->GetValue();
     switch (GetResultType()) {
       case DataType::Type::kInt32:
         if (std::isnan(value))
@@ -1881,8 +1893,8 @@ HConstant* HTypeConversion::TryStaticEvaluation() const {
       default:
         return nullptr;
     }
-  } else if (GetInput()->IsDoubleConstant()) {
-    double value = GetInput()->AsDoubleConstant()->GetValue();
+  } else if (input->IsDoubleConstant()) {
+    double value = input->AsDoubleConstant()->GetValue();
     switch (GetResultType()) {
       case DataType::Type::kInt32:
         if (std::isnan(value))
@@ -1909,41 +1921,47 @@ HConstant* HTypeConversion::TryStaticEvaluation() const {
   return nullptr;
 }
 
-HConstant* HUnaryOperation::TryStaticEvaluation() const {
-  if (GetInput()->IsIntConstant()) {
-    return Evaluate(GetInput()->AsIntConstant());
-  } else if (GetInput()->IsLongConstant()) {
-    return Evaluate(GetInput()->AsLongConstant());
+HConstant* HUnaryOperation::TryStaticEvaluation() const { return TryStaticEvaluation(GetInput()); }
+
+HConstant* HUnaryOperation::TryStaticEvaluation(HInstruction* input) const {
+  if (input->IsIntConstant()) {
+    return Evaluate(input->AsIntConstant());
+  } else if (input->IsLongConstant()) {
+    return Evaluate(input->AsLongConstant());
   } else if (kEnableFloatingPointStaticEvaluation) {
-    if (GetInput()->IsFloatConstant()) {
-      return Evaluate(GetInput()->AsFloatConstant());
-    } else if (GetInput()->IsDoubleConstant()) {
-      return Evaluate(GetInput()->AsDoubleConstant());
+    if (input->IsFloatConstant()) {
+      return Evaluate(input->AsFloatConstant());
+    } else if (input->IsDoubleConstant()) {
+      return Evaluate(input->AsDoubleConstant());
     }
   }
   return nullptr;
 }
 
 HConstant* HBinaryOperation::TryStaticEvaluation() const {
-  if (GetLeft()->IsIntConstant() && GetRight()->IsIntConstant()) {
-    return Evaluate(GetLeft()->AsIntConstant(), GetRight()->AsIntConstant());
-  } else if (GetLeft()->IsLongConstant()) {
-    if (GetRight()->IsIntConstant()) {
+  return TryStaticEvaluation(GetLeft(), GetRight());
+}
+
+HConstant* HBinaryOperation::TryStaticEvaluation(HInstruction* left, HInstruction* right) const {
+  if (left->IsIntConstant() && right->IsIntConstant()) {
+    return Evaluate(left->AsIntConstant(), right->AsIntConstant());
+  } else if (left->IsLongConstant()) {
+    if (right->IsIntConstant()) {
       // The binop(long, int) case is only valid for shifts and rotations.
       DCHECK(IsShl() || IsShr() || IsUShr() || IsRor()) << DebugName();
-      return Evaluate(GetLeft()->AsLongConstant(), GetRight()->AsIntConstant());
-    } else if (GetRight()->IsLongConstant()) {
-      return Evaluate(GetLeft()->AsLongConstant(), GetRight()->AsLongConstant());
+      return Evaluate(left->AsLongConstant(), right->AsIntConstant());
+    } else if (right->IsLongConstant()) {
+      return Evaluate(left->AsLongConstant(), right->AsLongConstant());
     }
-  } else if (GetLeft()->IsNullConstant() && GetRight()->IsNullConstant()) {
+  } else if (left->IsNullConstant() && right->IsNullConstant()) {
     // The binop(null, null) case is only valid for equal and not-equal conditions.
     DCHECK(IsEqual() || IsNotEqual()) << DebugName();
-    return Evaluate(GetLeft()->AsNullConstant(), GetRight()->AsNullConstant());
+    return Evaluate(left->AsNullConstant(), right->AsNullConstant());
   } else if (kEnableFloatingPointStaticEvaluation) {
-    if (GetLeft()->IsFloatConstant() && GetRight()->IsFloatConstant()) {
-      return Evaluate(GetLeft()->AsFloatConstant(), GetRight()->AsFloatConstant());
-    } else if (GetLeft()->IsDoubleConstant() && GetRight()->IsDoubleConstant()) {
-      return Evaluate(GetLeft()->AsDoubleConstant(), GetRight()->AsDoubleConstant());
+    if (left->IsFloatConstant() && right->IsFloatConstant()) {
+      return Evaluate(left->AsFloatConstant(), right->AsFloatConstant());
+    } else if (left->IsDoubleConstant() && right->IsDoubleConstant()) {
+      return Evaluate(left->AsDoubleConstant(), right->AsDoubleConstant());
     }
   }
   return nullptr;
@@ -2797,8 +2815,11 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
   if (HasMonitorOperations()) {
     outer_graph->SetHasMonitorOperations(true);
   }
-  if (HasSIMD()) {
-    outer_graph->SetHasSIMD(true);
+  if (HasTraditionalSIMD()) {
+    outer_graph->SetHasTraditionalSIMD(true);
+  }
+  if (HasPredicatedSIMD()) {
+    outer_graph->SetHasPredicatedSIMD(true);
   }
   if (HasAlwaysThrowingInvokes()) {
     outer_graph->SetHasAlwaysThrowingInvokes(true);
@@ -2989,12 +3010,7 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
       }
     }
     if (rerun_loop_analysis) {
-      DCHECK(!outer_graph->HasIrreducibleLoops())
-          << "Recomputing loop information in graphs with irreducible loops "
-          << "is unsupported, as it could lead to loop header changes";
-      outer_graph->ClearLoopInformation();
-      outer_graph->ClearDominanceInformation();
-      outer_graph->BuildDominatorTree();
+      outer_graph->RecomputeDominatorTree();
     } else if (rerun_dominance) {
       outer_graph->ClearDominanceInformation();
       outer_graph->ComputeDominanceInformation();
@@ -3026,9 +3042,9 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
       replacement = outer_graph->GetDoubleConstant(
           current->AsDoubleConstant()->GetValue(), current->GetDexPc());
     } else if (current->IsParameterValue()) {
-      if (kIsDebugBuild
-          && invoke->IsInvokeStaticOrDirect()
-          && invoke->AsInvokeStaticOrDirect()->IsStaticWithExplicitClinitCheck()) {
+      if (kIsDebugBuild &&
+          invoke->IsInvokeStaticOrDirect() &&
+          invoke->AsInvokeStaticOrDirect()->IsStaticWithExplicitClinitCheck()) {
         // Ensure we do not use the last input of `invoke`, as it
         // contains a clinit check which is not an actual argument.
         size_t last_input_index = invoke->InputCount() - 1;
@@ -3125,6 +3141,8 @@ void HGraph::TransformLoopHeaderForBCE(HBasicBlock* header) {
       new_pre_header, old_pre_header, /* replace_if_back_edge= */ false);
 }
 
+// Creates a new two-basic-block loop and inserts it between original loop header and
+// original loop exit; also adjusts dominators, post order and new LoopInformation.
 HBasicBlock* HGraph::TransformLoopForVectorization(HBasicBlock* header,
                                                    HBasicBlock* body,
                                                    HBasicBlock* exit) {
@@ -3346,6 +3364,21 @@ std::ostream& operator<<(std::ostream& os, HInvokeStaticOrDirect::ClinitCheckReq
   }
 }
 
+bool HInvokeStaticOrDirect::CanBeNull() const {
+  if (GetType() != DataType::Type::kReference || IsStringInit()) {
+    return false;
+  }
+  switch (GetIntrinsic()) {
+#define DEFINE_BOXED_CASE(name, unused1, unused2, unused3, unused4) \
+    case Intrinsics::k##name##ValueOf: \
+      return false;
+    BOXED_TYPES(DEFINE_BOXED_CASE)
+#undef DEFINE_BOXED_CASE
+    default:
+      return true;
+  }
+}
+
 bool HInvokeVirtual::CanDoImplicitNullCheckOn(HInstruction* obj) const {
   if (obj != InputAt(0)) {
     return false;
@@ -3518,9 +3551,7 @@ std::ostream& operator<<(std::ostream& os, TypeCheckKind rhs) {
   static_assert( \
     static_cast<uint32_t>(Intrinsics::k ## Name) <= (kAccIntrinsicBits >> CTZ(kAccIntrinsicBits)), \
     "Instrinsics enumeration space overflow.");
-#include "intrinsics_list.h"
-  INTRINSICS_LIST(CHECK_INTRINSICS_ENUM_VALUES)
-#undef INTRINSICS_LIST
+  ART_INTRINSICS_LIST(CHECK_INTRINSICS_ENUM_VALUES)
 #undef CHECK_INTRINSICS_ENUM_VALUES
 
 // Function that returns whether an intrinsic needs an environment or not.
@@ -3531,9 +3562,7 @@ static inline IntrinsicNeedsEnvironment NeedsEnvironmentIntrinsic(Intrinsics i) 
 #define OPTIMIZING_INTRINSICS(Name, InvokeType, NeedsEnv, SideEffects, Exceptions, ...) \
     case Intrinsics::k ## Name: \
       return NeedsEnv;
-#include "intrinsics_list.h"
-      INTRINSICS_LIST(OPTIMIZING_INTRINSICS)
-#undef INTRINSICS_LIST
+      ART_INTRINSICS_LIST(OPTIMIZING_INTRINSICS)
 #undef OPTIMIZING_INTRINSICS
   }
   return kNeedsEnvironment;
@@ -3547,9 +3576,7 @@ static inline IntrinsicSideEffects GetSideEffectsIntrinsic(Intrinsics i) {
 #define OPTIMIZING_INTRINSICS(Name, InvokeType, NeedsEnv, SideEffects, Exceptions, ...) \
     case Intrinsics::k ## Name: \
       return SideEffects;
-#include "intrinsics_list.h"
-      INTRINSICS_LIST(OPTIMIZING_INTRINSICS)
-#undef INTRINSICS_LIST
+      ART_INTRINSICS_LIST(OPTIMIZING_INTRINSICS)
 #undef OPTIMIZING_INTRINSICS
   }
   return kAllSideEffects;
@@ -3563,9 +3590,7 @@ static inline IntrinsicExceptions GetExceptionsIntrinsic(Intrinsics i) {
 #define OPTIMIZING_INTRINSICS(Name, InvokeType, NeedsEnv, SideEffects, Exceptions, ...) \
     case Intrinsics::k ## Name: \
       return Exceptions;
-#include "intrinsics_list.h"
-      INTRINSICS_LIST(OPTIMIZING_INTRINSICS)
-#undef INTRINSICS_LIST
+      ART_INTRINSICS_LIST(OPTIMIZING_INTRINSICS)
 #undef OPTIMIZING_INTRINSICS
   }
   return kCanThrow;

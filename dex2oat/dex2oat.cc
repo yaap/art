@@ -642,6 +642,9 @@ class Dex2Oat final {
     compiler_options_->compiler_type_ = CompilerOptions::CompilerType::kAotCompiler;
     compiler_options_->compile_pic_ = true;  // All AOT compilation is PIC.
 
+    // TODO: This should be a command line option for cross-compilation. b/289805127
+    compiler_options_->emit_read_barrier_ = gUseReadBarrier;
+
     if (android_root_.empty()) {
       const char* android_root_env_var = getenv("ANDROID_ROOT");
       if (android_root_env_var == nullptr) {
@@ -867,6 +870,7 @@ class Dex2Oat final {
         FALLTHROUGH_INTENDED;
       case InstructionSet::kArm:
       case InstructionSet::kThumb2:
+      case InstructionSet::kRiscv64:
       case InstructionSet::kX86:
       case InstructionSet::kX86_64:
         compiler_options_->implicit_null_checks_ = true;
@@ -979,7 +983,7 @@ class Dex2Oat final {
                           compiler_options_->GetNativeDebuggable());
     key_value_store_->Put(OatHeader::kCompilerFilter,
                           CompilerFilter::NameOfFilter(compiler_options_->GetCompilerFilter()));
-    key_value_store_->Put(OatHeader::kConcurrentCopying, gUseReadBarrier);
+    key_value_store_->Put(OatHeader::kConcurrentCopying, compiler_options_->EmitReadBarrier());
     if (invocation_file_.get() != -1) {
       std::ostringstream oss;
       for (int i = 0; i < argc; ++i) {
@@ -1051,13 +1055,7 @@ class Dex2Oat final {
     original_argv = argv;
 
     Locks::Init();
-
-    // Microdroid doesn't support logd logging, so don't override there.
-    if (android::base::GetProperty("ro.hardware", "") == "microdroid") {
-      android::base::SetAborter(Runtime::Abort);
-    } else {
-      InitLogging(argv, Runtime::Abort);
-    }
+    InitLogging(argv, Runtime::Abort);
 
     compiler_options_.reset(new CompilerOptions());
 
@@ -1123,17 +1121,9 @@ class Dex2Oat final {
     AssignIfExists(args, M::PublicSdk, &public_sdk_);
     AssignIfExists(args, M::ApexVersions, &apex_versions_argument_);
 
-    // Check for phenotype flag to override compact_dex_level_, if it isn't "none" already.
-    // TODO(b/256664509): Clean this up.
     if (compact_dex_level_ != CompactDexLevel::kCompactDexLevelNone) {
-      std::string ph_disable_compact_dex =
-          android::base::GetProperty(kPhDisableCompactDex, "false");
-      if (ph_disable_compact_dex == "true") {
-        LOG(WARNING)
-            << "Overriding --compact-dex-level due to "
-               "persist.device_config.runtime_native_boot.disable_compact_dex set to `true`";
-        compact_dex_level_ = CompactDexLevel::kCompactDexLevelNone;
-      }
+      LOG(WARNING) << "Obsolete flag --compact-dex-level ignored";
+      compact_dex_level_ = CompactDexLevel::kCompactDexLevelNone;
     }
 
     AssignIfExists(args, M::Backend, &compiler_kind_);
@@ -1598,10 +1588,10 @@ class Dex2Oat final {
           LOG(ERROR) << "Missing dex file for boot class component " << bcp_location;
           return dex2oat::ReturnCode::kOther;
         }
-        CHECK(!DexFileLoader::IsMultiDexLocation(bcp_dex_files[bcp_df_pos]->GetLocation().c_str()));
+        CHECK(!DexFileLoader::IsMultiDexLocation(bcp_dex_files[bcp_df_pos]->GetLocation()));
         ++bcp_df_pos;
         while (bcp_df_pos != bcp_df_end &&
-            DexFileLoader::IsMultiDexLocation(bcp_dex_files[bcp_df_pos]->GetLocation().c_str())) {
+            DexFileLoader::IsMultiDexLocation(bcp_dex_files[bcp_df_pos]->GetLocation())) {
           ++bcp_df_pos;
         }
       }
@@ -1759,9 +1749,7 @@ class Dex2Oat final {
     }
 
     // Setup VerifierDeps for compilation and report if we fail to parse the data.
-    // When we do profile guided optimizations, the compiler currently needs to run
-    // full verification.
-    if (!DoProfileGuidedOptimizations() && input_vdex_file_ != nullptr) {
+    if (input_vdex_file_ != nullptr) {
       std::unique_ptr<verifier::VerifierDeps> verifier_deps(
           new verifier::VerifierDeps(dex_files, /*output_only=*/ false));
       if (!verifier_deps->ParseStoredData(dex_files, input_vdex_file_->GetVerifierDepsData())) {
@@ -2561,9 +2549,8 @@ class Dex2Oat final {
 
   bool PrepareDirtyObjects() {
     if (dirty_image_objects_fd_ != -1) {
-      dirty_image_objects_ = ReadCommentedInputFromFd<HashSet<std::string>>(
-          dirty_image_objects_fd_,
-          nullptr);
+      dirty_image_objects_ =
+          ReadCommentedInputFromFd<std::vector<std::string>>(dirty_image_objects_fd_, nullptr);
       // Close since we won't need it again.
       close(dirty_image_objects_fd_);
       dirty_image_objects_fd_ = -1;
@@ -2572,9 +2559,8 @@ class Dex2Oat final {
         return false;
       }
     } else if (dirty_image_objects_filename_ != nullptr) {
-      dirty_image_objects_ = ReadCommentedInputFromFile<HashSet<std::string>>(
-          dirty_image_objects_filename_,
-          nullptr);
+      dirty_image_objects_ = ReadCommentedInputFromFile<std::vector<std::string>>(
+          dirty_image_objects_filename_, nullptr);
       if (dirty_image_objects_ == nullptr) {
         LOG(ERROR) << "Failed to create list of dirty objects from '"
             << dirty_image_objects_filename_ << "'";
@@ -2984,13 +2970,15 @@ class Dex2Oat final {
   const char* passes_to_run_filename_;
   const char* dirty_image_objects_filename_;
   int dirty_image_objects_fd_;
-  std::unique_ptr<HashSet<std::string>> dirty_image_objects_;
+  std::unique_ptr<std::vector<std::string>> dirty_image_objects_;
   std::unique_ptr<std::vector<std::string>> passes_to_run_;
   bool is_host_;
   std::string android_root_;
   std::string no_inline_from_string_;
   bool force_allow_oj_inlines_ = false;
-  CompactDexLevel compact_dex_level_ = kDefaultCompactDexLevel;
+
+  // TODO(b/256664509): Clean this up.
+  CompactDexLevel compact_dex_level_ = CompactDexLevel::kCompactDexLevelNone;
 
   std::vector<std::unique_ptr<linker::ElfWriter>> elf_writers_;
   std::vector<std::unique_ptr<linker::OatWriter>> oat_writers_;

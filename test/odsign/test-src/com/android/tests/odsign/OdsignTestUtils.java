@@ -480,10 +480,20 @@ public class OdsignTestUtils {
         runOdrefresh("" /* extraArgs */);
     }
 
-    public void runOdrefresh(String extraArgs) throws Exception {
+    public CommandResult runOdrefresh(String extraArgs) throws Exception {
         mTestInfo.getDevice().executeShellV2Command(ODREFRESH_BIN + " --check");
-        mTestInfo.getDevice().executeShellV2Command(
-                ODREFRESH_BIN + " --partial-compilation --no-refresh " + extraArgs + " --compile");
+        return mTestInfo.getDevice().executeShellV2Command(ODREFRESH_BIN
+                + " --partial-compilation=true --no-refresh " + extraArgs + " --compile");
+    }
+
+    /**
+     * Simulates how odsign invokes odrefresh on a device that doesn't have the security fix for
+     * CVE-2021-39689 (b/206090748).
+     */
+    public CommandResult runOdrefreshNoPartialCompilation() throws Exception {
+        // Note that odsign doesn't call `odrefresh --check` on such a device.
+        return mTestInfo.getDevice().executeShellV2Command(
+                ODREFRESH_BIN + " --partial-compilation=false --no-refresh --compile");
     }
 
     public boolean areAllApexesFactoryInstalled() throws Exception {

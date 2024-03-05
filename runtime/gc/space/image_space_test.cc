@@ -58,17 +58,10 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
   int mkdir_result = mkdir(image_dir.c_str(), 0700);
   ASSERT_EQ(0, mkdir_result);
 
-  // Prepare boot class path variables, exclude core-icu4j and conscrypt
-  // which are not in the primary boot image.
+  // Prepare boot class path variables.
   std::vector<std::string> bcp = GetLibCoreDexFileNames();
   std::vector<std::string> bcp_locations = GetLibCoreDexLocations();
   CHECK_EQ(bcp.size(), bcp_locations.size());
-  ASSERT_NE(std::string::npos, bcp.back().find("conscrypt"));
-  bcp.pop_back();
-  bcp_locations.pop_back();
-  ASSERT_NE(std::string::npos, bcp.back().find("core-icu4j"));
-  bcp.pop_back();
-  bcp_locations.pop_back();
   std::string base_bcp_string = android::base::Join(bcp, ':');
   std::string base_bcp_locations_string = android::base::Join(bcp_locations, ':');
   std::string base_image_location = GetImageLocation();
@@ -83,14 +76,15 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
     std::vector<std::string> extra_args = {
         "--profile-file=" + profile_file.GetFilename(),
         "--runtime-arg",
-        "-Xbootclasspath:" + base_bcp_string + ':' + jar_name,
+        ART_FORMAT("-Xbootclasspath:{}:{}", base_bcp_string, jar_name),
         "--runtime-arg",
-        "-Xbootclasspath-locations:" + base_bcp_locations_string + ':' + jar_name,
+        ART_FORMAT("-Xbootclasspath-locations:{}:{}", base_bcp_locations_string, jar_name),
         "--boot-image=" + base_image_location,
     };
     std::string prefix = GetFilenameBase(base_image_location);
     std::string error_msg;
-    bool success = CompileBootImage(extra_args, image_dir + '/' + prefix, dex_files, &error_msg);
+    bool success =
+        CompileBootImage(extra_args, ART_FORMAT("{}/{}", image_dir, prefix), dex_files, &error_msg);
     ASSERT_TRUE(success) << error_msg;
     bcp.push_back(jar_name);
     bcp_locations.push_back(jar_name);
@@ -135,20 +129,22 @@ TEST_F(ImageSpaceTest, StringDeduplication) {
   auto load_boot_image = [&]() REQUIRES_SHARED(Locks::mutator_lock_) {
     boot_image_spaces.clear();
     extra_reservation = MemMap::Invalid();
-    return ImageSpace::LoadBootImage(bcp,
-                                     bcp_locations,
-                                     /*boot_class_path_fds=*/std::vector<int>(),
-                                     /*boot_class_path_image_fds=*/std::vector<int>(),
-                                     /*boot_class_path_vdex_fds=*/std::vector<int>(),
-                                     /*boot_class_path_oat_fds=*/std::vector<int>(),
-                                     full_image_locations,
-                                     kRuntimeISA,
-                                     /*relocate=*/false,
-                                     /*executable=*/true,
-                                     /*extra_reservation_size=*/0u,
-                                     /*allow_in_memory_compilation=*/false,
-                                     &boot_image_spaces,
-                                     &extra_reservation);
+    return ImageSpace::LoadBootImage(
+        bcp,
+        bcp_locations,
+        /*boot_class_path_files=*/{},
+        /*boot_class_path_image_files=*/{},
+        /*boot_class_path_vdex_files=*/{},
+        /*boot_class_path_oat_files=*/{},
+        full_image_locations,
+        kRuntimeISA,
+        /*relocate=*/false,
+        /*executable=*/true,
+        /*extra_reservation_size=*/0u,
+        /*allow_in_memory_compilation=*/false,
+        Runtime::GetApexVersions(ArrayRef<const std::string>(bcp_locations)),
+        &boot_image_spaces,
+        &extra_reservation);
   };
 
   const char test_string[] = "SharedBootImageExtensionTestString";
@@ -259,7 +255,7 @@ TEST_F(DexoptTest, ValidateOatFile) {
                                                 /*executable=*/false,
                                                 /*low_4gb=*/false,
                                                 ArrayRef<const std::string>(dex_filenames),
-                                                /*dex_fds=*/ArrayRef<const int>(),
+                                                /*dex_files=*/{},
                                                 /*reservation=*/nullptr,
                                                 &error_msg));
     ASSERT_TRUE(oat2 != nullptr) << error_msg;
@@ -436,6 +432,7 @@ class ImageSpaceLoadingSingleComponentWithProfilesTest
 TEST_F(ImageSpaceLoadingSingleComponentWithProfilesTest, Test) {
   // Compiling the primary boot image into a single image is not allowed on host.
   TEST_DISABLED_FOR_HOST();
+  TEST_DISABLED_FOR_RISCV64();
 
   CheckImageSpaceAndOatFile(/*space_count=*/1);
 }
@@ -490,6 +487,7 @@ class ImageSpaceLoadingMultipleComponentsWithProfilesTest
 TEST_F(ImageSpaceLoadingMultipleComponentsWithProfilesTest, Test) {
   // Compiling the primary boot image into a single image is not allowed on host.
   TEST_DISABLED_FOR_HOST();
+  TEST_DISABLED_FOR_RISCV64();
 
   CheckImageSpaceAndOatFile(/*space_count=*/1);
 }

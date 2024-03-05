@@ -65,7 +65,7 @@ def parse_args(argv):
   argp.add_argument("--gdb", action="store_true")
   argp.add_argument("--gdb-arg", default=[], action="append")
   argp.add_argument("--gdb-dex2oat", action="store_true")
-  argp.add_argument("--gdb-dex2oat-args", default=[], action="append")
+  argp.add_argument("--gdb-dex2oat-args")
   argp.add_argument("--gdbserver", action="store_true")
   argp.add_argument("--gdbserver-bin")
   argp.add_argument("--gdbserver-port", default=":5039")
@@ -73,6 +73,7 @@ def parse_args(argv):
   argp.add_argument("--image", default=True, action=opt_bool)
   argp.add_argument("--instruction-set-features", default="")
   argp.add_argument("--interpreter", action="store_true")
+  argp.add_argument("--switch-interpreter", action="store_true")
   argp.add_argument("--invoke-with", default=[], action="append")
   argp.add_argument("--jit", action="store_true")
   argp.add_argument("--jvm", action="store_true")
@@ -88,9 +89,7 @@ def parse_args(argv):
   argp.add_argument("--random-profile", action="store_true")
   argp.add_argument("--relocate", default=False, action=opt_bool)
   argp.add_argument("--runtime-dm", action="store_true")
-  argp.add_argument("--runtime-extracted-zipapex", default="")
   argp.add_argument("--runtime-option", default=[], action="append")
-  argp.add_argument("--runtime-zipapex", default="")
   argp.add_argument("--secondary", action="store_true")
   argp.add_argument("--secondary-app-image", default=True, action=opt_bool)
   argp.add_argument("--secondary-class-loader-context", default="")
@@ -237,7 +236,6 @@ def default_run(ctx, args, **kwargs):
   PATH = os.environ.get("PATH", "")
   SANITIZE_HOST = os.environ.get("SANITIZE_HOST", "")
   TEST_NAME = os.environ["TEST_NAME"]
-  USE_EXRACTED_ZIPAPEX = os.environ.get("USE_EXRACTED_ZIPAPEX", "")
 
   assert ANDROID_BUILD_TOP, "Did you forget to run `lunch`?"
 
@@ -265,19 +263,15 @@ def default_run(ctx, args, **kwargs):
   ANDROID_FLAGS = ""
   GDB = ""
   GDB_ARGS = ""
-  GDB_DEX2OAT = ""
-  GDB_DEX2OAT_ARGS = ""
+  GDB_DEX2OAT_EXTRA_ARGS = ""
   GDBSERVER_DEVICE = "gdbserver"
   GDBSERVER_HOST = "gdbserver"
   HAVE_IMAGE = args.image
   HOST = args.host
   BIONIC = args.bionic
   CREATE_ANDROID_ROOT = False
-  USE_ZIPAPEX = (args.runtime_zipapex != "")
-  ZIPAPEX_LOC = args.runtime_zipapex
-  USE_EXTRACTED_ZIPAPEX = (args.runtime_extracted_zipapex != "")
-  EXTRACTED_ZIPAPEX_LOC = args.runtime_extracted_zipapex
   INTERPRETER = args.interpreter
+  SWITCH_INTERPRETER = args.switch_interpreter
   JIT = args.jit
   INVOKE_WITH = " ".join(args.invoke_with)
   USE_JVMTI = args.jvmti
@@ -403,12 +397,6 @@ def default_run(ctx, args, **kwargs):
     # the frameworks/libcore with linux_bionic so we need to use the normal
     # host ones which are in a different location.
     CREATE_ANDROID_ROOT = True
-  if USE_ZIPAPEX:
-    # TODO (b/119942078): Currently apex does not support
-    # symlink_preferred_arch so we will not have a dex2oatd to execute and
-    # need to manually provide
-    # dex2oatd64.
-    DEX2OAT_DEBUG_BINARY = "dex2oatd64"
   if WITH_AGENT:
     USE_JVMTI = True
   if DEBUGGER_AGENT:
@@ -428,8 +416,8 @@ def default_run(ctx, args, **kwargs):
   for arg in args.gdb_arg:
     GDB_ARGS += f" {arg}"
   if args.gdb_dex2oat_args:
-    for arg in arg.split(";"):
-      GDB_DEX2OAT_ARGS += f"{arg} "
+    for arg in args.gdb_dex2oat_args.split(";"):
+      GDB_DEX2OAT_EXTRA_ARGS += f'"{arg}" '
   if args.zygote:
     ZYGOTE = "-Xzygote"
     print("Spawning from zygote")
@@ -654,17 +642,22 @@ def default_run(ctx, args, **kwargs):
       GDB = f"{GDBSERVER_DEVICE} --no-startup-with-shell 127.0.0.1{GDBSERVER_PORT}"
     else:
       GDB = "gdb"
-      GDB_ARGS += f" --args {DALVIKVM}"
+      GDB_ARGS += f" -d '{ANDROID_BUILD_TOP}' --args {DALVIKVM}"
+
+  if SWITCH_INTERPRETER:
+    # run on the slow switch-interpreter enabled with -Xint
+    INT_OPTS += " -Xint"
 
   if INTERPRETER:
-    INT_OPTS += " -Xint"
+    # run on Nterp the fast interpreter, not the slow switch-interpreter enabled with -Xint
+    INT_OPTS += " -Xusejit:false"
 
   if JIT:
     INT_OPTS += " -Xusejit:true"
   else:
     INT_OPTS += " -Xusejit:false"
 
-  if INTERPRETER or JIT:
+  if INTERPRETER or SWITCH_INTERPRETER or JIT:
     if VERIFY == "y":
       INT_OPTS += " -Xcompiler-option --compiler-filter=verify"
       COMPILE_FLAGS += " --compiler-filter=verify"
@@ -732,9 +725,6 @@ def default_run(ctx, args, **kwargs):
   sync_cmdline = "true"
   linkroot_cmdline = "true"
   linkroot_overlay_cmdline = "true"
-  setupapex_cmdline = "true"
-  installapex_cmdline = "true"
-  installapex_test_cmdline = "true"
 
   def linkdirs(host_out: str, root: str):
     dirs = list(filter(os.path.isdir, glob.glob(os.path.join(host_out, "*"))))
@@ -751,20 +741,6 @@ def default_run(ctx, args, **kwargs):
           f"{OUT_DIR}/soong/host/linux_bionic-x86", ANDROID_ROOT)
     # Replace the boot image to a location expected by the runtime.
     DALVIKVM_BOOT_OPT = f"-Ximage:{ANDROID_ROOT}/art_boot_images/javalib/boot.art"
-
-  if USE_ZIPAPEX:
-    # TODO Currently this only works for linux_bionic zipapexes because those are
-    # stripped and so small enough that the ulimit doesn't kill us.
-    mkdir_locations += f" {DEX_LOCATION}/zipapex"
-    setupapex_cmdline = f"unzip -o -u {ZIPAPEX_LOC} apex_payload.zip -d {DEX_LOCATION}"
-    installapex_cmdline = f"unzip -o -u {DEX_LOCATION}/apex_payload.zip -d {DEX_LOCATION}/zipapex"
-    ANDROID_ART_BIN_DIR = f"{DEX_LOCATION}/zipapex/bin"
-  elif USE_EXTRACTED_ZIPAPEX:
-    # Just symlink the zipapex binaries
-    ANDROID_ART_BIN_DIR = f"{DEX_LOCATION}/zipapex/bin"
-    # Force since some tests manually run this file twice.
-    # If the {RUN} is executed multiple times we don't need to recreate the link
-    installapex_cmdline = f"ln -sfTv {EXTRACTED_ZIPAPEX_LOC} {DEX_LOCATION}/zipapex"
 
   # PROFILE takes precedence over RANDOM_PROFILE, since PROFILE tests require a
   # specific profile to run properly.
@@ -787,44 +763,6 @@ def default_run(ctx, args, **kwargs):
     else:
       profman_cmdline = f"{profman_cmdline} --generate-test-profile={DEX_LOCATION}/{TEST_NAME}.prof \
           --generate-test-profile-seed=0"
-
-  def get_prebuilt_lldb_path():
-    CLANG_BASE = "prebuilts/clang/host"
-    CLANG_VERSION = check_output(
-        f"{ANDROID_BUILD_TOP}/build/soong/scripts/get_clang_version.py"
-    ).strip()
-    uname = check_output("uname -s", shell=True).strip()
-    if uname == "Darwin":
-      PREBUILT_NAME = "darwin-x86"
-    elif uname == "Linux":
-      PREBUILT_NAME = "linux-x86"
-    else:
-      print(
-          "Unknown host $(uname -s). Unsupported for debugging dex2oat with LLDB.",
-          file=sys.stderr)
-      return
-    CLANG_PREBUILT_HOST_PATH = f"{ANDROID_BUILD_TOP}/{CLANG_BASE}/{PREBUILT_NAME}/{CLANG_VERSION}"
-    # If the clang prebuilt directory exists and the reported clang version
-    # string does not, then it is likely that the clang version reported by the
-    # get_clang_version.py script does not match the expected directory name.
-    if isdir(f"{ANDROID_BUILD_TOP}/{CLANG_BASE}/{PREBUILT_NAME}"):
-      assert isdir(CLANG_PREBUILT_HOST_PATH), (
-          "The prebuilt clang directory exists, but the specific "
-          "clang\nversion reported by get_clang_version.py does not exist in "
-          "that path.\nPlease make sure that the reported clang version "
-          "resides in the\nprebuilt clang directory!")
-
-    # The lldb-server binary is a dependency of lldb.
-    os.environ[
-        "LLDB_DEBUGSERVER_PATH"] = f"{CLANG_PREBUILT_HOST_PATH}/runtimes_ndk_cxx/x86_64/lldb-server"
-
-    # Set the current terminfo directory to TERMINFO so that LLDB can read the
-    # termcap database.
-    terminfo = re.search("/.*/terminfo/", check_output("infocmp"))
-    if terminfo:
-      os.environ["TERMINFO"] = terminfo[0]
-
-    return f"{CLANG_PREBUILT_HOST_PATH}/bin/lldb.sh"
 
   def write_dex2oat_cmdlines(name: str):
     nonlocal dex2oat_cmdline, dm_cmdline, vdex_cmdline
@@ -854,18 +792,18 @@ def default_run(ctx, args, **kwargs):
     if enable_app_image:
       app_image = f"--app-image-file={DEX_LOCATION}/oat/{ISA}/{name}.art --resolve-startup-const-strings=true"
 
-    nonlocal GDB_DEX2OAT, GDB_DEX2OAT_ARGS
-    if USE_GDB_DEX2OAT:
-      prebuilt_lldb_path = get_prebuilt_lldb_path()
-      GDB_DEX2OAT = f"{prebuilt_lldb_path} -f"
-      GDB_DEX2OAT_ARGS += " -- "
-
     dex2oat_binary = DEX2OAT_DEBUG_BINARY
     if TEST_IS_NDEBUG:
       dex2oat_binary = DEX2OAT_NDEBUG_BINARY
-    dex2oat_cmdline = f"{INVOKE_WITH} {GDB_DEX2OAT} \
-                        {ANDROID_ART_BIN_DIR}/{dex2oat_binary} \
-                        {GDB_DEX2OAT_ARGS} \
+
+    dex2oat_cmdline = f"{INVOKE_WITH} "
+
+    if USE_GDB_DEX2OAT:
+      nonlocal GDB_DEX2OAT_EXTRA_ARGS
+      dex2oat_cmdline += f"gdb {GDB_DEX2OAT_EXTRA_ARGS} \
+                          -d '{ANDROID_BUILD_TOP}' --args "
+
+    dex2oat_cmdline += f"'{ANDROID_ART_BIN_DIR}/{dex2oat_binary}' \
                         {COMPILE_FLAGS} \
                         --boot-image={BOOT_IMAGE} \
                         --dex-file={DEX_LOCATION}/{name}.jar \
@@ -1021,11 +959,12 @@ def default_run(ctx, args, **kwargs):
     #     In particular, unhandled exception is printed using several unterminated printfs.
     ALL_LOG_TAGS = ["V", "D", "I", "W", "E", "F", "S"]
     skip_tag_set = "|".join(ALL_LOG_TAGS[:ALL_LOG_TAGS.index(args.diff_min_log_tag.upper())])
-    skip_reg_exp = fr'[[:alnum:]]+ ({skip_tag_set}) #-# #:#:# [^\n]*\n'.replace('#', '[0-9]+')
+    skip_reg_exp = fr'#-# #:#:# # # ({skip_tag_set}) [^\n]*\n'
+    skip_reg_exp = skip_reg_exp.replace('#', '[0-9.]+').replace(' ', ' +')
     ctx.run(fr"sed -i -z -E 's/{skip_reg_exp}//g' '{args.stderr_file}'")
     if not HAVE_IMAGE:
       message = "(Unable to open file|Could not create image space)"
-      ctx.run(fr"sed -i -E '/^dalvikvm(|32|64) E .* {message}/d' '{args.stderr_file}'")
+      ctx.run(fr"sed -i -E '/^.* E dalvikvm(|32|64): .* {message}/d' '{args.stderr_file}'")
     if ANDROID_LOG_TAGS != "*:i" and "D" in skip_tag_set:
       ctx.run(fr"sed -i -E '/^(Time zone|I18n) APEX ICU file found/d' '{args.stderr_file}'")
     if ON_VM:
@@ -1125,11 +1064,7 @@ def default_run(ctx, args, **kwargs):
 
   else:
     # Host run.
-    if USE_ZIPAPEX or USE_EXRACTED_ZIPAPEX:
-      # Put the zipapex files in front of the ld-library-path
-      LD_LIBRARY_PATH = f"{ANDROID_DATA}/zipapex/{LIBRARY_DIRECTORY}:{ANDROID_ROOT}/{TEST_DIRECTORY}"
-    else:
-      LD_LIBRARY_PATH = f"{ANDROID_ROOT}/{LIBRARY_DIRECTORY}:{ANDROID_ROOT}/{TEST_DIRECTORY}"
+    LD_LIBRARY_PATH = f"{ANDROID_ROOT}/{LIBRARY_DIRECTORY}:{ANDROID_ROOT}/{TEST_DIRECTORY}"
 
     ctx.export(
       ANDROID_PRINTF_LOG = "brief",
@@ -1183,9 +1118,6 @@ def default_run(ctx, args, **kwargs):
     ctx.run(f"rm -rf {DEX_LOCATION}/{{oat,dalvik-cache}}/")
 
     ctx.run(f"mkdir -p {mkdir_locations}")
-    ctx.run(setupapex_cmdline)
-    if USE_EXTRACTED_ZIPAPEX:
-      ctx.run(installapex_cmdline)
     ctx.run(linkroot_cmdline)
     ctx.run(linkroot_overlay_cmdline)
     ctx.run(profman_cmdline)

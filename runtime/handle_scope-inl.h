@@ -19,6 +19,7 @@
 
 #include "handle_scope.h"
 
+#include "base/casts.h"
 #include "base/mutex.h"
 #include "handle.h"
 #include "handle_wrapper.h"
@@ -30,23 +31,24 @@
 namespace art {
 
 template<size_t kNumReferences>
-inline FixedSizeHandleScope<kNumReferences>::FixedSizeHandleScope(BaseHandleScope* link,
-                                                                  ObjPtr<mirror::Object> fill_value)
+inline FixedSizeHandleScope<kNumReferences>::FixedSizeHandleScope(BaseHandleScope* link)
     : HandleScope(link, kNumReferences) {
   if (kDebugLocking) {
     Locks::mutator_lock_->AssertSharedHeld(Thread::Current());
   }
   static_assert(kNumReferences >= 1, "FixedSizeHandleScope must contain at least 1 reference");
   DCHECK_EQ(&storage_[0], GetReferences());  // TODO: Figure out how to use a compile assert.
-  for (size_t i = 0; i < kNumReferences; ++i) {
-    SetReference(i, fill_value);
+  if (kIsDebugBuild) {
+    // Fill storage with "DEAD HAndleSCope", mapping H->"4" and S->"5".
+    for (size_t i = 0; i < kNumReferences; ++i) {
+      GetReferences()[i].Assign(reinterpret_cast32<mirror::Object*>(0xdead4a5c));
+    }
   }
 }
 
 template<size_t kNumReferences>
-inline StackHandleScope<kNumReferences>::StackHandleScope(Thread* self,
-                                                          ObjPtr<mirror::Object> fill_value)
-    : FixedSizeHandleScope<kNumReferences>(self->GetTopHandleScope(), fill_value),
+inline StackHandleScope<kNumReferences>::StackHandleScope(Thread* self)
+    : FixedSizeHandleScope<kNumReferences>(self->GetTopHandleScope()),
       self_(self) {
   DCHECK_EQ(self, Thread::Current());
   if (kDebugLocking) {
@@ -64,113 +66,96 @@ inline StackHandleScope<kNumReferences>::~StackHandleScope() {
   DCHECK_EQ(top_handle_scope, this);
 }
 
-inline size_t HandleScope::SizeOf(uint32_t num_references) {
-  size_t header_size = sizeof(HandleScope);
-  size_t data_size = sizeof(StackReference<mirror::Object>) * num_references;
-  return header_size + data_size;
-}
-
-inline size_t HandleScope::SizeOf(PointerSize pointer_size, uint32_t num_references) {
-  // Assume that the layout is packed.
-  size_t header_size = ReferencesOffset(pointer_size);
-  size_t data_size = sizeof(StackReference<mirror::Object>) * num_references;
-  return header_size + data_size;
-}
-
 inline ObjPtr<mirror::Object> HandleScope::GetReference(size_t i) const {
-  DCHECK_LT(i, NumberOfReferences());
+  DCHECK_LT(i, Size());
   if (kDebugLocking) {
     Locks::mutator_lock_->AssertSharedHeld(Thread::Current());
   }
   return GetReferences()[i].AsMirrorPtr();
 }
 
-inline Handle<mirror::Object> HandleScope::GetHandle(size_t i) {
-  DCHECK_LT(i, NumberOfReferences());
-  return Handle<mirror::Object>(&GetReferences()[i]);
+template<class T>
+inline Handle<T> HandleScope::GetHandle(size_t i) {
+  DCHECK_LT(i, Size());
+  return Handle<T>(&GetReferences()[i]);
 }
 
-inline MutableHandle<mirror::Object> HandleScope::GetMutableHandle(size_t i) {
-  DCHECK_LT(i, NumberOfReferences());
-  return MutableHandle<mirror::Object>(&GetReferences()[i]);
+template<class T>
+inline MutableHandle<T> HandleScope::GetMutableHandle(size_t i) {
+  DCHECK_LT(i, Size());
+  return MutableHandle<T>(&GetReferences()[i]);
 }
 
 inline void HandleScope::SetReference(size_t i, ObjPtr<mirror::Object> object) {
   if (kDebugLocking) {
     Locks::mutator_lock_->AssertSharedHeld(Thread::Current());
   }
-  DCHECK_LT(i, NumberOfReferences());
+  DCHECK_LT(i, Size());
+  VerifyObject(object);
   GetReferences()[i].Assign(object);
 }
 
+template<class T>
+inline MutableHandle<T> HandleScope::NewHandle(T* object) {
+  return NewHandle(ObjPtr<T>(object));
+}
+
+template<class MirrorType>
+inline MutableHandle<MirrorType> HandleScope::NewHandle(
+    ObjPtr<MirrorType> object) {
+  DCHECK_LT(Size(), Capacity());
+  size_t pos = size_;
+  ++size_;
+  SetReference(pos, object);
+  MutableHandle<MirrorType> h(GetMutableHandle<MirrorType>(pos));
+  return h;
+}
+
+template<class T>
+inline HandleWrapper<T> HandleScope::NewHandleWrapper(T** object) {
+  return HandleWrapper<T>(object, NewHandle(*object));
+}
+
+template<class T>
+inline HandleWrapperObjPtr<T> HandleScope::NewHandleWrapper(
+    ObjPtr<T>* object) {
+  return HandleWrapperObjPtr<T>(object, NewHandle(*object));
+}
+
 inline bool HandleScope::Contains(StackReference<mirror::Object>* handle_scope_entry) const {
-  // A HandleScope should always contain something. One created by the
-  // jni_compiler should have a jobject/jclass as a native method is
-  // passed in a this pointer or a class
-  DCHECK_GT(NumberOfReferences(), 0U);
-  return &GetReferences()[0] <= handle_scope_entry &&
-      handle_scope_entry <= &GetReferences()[number_of_references_ - 1];
+  return GetReferences() <= handle_scope_entry && handle_scope_entry < GetReferences() + size_;
 }
 
 template <typename Visitor>
 inline void HandleScope::VisitRoots(Visitor& visitor) {
-  for (size_t i = 0, count = NumberOfReferences(); i < count; ++i) {
+  for (size_t i = 0, size = Size(); i < size; ++i) {
     // GetReference returns a pointer to the stack reference within the handle scope. If this
     // needs to be updated, it will be done by the root visitor.
-    visitor.VisitRootIfNonNull(GetHandle(i).GetReference());
+    visitor.VisitRootIfNonNull(GetHandle<mirror::Object>(i).GetReference());
   }
 }
 
 template <typename Visitor>
 inline void HandleScope::VisitHandles(Visitor& visitor) {
-  for (size_t i = 0, count = NumberOfReferences(); i < count; ++i) {
-    if (GetHandle(i) != nullptr) {
-      visitor.Visit(GetHandle(i));
+  for (size_t i = 0, size = Size(); i < size; ++i) {
+    if (GetHandle<mirror::Object>(i) != nullptr) {
+      visitor.Visit(GetHandle<mirror::Object>(i));
     }
   }
 }
 
-template<size_t kNumReferences> template<class T>
-inline MutableHandle<T> FixedSizeHandleScope<kNumReferences>::NewHandle(T* object) {
-  return NewHandle(ObjPtr<T>(object));
-}
-
-template<size_t kNumReferences> template<class MirrorType>
-inline MutableHandle<MirrorType> FixedSizeHandleScope<kNumReferences>::NewHandle(
-    ObjPtr<MirrorType> object) {
-  SetReference(pos_, object);
-  MutableHandle<MirrorType> h(GetHandle<MirrorType>(pos_));
-  ++pos_;
-  return h;
-}
-
-template<size_t kNumReferences> template<class T>
-inline HandleWrapper<T> FixedSizeHandleScope<kNumReferences>::NewHandleWrapper(T** object) {
-  return HandleWrapper<T>(object, NewHandle(*object));
-}
-
-template<size_t kNumReferences> template<class T>
-inline HandleWrapperObjPtr<T> FixedSizeHandleScope<kNumReferences>::NewHandleWrapper(
-    ObjPtr<T>* object) {
-  return HandleWrapperObjPtr<T>(object, NewHandle(*object));
-}
-
-template<size_t kNumReferences>
-inline void FixedSizeHandleScope<kNumReferences>::SetReference(size_t i,
-                                                               ObjPtr<mirror::Object> object) {
-  if (kDebugLocking) {
-    Locks::mutator_lock_->AssertSharedHeld(Thread::Current());
-  }
-  DCHECK_LT(i, kNumReferences);
-  VerifyObject(object);
-  GetReferences()[i].Assign(object);
-}
-
-// Number of references contained within this handle scope.
-inline uint32_t BaseHandleScope::NumberOfReferences() const {
+// The current size of this handle scope.
+inline uint32_t BaseHandleScope::Size() const {
   return LIKELY(!IsVariableSized())
-      ? AsHandleScope()->NumberOfReferences()
-      : AsVariableSized()->NumberOfReferences();
+      ? AsHandleScope()->Size()
+      : AsVariableSized()->Size();
+}
+
+// The current capacity of this handle scope.
+inline uint32_t BaseHandleScope::Capacity() const {
+  return LIKELY(!IsVariableSized())
+      ? AsHandleScope()->Capacity()
+      : AsVariableSized()->Capacity();
 }
 
 inline bool BaseHandleScope::Contains(StackReference<mirror::Object>* handle_scope_entry) const {
@@ -224,7 +209,8 @@ inline MutableHandle<T> VariableSizedHandleScope::NewHandle(T* object) {
 
 template<class MirrorType>
 inline MutableHandle<MirrorType> VariableSizedHandleScope::NewHandle(ObjPtr<MirrorType> ptr) {
-  if (current_scope_->RemainingSlots() == 0) {
+  DCHECK_EQ(current_scope_->Capacity(), kNumReferencesPerScope);
+  if (current_scope_->Size() == kNumReferencesPerScope) {
     current_scope_ = new LocalScopeType(current_scope_);
   }
   return current_scope_->NewHandle(ptr);
@@ -256,12 +242,28 @@ inline VariableSizedHandleScope::~VariableSizedHandleScope() {
   }
 }
 
-inline uint32_t VariableSizedHandleScope::NumberOfReferences() const {
+inline uint32_t VariableSizedHandleScope::Size() const {
+  const LocalScopeType* cur = current_scope_;
+  DCHECK(cur != nullptr);
+  // The linked list of local scopes starts from the latest which may not be fully filled.
+  uint32_t sum = cur->Size();
+  cur = down_cast<const LocalScopeType*>(cur->GetLink());
+  while (cur != nullptr) {
+    // All other local scopes are fully filled.
+    DCHECK_EQ(cur->Size(), kNumReferencesPerScope);
+    sum += kNumReferencesPerScope;
+    cur = down_cast<const LocalScopeType*>(cur->GetLink());
+  }
+  return sum;
+}
+
+inline uint32_t VariableSizedHandleScope::Capacity() const {
   uint32_t sum = 0;
   const LocalScopeType* cur = current_scope_;
   while (cur != nullptr) {
-    sum += cur->NumberOfReferences();
-    cur = reinterpret_cast<const LocalScopeType*>(cur->GetLink());
+    DCHECK_EQ(cur->Capacity(), kNumReferencesPerScope);
+    sum += kNumReferencesPerScope;
+    cur = down_cast<const LocalScopeType*>(cur->GetLink());
   }
   return sum;
 }
@@ -273,9 +275,33 @@ inline bool VariableSizedHandleScope::Contains(StackReference<mirror::Object>* h
     if (cur->Contains(handle_scope_entry)) {
       return true;
     }
-    cur = reinterpret_cast<const LocalScopeType*>(cur->GetLink());
+    cur = down_cast<const LocalScopeType*>(cur->GetLink());
   }
   return false;
+}
+
+template<class T>
+Handle<T> VariableSizedHandleScope::GetHandle(size_t i) {
+  // Handle the most common path efficiently.
+  if (i < kNumReferencesPerScope) {
+    return first_scope_.GetHandle<T>(i);
+  }
+
+  uint32_t size = Size();
+  DCHECK_GT(size, kNumReferencesPerScope);
+  DCHECK_LT(i, size);
+  LocalScopeType* cur = current_scope_;
+  DCHECK(cur != &first_scope_);
+  // The linked list of local scopes starts from the latest which may not be fully filled.
+  uint32_t cur_start = size - cur->Size();
+  DCHECK_EQ(cur_start % kNumReferencesPerScope, 0u);  // All other local scopes are fully filled.
+  while (i < cur_start) {
+    cur = down_cast<LocalScopeType*>(cur->GetLink());
+    DCHECK(cur != nullptr);
+    DCHECK_EQ(cur->Size(), kNumReferencesPerScope);
+    cur_start -= kNumReferencesPerScope;
+  }
+  return cur->GetHandle<T>(i - cur_start);
 }
 
 template <typename Visitor>
@@ -283,7 +309,7 @@ inline void VariableSizedHandleScope::VisitRoots(Visitor& visitor) {
   LocalScopeType* cur = current_scope_;
   while (cur != nullptr) {
     cur->VisitRoots(visitor);
-    cur = reinterpret_cast<LocalScopeType*>(cur->GetLink());
+    cur = down_cast<LocalScopeType*>(cur->GetLink());
   }
 }
 
@@ -292,7 +318,7 @@ inline void VariableSizedHandleScope::VisitHandles(Visitor& visitor) {
   LocalScopeType* cur = current_scope_;
   while (cur != nullptr) {
     cur->VisitHandles(visitor);
-    cur = reinterpret_cast<LocalScopeType*>(cur->GetLink());
+    cur = down_cast<LocalScopeType*>(cur->GetLink());
   }
 }
 

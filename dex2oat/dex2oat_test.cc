@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -207,7 +208,7 @@ class Dex2oatTest : public Dex2oatEnvironmentTest {
 // to what's already huge test methods).
 class Dex2oatWithExpectedFilterTest : public Dex2oatTest {
  protected:
-  void CheckFilter(CompilerFilter::Filter expected ATTRIBUTE_UNUSED,
+  void CheckFilter([[maybe_unused]] CompilerFilter::Filter expected,
                    CompilerFilter::Filter actual) override {
     EXPECT_EQ(expected_filter_, actual);
   }
@@ -251,7 +252,7 @@ class Dex2oatSwapTest : public Dex2oatTest {
     }
   }
 
-  virtual void CheckTargetResult(bool expect_use ATTRIBUTE_UNUSED) {
+  virtual void CheckTargetResult([[maybe_unused]] bool expect_use) {
     // TODO: Ignore for now, as we won't capture any output (it goes to the logcat). We may do
     //       something for variants with file descriptor where we can control the lifetime of
     //       the swap file and thus take a look at it.
@@ -441,8 +442,8 @@ TEST_F(Dex2oatSwapUseTest, CheckSwapUsage) {
 
 class Dex2oatVeryLargeTest : public Dex2oatTest {
  protected:
-  void CheckFilter(CompilerFilter::Filter input ATTRIBUTE_UNUSED,
-                   CompilerFilter::Filter result ATTRIBUTE_UNUSED) override {
+  void CheckFilter([[maybe_unused]] CompilerFilter::Filter input,
+                   [[maybe_unused]] CompilerFilter::Filter result) override {
     // Ignore, we'll do our own checks.
   }
 
@@ -537,7 +538,7 @@ class Dex2oatVeryLargeTest : public Dex2oatTest {
     }
   }
 
-  void CheckTargetResult(bool expect_downgrade ATTRIBUTE_UNUSED) {
+  void CheckTargetResult([[maybe_unused]] bool expect_downgrade) {
     // TODO: Ignore for now. May do something for fd things.
   }
 
@@ -591,8 +592,8 @@ TEST_F(Dex2oatVeryLargeTest, SpeedProfileNoProfile) {
 
 class Dex2oatLayoutTest : public Dex2oatTest {
  protected:
-  void CheckFilter(CompilerFilter::Filter input ATTRIBUTE_UNUSED,
-                   CompilerFilter::Filter result ATTRIBUTE_UNUSED) override {
+  void CheckFilter([[maybe_unused]] CompilerFilter::Filter input,
+                   [[maybe_unused]] CompilerFilter::Filter result) override {
     // Ignore, we'll do our own checks.
   }
 
@@ -1089,9 +1090,11 @@ TEST_F(Dex2oatClassLoaderContextTest, ContextWithTheSourceDexFiles) {
 TEST_F(Dex2oatClassLoaderContextTest, ContextWithOtherDexFiles) {
   std::vector<std::unique_ptr<const DexFile>> dex_files = OpenTestDexFiles("Nested");
 
+  uint32_t expected_checksum = DexFileLoader::GetMultiDexChecksum(dex_files);
+
   std::string context = "PCL[" + dex_files[0]->GetLocation() + "]";
-  std::string expected_classpath_key = "PCL[" + dex_files[0]->GetLocation() + "*" +
-                                       std::to_string(dex_files[0]->GetLocationChecksum()) + "]";
+  std::string expected_classpath_key =
+      "PCL[" + dex_files[0]->GetLocation() + "*" + std::to_string(expected_checksum) + "]";
   RunTest(context.c_str(), expected_classpath_key.c_str(), true);
 }
 
@@ -1242,6 +1245,9 @@ TEST_F(Dex2oatDeterminism, UnloadCompile) {
 // Test that dexlayout section info is correctly written to the oat file for profile based
 // compilation.
 TEST_F(Dex2oatTest, LayoutSections) {
+  // TODO(b/256664509): Clean this up.
+  GTEST_SKIP() << "Compact dex is disabled";
+#if 0
   using Hotness = ProfileCompilationInfo::MethodHotness;
   std::unique_ptr<const DexFile> dex(OpenTestDexFile("ManyMethods"));
   ScratchFile profile_file;
@@ -1314,6 +1320,10 @@ TEST_F(Dex2oatTest, LayoutSections) {
   ASSERT_EQ(oat_dex_files.size(), 1u);
   // Check that the code sections match what we expect.
   for (const OatDexFile* oat_dex : oat_dex_files) {
+    if (oat_dex->GetDexVersion() >= DexFile::kDexContainerVersion) {
+      continue;  // Compact dex isn't supported together with dex container.
+    }
+
     const DexLayoutSections* const sections = oat_dex->GetDexLayoutSections();
     // Testing of logging the sections.
     ASSERT_TRUE(sections != nullptr);
@@ -1392,10 +1402,14 @@ TEST_F(Dex2oatTest, LayoutSections) {
     EXPECT_GT(startup_count, 0u);
     EXPECT_GT(unused_count, 0u);
   }
+#endif  // 0
 }
 
 // Test that generating compact dex works.
 TEST_F(Dex2oatTest, GenerateCompactDex) {
+  // TODO(b/256664509): Clean this up.
+  GTEST_SKIP() << "Compact dex is disabled";
+#if 0
   // Generate a compact dex based odex.
   const std::string dir = GetScratchDir();
   const std::string oat_filename = dir + "/base.oat";
@@ -1423,6 +1437,10 @@ TEST_F(Dex2oatTest, GenerateCompactDex) {
   std::vector<std::unique_ptr<const CompactDexFile>> compact_dex_files;
   for (const OatDexFile* oat_dex : oat_dex_files) {
     std::unique_ptr<const DexFile> dex_file(oat_dex->OpenDexFile(&error_msg));
+    if (dex_file->HasDexContainer()) {
+      ASSERT_FALSE(dex_file->IsCompactDexFile());
+      continue;  // Compact dex isn't supported together with dex container.
+    }
     ASSERT_TRUE(dex_file != nullptr) << error_msg;
     ASSERT_TRUE(dex_file->IsCompactDexFile());
     compact_dex_files.push_back(
@@ -1451,6 +1469,7 @@ TEST_F(Dex2oatTest, GenerateCompactDex) {
       }
     }
   }
+#endif  // 0
 }
 
 class Dex2oatVerifierAbort : public Dex2oatTest {};
@@ -1479,6 +1498,7 @@ TEST_F(Dex2oatVerifierAbort, HardFail) {
 class Dex2oatDedupeCode : public Dex2oatTest {};
 
 TEST_F(Dex2oatDedupeCode, DedupeTest) {
+  TEST_DISABLED_FOR_RISCV64();
   // Use MyClassNatives. It has lots of native methods that will produce deduplicate-able code.
   std::unique_ptr<const DexFile> dex(OpenTestDexFile("MyClassNatives"));
   std::string out_dir = GetScratchDir();
@@ -1689,8 +1709,7 @@ TEST_F(Dex2oatTest, CompactDexGenerationFailureMultiDex) {
   }
   const std::string& dex_location = apk_file.GetFilename();
   const std::string odex_location = GetOdexDir() + "/output.odex";
-  ASSERT_TRUE(GenerateOdexForTest(
-      dex_location, odex_location, CompilerFilter::kVerify, {"--compact-dex-level=fast"}, true));
+  ASSERT_TRUE(GenerateOdexForTest(dex_location, odex_location, CompilerFilter::kVerify, {}, true));
 }
 
 TEST_F(Dex2oatTest, StderrLoggerOutput) {
@@ -1853,8 +1872,8 @@ TEST_F(Dex2oatTest, CompactDexInvalidSource) {
     ZipWriter writer(file);
     writer.StartEntry("classes.dex", ZipWriter::kAlign32);
     DexFile::Header header = {};
-    StandardDexFile::WriteMagic(header.magic_);
-    StandardDexFile::WriteCurrentVersion(header.magic_);
+    StandardDexFile::WriteMagic(header.magic_.data());
+    StandardDexFile::WriteCurrentVersion(header.magic_.data());
     header.file_size_ = 4 * KB;
     header.data_size_ = 4 * KB;
     header.data_off_ = 10 * MB;
@@ -1869,21 +1888,17 @@ TEST_F(Dex2oatTest, CompactDexInvalidSource) {
   const std::string& dex_location = invalid_dex.GetFilename();
   const std::string odex_location = GetOdexDir() + "/output.odex";
   std::string error_msg;
-  int status = GenerateOdexForTestWithStatus({dex_location},
-                                             odex_location,
-                                             CompilerFilter::kVerify,
-                                             &error_msg,
-                                             {"--compact-dex-level=fast"});
+  int status = GenerateOdexForTestWithStatus(
+      {dex_location}, odex_location, CompilerFilter::kVerify, &error_msg, {});
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) != 0) << status << " " << output_;
 }
 
 // Test that dex2oat with a CompactDex file in the APK fails.
 TEST_F(Dex2oatTest, CompactDexInZip) {
   CompactDexFile::Header header = {};
-  CompactDexFile::WriteMagic(header.magic_);
-  CompactDexFile::WriteCurrentVersion(header.magic_);
+  CompactDexFile::WriteMagic(header.magic_.data());
+  CompactDexFile::WriteCurrentVersion(header.magic_.data());
   header.file_size_ = sizeof(CompactDexFile::Header);
-  header.data_off_ = 10 * MB;
   header.map_off_ = 10 * MB;
   header.class_defs_off_ = 10 * MB;
   header.class_defs_size_ = 10000;
@@ -1911,14 +1926,14 @@ TEST_F(Dex2oatTest, CompactDexInZip) {
                                          GetOdexDir() + "/output_apk.odex",
                                          CompilerFilter::kVerify,
                                          &error_msg,
-                                         {"--compact-dex-level=fast"});
+                                         {});
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) != 0) << status << " " << output_;
 
   status = GenerateOdexForTestWithStatus({invalid_dex.GetFilename()},
                                          GetOdexDir() + "/output.odex",
                                          CompilerFilter::kVerify,
                                          &error_msg,
-                                         {"--compact-dex-level=fast"});
+                                         {});
   ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) != 0) << status << " " << output_;
 }
 
@@ -2003,7 +2018,7 @@ TEST_F(Dex2oatWithExpectedFilterTest, AppImageEmptyDex) {
       ASSERT_GT(header->file_size_,
                 sizeof(*header) + sizeof(dex::MapList) + sizeof(dex::MapItem) * 2);
       // Move map list to be right after the header.
-      header->map_off_ = sizeof(DexFile::Header);
+      header->map_off_ = header->header_size_;
       dex::MapList* map_list = const_cast<dex::MapList*>(dex->GetMapList());
       map_list->list_[0].type_ = DexFile::kDexTypeHeaderItem;
       map_list->list_[0].size_ = 1u;
@@ -2014,6 +2029,7 @@ TEST_F(Dex2oatWithExpectedFilterTest, AppImageEmptyDex) {
       map_list->size_ = 2;
       header->data_off_ = header->map_off_;
       header->data_size_ = map_list->Size();
+      header->SetDexContainer(0, header->file_size_);
     });
   }
   std::unique_ptr<const DexFile> dex_file(OpenDexFile(temp_dex.GetFilename().c_str()));
@@ -2214,21 +2230,9 @@ TEST_F(Dex2oatClassLoaderContextTest, StoredClassLoaderContext) {
   const std::string odex_location = out_dir + "/base.odex";
   const std::string valid_context = "PCL[" + dex_files[0]->GetLocation() + "]";
   const std::string stored_context = "PCL[/system/not_real_lib.jar]";
-  std::string expected_stored_context = "PCL[";
-  size_t index = 1;
-  for (const std::unique_ptr<const DexFile>& dex_file : dex_files) {
-    const bool is_first = index == 1u;
-    if (!is_first) {
-      expected_stored_context += ":";
-    }
-    expected_stored_context += "/system/not_real_lib.jar";
-    if (!is_first) {
-      expected_stored_context += "!classes" + std::to_string(index) + ".dex";
-    }
-    expected_stored_context += "*" + std::to_string(dex_file->GetLocationChecksum());
-    ++index;
-  }
-  expected_stored_context += "]";
+  uint32_t checksum = DexFileLoader::GetMultiDexChecksum(dex_files);
+  std::string expected_stored_context =
+      "PCL[/system/not_real_lib.jar*" + std::to_string(checksum) + "]";
   // The class path should not be valid and should fail being stored.
   EXPECT_TRUE(GenerateOdexForTest(GetTestDexFileName("ManyMethods"),
                                   odex_location,

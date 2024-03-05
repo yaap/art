@@ -23,14 +23,28 @@
 #include "aidl/com/android/server/art/BnArtd.h"
 #include "android-base/result.h"
 #include "base/file_utils.h"
+#include "fstab/fstab.h"
 
 namespace art {
 namespace artd {
 
-// Returns all existing files that are managed by artd.
-android::base::Result<std::vector<std::string>> ListManagedFiles();
+android::base::Result<std::string> GetAndroidDataOrError();
 
-android::base::Result<void> ValidateDexPath(const std::string& dex_path);
+android::base::Result<std::string> GetAndroidExpandOrError();
+
+android::base::Result<std::string> GetArtRootOrError();
+
+// Returns all existing files that are managed by artd.
+std::vector<std::string> ListManagedFiles(const std::string& android_data,
+                                          const std::string& android_expand);
+
+std::vector<std::string> ListRuntimeArtifactsFiles(
+    const std::string& android_data,
+    const std::string& android_expand,
+    const aidl::com::android::server::art::RuntimeArtifactsPath& runtime_artifacts_path);
+
+android::base::Result<void> ValidateRuntimeArtifactsPath(
+    const aidl::com::android::server::art::RuntimeArtifactsPath& runtime_artifacts_path);
 
 android::base::Result<std::string> BuildArtBinPath(const std::string& binary_name);
 
@@ -81,6 +95,20 @@ android::base::Result<std::string> BuildProfileOrDmPath(
 
 android::base::Result<std::string> BuildVdexPath(
     const aidl::com::android::server::art::VdexPath& vdex_path);
+
+// Returns true if `path` starts with `prefix` (i.e., if `prefix` represents a directory that
+// contains a file/directory at `path`, or if `prefix` and `path` represents the same
+// file/directory). Only supports absolute paths.
+bool PathStartsWith(std::string_view path, std::string_view prefix);
+
+// Returns the fstab entries in /proc/mounts for the given path.
+android::base::Result<std::vector<android::fs_mgr::FstabEntry>> GetProcMountsEntriesForPath(
+    const std::string& path);
+
+// Sets the root dir for `ListManagedFiles` and `ListRuntimeImageFiles`.
+// The passed string must be alive until the test ends.
+// For testing use only.
+void TestOnlySetListRootDir(std::string_view root_dir);
 
 }  // namespace artd
 }  // namespace art

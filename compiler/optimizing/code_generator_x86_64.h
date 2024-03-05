@@ -87,19 +87,8 @@ static constexpr FloatRegister non_volatile_xmm_regs[] = { XMM12, XMM13, XMM14, 
   V(StringBuilderLength)                       \
   V(StringBuilderToString)                     \
   /* 1.8 */                                    \
-  V(UnsafeGetAndAddInt)                        \
-  V(UnsafeGetAndAddLong)                       \
-  V(UnsafeGetAndSetInt)                        \
-  V(UnsafeGetAndSetLong)                       \
-  V(UnsafeGetAndSetObject)                     \
   V(MethodHandleInvokeExact)                   \
-  V(MethodHandleInvoke)                        \
-  /* OpenJDK 11 */                             \
-  V(JdkUnsafeGetAndAddInt)                     \
-  V(JdkUnsafeGetAndAddLong)                    \
-  V(JdkUnsafeGetAndSetInt)                     \
-  V(JdkUnsafeGetAndSetLong)                    \
-  V(JdkUnsafeGetAndSetObject)
+  V(MethodHandleInvoke)
 
 class InvokeRuntimeCallingConvention : public CallingConvention<Register, FloatRegister> {
  public:
@@ -162,16 +151,16 @@ class FieldAccessCallingConventionX86_64 : public FieldAccessCallingConvention {
   Location GetFieldIndexLocation() const override {
     return Location::RegisterLocation(RDI);
   }
-  Location GetReturnLocation(DataType::Type type ATTRIBUTE_UNUSED) const override {
+  Location GetReturnLocation([[maybe_unused]] DataType::Type type) const override {
     return Location::RegisterLocation(RAX);
   }
-  Location GetSetValueLocation(DataType::Type type ATTRIBUTE_UNUSED, bool is_instance)
-      const override {
+  Location GetSetValueLocation([[maybe_unused]] DataType::Type type,
+                               bool is_instance) const override {
     return is_instance
         ? Location::RegisterLocation(RDX)
         : Location::RegisterLocation(RSI);
   }
-  Location GetFpuLocation(DataType::Type type ATTRIBUTE_UNUSED) const override {
+  Location GetFpuLocation([[maybe_unused]] DataType::Type type) const override {
     return Location::FpuRegisterLocation(XMM0);
   }
 
@@ -468,7 +457,7 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   void SetupBlockedRegisters() const override;
   void DumpCoreRegister(std::ostream& stream, int reg) const override;
   void DumpFloatingPointRegister(std::ostream& stream, int reg) const override;
-  void Finalize(CodeAllocator* allocator) override;
+  void Finalize() override;
 
   InstructionSet GetInstructionSet() const override {
     return InstructionSet::kX86_64;
@@ -502,9 +491,7 @@ class CodeGeneratorX86_64 : public CodeGenerator {
     block_labels_ = CommonInitializeLabels<Label>();
   }
 
-  bool NeedsTwoRegisters(DataType::Type type ATTRIBUTE_UNUSED) const override {
-    return false;
-  }
+  bool NeedsTwoRegisters([[maybe_unused]] DataType::Type type) const override { return false; }
 
   // Check if the desired_string_load_kind is supported. If it is, return it,
   // otherwise return a fall-back kind that should be used instead.

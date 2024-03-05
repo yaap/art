@@ -241,19 +241,13 @@
     add     \reg, rFP, \vreg, lsl #2
 .endm
 
-// An assembly entry that has a OatQuickMethodHeader prefix.
-.macro OAT_ENTRY name, end
+// An assembly entry for nterp.
+.macro OAT_ENTRY name
     .arm
     .type \name, #function
     .hidden \name
     .global \name
     .balign 16
-    // Padding of 3 * 4 bytes to get 16 bytes alignment of code entry.
-    .long 0
-    .long 0
-    .long 0
-    // OatQuickMethodHeader. Note that the top two bits must be clear.
-    .long (\end - \name)
 \name:
 .endm
 
@@ -1451,6 +1445,12 @@ END \name
    GOTO_OPCODE ip
 .endm
 
+.macro POISON_HEAP_REF_IF_OBJECT is_object, rRef
+   .if \is_object
+   POISON_HEAP_REF \rRef
+   .endif
+.endm
+
 .macro WRITE_BARRIER_IF_OBJECT is_object, value, holder, label, tmp
    .if \is_object
    // In T32, we would use `SMART_CBZ \value, \label`
@@ -1611,29 +1611,34 @@ END \name
  *  rest  method parameters
  */
 
-OAT_ENTRY ExecuteNterpWithClinitImpl, EndExecuteNterpWithClinitImpl
+OAT_ENTRY ExecuteNterpWithClinitImpl
+    .cfi_startproc
     // For simplicity, we don't do a read barrier here, but instead rely
     // on art_quick_resolution_trampoline to always have a suspend point before
     // calling back here.
     ldr r4, [r0, ART_METHOD_DECLARING_CLASS_OFFSET]
-    ldrb ip, [r4, MIRROR_CLASS_IS_VISIBLY_INITIALIZED_OFFSET]
-    cmp ip, #MIRROR_CLASS_IS_VISIBLY_INITIALIZED_VALUE
+    ldr ip, [r4, MIRROR_CLASS_STATUS_OFFSET]
+    cmp ip, #MIRROR_CLASS_STATUS_VISIBLY_INITIALIZED_SHIFTED
     bcs ExecuteNterpImpl
-    cmp ip, #MIRROR_CLASS_IS_INITIALIZED_VALUE
+    cmp ip, #MIRROR_CLASS_STATUS_INITIALIZED_SHIFTED
     blo .Linitializing_check
     dmb ish
     b ExecuteNterpImpl
 .Linitializing_check:
-    cmp ip, #MIRROR_CLASS_IS_INITIALIZING_VALUE
+    cmp ip, #MIRROR_CLASS_STATUS_INITIALIZING_SHIFTED
     blo art_quick_resolution_trampoline
     ldr r4, [r4, #MIRROR_CLASS_CLINIT_THREAD_ID_OFFSET]
     ldr ip, [rSELF, #THREAD_TID_OFFSET]
     cmp r4, ip
     beq ExecuteNterpImpl
     b art_quick_resolution_trampoline
+    .cfi_endproc
+    .type EndExecuteNterpWithClinitImpl, #function
+    .hidden EndExecuteNterpWithClinitImpl
+    .global EndExecuteNterpWithClinitImpl
 EndExecuteNterpWithClinitImpl:
 
-OAT_ENTRY ExecuteNterpImpl, EndExecuteNterpImpl
+OAT_ENTRY ExecuteNterpImpl
     .cfi_startproc
     sub ip, sp, #STACK_OVERFLOW_RESERVED_BYTES
     ldr ip, [ip]

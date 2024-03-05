@@ -35,13 +35,16 @@ cc_defaults {
         "profman_headers",
     ],
     shared_libs: [
+        "libartservice",
         "libarttools", // Contains "libc++fs".
         "libbase",
         "libbinder_ndk",
+        "libdexfile",
         "libselinux",
     ],
     static_libs: [
         "artd-aidl-ndk",
+        "libfstab",
     ],
 }
 

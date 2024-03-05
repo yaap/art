@@ -97,6 +97,7 @@ class MethodHandle;
 class MethodHandlesLookup;
 class MethodType;
 template<class T> class ObjectArray;
+class RawMethodType;
 class StackTraceElement;
 }  // namespace mirror
 
@@ -448,6 +449,14 @@ class ClassLinker {
                                                ArtMethod* referrer)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  bool ResolveMethodType(Thread* self,
+                         dex::ProtoIndex proto_idx,
+                         Handle<mirror::DexCache> dex_cache,
+                         Handle<mirror::ClassLoader> class_loader,
+                         /*out*/ mirror::RawMethodType method_type)
+      REQUIRES_SHARED(Locks::mutator_lock_)
+      REQUIRES(!Locks::dex_lock_, !Roles::uninterruptible_);
+
   // Resolve a method handle with a given ID from the DexFile. The
   // result is not cached in the DexCache as the instance will only be
   // used once in most circumstances.
@@ -514,7 +523,7 @@ class ClassLinker {
   void VisitClassRoots(RootVisitor* visitor, VisitRootFlags flags)
       REQUIRES(!Locks::classlinker_classes_lock_, !Locks::trace_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
-  void VisitRoots(RootVisitor* visitor, VisitRootFlags flags)
+  void VisitRoots(RootVisitor* visitor, VisitRootFlags flags, bool visit_class_roots = true)
       REQUIRES(!Locks::dex_lock_, !Locks::classlinker_classes_lock_, !Locks::trace_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
   // Visits all dex-files accessible by any class-loader or the BCP.
@@ -784,6 +793,16 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_)
       NO_THREAD_SAFETY_ANALYSIS;
 
+  // Dirty card in the card-table corresponding to the class_loader. Also log
+  // the root if we are logging new roots and class_loader is null.
+  void WriteBarrierOnClassLoaderLocked(ObjPtr<mirror::ClassLoader> class_loader,
+                                       ObjPtr<mirror::Object> root)
+      REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(Locks::classlinker_classes_lock_);
+  void WriteBarrierOnClassLoader(Thread* self,
+                                 ObjPtr<mirror::ClassLoader> class_loader,
+                                 ObjPtr<mirror::Object> root) REQUIRES_SHARED(Locks::mutator_lock_)
+      REQUIRES(!Locks::classlinker_classes_lock_);
+
   // DO NOT use directly. Use `Runtime::AppendToBootClassPath`.
   void AppendToBootClassPath(Thread* self, const DexFile* dex_file)
       REQUIRES_SHARED(Locks::mutator_lock_)
@@ -866,6 +885,9 @@ class ClassLinker {
   // Enable or disable public sdk checks.
   virtual void SetEnablePublicSdkChecks(bool enabled);
   void RemoveDexFromCaches(const DexFile& dex_file);
+  ClassTable* GetBootClassTable() REQUIRES_SHARED(Locks::classlinker_classes_lock_) {
+    return boot_class_table_.get();
+  }
 
  protected:
   virtual bool InitializeClass(Thread* self,
@@ -912,7 +934,11 @@ class ClassLinker {
       REQUIRES(!Locks::dex_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  void DeleteClassLoader(Thread* self, const ClassLoaderData& data, bool cleanup_cha)
+  // Prepare by removing dependencies on things allocated in data.allocator.
+  // Please note that the allocator and class_table are not deleted in this
+  // function. They are to be deleted after preparing all the class-loaders that
+  // are to be deleted (see b/298575095).
+  void PrepareToDeleteClassLoader(Thread* self, const ClassLoaderData& data, bool cleanup_cha)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   void VisitClassesInternal(ClassVisitor* visitor)
@@ -1323,8 +1349,8 @@ class ClassLinker {
   // Boot class path table. Since the class loader for this is null.
   std::unique_ptr<ClassTable> boot_class_table_ GUARDED_BY(Locks::classlinker_classes_lock_);
 
-  // New class roots, only used by CMS since the GC needs to mark these in the pause.
-  std::vector<GcRoot<mirror::Class>> new_class_roots_ GUARDED_BY(Locks::classlinker_classes_lock_);
+  // New gc-roots, only used by CMS/CMC since the GC needs to mark these in the pause.
+  std::vector<GcRoot<mirror::Object>> new_roots_ GUARDED_BY(Locks::classlinker_classes_lock_);
 
   // Boot image oat files with new .bss GC roots to be visited in the pause by CMS.
   std::vector<const OatFile*> new_bss_roots_boot_oat_files_
@@ -1374,6 +1400,9 @@ class ClassLinker {
   IntrusiveForwardList<VisiblyInitializedCallback> running_visibly_initialized_callbacks_
       GUARDED_BY(visibly_initialized_callback_lock_);
 
+  // Whether to use `membarrier()` to make classes visibly initialized.
+  bool visibly_initialize_classes_with_membarier_;
+
   // Registered native code for @CriticalNative methods of classes that are not visibly
   // initialized. These code pointers cannot be stored in ArtMethod as that would risk
   // skipping the class initialization check for direct calls from compiled code.
@@ -1414,13 +1443,13 @@ class ClassLoadCallback {
   //       different object. It is the listener's responsibility to handle this.
   // Note: This callback is rarely useful so a default implementation has been given that does
   //       nothing.
-  virtual void ClassPreDefine(const char* descriptor ATTRIBUTE_UNUSED,
-                              Handle<mirror::Class> klass ATTRIBUTE_UNUSED,
-                              Handle<mirror::ClassLoader> class_loader ATTRIBUTE_UNUSED,
-                              const DexFile& initial_dex_file ATTRIBUTE_UNUSED,
-                              const dex::ClassDef& initial_class_def ATTRIBUTE_UNUSED,
-                              /*out*/DexFile const** final_dex_file ATTRIBUTE_UNUSED,
-                              /*out*/dex::ClassDef const** final_class_def ATTRIBUTE_UNUSED)
+  virtual void ClassPreDefine([[maybe_unused]] const char* descriptor,
+                              [[maybe_unused]] Handle<mirror::Class> klass,
+                              [[maybe_unused]] Handle<mirror::ClassLoader> class_loader,
+                              [[maybe_unused]] const DexFile& initial_dex_file,
+                              [[maybe_unused]] const dex::ClassDef& initial_class_def,
+                              [[maybe_unused]] /*out*/ DexFile const** final_dex_file,
+                              [[maybe_unused]] /*out*/ dex::ClassDef const** final_class_def)
       REQUIRES_SHARED(Locks::mutator_lock_) {}
 
   // A class has been loaded.

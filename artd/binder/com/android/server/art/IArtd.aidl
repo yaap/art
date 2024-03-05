@@ -22,7 +22,10 @@ interface IArtd {
     boolean isAlive();
 
     /**
-     * Deletes artifacts and returns the released space, in bytes.
+     * Deletes dexopt artifacts and returns the released space, in bytes.
+     *
+     * Note that this method doesn't delete runtime artifacts. To delete them, call
+     * `deleteRuntimeArtifacts`.
      *
      * Throws fatal errors. Logs and ignores non-fatal errors.
      */
@@ -46,13 +49,23 @@ interface IArtd {
             @utf8InCpp String dexFile);
 
     /**
-     * Copies the profile and rewrites it for the given dex file. Returns true and fills
+     * Copies the profile and rewrites it for the given dex file. Returns `SUCCESS` and fills
      * `dst.profilePath.id` if the operation succeeds and `src` exists and contains entries that
      * match the given dex file.
      *
-     * Throws fatal and non-fatal errors.
+     * Throws fatal and non-fatal errors, except if the input is a bad profile.
      */
-    boolean copyAndRewriteProfile(in com.android.server.art.ProfilePath src,
+    com.android.server.art.CopyAndRewriteProfileResult copyAndRewriteProfile(
+            in com.android.server.art.ProfilePath src,
+            inout com.android.server.art.OutputProfile dst, @utf8InCpp String dexFile);
+
+    /**
+     * Similar to above. The difference is that the profile is not taken from a separate file but
+     * taken from `dexFile` itself. Specifically, if `dexFile` is a zip file, the profile is taken
+     * from `assets/art-profile/baseline.prof` in the zip. Returns `NO_PROFILE` if `dexFile` is not
+     * a zip file or it doesn't contain a profile.
+     */
+    com.android.server.art.CopyAndRewriteProfileResult copyAndRewriteEmbeddedProfile(
             inout com.android.server.art.OutputProfile dst, @utf8InCpp String dexFile);
 
     /**
@@ -168,12 +181,22 @@ interface IArtd {
      */
     long cleanup(in List<com.android.server.art.ProfilePath> profilesToKeep,
             in List<com.android.server.art.ArtifactsPath> artifactsToKeep,
-            in List<com.android.server.art.VdexPath> vdexFilesToKeep);
+            in List<com.android.server.art.VdexPath> vdexFilesToKeep,
+            in List<com.android.server.art.RuntimeArtifactsPath> runtimeArtifactsToKeep);
 
     /**
-     * Returns whether the dex file is in Incremental FS.
+     * Returns whether the artifacts of the primary dex files should be in the global dalvik-cache
+     * directory.
      *
-     * Throws fatal errors. On non-fatal errors, logs the error and returns false.
+     * Throws fatal and non-fatal errors.
      */
-    boolean isIncrementalFsPath(@utf8InCpp String dexFile);
+    boolean isInDalvikCache(@utf8InCpp String dexFile);
+
+    /**
+     * Deletes runtime artifacts and returns the released space, in bytes.
+     *
+     * Throws fatal errors. Logs and ignores non-fatal errors.
+     */
+    long deleteRuntimeArtifacts(
+            in com.android.server.art.RuntimeArtifactsPath runtimeArtifactsPath);
 }

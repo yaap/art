@@ -203,25 +203,39 @@
 /*
  * Get/set the 64-bit value from a Dalvik register.
  */
+.macro LOAD_SCALED_VREG_MASK scaled_mask_reg, unscaled_mask
+    mov     \scaled_mask_reg, \unscaled_mask << 2
+.endm
+.macro EXTRACT_SCALED_VREG scaled_vreg, scaled_mask_reg, src_reg, lsb
+    .if \lsb < 2
+    and     \scaled_vreg, \scaled_mask_reg, \src_reg, lsl #(2 - \lsb)
+    .else
+    and     \scaled_vreg, \scaled_mask_reg, \src_reg, lsr #(\lsb - 2)
+    .endif
+.endm
+.macro GET_VREG_WIDE_PRESCALED reg, scaled_vreg
+    ldr     \reg, [xFP, \scaled_vreg, uxtw]
+.endm
 .macro GET_VREG_WIDE reg, vreg
-    add     ip2, xFP, \vreg, uxtw #2
-    ldr     \reg, [ip2]
+    lsl     wip2, \vreg, #2
+    GET_VREG_WIDE_PRESCALED \reg, wip2
+.endm
+.macro SET_VREG_WIDE_PRESCALED reg, scaled_vreg
+    str     \reg, [xFP, \scaled_vreg, uxtw]
+    str     xzr, [xREFS, \scaled_vreg, uxtw]
 .endm
 .macro SET_VREG_WIDE reg, vreg
-    add     ip2, xFP, \vreg, uxtw #2
-    str     \reg, [ip2]
-    add     ip2, xREFS, \vreg, uxtw #2
-    str     xzr, [ip2]
+    lsl     wip2, \vreg, #2
+    SET_VREG_WIDE_PRESCALED \reg, wip2
+.endm
+.macro GET_VREG_DOUBLE_PRESCALED reg, scaled_vreg
+    GET_VREG_WIDE_PRESCALED \reg, \scaled_vreg
 .endm
 .macro GET_VREG_DOUBLE reg, vreg
-    add     ip2, xFP, \vreg, uxtw #2
-    ldr     \reg, [ip2]
+    GET_VREG_WIDE \reg, \vreg
 .endm
 .macro SET_VREG_DOUBLE reg, vreg
-    add     ip2, xFP, \vreg, uxtw #2
-    str     \reg, [ip2]
-    add     ip2, xREFS, \vreg, uxtw #2
-    str     xzr, [ip2]
+    SET_VREG_WIDE \reg, \vreg
 .endm
 
 /*
@@ -232,18 +246,12 @@
     ldrsw   \reg, [xFP, \vreg, uxtw #2]
 .endm
 
-// An assembly entry that has a OatQuickMethodHeader prefix.
-.macro OAT_ENTRY name, end
+// An assembly entry for nterp.
+.macro OAT_ENTRY name
     .type \name, #function
     .hidden \name
     .global \name
     .balign 16
-    // Padding of 3 * 4 bytes to get 16 bytes alignment of code entry.
-    .long 0
-    .long 0
-    .long 0
-    // OatQuickMethodHeader. Note that the top two bits must be clear.
-    .long (\end - \name)
 \name:
 .endm
 
@@ -1404,6 +1412,12 @@ END \name
    GOTO_OPCODE ip
 .endm
 
+.macro POISON_HEAP_REF_IF_OBJECT is_object, rRef
+   .if \is_object
+   POISON_HEAP_REF \rRef
+   .endif
+.endm
+
 .macro WRITE_BARRIER_IF_OBJECT is_object, value, holder, label
    .if \is_object
    cbz     \value, \label
@@ -1592,20 +1606,22 @@ END \name
  *  rest  method parameters
  */
 
-OAT_ENTRY ExecuteNterpWithClinitImpl, EndExecuteNterpWithClinitImpl
+OAT_ENTRY ExecuteNterpWithClinitImpl
+    .cfi_startproc
     // For simplicity, we don't do a read barrier here, but instead rely
     // on art_quick_resolution_trampoline to always have a suspend point before
     // calling back here.
     ldr wip, [x0, #ART_METHOD_DECLARING_CLASS_OFFSET]
-    ldrb wip2, [ip, #MIRROR_CLASS_IS_VISIBLY_INITIALIZED_OFFSET]
-    cmp ip2, #MIRROR_CLASS_IS_VISIBLY_INITIALIZED_VALUE
+    ldr wip2, [ip, #MIRROR_CLASS_STATUS_OFFSET]
+    lsr wip2, wip2, #MIRROR_CLASS_STATUS_SHIFT
+    cmp wip2, #MIRROR_CLASS_STATUS_VISIBLY_INITIALIZED
     b.hs ExecuteNterpImpl
-    cmp ip2, #MIRROR_CLASS_IS_INITIALIZED_VALUE
+    cmp wip2, #MIRROR_CLASS_STATUS_INITIALIZED
     b.lo .Linitializing_check
     dmb ish
     b ExecuteNterpImpl
 .Linitializing_check:
-    cmp ip2, #MIRROR_CLASS_IS_INITIALIZING_VALUE
+    cmp wip2, #MIRROR_CLASS_STATUS_INITIALIZING
     b.lo .Lresolution_trampoline
     ldr wip2, [ip, #MIRROR_CLASS_CLINIT_THREAD_ID_OFFSET]
     ldr wip, [xSELF, #THREAD_TID_OFFSET]
@@ -1613,9 +1629,13 @@ OAT_ENTRY ExecuteNterpWithClinitImpl, EndExecuteNterpWithClinitImpl
     b.eq ExecuteNterpImpl
 .Lresolution_trampoline:
     b art_quick_resolution_trampoline
+    .cfi_endproc
+    .type EndExecuteNterpWithClinitImpl, #function
+    .hidden EndExecuteNterpWithClinitImpl
+    .global EndExecuteNterpWithClinitImpl
 EndExecuteNterpWithClinitImpl:
 
-OAT_ENTRY ExecuteNterpImpl, EndExecuteNterpImpl
+OAT_ENTRY ExecuteNterpImpl
     .cfi_startproc
     sub x16, sp, #STACK_OVERFLOW_RESERVED_BYTES
     ldr wzr, [x16]

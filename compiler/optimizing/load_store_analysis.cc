@@ -41,7 +41,7 @@ static bool CanBinaryOpAndIndexAlias(const HBinaryOperation* idx1,
     // We currently only support Add and Sub operations.
     return true;
   }
-  if (idx1->AsBinaryOperation()->GetLeastConstantLeft() != idx2) {
+  if (idx1->GetLeastConstantLeft() != idx2) {
     // Cannot analyze [i+CONST1] and [j].
     return true;
   }
@@ -51,9 +51,9 @@ static bool CanBinaryOpAndIndexAlias(const HBinaryOperation* idx1,
 
   // Since 'i' are the same in [i+CONST] and [i],
   // further compare [CONST] and [0].
-  int64_t l1 = idx1->IsAdd() ?
-               idx1->GetConstantRight()->AsIntConstant()->GetValue() :
-               -idx1->GetConstantRight()->AsIntConstant()->GetValue();
+  int64_t l1 = idx1->IsAdd()
+      ? idx1->GetConstantRight()->AsIntConstant()->GetValue()
+      : -idx1->GetConstantRight()->AsIntConstant()->GetValue();
   int64_t l2 = 0;
   int64_t h1 = l1 + (vector_length1 - 1);
   int64_t h2 = l2 + (vector_length2 - 1);
@@ -68,8 +68,7 @@ static bool CanBinaryOpsAlias(const HBinaryOperation* idx1,
     // We currently only support Add and Sub operations.
     return true;
   }
-  if (idx1->AsBinaryOperation()->GetLeastConstantLeft() !=
-      idx2->AsBinaryOperation()->GetLeastConstantLeft()) {
+  if (idx1->GetLeastConstantLeft() != idx2->GetLeastConstantLeft()) {
     // Cannot analyze [i+CONST1] and [j+CONST2].
     return true;
   }
@@ -80,52 +79,15 @@ static bool CanBinaryOpsAlias(const HBinaryOperation* idx1,
 
   // Since 'i' are the same in [i+CONST1] and [i+CONST2],
   // further compare [CONST1] and [CONST2].
-  int64_t l1 = idx1->IsAdd() ?
-               idx1->GetConstantRight()->AsIntConstant()->GetValue() :
-               -idx1->GetConstantRight()->AsIntConstant()->GetValue();
-  int64_t l2 = idx2->IsAdd() ?
-               idx2->GetConstantRight()->AsIntConstant()->GetValue() :
-               -idx2->GetConstantRight()->AsIntConstant()->GetValue();
+  int64_t l1 = idx1->IsAdd()
+      ? idx1->GetConstantRight()->AsIntConstant()->GetValue()
+      : -idx1->GetConstantRight()->AsIntConstant()->GetValue();
+  int64_t l2 = idx2->IsAdd()
+      ? idx2->GetConstantRight()->AsIntConstant()->GetValue()
+      : -idx2->GetConstantRight()->AsIntConstant()->GetValue();
   int64_t h1 = l1 + (vector_length1 - 1);
   int64_t h2 = l2 + (vector_length2 - 1);
   return CanIntegerRangesOverlap(l1, h1, l2, h2);
-}
-
-// Make sure we mark any writes/potential writes to heap-locations within partially
-// escaped values as escaping.
-void ReferenceInfo::PrunePartialEscapeWrites() {
-  DCHECK(subgraph_ != nullptr);
-  if (!subgraph_->IsValid()) {
-    // All paths escape.
-    return;
-  }
-  HGraph* graph = reference_->GetBlock()->GetGraph();
-  ArenaBitVector additional_exclusions(
-      allocator_, graph->GetBlocks().size(), false, kArenaAllocLSA);
-  for (const HUseListNode<HInstruction*>& use : reference_->GetUses()) {
-    const HInstruction* user = use.GetUser();
-    if (!additional_exclusions.IsBitSet(user->GetBlock()->GetBlockId()) &&
-        subgraph_->ContainsBlock(user->GetBlock()) &&
-        (user->IsUnresolvedInstanceFieldSet() || user->IsUnresolvedStaticFieldSet() ||
-         user->IsInstanceFieldSet() || user->IsStaticFieldSet() || user->IsArraySet()) &&
-        (reference_ == user->InputAt(0)) &&
-        std::any_of(subgraph_->UnreachableBlocks().begin(),
-                    subgraph_->UnreachableBlocks().end(),
-                    [&](const HBasicBlock* excluded) -> bool {
-                      return reference_->GetBlock()->GetGraph()->PathBetween(excluded,
-                                                                             user->GetBlock());
-                    })) {
-      // This object had memory written to it somewhere, if it escaped along
-      // some paths prior to the current block this write also counts as an
-      // escape.
-      additional_exclusions.SetBit(user->GetBlock()->GetBlockId());
-    }
-  }
-  if (UNLIKELY(additional_exclusions.IsAnyBitSet())) {
-    for (uint32_t exc : additional_exclusions.Indexes()) {
-      subgraph_->RemoveBlock(graph->GetBlocks()[exc]);
-    }
-  }
 }
 
 bool HeapLocationCollector::InstructionEligibleForLSERemoval(HInstruction* inst) const {
@@ -149,37 +111,6 @@ bool HeapLocationCollector::InstructionEligibleForLSERemoval(HInstruction* inst)
   }
 }
 
-void ReferenceInfo::CollectPartialEscapes(HGraph* graph) {
-  ScopedArenaAllocator saa(graph->GetArenaStack());
-  ArenaBitVector seen_instructions(&saa, graph->GetCurrentInstructionId(), false, kArenaAllocLSA);
-  // Get regular escapes.
-  ScopedArenaVector<HInstruction*> additional_escape_vectors(saa.Adapter(kArenaAllocLSA));
-  LambdaEscapeVisitor scan_instructions([&](HInstruction* escape) -> bool {
-    HandleEscape(escape);
-    // LSE can't track heap-locations through Phi and Select instructions so we
-    // need to assume all escapes from these are escapes for the base reference.
-    if ((escape->IsPhi() || escape->IsSelect()) && !seen_instructions.IsBitSet(escape->GetId())) {
-      seen_instructions.SetBit(escape->GetId());
-      additional_escape_vectors.push_back(escape);
-    }
-    return true;
-  });
-  additional_escape_vectors.push_back(reference_);
-  while (!additional_escape_vectors.empty()) {
-    HInstruction* ref = additional_escape_vectors.back();
-    additional_escape_vectors.pop_back();
-    DCHECK(ref == reference_ || ref->IsPhi() || ref->IsSelect()) << *ref;
-    VisitEscapes(ref, scan_instructions);
-  }
-
-  // Mark irreducible loop headers as escaping since they cannot be tracked through.
-  for (HBasicBlock* blk : graph->GetActiveBlocks()) {
-    if (blk->IsLoopHeader() && blk->GetLoopInformation()->IsIrreducible()) {
-      HandleEscape(blk);
-    }
-  }
-}
-
 void HeapLocationCollector::DumpReferenceStats(OptimizingCompilerStats* stats) {
   if (stats == nullptr) {
     return;
@@ -196,14 +127,6 @@ void HeapLocationCollector::DumpReferenceStats(OptimizingCompilerStats* stats) {
       if (InstructionEligibleForLSERemoval(instruction)) {
         MaybeRecordStat(stats, MethodCompilationStat::kFullLSEPossible);
       }
-    }
-    // TODO This is an estimate of the number of allocations we will be able
-    // to (partially) remove. As additional work is done this can be refined.
-    if (ri->IsPartialSingleton() && instruction->IsNewInstance() &&
-        ri->GetNoEscapeSubgraph()->ContainsBlock(instruction->GetBlock()) &&
-        !ri->GetNoEscapeSubgraph()->GetExcludedCohorts().empty() &&
-        InstructionEligibleForLSERemoval(instruction)) {
-      MaybeRecordStat(stats, MethodCompilationStat::kPartialLSEPossible);
     }
   }
 }
@@ -269,6 +192,13 @@ bool HeapLocationCollector::CanArrayElementsAlias(const HInstruction* idx1,
 }
 
 bool LoadStoreAnalysis::Run() {
+  // Currently load_store analysis can't handle predicated load/stores; specifically pairs of
+  // memory operations with different predicates.
+  // TODO: support predicated SIMD.
+  if (graph_->HasPredicatedSIMD()) {
+    return false;
+  }
+
   for (HBasicBlock* block : graph_->GetReversePostOrder()) {
     heap_location_collector_.VisitBasicBlock(block);
   }

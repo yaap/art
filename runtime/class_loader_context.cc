@@ -17,6 +17,7 @@
 #include "class_loader_context.h"
 
 #include <algorithm>
+#include <optional>
 
 #include "android-base/file.h"
 #include "android-base/parseint.h"
@@ -454,13 +455,14 @@ bool ClassLoaderContext::OpenDexFiles(const std::string& classpath_dir,
       // If path is relative, append it to the provided base directory.
       std::string location = cp_elem;
       if (location[0] != '/' && !classpath_dir.empty()) {
-        location = classpath_dir + (classpath_dir.back() == '/' ? "" : "/") + location;
+        location =
+            ART_FORMAT("{}{}{}", classpath_dir, classpath_dir.back() == '/' ? "" : "/", location);
       }
 
       // If file descriptors were provided for the class loader context dex paths,
       // get the descriptor which corresponds to this dex path. We assume the `fds`
       // vector follows the same order as a flattened class loader context.
-      int fd = -1;
+      File file;
       if (!fds.empty()) {
         if (dex_file_index >= fds.size()) {
           LOG(WARNING) << "Number of FDs is smaller than number of dex files in the context";
@@ -468,42 +470,44 @@ bool ClassLoaderContext::OpenDexFiles(const std::string& classpath_dir,
           return false;
         }
 
-        fd = fds[dex_file_index++];
-        DCHECK_GE(fd, 0);
+        file = File(fds[dex_file_index++], /*check_usage=*/false);
+        DCHECK(file.IsValid());
       }
 
       std::string error_msg;
+      std::optional<uint32_t> dex_checksum;
       if (only_read_checksums) {
         bool zip_file_only_contains_uncompress_dex;
-        if (!ArtDexFileLoader::GetMultiDexChecksums(location.c_str(),
-                                                    &dex_checksums,
-                                                    &dex_locations,
-                                                    &error_msg,
-                                                    fd,
-                                                    &zip_file_only_contains_uncompress_dex)) {
-          LOG(WARNING) << "Could not get dex checksums for location " << location << ", fd=" << fd;
+        ArtDexFileLoader dex_file_loader(&file, location);
+        if (!dex_file_loader.GetMultiDexChecksum(
+                &dex_checksum, &error_msg, &zip_file_only_contains_uncompress_dex)) {
+          LOG(WARNING) << "Could not get dex checksums for location " << location
+                       << ", fd=" << file.Fd();
           dex_files_state_ = kDexFilesOpenFailed;
         }
+        file.Release();  // Don't close the file yet (we have only read the checksum).
       } else {
         // When opening the dex files from the context we expect their checksum to match their
         // contents. So pass true to verify_checksum.
         // We don't need to do structural dex file verification, we only need to
         // check the checksum, so pass false to verify.
-        size_t opened_dex_files_index = info->opened_dex_files.size();
-        ArtDexFileLoader dex_file_loader(location.c_str(), fd, location);
+        size_t i = info->opened_dex_files.size();
+        ArtDexFileLoader dex_file_loader(&file, location);
         if (!dex_file_loader.Open(/*verify=*/false,
                                   /*verify_checksum=*/true,
                                   &error_msg,
                                   &info->opened_dex_files)) {
-          LOG(WARNING) << "Could not open dex files for location " << location << ", fd=" << fd;
+          LOG(WARNING) << "Could not open dex files for location " << location
+                       << ", fd=" << file.Fd();
           dex_files_state_ = kDexFilesOpenFailed;
         } else {
-          for (size_t k = opened_dex_files_index; k < info->opened_dex_files.size(); k++) {
-            std::unique_ptr<const DexFile>& dex = info->opened_dex_files[k];
-            dex_locations.push_back(dex->GetLocation());
-            dex_checksums.push_back(dex->GetLocationChecksum());
-          }
+          dex_checksum = DexFileLoader::GetMultiDexChecksum(info->opened_dex_files, &i);
+          DCHECK_EQ(i, info->opened_dex_files.size());
         }
+      }
+      if (dex_checksum.has_value()) {
+        dex_locations.push_back(location);
+        dex_checksums.push_back(dex_checksum.value());
       }
     }
 
@@ -518,8 +522,8 @@ bool ClassLoaderContext::OpenDexFiles(const std::string& classpath_dir,
     // Note that this will also remove the paths that could not be opened.
     info->original_classpath = std::move(info->classpath);
     DCHECK(dex_locations.size() == dex_checksums.size());
-    info->classpath = dex_locations;
-    info->checksums = dex_checksums;
+    info->classpath = std::move(dex_locations);
+    info->checksums = std::move(dex_checksums);
     AddToWorkList(info, work_list);
   }
 
@@ -692,31 +696,28 @@ void ClassLoaderContext::EncodeContextInternal(const ClassLoaderInfo& info,
     }
   }
 
-  for (size_t k = 0; k < info.opened_dex_files.size(); k++) {
-    const std::unique_ptr<const DexFile>& dex_file = info.opened_dex_files[k];
+  DCHECK_EQ(info.classpath.size(), info.checksums.size());
+  for (size_t i = 0; i < info.classpath.size(); i++) {
     if (for_dex2oat) {
-      // dex2oat only needs the base location. It cannot accept multidex locations.
-      // So ensure we only add each file once.
-      bool new_insert =
-          seen_locations.insert(DexFileLoader::GetBaseLocation(dex_file->GetLocation())).second;
+      // De-duplicate locations.
+      bool new_insert = seen_locations.insert(info.classpath[i]).second;
       if (!new_insert) {
         continue;
       }
     }
 
-    std::string location = dex_file->GetLocation();
+    std::string location = info.classpath[i];
     // If there is a stored class loader remap, fix up the multidex strings.
     if (!remap.empty()) {
-      std::string base_dex_location = DexFileLoader::GetBaseLocation(location);
-      auto it = remap.find(base_dex_location);
-      CHECK(it != remap.end()) << base_dex_location;
-      location = it->second + DexFileLoader::GetMultiDexSuffix(location);
+      auto it = remap.find(location);
+      CHECK(it != remap.end()) << location;
+      location = it->second;
     }
     locations.emplace_back(std::move(location));
 
     // dex2oat does not need the checksums.
     if (!for_dex2oat) {
-      checksums.push_back(dex_file->GetLocationChecksum());
+      checksums.push_back(info.checksums[i]);
     }
   }
   EncodeClassPath(base_dir, locations, checksums, info.type, out);
@@ -1155,13 +1156,17 @@ bool ClassLoaderContext::CreateInfoFromClassLoader(
   }
 
   // Now that `info` is in the chain, populate dex files.
-  for (const DexFile* dex_file : dex_files_loaded) {
+  for (size_t i = 0; i < dex_files_loaded.size();) {
+    const DexFile* dex_file = dex_files_loaded[i];
+    uint32_t checksum = DexFileLoader::GetMultiDexChecksum(dex_files_loaded, &i);
     // Dex location of dex files loaded with InMemoryDexClassLoader is always bogus.
     // Use a magic value for the classpath instead.
     info->classpath.push_back((type == kInMemoryDexClassLoader) ?
                                   kInMemoryDexClassLoaderDexLocationMagic :
                                   dex_file->GetLocation());
-    info->checksums.push_back(dex_file->GetLocationChecksum());
+    info->checksums.push_back(checksum);
+  }
+  for (auto* dex_file : dex_files_loaded) {
     info->opened_dex_files.emplace_back(dex_file);
   }
 
@@ -1477,8 +1482,10 @@ std::set<const DexFile*> ClassLoaderContext::CheckForDuplicateDexFiles(
   // in the Android world) - and as such we decide not to warn on them.
   ClassLoaderInfo* info = class_loader_chain_.get();
   for (size_t k = 0; k < info->classpath.size(); k++) {
-    for (const DexFile* dex_file : dex_files_to_check) {
-      if (info->checksums[k] == dex_file->GetLocationChecksum() &&
+    for (size_t i = 0; i < dex_files_to_check.size();) {
+      const DexFile* dex_file = dex_files_to_check[i];
+      uint32_t checksum = DexFileLoader::GetMultiDexChecksum(dex_files_to_check, &i);
+      if (info->checksums[k] == checksum &&
           AreDexNameMatching(info->classpath[k], dex_file->GetLocation())) {
         result.insert(dex_file);
       }

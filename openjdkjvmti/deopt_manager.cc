@@ -388,9 +388,14 @@ void DeoptManager::Shutdown() {
     return;
   }
 
-  runtime->GetInstrumentation()->DisableDeoptimization(kInstrumentationKey);
-  runtime->GetInstrumentation()->DisableDeoptimization(kDeoptManagerInstrumentationKey);
-  runtime->GetInstrumentation()->MaybeSwitchRuntimeDebugState(self);
+  // If we attach a debugger to a non-debuggable runtime, we switch the runtime to debuggable to
+  // provide a consistent (though still best effort) support. Since we are detaching the debugger
+  // now, switch it back to non-debuggable if there are no other debugger / profiling tools are
+  // active.
+  runtime->GetInstrumentation()->DisableDeoptimization(kInstrumentationKey,
+                                                       /*try_switch_to_non_debuggable=*/true);
+  runtime->GetInstrumentation()->DisableDeoptimization(kDeoptManagerInstrumentationKey,
+                                                       /*try_switch_to_non_debuggable=*/true);
 }
 
 void DeoptManager::RemoveDeoptimizeAllMethodsLocked(art::Thread* self) {
@@ -475,7 +480,8 @@ void DeoptManager::RemoveDeoptimizationRequester() {
   deopter_count_--;
   if (deopter_count_ == 0) {
     ScopedDeoptimizationContext sdc(self, this);
-    art::Runtime::Current()->GetInstrumentation()->DisableDeoptimization(kInstrumentationKey);
+    art::Runtime::Current()->GetInstrumentation()->DisableDeoptimization(
+        kInstrumentationKey, /*try_switch_to_non_debuggable=*/false);
     return;
   } else {
     deoptimization_status_lock_.ExclusiveUnlock(self);
@@ -510,9 +516,8 @@ void DeoptManager::DeoptimizeThread(art::Thread* target) {
   // Prepare the stack so methods can be deoptimized as and when required.
   // This by itself doesn't cause any methods to deoptimize but enables
   // deoptimization on demand.
-  art::Runtime::Current()->GetInstrumentation()->InstrumentThreadStack(
-      target,
-      /* deopt_all_frames= */ false);
+  art::Runtime::Current()->GetInstrumentation()->InstrumentThreadStack(target,
+                                                                       /* force_deopt= */ false);
 }
 
 extern DeoptManager* gDeoptManager;

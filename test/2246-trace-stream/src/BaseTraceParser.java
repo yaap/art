@@ -24,7 +24,9 @@ import java.util.HashMap;
 abstract class BaseTraceParser {
     public static final int MAGIC_NUMBER = 0x574f4c53;
     public static final int DUAL_CLOCK_VERSION = 3;
+    public static final int WALL_CLOCK_VERSION = 2;
     public static final int STREAMING_DUAL_CLOCK_VERSION = 0xF3;
+    public static final int STREAMING_WALL_CLOCK_VERSION = 0xF2;
     public static final String START_SECTION_ID = "*";
     public static final String METHODS_SECTION_ID = "*methods";
     public static final String THREADS_SECTION_ID = "*threads";
@@ -36,6 +38,8 @@ abstract class BaseTraceParser {
         threadIdMap = new HashMap<Integer, String>();
         nestingLevelMap = new HashMap<Integer, Integer>();
         threadEventsMap = new HashMap<String, String>();
+        threadTimestamp1Map = new HashMap<Integer, Integer>();
+        threadTimestamp2Map = new HashMap<Integer, Integer>();
     }
 
     public void closeFile() throws IOException {
@@ -101,12 +105,14 @@ abstract class BaseTraceParser {
         }
     }
 
-    public int GetEntryHeader() throws IOException {
-        // Read 2-byte thread-id. On host thread-ids can be greater than 16-bit.
+    public int GetThreadID() throws IOException {
+        // Read 2-byte thread-id. On host thread-ids can be greater than 16-bit but it is truncated
+        // to 16-bits in the trace.
         int threadId = readNumber(2);
-        if (threadId != 0) {
-            return threadId;
-        }
+        return threadId;
+    }
+
+    public int GetEntryHeader() throws IOException {
         // Read 1-byte header type
         return readNumber(1);
     }
@@ -134,11 +140,16 @@ abstract class BaseTraceParser {
         threadIdMap.put(threadId, threadInfo);
     }
 
-    public boolean ShouldIgnoreThread(int threadId) throws Exception {
-        if (threadIdMap.get(threadId).contains("Daemon")) {
-            return true;
+    public boolean ShouldCheckThread(int threadId, String threadName) throws Exception {
+        if (!threadIdMap.containsKey(threadId)) {
+          System.out.println("no threadId -> name  mapping for thread " + threadId);
+          // TODO(b/279547877): Ideally we should throw here, since it isn't expected. Just
+          // continuing to get more logs from the bots to see what's happening here. The
+          // test will fail anyway because the expected output will be different.
+          return true;
         }
-        return false;
+
+        return threadIdMap.get(threadId).equals(threadName);
     }
 
     public String eventTypeToString(int eventType, int threadId) {
@@ -171,7 +182,19 @@ abstract class BaseTraceParser {
         return str;
     }
 
-    public String ProcessEventEntry(int threadId) throws IOException {
+    public void CheckTimestamp(int timestamp, int threadId,
+            HashMap<Integer, Integer> threadTimestampMap) throws Exception {
+        if (threadTimestampMap.containsKey(threadId)) {
+            int oldTimestamp = threadTimestampMap.get(threadId);
+            if (timestamp < oldTimestamp) {
+                throw new Exception("timestamps are not increasing current: " + timestamp
+                        + "  earlier: " + oldTimestamp);
+            }
+        }
+        threadTimestampMap.put(threadId, timestamp);
+    }
+
+    public String ProcessEventEntry(int threadId) throws IOException, Exception {
         // Read 4-byte method value
         int methodAndEvent = readNumber(4);
         int methodId = methodAndEvent & ~0x3;
@@ -180,10 +203,13 @@ abstract class BaseTraceParser {
         String str = eventTypeToString(eventType, threadId) + " " + threadIdMap.get(threadId)
                 + " " + methodIdMap.get(methodId);
         // Depending on the version skip either one or two timestamps.
-        // TODO(mythria): Probably add a check that time stamps are always greater than initial
-        // timestamp.
-        int numBytesTimestamp = (traceFormatVersion == 2) ? 4 : 8;
-        dataStream.skipBytes(numBytesTimestamp);
+        int timestamp1 = readNumber(4);
+        CheckTimestamp(timestamp1, threadId, threadTimestamp1Map);
+        if (traceFormatVersion != 2) {
+            // Read second timestamp
+            int timestamp2 = readNumber(4);
+            CheckTimestamp(timestamp2, threadId, threadTimestamp2Map);
+        }
         return str;
     }
 
@@ -196,14 +222,16 @@ abstract class BaseTraceParser {
         threadEventsMap.put(threadName, threadEventsMap.get(threadName) + "\n" + entry);
     }
 
-    public abstract void CheckTraceFileFormat(File traceFile, int expectedVersion)
-            throws Exception;
+    public abstract void CheckTraceFileFormat(File traceFile,
+        int expectedVersion, String threadName) throws Exception;
 
     DataInputStream dataStream;
     HashMap<Integer, String> methodIdMap;
     HashMap<Integer, String> threadIdMap;
     HashMap<Integer, Integer> nestingLevelMap;
     HashMap<String, String> threadEventsMap;
+    HashMap<Integer, Integer> threadTimestamp1Map;
+    HashMap<Integer, Integer> threadTimestamp2Map;
     int recordSize = 0;
     int traceFormatVersion = 0;
 }

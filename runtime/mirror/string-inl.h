@@ -35,11 +35,11 @@ inline uint32_t String::ClassSize(PointerSize pointer_size) {
   //   lambda$codePoints$1$CharSequence
   // which were virtual functions in standalone desugar, becomes
   // direct functions with D8 desugaring.
-  uint32_t vtable_entries = Object::kVTableLength + 67;
+  uint32_t vtable_entries = Object::kVTableLength + 70;
 #else
-  uint32_t vtable_entries = Object::kVTableLength + 69;
+  uint32_t vtable_entries = Object::kVTableLength + 72;
 #endif
-  return Class::ComputeClassSize(true, vtable_entries, 3, 0, 0, 1, 2, pointer_size);
+  return Class::ComputeClassSize(true, vtable_entries, 3, 0, 0, 1, 3, pointer_size);
 }
 
 inline uint16_t String::CharAt(int32_t index) {
@@ -63,6 +63,20 @@ int32_t String::FastIndexOf(MemoryType* chars, int32_t ch, int32_t start) {
     if (*p++ == ch) {
       return (p - 1) - chars;
     }
+  }
+  return -1;
+}
+
+template <typename MemoryType>
+int32_t String::LastIndexOf(MemoryType* chars, int32_t ch, int32_t from_index) {
+  DCHECK_LT(from_index, GetLength());
+  const MemoryType* start = chars;
+  const MemoryType* p = chars + from_index;
+  while (p >= start) {
+    if (*p == ch) {
+      return p - chars;
+    }
+    p--;
   }
   return -1;
 }

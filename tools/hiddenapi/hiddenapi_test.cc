@@ -114,9 +114,12 @@ class HiddenApiTest : public CommonRuntimeTest {
       UNREACHABLE();
     }
 
-    ArtDexFileLoader dex_loader(fd.Release(), file.GetFilename());
+    ArtDexFileLoader dex_loader(&fd, file.GetFilename());
     std::unique_ptr<const DexFile> dex_file(dex_loader.Open(
-        /* verify= */ true, /* verify_checksum= */ true, /* mmap_shared= */ false, &error_msg));
+        /*location_checksum=*/0,
+        /*verify=*/true,
+        /*verify_checksum=*/true,
+        &error_msg));
     if (dex_file.get() == nullptr) {
       LOG(FATAL) << "Open failed for '" << file.GetFilename() << "' " << error_msg;
       UNREACHABLE();

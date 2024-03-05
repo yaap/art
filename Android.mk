@@ -343,43 +343,6 @@ endif
 # "include $(BUILD_...)".
 LOCAL_PATH := $(art_path)
 
-# Create canonical name -> file name symlink in the symbol directory for the
-# debug APEX. The symbol files for it are installed to
-# $(TARGET_OUT_UNSTRIPPED)/apex/com.android.art.debug. However, since it's
-# available via /apex/com.android.art at runtime, create a symlink so that
-# $(TARGET_OUT_UNSTRIPPED)/apex/com.android.art is linked to
-# $(TARGET_OUT_UNSTRIPPED)/apex/$(TARGET_ART_APEX). We skip this for the release
-# APEX which has com.android.art as $(TARGET_ART_APEX). Note that installation
-# of the symlink is triggered by the apex_manifest.pb file which is the file
-# that is guaranteed to be created regardless of the value of
-# TARGET_FLATTEN_APEX.
-# TODO(b/171419613): the symlink is disabled because the
-# $OUT/symbols/apex/com.android.art name is taken by the com.android.art apex
-# even when com.android.art.debug is selected by TARGET_ART_APEX.
-# Disabling the symlink means that symbols for the com.android.art.debug apex
-# will not be found.
-ifeq ($(TARGET_FLATTEN_APEX),true)
-art_apex_manifest_file := $(PRODUCT_OUT)/system/apex/$(TARGET_ART_APEX)/apex_manifest.pb
-else
-art_apex_manifest_file := $(PRODUCT_OUT)/apex/$(TARGET_ART_APEX)/apex_manifest.pb
-endif
-
-art_apex_symlink_timestamp := $(call intermediates-dir-for,FAKE,com.android.art)/symlink.timestamp
-$(art_apex_manifest_file): $(art_apex_symlink_timestamp)
-$(art_apex_manifest_file): PRIVATE_LINK_NAME := $(TARGET_OUT_UNSTRIPPED)/apex/com.android.art
-$(art_apex_symlink_timestamp):
-#ifeq ($(TARGET_ART_APEX),com.android.art)
-#	$(hide) if [ -L $(PRIVATE_LINK_NAME) ]; then rm -f $(PRIVATE_LINK_NAME); fi
-#else
-#	$(hide) mkdir -p $(dir $(PRIVATE_LINK_NAME))
-#	$(hide) rm -rf $(PRIVATE_LINK_NAME)
-#	$(hide) ln -sf $(TARGET_ART_APEX) $(PRIVATE_LINK_NAME)
-#endif
-	$(hide) touch $@
-$(art_apex_symlink_timestamp): .KATI_SYMLINK_OUTPUTS := $(PRIVATE_LINK_NAME)
-
-art_apex_manifest_file :=
-
 ####################################################################################################
 # Fake packages to ensure generation of libopenjdkd when one builds with mm/mmm/mmma.
 #
@@ -446,7 +409,6 @@ PRIVATE_ART_APEX_DEPENDENCY_LIBS := \
   lib/libadbconnection.so \
   lib/libandroidio.so \
   lib/libartbase.so \
-  lib/libart-compiler.so \
   lib/libart-dexlayout.so \
   lib/libart-disassembler.so \
   lib/libartpalette.so \
@@ -474,7 +436,6 @@ PRIVATE_ART_APEX_DEPENDENCY_LIBS := \
   lib64/libadbconnection.so \
   lib64/libandroidio.so \
   lib64/libartbase.so \
-  lib64/libart-compiler.so \
   lib64/libart-dexlayout.so \
   lib64/libart-disassembler.so \
   lib64/libartpalette.so \
@@ -534,9 +495,9 @@ PRIVATE_STATSD_APEX_DEPENDENCY_LIBS := \
   lib/libstatssocket.so \
   lib64/libstatssocket.so \
 
-# Extracts files from an APEX into a location. The APEX can be either a .apex
-# file in $(TARGET_OUT)/apex, or a directory in the same location. Files are
-# extracted to $(TARGET_OUT) with the same relative paths as under the APEX
+# Extracts files from an APEX into a location. The APEX can be either a .apex or
+# .capex file in $(TARGET_OUT)/apex, or a directory in the same location. Files
+# are extracted to $(TARGET_OUT) with the same relative paths as under the APEX
 # root.
 # $(1): APEX base name
 # $(2): List of files to extract, with paths relative to the APEX root
@@ -547,13 +508,15 @@ define extract-from-apex
   apex_root=$(TARGET_OUT)/apex && \
   apex_file=$$apex_root/$(1).apex && \
   apex_dir=$$apex_root/$(1) && \
+  if [ ! -f $$apex_file ]; then \
+    apex_file=$$apex_root/$(1).capex; \
+  fi && \
   if [ -f $$apex_file ]; then \
     rm -rf $$apex_dir && \
     mkdir -p $$apex_dir && \
     debugfs=$(HOST_OUT)/bin/debugfs_static && \
-    blkid=$(HOST_OUT)/bin/blkid_static && \
     fsckerofs=$(HOST_OUT)/bin/fsck.erofs && \
-    $(HOST_OUT)/bin/deapexer --debugfs_path $$debugfs --blkid_path $$blkid \
+    $(HOST_OUT)/bin/deapexer --debugfs_path $$debugfs \
 		--fsckerofs_path $$fsckerofs extract $$apex_file $$apex_dir; \
   fi && \
   for f in $(2); do \
@@ -592,7 +555,9 @@ standalone-apex-files: deapexer \
                        $(CONSCRYPT_APEX) \
                        $(I18N_APEX) \
                        $(STATSD_APEX) \
-                       $(TZDATA_APEX)
+                       $(TZDATA_APEX) \
+                       $(HOST_OUT)/bin/generate-boot-image64 \
+                       $(HOST_OUT)/bin/dex2oat64
 	$(call extract-from-apex,$(RELEASE_ART_APEX),\
 	  $(PRIVATE_ART_APEX_DEPENDENCY_LIBS) $(PRIVATE_ART_APEX_DEPENDENCY_FILES))
 	# The Runtime APEX has the Bionic libs in ${LIB}/bionic subdirectories,
@@ -612,6 +577,15 @@ standalone-apex-files: deapexer \
 	$(call extract-from-apex,$(STATSD_APEX),\
 	  $(PRIVATE_STATSD_APEX_DEPENDENCY_LIBS))
 	$(call extract-from-apex,$(TZDATA_APEX),)
+	rm -rf $(PRODUCT_OUT)/apex/art_boot_images && \
+	  mkdir -p $(PRODUCT_OUT)/apex/art_boot_images/javalib && \
+	  $(HOST_OUT)/bin/generate-boot-image64 \
+	    --output-dir=$(PRODUCT_OUT)/apex/art_boot_images/javalib \
+	    --compiler-filter=speed \
+	    --use-profile=false \
+	    --dex2oat-bin=$(HOST_OUT)/bin/dex2oat64 \
+	    --android-root=$(TARGET_OUT) \
+	    --instruction-set=$(TARGET_ARCH)
 
 ########################################################################
 # Phony target for only building what go/lem requires for pushing ART on /data.
@@ -637,8 +611,7 @@ build-art-target-golem: $(RELEASE_ART_APEX) com.android.runtime $(CONSCRYPT_APEX
                         $(TARGET_OUT_EXECUTABLES)/dex2oat_wrapper \
                         $(ART_TARGET_PLATFORM_DEPENDENCIES) \
                         $(ART_TARGET_SHARED_LIBRARY_BENCHMARK) \
-			$(TARGET_OUT_SHARED_LIBRARIES)/libgolemtiagent.so \
-                        $(PRODUCT_OUT)/apex/art_boot_images/javalib/$(TARGET_ARCH)/boot.art \
+                        $(TARGET_OUT_SHARED_LIBRARIES)/libgolemtiagent.so \
                         standalone-apex-files
 	# remove debug libraries from public.libraries.txt because golem builds
 	# won't have it.
@@ -779,6 +752,10 @@ use-art-verify-none:
 # Clear locally used variables.
 TEST_ART_TARGET_SYNC_DEPS :=
 
+# These files only exist if this flag is off. WITH_DEXPREOPT_ART_BOOT_IMG_ONLY is the
+# minimal dexpreopt mode we use on eng builds for build speed.
+ifneq ($(WITH_DEXPREOPT_ART_BOOT_IMG_ONLY),true)
+
 # Helper target that depends on boot image creation.
 #
 # Can be used, for example, to dump initialization failures:
@@ -793,6 +770,8 @@ art-job-images: \
   $(HOST_OUT_EXECUTABLES)/dex2oats \
   $(HOST_OUT_EXECUTABLES)/dex2oatds \
   $(HOST_OUT_EXECUTABLES)/profman
+
+endif # TARGET_BUILD_VARIANT == eng
 
 ########################################################################
 

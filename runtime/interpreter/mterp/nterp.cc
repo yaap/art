@@ -19,6 +19,7 @@
  */
 #include "nterp.h"
 
+#include "arch/instruction_set.h"
 #include "base/quasi_atomic.h"
 #include "class_linker-inl.h"
 #include "dex/dex_instruction_utils.h"
@@ -33,10 +34,91 @@
 namespace art {
 namespace interpreter {
 
+bool IsNterpSupported() {
+  switch (kRuntimeISA) {
+    case InstructionSet::kArm:
+    case InstructionSet::kThumb2:
+    case InstructionSet::kArm64:
+      return kReserveMarkingRegister && !kUseTableLookupReadBarrier;
+    case InstructionSet::kRiscv64:
+      return true;
+    case InstructionSet::kX86:
+    case InstructionSet::kX86_64:
+      return !kUseTableLookupReadBarrier;
+    default:
+      return false;
+  }
+}
+
+bool CanRuntimeUseNterp() REQUIRES_SHARED(Locks::mutator_lock_) {
+  Runtime* runtime = Runtime::Current();
+  instrumentation::Instrumentation* instr = runtime->GetInstrumentation();
+  // If the runtime is interpreter only, we currently don't use nterp as some
+  // parts of the runtime (like instrumentation) make assumption on an
+  // interpreter-only runtime to always be in a switch-like interpreter.
+  return IsNterpSupported() && !runtime->IsJavaDebuggable() && !instr->EntryExitStubsInstalled() &&
+         !instr->InterpretOnly() && !runtime->IsAotCompiler() &&
+         !instr->NeedsSlowInterpreterForListeners() &&
+         // An async exception has been thrown. We need to go to the switch interpreter. nterp
+         // doesn't know how to deal with these so we could end up never dealing with it if we are
+         // in an infinite loop.
+         !runtime->AreAsyncExceptionsThrown() &&
+         (runtime->GetJit() == nullptr || !runtime->GetJit()->JitAtFirstUse());
+}
+
+// The entrypoint for nterp, which ArtMethods can directly point to.
+extern "C" void ExecuteNterpImpl() REQUIRES_SHARED(Locks::mutator_lock_);
+extern "C" void EndExecuteNterpImpl() REQUIRES_SHARED(Locks::mutator_lock_);
+
+const void* GetNterpEntryPoint() {
+  return reinterpret_cast<const void*>(interpreter::ExecuteNterpImpl);
+}
+
+ArrayRef<const uint8_t> NterpImpl() {
+  const uint8_t* entry_point = reinterpret_cast<const uint8_t*>(ExecuteNterpImpl);
+  size_t size = reinterpret_cast<const uint8_t*>(EndExecuteNterpImpl) - entry_point;
+  const uint8_t* code = reinterpret_cast<const uint8_t*>(EntryPointToCodePointer(entry_point));
+  return ArrayRef<const uint8_t>(code, size);
+}
+
+// Another entrypoint, which does a clinit check at entry.
+extern "C" void ExecuteNterpWithClinitImpl() REQUIRES_SHARED(Locks::mutator_lock_);
+extern "C" void EndExecuteNterpWithClinitImpl() REQUIRES_SHARED(Locks::mutator_lock_);
+
+const void* GetNterpWithClinitEntryPoint() {
+  return reinterpret_cast<const void*>(interpreter::ExecuteNterpWithClinitImpl);
+}
+
+ArrayRef<const uint8_t> NterpWithClinitImpl() {
+  const uint8_t* entry_point = reinterpret_cast<const uint8_t*>(ExecuteNterpWithClinitImpl);
+  size_t size = reinterpret_cast<const uint8_t*>(EndExecuteNterpWithClinitImpl) - entry_point;
+  const uint8_t* code = reinterpret_cast<const uint8_t*>(EntryPointToCodePointer(entry_point));
+  return ArrayRef<const uint8_t>(code, size);
+}
+
+/*
+ * Verify some constants used by the nterp interpreter.
+ */
+void CheckNterpAsmConstants() {
+  /*
+   * If we're using computed goto instruction transitions, make sure
+   * none of the handlers overflows the byte limit.  This won't tell
+   * which one did, but if any one is too big the total size will
+   * overflow.
+   */
+  const int width = kNterpHandlerSize;
+  ptrdiff_t interp_size = reinterpret_cast<uintptr_t>(artNterpAsmInstructionEnd) -
+                          reinterpret_cast<uintptr_t>(artNterpAsmInstructionStart);
+  if ((interp_size == 0) || (interp_size != (art::kNumPackedOpcodes * width))) {
+    LOG(FATAL) << "ERROR: unexpected asm interp size " << interp_size
+               << "(did an instruction handler exceed " << width << " bytes?)";
+  }
+}
+
 inline void UpdateHotness(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_) {
   // The hotness we will add to a method when we perform a
   // field/method/class/string lookup.
-  constexpr uint16_t kNterpHotnessLookup = 0xf;
+  constexpr uint16_t kNterpHotnessLookup = 0xff;
   method->UpdateCounter(kNterpHotnessLookup);
 }
 

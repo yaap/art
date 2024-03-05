@@ -4418,6 +4418,15 @@ void X86_64Assembler::addl(CpuRegister reg, const Immediate& imm) {
 }
 
 
+void X86_64Assembler::addw(CpuRegister reg, const Immediate& imm) {
+  AssemblerBuffer::EnsureCapacity ensured(&buffer_);
+  CHECK(imm.is_uint16() || imm.is_int16()) << imm.value();
+  EmitUint8(0x66);
+  EmitOptionalRex32(reg);
+  EmitComplex(0, Operand(reg), imm, /* is_16_op= */ true);
+}
+
+
 void X86_64Assembler::addq(CpuRegister reg, const Immediate& imm) {
   AssemblerBuffer::EnsureCapacity ensured(&buffer_);
   CHECK(imm.is_int32());  // addq only supports 32b immediate.
@@ -4464,6 +4473,15 @@ void X86_64Assembler::addw(const Address& address, const Immediate& imm) {
   EmitUint8(0x66);
   EmitOptionalRex32(address);
   EmitComplex(0, address, imm, /* is_16_op= */ true);
+}
+
+
+void X86_64Assembler::addw(const Address& address, CpuRegister reg) {
+  AssemblerBuffer::EnsureCapacity ensured(&buffer_);
+  EmitOperandSizeOverride();
+  EmitOptionalRex32(reg, address);
+  EmitUint8(0x01);
+  EmitOperand(reg.LowBits(), address);
 }
 
 
@@ -5242,6 +5260,12 @@ void X86_64Assembler::popcntq(CpuRegister dst, const Address& src) {
   EmitUint8(0x0F);
   EmitUint8(0xB8);
   EmitOperand(dst.LowBits(), src);
+}
+
+void X86_64Assembler::rdtsc() {
+  AssemblerBuffer::EnsureCapacity ensured(&buffer_);
+  EmitUint8(0x0F);
+  EmitUint8(0x31);
 }
 
 void X86_64Assembler::repne_scasb() {

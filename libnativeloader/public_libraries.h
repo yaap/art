@@ -47,11 +47,13 @@ const std::string& apex_jni_libraries(const std::string& apex_name);
 // but provided by com.android.foo APEX.
 const std::map<std::string, std::string>& apex_public_libraries();
 
-// Returns true if libnativeloader is running on devices and the device has
-// ro.product.vndk.version property. It returns false for host.
-bool is_product_vndk_version_defined();
-
 std::string get_vndk_version(bool is_product_vndk);
+
+// Returnes true if libnativeloader is running on devices and the device has
+// treblelized product partition. It returns false for host.
+// TODO: Remove this function and assume it is always true once when Mainline does not support any
+// devices launched with Q or below.
+bool is_product_treblelized();
 
 // These are exported for testing
 namespace internal {

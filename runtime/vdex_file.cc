@@ -40,7 +40,6 @@
 #include "gc/heap.h"
 #include "gc/space/image_space.h"
 #include "mirror/class-inl.h"
-#include "quicken_info.h"
 #include "handle_scope-inl.h"
 #include "runtime.h"
 #include "verifier/verifier_deps.h"
@@ -57,7 +56,7 @@ bool VdexFile::VdexFileHeader::IsVdexVersionValid() const {
   return (memcmp(vdex_version_, kVdexVersion, sizeof(kVdexVersion)) == 0);
 }
 
-VdexFile::VdexFileHeader::VdexFileHeader(bool has_dex_section ATTRIBUTE_UNUSED)
+VdexFile::VdexFileHeader::VdexFileHeader([[maybe_unused]] bool has_dex_section)
     : number_of_sections_(static_cast<uint32_t>(VdexSection::kNumberOfSections)) {
   memcpy(magic_, kVdexMagic, sizeof(kVdexMagic));
   memcpy(vdex_version_, kVdexVersion, sizeof(kVdexVersion));
@@ -216,19 +215,20 @@ const uint8_t* VdexFile::GetNextTypeLookupTableData(const uint8_t* cursor,
 bool VdexFile::OpenAllDexFiles(std::vector<std::unique_ptr<const DexFile>>* dex_files,
                                std::string* error_msg) const {
   size_t i = 0;
+  auto dex_file_container = std::make_shared<MemoryDexFileContainer>(Begin(), End());
   for (const uint8_t* dex_file_start = GetNextDexFileData(nullptr, i);
        dex_file_start != nullptr;
        dex_file_start = GetNextDexFileData(dex_file_start, ++i)) {
-    size_t size = reinterpret_cast<const DexFile::Header*>(dex_file_start)->file_size_;
     // TODO: Supply the location information for a vdex file.
     static constexpr char kVdexLocation[] = "";
     std::string location = DexFileLoader::GetMultiDexLocation(i, kVdexLocation);
-    ArtDexFileLoader dex_file_loader(dex_file_start, size, location);
-    std::unique_ptr<const DexFile> dex(dex_file_loader.Open(GetLocationChecksum(i),
-                                                            /*oat_dex_file=*/nullptr,
-                                                            /*verify=*/false,
-                                                            /*verify_checksum=*/false,
-                                                            error_msg));
+    ArtDexFileLoader dex_file_loader(dex_file_container, location);
+    std::unique_ptr<const DexFile> dex(dex_file_loader.OpenOne(dex_file_start - Begin(),
+                                                               GetLocationChecksum(i),
+                                                               /*oat_dex_file=*/nullptr,
+                                                               /*verify=*/false,
+                                                               /*verify_checksum=*/false,
+                                                               error_msg));
     if (dex == nullptr) {
       return false;
     }

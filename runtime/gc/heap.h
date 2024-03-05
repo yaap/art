@@ -17,18 +17,19 @@
 #ifndef ART_RUNTIME_GC_HEAP_H_
 #define ART_RUNTIME_GC_HEAP_H_
 
+#include <android-base/logging.h>
+
 #include <iosfwd>
 #include <string>
 #include <unordered_set>
 #include <vector>
-
-#include <android-base/logging.h>
 
 #include "allocator_type.h"
 #include "base/atomic.h"
 #include "base/histogram.h"
 #include "base/macros.h"
 #include "base/mutex.h"
+#include "base/os.h"
 #include "base/runtime_debug.h"
 #include "base/safe_map.h"
 #include "base/time_utils.h"
@@ -38,12 +39,14 @@
 #include "gc/collector_type.h"
 #include "gc/gc_cause.h"
 #include "gc/space/large_object_space.h"
+#include "gc/space/space.h"
 #include "handle.h"
 #include "obj_ptr.h"
 #include "offsets.h"
 #include "process_state.h"
 #include "read_barrier_config.h"
 #include "runtime_globals.h"
+#include "scoped_thread_state_change.h"
 #include "verify_object.h"
 
 namespace art {
@@ -134,21 +137,22 @@ class Heap {
   static constexpr size_t kPartialTlabSize = 16 * KB;
   static constexpr bool kUsePartialTlabs = true;
 
-  static constexpr size_t kDefaultStartingSize = kPageSize;
   static constexpr size_t kDefaultInitialSize = 2 * MB;
   static constexpr size_t kDefaultMaximumSize = 256 * MB;
   static constexpr size_t kDefaultNonMovingSpaceCapacity = 64 * MB;
-  static constexpr size_t kDefaultMaxFree = 2 * MB;
+  static constexpr size_t kDefaultMaxFree = 32 * MB;
   static constexpr size_t kDefaultMinFree = kDefaultMaxFree / 4;
   static constexpr size_t kDefaultLongPauseLogThreshold = MsToNs(5);
   static constexpr size_t kDefaultLongPauseLogThresholdGcStress = MsToNs(50);
   static constexpr size_t kDefaultLongGCLogThreshold = MsToNs(100);
   static constexpr size_t kDefaultLongGCLogThresholdGcStress = MsToNs(1000);
   static constexpr size_t kDefaultTLABSize = 32 * KB;
-  static constexpr double kDefaultTargetUtilization = 0.75;
+  static constexpr double kDefaultTargetUtilization = 0.6;
   static constexpr double kDefaultHeapGrowthMultiplier = 2.0;
   // Primitive arrays larger than this size are put in the large object space.
-  static constexpr size_t kMinLargeObjectThreshold = 3 * kPageSize;
+  // TODO: Preliminary experiments suggest this value might be not optimal.
+  //       This might benefit from further investigation.
+  static constexpr size_t kMinLargeObjectThreshold = 12 * KB;
   static constexpr size_t kDefaultLargeObjectThreshold = kMinLargeObjectThreshold;
   // Whether or not parallel GC is enabled. If not, then we never create the thread pool.
   static constexpr bool kDefaultEnableParallelGC = true;
@@ -178,10 +182,16 @@ class Heap {
   // RegisterNativeAllocation checks immediately whether GC is needed if size exceeds the
   // following. kCheckImmediatelyThreshold * kNotifyNativeInterval should be small enough to
   // make it safe to allocate that many bytes between checks.
-  static constexpr size_t kCheckImmediatelyThreshold = 300000;
+  static constexpr size_t kCheckImmediatelyThreshold = (10'000'000 / kNotifyNativeInterval);
 
   // How often we allow heap trimming to happen (nanoseconds).
   static constexpr uint64_t kHeapTrimWait = MsToNs(5000);
+
+  // Starting size of DlMalloc/RosAlloc spaces.
+  static size_t GetDefaultStartingSize() {
+    return gPageSize;
+  }
+
   // Whether the transition-GC heap threshold condition applies or not for non-low memory devices.
   // Stressing GC will bypass the heap threshold condition.
   DECLARE_RUNTIME_DEBUG_FLAG(kStressCollectorTransition);
@@ -200,10 +210,10 @@ class Heap {
        size_t non_moving_space_capacity,
        const std::vector<std::string>& boot_class_path,
        const std::vector<std::string>& boot_class_path_locations,
-       const std::vector<int>& boot_class_path_fds,
-       const std::vector<int>& boot_class_path_image_fds,
-       const std::vector<int>& boot_class_path_vdex_fds,
-       const std::vector<int>& boot_class_path_oat_fds,
+       ArrayRef<File> boot_class_path_files,
+       ArrayRef<File> boot_class_path_image_files,
+       ArrayRef<File> boot_class_path_vdex_files,
+       ArrayRef<File> boot_class_path_oat_files,
        const std::vector<std::string>& image_file_names,
        InstructionSet image_instruction_set,
        CollectorType foreground_collector_type,
@@ -270,7 +280,9 @@ class Heap {
                                                                   GetCurrentNonMovingAllocator(),
                                                                   pre_fence_visitor);
     // Java Heap Profiler check and sample allocation.
-    JHPCheckNonTlabSampleAllocation(self, obj, num_bytes);
+    if (GetHeapSampler().IsEnabled()) {
+      JHPCheckNonTlabSampleAllocation(self, obj, num_bytes);
+    }
     return obj;
   }
 
@@ -389,7 +401,7 @@ class Heap {
 
   // Clear all of the mark bits, doesn't clear bitmaps which have the same live bits as mark bits.
   // Mutator lock is required for GetContinuousSpaces.
-  void ClearMarkedObjects()
+  void ClearMarkedObjects(bool release_eagerly = true)
       REQUIRES(Locks::heap_bitmap_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -550,6 +562,11 @@ class Heap {
     return num_bytes_allocated_.load(std::memory_order_relaxed);
   }
 
+  // Returns bytes_allocated before adding 'bytes' to it.
+  size_t AddBytesAllocated(size_t bytes) {
+    return num_bytes_allocated_.fetch_add(bytes, std::memory_order_relaxed);
+  }
+
   bool GetUseGenerationalCC() const {
     return use_generational_cc_;
   }
@@ -558,21 +575,14 @@ class Heap {
   size_t GetObjectsAllocated() const
       REQUIRES(!Locks::heap_bitmap_lock_);
 
-  // Returns the total number of objects allocated since the heap was created.
-  uint64_t GetObjectsAllocatedEver() const;
-
   // Returns the total number of bytes allocated since the heap was created.
   uint64_t GetBytesAllocatedEver() const;
 
-  // Returns the total number of objects freed since the heap was created.
-  // With default memory order, this should be viewed only as a hint.
-  uint64_t GetObjectsFreedEver(std::memory_order mo = std::memory_order_relaxed) const {
-    return total_objects_freed_ever_.load(mo);
-  }
-
   // Returns the total number of bytes freed since the heap was created.
+  // Can decrease over time, and may even be negative, since moving an object to
+  // a space in which it occupies more memory results in negative "freed bytes".
   // With default memory order, this should be viewed only as a hint.
-  uint64_t GetBytesFreedEver(std::memory_order mo = std::memory_order_relaxed) const {
+  int64_t GetBytesFreedEver(std::memory_order mo = std::memory_order_relaxed) const {
     return total_bytes_freed_ever_.load(mo);
   }
 
@@ -795,6 +805,16 @@ class Heap {
   bool HasBootImageSpace() const {
     return !boot_image_spaces_.empty();
   }
+  bool HasAppImageSpace() const {
+    ScopedObjectAccess soa(Thread::Current());
+    for (const space::ContinuousSpace* space : continuous_spaces_) {
+      // An image space is either a boot image space or an app image space.
+      if (space->IsImageSpace() && !IsBootImageAddress(space->Begin())) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   ReferenceProcessor* GetReferenceProcessor() {
     return reference_processor_.get();
@@ -897,7 +917,6 @@ class Heap {
   }
 
   void InitPerfettoJavaHeapProf();
-  int CheckPerfettoJHPEnabled();
   // In NonTlab case: Check whether we should report a sample allocation and if so report it.
   // Also update state (bytes_until_sample).
   // By calling JHPCheckNonTlabSampleAllocation from different functions for Large allocations and
@@ -1046,6 +1065,7 @@ class Heap {
         collector_type == kCollectorTypeSS ||
         collector_type == kCollectorTypeCMC ||
         collector_type == kCollectorTypeCCBackground ||
+        collector_type == kCollectorTypeCMCBackground ||
         collector_type == kCollectorTypeHomogeneousSpaceCompact;
   }
   bool ShouldAllocLargeObject(ObjPtr<mirror::Class> c, size_t byte_count) const
@@ -1229,13 +1249,13 @@ class Heap {
   void ClearPendingTrim(Thread* self) REQUIRES(!*pending_task_lock_);
   void ClearPendingCollectorTransition(Thread* self) REQUIRES(!*pending_task_lock_);
 
-  // What kind of concurrency behavior is the runtime after? Currently true for concurrent mark
-  // sweep GC, false for other GC types.
+  // What kind of concurrency behavior is the runtime after?
   bool IsGcConcurrent() const ALWAYS_INLINE {
     return collector_type_ == kCollectorTypeCC ||
         collector_type_ == kCollectorTypeCMC ||
         collector_type_ == kCollectorTypeCMS ||
-        collector_type_ == kCollectorTypeCCBackground;
+        collector_type_ == kCollectorTypeCCBackground ||
+        collector_type_ == kCollectorTypeCMCBackground;
   }
 
   // Trim the managed and native spaces by releasing unused memory back to the OS.
@@ -1462,7 +1482,7 @@ class Heap {
   size_t concurrent_start_bytes_;
 
   // Since the heap was created, how many bytes have been freed.
-  std::atomic<uint64_t> total_bytes_freed_ever_;
+  std::atomic<int64_t> total_bytes_freed_ever_;
 
   // Since the heap was created, how many objects have been freed.
   std::atomic<uint64_t> total_objects_freed_ever_;

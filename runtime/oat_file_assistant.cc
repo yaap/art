@@ -32,6 +32,7 @@
 #include "base/array_ref.h"
 #include "base/compiler_filter.h"
 #include "base/file_utils.h"
+#include "base/globals.h"
 #include "base/logging.h"  // For VLOG.
 #include "base/macros.h"
 #include "base/os.h"
@@ -45,7 +46,6 @@
 #include "dex/art_dex_file_loader.h"
 #include "dex/dex_file_loader.h"
 #include "exec_utils.h"
-#include "fmt/format.h"
 #include "gc/heap.h"
 #include "gc/space/image_space.h"
 #include "image.h"
@@ -60,8 +60,6 @@ namespace art {
 
 using ::android::base::ConsumePrefix;
 using ::android::base::StringPrintf;
-
-using ::fmt::literals::operator""_format;  // NOLINT
 
 static constexpr const char* kAnonymousDexPrefix = "Anonymous-DexFile@";
 static constexpr const char* kVdexExtension = ".vdex";
@@ -203,7 +201,9 @@ OatFileAssistant::OatFileAssistant(const char* dex_location,
       vdex_for_oat_.Reset(vdex_file_name, UseFdToReadFiles(), zip_fd, vdex_fd, oat_fd);
       std::string dm_file_name = GetDmFilename(dex_location);
       dm_for_oat_.Reset(dm_file_name, UseFdToReadFiles(), zip_fd, vdex_fd, oat_fd);
-    } else {
+    } else if (kIsTargetAndroid) {
+      // No need to warn on host. We are probably in oatdump, where we only need OatFileAssistant to
+      // validate BCP checksums.
       LOG(WARNING) << "Failed to determine oat file name for dex location " << dex_location_ << ": "
                    << error_msg;
     }
@@ -314,6 +314,7 @@ int OatFileAssistant::GetDexOptNeeded(CompilerFilter::Filter target_compiler_fil
                                       bool downgrade) {
   OatFileInfo& info = GetBestInfo();
   if (info.CheckDisableCompactDexExperiment()) {  // TODO(b/256664509): Clean this up.
+    VLOG(oat) << "Should recompile: disable cdex experiment";
     return kDex2OatFromScratch;
   }
   DexOptNeeded dexopt_needed = info.GetDexOptNeeded(
@@ -421,8 +422,7 @@ bool OatFileAssistant::LoadDexFiles(const OatFile& oat_file,
                                     std::vector<std::unique_ptr<const DexFile>>* out_dex_files) {
   // Load the main dex file.
   std::string error_msg;
-  const OatDexFile* oat_dex_file =
-      oat_file.GetOatDexFile(dex_location.c_str(), nullptr, &error_msg);
+  const OatDexFile* oat_dex_file = oat_file.GetOatDexFile(dex_location.c_str(), &error_msg);
   if (oat_dex_file == nullptr) {
     LOG(WARNING) << error_msg;
     return false;
@@ -438,7 +438,7 @@ bool OatFileAssistant::LoadDexFiles(const OatFile& oat_file,
   // Load the rest of the multidex entries
   for (size_t i = 1;; i++) {
     std::string multidex_dex_location = DexFileLoader::GetMultiDexLocation(i, dex_location.c_str());
-    oat_dex_file = oat_file.GetOatDexFile(multidex_dex_location.c_str(), nullptr);
+    oat_dex_file = oat_file.GetOatDexFile(multidex_dex_location.c_str());
     if (oat_dex_file == nullptr) {
       // There are no more multidex entries to load.
       break;
@@ -456,11 +456,11 @@ bool OatFileAssistant::LoadDexFiles(const OatFile& oat_file,
 
 std::optional<bool> OatFileAssistant::HasDexFiles(std::string* error_msg) {
   ScopedTrace trace("HasDexFiles");
-  const std::vector<std::uint32_t>* checksums = GetRequiredDexChecksums(error_msg);
-  if (checksums == nullptr) {
+  std::optional<std::uint32_t> checksum;
+  if (!GetRequiredDexChecksum(&checksum, error_msg)) {
     return std::nullopt;
   }
-  return !checksums->empty();
+  return checksum.has_value();
 }
 
 OatFileAssistant::OatStatus OatFileAssistant::OdexFileStatus() { return odex_.Status(); }
@@ -474,37 +474,35 @@ bool OatFileAssistant::DexChecksumUpToDate(const OatFile& file, std::string* err
     return true;
   }
   ScopedTrace trace("DexChecksumUpToDate");
-  const std::vector<uint32_t>* required_dex_checksums = GetRequiredDexChecksums(error_msg);
-  if (required_dex_checksums == nullptr) {
+  std::optional<std::uint32_t> dex_checksum;
+  if (!GetRequiredDexChecksum(&dex_checksum, error_msg)) {
     return false;
   }
-  if (required_dex_checksums->empty()) {
+  if (!dex_checksum.has_value()) {
     LOG(WARNING) << "Required dex checksums not found. Assuming dex checksums are up to date.";
     return true;
   }
 
+  std::vector<const OatDexFile*> oat_dex_files;
   uint32_t number_of_dex_files = file.GetOatHeader().GetDexFileCount();
-  if (required_dex_checksums->size() != number_of_dex_files) {
-    *error_msg = StringPrintf(
-        "expected %zu dex files but found %u", required_dex_checksums->size(), number_of_dex_files);
-    return false;
-  }
-
   for (uint32_t i = 0; i < number_of_dex_files; i++) {
     std::string dex = DexFileLoader::GetMultiDexLocation(i, dex_location_.c_str());
-    uint32_t expected_checksum = (*required_dex_checksums)[i];
-    const OatDexFile* oat_dex_file = file.GetOatDexFile(dex.c_str(), nullptr);
+    const OatDexFile* oat_dex_file = file.GetOatDexFile(dex.c_str());
     if (oat_dex_file == nullptr) {
       *error_msg = StringPrintf("failed to find %s in %s", dex.c_str(), file.GetLocation().c_str());
       return false;
     }
-    uint32_t actual_checksum = oat_dex_file->GetDexFileLocationChecksum();
-    if (expected_checksum != actual_checksum) {
-      VLOG(oat) << "Dex checksum does not match for dex: " << dex
-                << ". Expected: " << expected_checksum << ", Actual: " << actual_checksum;
-      return false;
-    }
+    oat_dex_files.push_back(oat_dex_file);
   }
+  uint32_t oat_checksum = DexFileLoader::GetMultiDexChecksum(oat_dex_files);
+
+  CHECK(dex_checksum.has_value());
+  if (dex_checksum != oat_checksum) {
+    VLOG(oat) << "Checksum does not match: " << std::hex << file.GetLocation() << " ("
+              << oat_checksum << ") vs " << dex_location_ << " (" << *dex_checksum << ")";
+    return false;
+  }
+
   return true;
 }
 
@@ -654,11 +652,7 @@ bool OatFileAssistant::DexLocationToOdexFilename(const std::string& location,
   // Get the base part of the file without the extension.
   std::string file = location.substr(pos + 1);
   pos = file.rfind('.');
-  if (pos == std::string::npos) {
-    *error_msg = "Dex location " + location + " has no extension.";
-    return false;
-  }
-  std::string base = file.substr(0, pos);
+  std::string base = pos != std::string::npos ? file.substr(0, pos) : file;
 
   *odex_filename = dir + "/" + base + ".odex";
   return true;
@@ -721,33 +715,38 @@ bool OatFileAssistant::DexLocationToOatFilename(const std::string& location,
   return GetDalvikCacheFilename(location.c_str(), dalvik_cache.c_str(), oat_filename, error_msg);
 }
 
-const std::vector<uint32_t>* OatFileAssistant::GetRequiredDexChecksums(std::string* error_msg) {
+bool OatFileAssistant::GetRequiredDexChecksum(std::optional<uint32_t>* checksum,
+                                              std::string* error) {
   if (!required_dex_checksums_attempted_) {
     required_dex_checksums_attempted_ = true;
-    std::vector<uint32_t> checksums;
-    std::vector<std::string> dex_locations_ignored;
-    if (ArtDexFileLoader::GetMultiDexChecksums(dex_location_.c_str(),
-                                               &checksums,
-                                               &dex_locations_ignored,
-                                               &cached_required_dex_checksums_error_,
-                                               zip_fd_,
-                                               &zip_file_only_contains_uncompressed_dex_)) {
-      if (checksums.empty()) {
-        // The only valid case here is for APKs without dex files.
-        VLOG(oat) << "No dex file found in " << dex_location_;
-      }
 
-      cached_required_dex_checksums_ = std::move(checksums);
+    File file(zip_fd_, /*check_usage=*/false);
+    ArtDexFileLoader dex_loader(&file, dex_location_);
+    std::optional<uint32_t> checksum2;
+    std::string error2;
+    if (dex_loader.GetMultiDexChecksum(
+            &checksum2, &error2, &zip_file_only_contains_uncompressed_dex_)) {
+      cached_required_dex_checksums_ = checksum2;
+      cached_required_dex_checksums_error_ = std::nullopt;
+    } else {
+      cached_required_dex_checksums_ = std::nullopt;
+      cached_required_dex_checksums_error_ = error2;
     }
+    file.Release();  // Don't close the file yet (we have only read the checksum).
   }
 
-  if (cached_required_dex_checksums_.has_value()) {
-    return &cached_required_dex_checksums_.value();
-  } else {
-    *error_msg = cached_required_dex_checksums_error_;
-    DCHECK(!error_msg->empty());
-    return nullptr;
+  if (cached_required_dex_checksums_error_.has_value()) {
+    *error = cached_required_dex_checksums_error_.value();
+    DCHECK(!error->empty());
+    return false;
   }
+
+  if (!cached_required_dex_checksums_.has_value()) {
+    // The only valid case here is for APKs without dex files.
+    VLOG(oat) << "No dex file found in " << dex_location_;
+  }
+  *checksum = cached_required_dex_checksums_;
+  return true;
 }
 
 bool OatFileAssistant::ValidateBootClassPathChecksums(OatFileAssistantContext* ofa_context,
@@ -892,15 +891,15 @@ OatFileAssistant::OatFileInfo& OatFileAssistant::GetBestInfo() {
 
     // If the odex is not useable, and we have a useable vdex, return the vdex
     // instead.
-    VLOG(oat) << "GetBestInfo checking odex next to the dex file ({})"_format(
-        odex_.DisplayFilename());
+    VLOG(oat) << ART_FORMAT("GetBestInfo checking odex next to the dex file ({})",
+                            odex_.DisplayFilename());
     if (!odex_.IsUseable()) {
-      VLOG(oat) << "GetBestInfo checking vdex next to the dex file ({})"_format(
-          vdex_for_odex_.DisplayFilename());
+      VLOG(oat) << ART_FORMAT("GetBestInfo checking vdex next to the dex file ({})",
+                              vdex_for_odex_.DisplayFilename());
       if (vdex_for_odex_.IsUseable()) {
         return vdex_for_odex_;
       }
-      VLOG(oat) << "GetBestInfo checking dm ({})"_format(dm_for_odex_.DisplayFilename());
+      VLOG(oat) << ART_FORMAT("GetBestInfo checking dm ({})", dm_for_odex_.DisplayFilename());
       if (dm_for_odex_.IsUseable()) {
         return dm_for_odex_;
       }
@@ -911,7 +910,7 @@ OatFileAssistant::OatFileInfo& OatFileAssistant::GetBestInfo() {
   // We cannot write to the odex location. This must be a system app.
 
   // If the oat location is useable take it.
-  VLOG(oat) << "GetBestInfo checking odex in dalvik-cache ({})"_format(oat_.DisplayFilename());
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking odex in dalvik-cache ({})", oat_.DisplayFilename());
   if (oat_.IsUseable()) {
     return oat_;
   }
@@ -919,29 +918,29 @@ OatFileAssistant::OatFileInfo& OatFileAssistant::GetBestInfo() {
   // The oat file is not useable but the odex file might be up to date.
   // This is an indication that we are dealing with an up to date prebuilt
   // (that doesn't need relocation).
-  VLOG(oat) << "GetBestInfo checking odex next to the dex file ({})"_format(
-      odex_.DisplayFilename());
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking odex next to the dex file ({})",
+                          odex_.DisplayFilename());
   if (odex_.IsUseable()) {
     return odex_;
   }
 
   // Look for a useable vdex file.
-  VLOG(oat) << "GetBestInfo checking vdex in dalvik-cache ({})"_format(
-      vdex_for_oat_.DisplayFilename());
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking vdex in dalvik-cache ({})",
+                          vdex_for_oat_.DisplayFilename());
   if (vdex_for_oat_.IsUseable()) {
     return vdex_for_oat_;
   }
-  VLOG(oat) << "GetBestInfo checking vdex next to the dex file ({})"_format(
-      vdex_for_odex_.DisplayFilename());
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking vdex next to the dex file ({})",
+                          vdex_for_odex_.DisplayFilename());
   if (vdex_for_odex_.IsUseable()) {
     return vdex_for_odex_;
   }
-  VLOG(oat) << "GetBestInfo checking dm ({})"_format(dm_for_oat_.DisplayFilename());
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking dm ({})", dm_for_oat_.DisplayFilename());
   if (dm_for_oat_.IsUseable()) {
     return dm_for_oat_;
   }
   // TODO(jiakaiz): Is this the same as above?
-  VLOG(oat) << "GetBestInfo checking dm ({})"_format(dm_for_odex_.DisplayFilename());
+  VLOG(oat) << ART_FORMAT("GetBestInfo checking dm ({})", dm_for_odex_.DisplayFilename());
   if (dm_for_odex_.IsUseable()) {
     return dm_for_odex_;
   }
@@ -1133,7 +1132,7 @@ const OatFile* OatFileAssistant::OatFileInfo::GetFile() {
                                   executable,
                                   /*low_4gb=*/false,
                                   dex_locations,
-                                  /*dex_fds=*/ArrayRef<const int>(),
+                                  /*dex_files=*/{},
                                   /*reservation=*/nullptr,
                                   &error_msg));
       }
@@ -1162,27 +1161,39 @@ bool OatFileAssistant::OatFileInfo::ShouldRecompileForFilter(CompilerFilter::Fil
 
   CompilerFilter::Filter current = file->GetCompilerFilter();
   if (dexopt_trigger.targetFilterIsBetter && CompilerFilter::IsBetter(target, current)) {
-    VLOG(oat) << "Should recompile: targetFilterIsBetter (current: {}, target: {})"_format(
-        CompilerFilter::NameOfFilter(current), CompilerFilter::NameOfFilter(target));
+    VLOG(oat) << ART_FORMAT("Should recompile: targetFilterIsBetter (current: {}, target: {})",
+                            CompilerFilter::NameOfFilter(current),
+                            CompilerFilter::NameOfFilter(target));
     return true;
   }
   if (dexopt_trigger.targetFilterIsSame && current == target) {
-    VLOG(oat) << "Should recompile: targetFilterIsSame (current: {}, target: {})"_format(
-        CompilerFilter::NameOfFilter(current), CompilerFilter::NameOfFilter(target));
+    VLOG(oat) << ART_FORMAT("Should recompile: targetFilterIsSame (current: {}, target: {})",
+                            CompilerFilter::NameOfFilter(current),
+                            CompilerFilter::NameOfFilter(target));
     return true;
   }
   if (dexopt_trigger.targetFilterIsWorse && CompilerFilter::IsBetter(current, target)) {
-    VLOG(oat) << "Should recompile: targetFilterIsWorse (current: {}, target: {})"_format(
-        CompilerFilter::NameOfFilter(current), CompilerFilter::NameOfFilter(target));
+    VLOG(oat) << ART_FORMAT("Should recompile: targetFilterIsWorse (current: {}, target: {})",
+                            CompilerFilter::NameOfFilter(current),
+                            CompilerFilter::NameOfFilter(target));
     return true;
   }
 
+  // Don't regress the compiler filter for the triggers handled below.
+  if (CompilerFilter::IsBetter(current, target)) {
+    VLOG(oat) << "Should not recompile: current filter is better";
+    return false;
+  }
+
   if (dexopt_trigger.primaryBootImageBecomesUsable &&
-      CompilerFilter::DependsOnImageChecksum(current)) {
+      CompilerFilter::IsAotCompilationEnabled(current)) {
     // If the oat file has been compiled without an image, and the runtime is
     // now running with an image loaded from disk, return that we need to
     // re-compile. The recompilation will generate a better oat file, and with an app
     // image for profile guided compilation.
+    // However, don't recompile for "verify". Although verification depends on the boot image, the
+    // penalty of being verified without a boot image is low. Consider the case where a dex file
+    // is verified by "ab-ota", we don't want it to be re-verified by "boot-after-ota".
     const char* oat_boot_class_path_checksums =
         file->GetOatHeader().GetStoreValueByKey(OatHeader::kBootClassPathChecksumsKey);
     if (oat_boot_class_path_checksums != nullptr &&
@@ -1314,7 +1325,7 @@ void OatFileAssistant::GetOptimizationStatus(std::string* out_odex_location,
                                              std::string* out_compilation_reason,
                                              std::string* out_odex_status) {
   OatFileInfo& oat_file_info = GetBestInfo();
-  const OatFile* oat_file = GetBestInfo().GetFile();
+  const OatFile* oat_file = oat_file_info.GetFile();
 
   if (oat_file == nullptr) {
     std::string error_msg;
@@ -1380,8 +1391,9 @@ void OatFileAssistant::GetOptimizationStatus(std::string* out_odex_location,
 
 bool OatFileAssistant::ZipFileOnlyContainsUncompressedDex() {
   // zip_file_only_contains_uncompressed_dex_ is only set during fetching the dex checksums.
+  std::optional<uint32_t> checksum;
   std::string error_msg;
-  if (GetRequiredDexChecksums(&error_msg) == nullptr) {
+  if (!GetRequiredDexChecksum(&checksum, &error_msg)) {
     LOG(ERROR) << error_msg;
   }
   return zip_file_only_contains_uncompressed_dex_;

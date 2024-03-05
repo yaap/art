@@ -55,5 +55,16 @@ TEST(OdrCommonTest, ShouldDisableRefresh) {
   EXPECT_FALSE(ShouldDisableRefresh("invalid"));
 }
 
+TEST(OdrCommonTest, CheckBuildUserfaultFdGc) {
+  EXPECT_TRUE(CheckBuildUserfaultFdGc(
+      /*build_enable_uffd_gc=*/false, /*kernel_supports_uffd=*/false));
+  EXPECT_FALSE(CheckBuildUserfaultFdGc(
+      /*build_enable_uffd_gc=*/true, /*kernel_supports_uffd=*/false));
+  EXPECT_FALSE(CheckBuildUserfaultFdGc(
+      /*build_enable_uffd_gc=*/false, /*kernel_supports_uffd=*/true));
+  EXPECT_TRUE(CheckBuildUserfaultFdGc(
+      /*build_enable_uffd_gc=*/true, /*kernel_supports_uffd=*/true));
+}
+
 }  // namespace odrefresh
 }  // namespace art

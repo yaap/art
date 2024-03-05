@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-#include "jni.h"
-
 #include <android-base/logging.h>
 #include <android-base/macros.h>
 #include <sys/resource.h>
@@ -25,10 +23,12 @@
 #include "base/enums.h"
 #include "common_throws.h"
 #include "dex/dex_file-inl.h"
+#include "gc/heap.h"
 #include "instrumentation.h"
 #include "jit/jit.h"
 #include "jit/jit_code_cache.h"
 #include "jit/profiling_info.h"
+#include "jni.h"
 #include "jni/jni_internal.h"
 #include "mirror/class-inl.h"
 #include "mirror/class.h"
@@ -72,7 +72,7 @@ extern "C" JNIEXPORT jboolean JNICALL Java_Main_hasOatFile(JNIEnv* env, jclass c
 }
 
 extern "C" JNIEXPORT jobject JNICALL Java_Main_getCompilerFilter(JNIEnv* env,
-                                                                 jclass caller ATTRIBUTE_UNUSED,
+                                                                 [[maybe_unused]] jclass caller,
                                                                  jclass cls) {
   ScopedObjectAccess soa(env);
 
@@ -91,22 +91,22 @@ extern "C" JNIEXPORT jobject JNICALL Java_Main_getCompilerFilter(JNIEnv* env,
 
 // public static native boolean runtimeIsSoftFail();
 
-extern "C" JNIEXPORT jboolean JNICALL Java_Main_runtimeIsSoftFail(JNIEnv* env ATTRIBUTE_UNUSED,
-                                                                  jclass cls ATTRIBUTE_UNUSED) {
+extern "C" JNIEXPORT jboolean JNICALL Java_Main_runtimeIsSoftFail([[maybe_unused]] JNIEnv* env,
+                                                                  [[maybe_unused]] jclass cls) {
   return Runtime::Current()->IsVerificationSoftFail() ? JNI_TRUE : JNI_FALSE;
 }
 
 // public static native boolean hasImage();
 
-extern "C" JNIEXPORT jboolean JNICALL Java_Main_hasImage(JNIEnv* env ATTRIBUTE_UNUSED,
-                                                         jclass cls ATTRIBUTE_UNUSED) {
+extern "C" JNIEXPORT jboolean JNICALL Java_Main_hasImage([[maybe_unused]] JNIEnv* env,
+                                                         [[maybe_unused]] jclass cls) {
   return Runtime::Current()->GetHeap()->HasBootImageSpace();
 }
 
 // public static native boolean isImageDex2OatEnabled();
 
-extern "C" JNIEXPORT jboolean JNICALL Java_Main_isImageDex2OatEnabled(JNIEnv* env ATTRIBUTE_UNUSED,
-                                                                      jclass cls ATTRIBUTE_UNUSED) {
+extern "C" JNIEXPORT jboolean JNICALL Java_Main_isImageDex2OatEnabled([[maybe_unused]] JNIEnv* env,
+                                                                      [[maybe_unused]] jclass cls) {
   return Runtime::Current()->IsImageDex2OatEnabled();
 }
 
@@ -276,7 +276,9 @@ static void ForceJitCompiled(Thread* self,
     // Will either ensure it's compiled or do the compilation itself. We do
     // this before checking if we will execute JIT code in case the request
     // is for an 'optimized' compilation.
-    jit->CompileMethod(method, self, kind, /*prejit=*/ false);
+    if (jit->CompileMethod(method, self, kind, /*prejit=*/ false)) {
+      return;
+    }
     const void* entry_point = method->GetEntryPointFromQuickCompiledCode();
     if (code_cache->ContainsPc(entry_point)) {
       // If we're running baseline or not requesting optimized, we're good to go.
@@ -453,20 +455,34 @@ extern "C" JNIEXPORT jboolean JNICALL Java_Main_isObsoleteObject(JNIEnv* env, jc
 }
 
 extern "C" JNIEXPORT void JNICALL Java_Main_forceInterpreterOnThread(JNIEnv* env,
-                                                                     jclass cls ATTRIBUTE_UNUSED) {
+                                                                     [[maybe_unused]] jclass cls) {
   ScopedObjectAccess soa(env);
   MutexLock thread_list_mu(soa.Self(), *Locks::thread_list_lock_);
   soa.Self()->IncrementForceInterpreterCount();
 }
 
-extern "C" JNIEXPORT void JNICALL Java_Main_setAsyncExceptionsThrown(JNIEnv* env ATTRIBUTE_UNUSED,
-                                                                     jclass cls ATTRIBUTE_UNUSED) {
+extern "C" JNIEXPORT void JNICALL Java_Main_setAsyncExceptionsThrown([[maybe_unused]] JNIEnv* env,
+                                                                     [[maybe_unused]] jclass cls) {
   Runtime::Current()->SetAsyncExceptionsThrown();
 }
 
 extern "C" JNIEXPORT void JNICALL Java_Main_setRlimitNoFile(JNIEnv*, jclass, jint value) {
   rlimit limit { static_cast<rlim_t>(value), static_cast<rlim_t>(value) };
   setrlimit(RLIMIT_NOFILE, &limit);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_Main_isInImageSpace(JNIEnv* env,
+                                                               [[maybe_unused]] jclass caller,
+                                                               jclass cls) {
+  ScopedObjectAccess soa(env);
+
+  ObjPtr<mirror::Class> klass = soa.Decode<mirror::Class>(cls);
+  gc::space::Space* space =
+      Runtime::Current()->GetHeap()->FindSpaceFromObject(klass, /*fail_ok=*/true);
+  if (space == nullptr) {
+    return JNI_FALSE;
+  }
+  return space->IsImageSpace() ? JNI_TRUE : JNI_FALSE;
 }
 
 }  // namespace art

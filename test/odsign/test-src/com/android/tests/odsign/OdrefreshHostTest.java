@@ -24,6 +24,7 @@ import com.android.tradefed.testtype.DeviceJUnit4ClassRunner;
 import com.android.tradefed.testtype.junit4.AfterClassWithInfo;
 import com.android.tradefed.testtype.junit4.BaseHostJUnit4Test;
 import com.android.tradefed.testtype.junit4.BeforeClassWithInfo;
+import com.android.tradefed.util.CommandResult;
 
 import org.junit.After;
 import org.junit.Before;
@@ -34,7 +35,7 @@ import java.util.HashSet;
 import java.util.Set;
 
 /**
- * Test to check end-to-end odrefresh invocations, but without odsign amd fs-verity involved.
+ * Test to check end-to-end odrefresh invocations, but without odsign and fs-verity involved.
  */
 @RunWith(DeviceJUnit4ClassRunner.class)
 public class OdrefreshHostTest extends BaseHostJUnit4Test {
@@ -130,18 +131,25 @@ public class OdrefreshHostTest extends BaseHostJUnit4Test {
     }
 
     @Test
-    public void verifyEnableUffdGcChangeTriggersCompilation() throws Exception {
-        mDeviceState.setPhenotypeFlag("enable_uffd_gc", "false");
+    public void verifyPhenotypeFlagChangeTriggersCompilation() throws Exception {
+        // Simulate that the flag value is initially empty.
+        mDeviceState.setPhenotypeFlag("odrefresh_test_toggle", null);
 
         long timeMs = mTestUtils.getCurrentTimeMs();
         mTestUtils.runOdrefresh();
 
-        // Artifacts should be re-compiled.
-        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
-        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
-        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
+        mDeviceState.setPhenotypeFlag("odrefresh_test_toggle", "false");
 
-        mDeviceState.setPhenotypeFlag("enable_uffd_gc", "true");
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefresh();
+
+        // Artifacts should not be re-compiled.
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
+
+        mDeviceState.setPhenotypeFlag("odrefresh_test_toggle", "true");
 
         timeMs = mTestUtils.getCurrentTimeMs();
         mTestUtils.runOdrefresh();
@@ -161,7 +169,7 @@ public class OdrefreshHostTest extends BaseHostJUnit4Test {
                 mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
         mTestUtils.assertNotModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
-        mDeviceState.setPhenotypeFlag("enable_uffd_gc", null);
+        mDeviceState.setPhenotypeFlag("odrefresh_test_toggle", null);
 
         timeMs = mTestUtils.getCurrentTimeMs();
         mTestUtils.runOdrefresh();
@@ -411,6 +419,75 @@ public class OdrefreshHostTest extends BaseHostJUnit4Test {
 
         // Now it should retry.
         mTestUtils.assertModifiedAfter(Set.of(OdsignTestUtils.CACHE_INFO_FILE), timeMs);
+    }
+
+    /**
+     * Regression test of CVE-2021-39689 (b/206090748): if the device doesn't have the odsign
+     * security fix, there's a risk that the existing artifacts may be manipulated, and odsign will
+     * mistakenly sign them. Therefore, odrefresh should clear all artifacts and regenerate them.
+     * I.e., no matter the compilation succeeds or not, no existing artifacts should be left.
+     *
+     * On contrary, if the device has the odsign security fix, odrefresh should keep existing
+     * artifacts (see {@link #verifyMissingArtifactTriggersCompilation}).
+     */
+    @Test
+    public void verifyArtifactsClearedWhenNoPartialCompilation() throws Exception {
+        // Remove arbitrary system server artifacts to trigger compilation.
+        simulateMissingArtifacts();
+
+        // The successful case.
+        mTestUtils.removeCompilationLogToAvoidBackoff();
+        long timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefreshNoPartialCompilation();
+
+        // Existing artifacts should be replaced with new ones.
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
+
+        // Remove arbitrary system server artifacts to trigger compilation again.
+        simulateMissingArtifacts();
+
+        // The failed case.
+        mDeviceState.makeDex2oatFail();
+        mTestUtils.removeCompilationLogToAvoidBackoff();
+        timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefreshNoPartialCompilation();
+
+        // Existing artifacts should be gone.
+        mTestUtils.assertFilesNotExist(mTestUtils.getExpectedPrimaryBootImage());
+        mTestUtils.assertFilesNotExist(mTestUtils.getExpectedBootImageMainlineExtension());
+        mTestUtils.assertFilesNotExist(mTestUtils.getSystemServerExpectedArtifacts());
+    }
+
+    /**
+     * If the compilation is skipped because a previous attempt partially failed, odrefresh should
+     * not clear existing artifacts.
+     */
+    @Test
+    public void verifyArtifactsKeptWhenCompilationSkippedNoPartialCompilation() throws Exception {
+        // Simulate that the compilation is partially failed.
+        mDeviceState.simulateBadSystemServerJar();
+        long timeMs = mTestUtils.getCurrentTimeMs();
+        mTestUtils.runOdrefreshNoPartialCompilation();
+
+        // Verify the test setup: boot images are still generated.
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+
+        // Rerun odrefresh. The compilation is skipped this time.
+        timeMs = mTestUtils.getCurrentTimeMs();
+        CommandResult result = mTestUtils.runOdrefreshNoPartialCompilation();
+
+        // Existing artifacts should be kept.
+        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+        mTestUtils.assertNotModifiedAfter(
+                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+
+        // Note that the existing artifacts may be manipulated (CVE-2021-39689). Make sure odrefresh
+        // returns `kOkay` rather than `kCompilationSuccess` or `kCompilationFailed`, so that odsign
+        // only verifies the artifacts but not sign them.
+        assertThat(result.getExitCode()).isEqualTo(0);
     }
 
     private Set<String> simulateMissingArtifacts() throws Exception {

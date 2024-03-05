@@ -109,6 +109,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   // i.e. if the method was annotated with @CriticalNative
   const bool is_critical_native = (access_flags & kAccCriticalNative) != 0u;
 
+  bool emit_read_barrier = compiler_options.EmitReadBarrier();
   bool is_debuggable = compiler_options.GetDebuggable();
   bool needs_entry_exit_hooks = is_debuggable && compiler_options.IsJitCompiler();
   // We don't support JITing stubs for critical native methods in debuggable runtimes yet.
@@ -154,11 +155,11 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     // -- Don't allow any objects as parameter or return value
     if (UNLIKELY(is_critical_native)) {
       CHECK(is_static)
-          << "@CriticalNative functions cannot be virtual since that would"
+          << "@CriticalNative functions cannot be virtual since that would "
           << "require passing a reference parameter (this), which is illegal "
           << dex_file.PrettyMethod(method_idx, /* with_signature= */ true);
       CHECK(!is_synchronized)
-          << "@CriticalNative functions cannot be synchronized since that would"
+          << "@CriticalNative functions cannot be synchronized since that would "
           << "require passing a (class and/or this) reference parameter, which is illegal "
           << dex_file.PrettyMethod(method_idx, /* with_signature= */ true);
       for (size_t i = 0; i < strlen(shorty); ++i) {
@@ -208,7 +209,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   //      Skip this for @CriticalNative because we're not passing a `jclass` to the native method.
   std::unique_ptr<JNIMacroLabel> jclass_read_barrier_slow_path;
   std::unique_ptr<JNIMacroLabel> jclass_read_barrier_return;
-  if (gUseReadBarrier && is_static && LIKELY(!is_critical_native)) {
+  if (emit_read_barrier && is_static && LIKELY(!is_critical_native)) {
     jclass_read_barrier_slow_path = __ CreateLabel();
     jclass_read_barrier_return = __ CreateLabel();
 
@@ -387,8 +388,8 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     DCHECK(main_jni_conv->HasNext());
     static_assert(kObjectReferenceSize == 4u);
     bool is_reference = mr_conv->IsCurrentParamAReference();
-    size_t src_size = (!is_reference && mr_conv->IsCurrentParamALongOrDouble()) ? 8u : 4u;
-    size_t dest_size = is_reference ? kRawPointerSize : src_size;
+    size_t src_size = mr_conv->CurrentParamSize();
+    size_t dest_size = main_jni_conv->CurrentParamSize();
     src_args.push_back(mr_conv->IsCurrentParamInRegister()
         ? ArgumentLocation(mr_conv->CurrentParamRegister(), src_size)
         : ArgumentLocation(mr_conv->CurrentParamStackOffset(), src_size));
@@ -601,7 +602,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
 
   // 8.1. Read barrier slow path for the declaring class in the method for a static call.
   //      Skip this for @CriticalNative because we're not passing a `jclass` to the native method.
-  if (gUseReadBarrier && is_static && !is_critical_native) {
+  if (emit_read_barrier && is_static && !is_critical_native) {
     __ Bind(jclass_read_barrier_slow_path.get());
 
     // Construct slow path for read barrier:
@@ -621,7 +622,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
           main_jni_conv->CalleeSaveScratchRegisters()[0], kObjectReferenceSize);
       // Load the declaring class reference.
       DCHECK_EQ(ArtMethod::DeclaringClassOffset().SizeValue(), 0u);
-      __ Load(temp, method_register, MemberOffset(0u), kObjectReferenceSize);
+      __ LoadGcRootWithoutReadBarrier(temp, method_register, MemberOffset(0u));
       // Return to main path if the class object is marked.
       __ TestMarkBit(temp, jclass_read_barrier_return.get(), JNIMacroUnaryCondition::kNotZero);
     }
@@ -724,7 +725,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   size_t cs = __ CodeSize();
   std::vector<uint8_t> managed_code(cs);
   MemoryRegion code(&managed_code[0], managed_code.size());
-  __ FinalizeInstructions(code);
+  __ CopyInstructions(code);
 
   return JniCompiledMethod(instruction_set,
                            std::move(managed_code),

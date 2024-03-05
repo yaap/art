@@ -84,8 +84,8 @@ public class DexoptParams {
          * https://source.android.com/docs/core/dalvik/configure#compilation_options.
          *
          * Note that the compiler filter might be adjusted before the execution based on factors
-         * like whether the profile is available or whether the app is used by other apps. If not
-         * set, the default compiler filter for the given reason will be used.
+         * like dexopt flags, whether the profile is available, or whether the app is used by other
+         * apps. If not set, the default compiler filter for the given reason will be used.
          */
         @NonNull
         public Builder setCompilerFilter(@NonNull String value) {
@@ -222,5 +222,13 @@ public class DexoptParams {
     /** The name of the split to dexopt, or null for the base split. */
     public @Nullable String getSplitName() {
         return mSplitName;
+    }
+
+    /** @hide */
+    public @NonNull Builder toBuilder() {
+        return new Builder(mReason, mFlags)
+                .setCompilerFilter(mCompilerFilter)
+                .setPriorityClass(mPriorityClass)
+                .setSplitName(mSplitName);
     }
 }

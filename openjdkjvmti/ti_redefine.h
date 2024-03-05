@@ -103,8 +103,8 @@ class Redefiner {
                                       std::string* error_msg);
 
   // Helper for checking if redefinition/retransformation is allowed.
-  template<RedefinitionType kType = RedefinitionType::kNormal>
-  static jvmtiError GetClassRedefinitionError(jclass klass, /*out*/std::string* error_msg)
+  template <RedefinitionType kType = RedefinitionType::kNormal>
+  static jvmtiError CanRedefineClass(jclass klass, /*out*/ std::string* error_msg)
       REQUIRES(!art::Locks::mutator_lock_);
 
   static jvmtiError StructurallyRedefineClassDirect(jvmtiEnv* env,
@@ -132,7 +132,6 @@ class Redefiner {
       dex_file_ = std::move(other.dex_file_);
       class_sig_ = std::move(other.class_sig_);
       original_dex_file_ = other.original_dex_file_;
-      lock_acquired_ = other.lock_acquired_;
       other.driver_ = nullptr;
       return *this;
     }
@@ -143,8 +142,7 @@ class Redefiner {
           klass_(other.klass_),
           dex_file_(std::move(other.dex_file_)),
           class_sig_(std::move(other.class_sig_)),
-          original_dex_file_(other.original_dex_file_),
-          lock_acquired_(other.lock_acquired_) {
+          original_dex_file_(other.original_dex_file_) {
       other.driver_ = nullptr;
     }
 
@@ -288,7 +286,6 @@ class Redefiner {
     bool added_fields_ = false;
     bool added_methods_ = false;
     bool has_virtuals_ = false;
-    bool lock_acquired_ = false;
   };
 
   ArtJvmTiEnv* env_;
@@ -325,9 +322,9 @@ class Redefiner {
   template<RedefinitionType kType = RedefinitionType::kNormal>
   static jvmtiError IsModifiableClassGeneric(jvmtiEnv* env, jclass klass, jboolean* is_redefinable);
 
-  template<RedefinitionType kType = RedefinitionType::kNormal>
-  static jvmtiError GetClassRedefinitionError(art::Handle<art::mirror::Class> klass,
-                                              /*out*/std::string* error_msg)
+  template <RedefinitionType kType = RedefinitionType::kNormal>
+  static jvmtiError CanRedefineClass(art::Handle<art::mirror::Class> klass,
+                                     /*out*/ std::string* error_msg)
       REQUIRES_SHARED(art::Locks::mutator_lock_);
 
   jvmtiError Run() REQUIRES_SHARED(art::Locks::mutator_lock_);

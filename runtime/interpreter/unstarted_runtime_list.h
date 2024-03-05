@@ -80,11 +80,11 @@
   V(UnsafePutObjectVolatile, "Lsun/misc/Unsafe;", "putObjectVolatile", "(Ljava/lang/Object;JLjava/lang/Object;)V") \
   V(UnsafePutOrderedObject, "Lsun/misc/Unsafe;", "putOrderedObject", "(Ljava/lang/Object;JLjava/lang/Object;)V") \
   V(JdkUnsafeCompareAndSetLong, "Ljdk/internal/misc/Unsafe;", "compareAndSetLong", "(Ljava/lang/Object;JJJ)Z") \
-  V(JdkUnsafeCompareAndSetObject, "Ljdk/internal/misc/Unsafe;", "compareAndSetObject", "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Z") \
+  V(JdkUnsafeCompareAndSetReference, "Ljdk/internal/misc/Unsafe;", "compareAndSetReference", "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Z") \
   V(JdkUnsafeCompareAndSwapLong, "Ljdk/internal/misc/Unsafe;", "compareAndSwapLong", "(Ljava/lang/Object;JJJ)Z") \
   V(JdkUnsafeCompareAndSwapObject, "Ljdk/internal/misc/Unsafe;", "compareAndSwapObject", "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Z") \
-  V(JdkUnsafeGetObjectVolatile, "Ljdk/internal/misc/Unsafe;", "getObjectVolatile", "(Ljava/lang/Object;J)Ljava/lang/Object;") \
-  V(JdkUnsafePutObjectVolatile, "Ljdk/internal/misc/Unsafe;", "putObjectVolatile", "(Ljava/lang/Object;JLjava/lang/Object;)V") \
+  V(JdkUnsafeGetReferenceVolatile, "Ljdk/internal/misc/Unsafe;", "getReferenceVolatile", "(Ljava/lang/Object;J)Ljava/lang/Object;") \
+  V(JdkUnsafePutReferenceVolatile, "Ljdk/internal/misc/Unsafe;", "putReferenceVolatile", "(Ljava/lang/Object;JLjava/lang/Object;)V") \
   V(JdkUnsafePutOrderedObject, "Ljdk/internal/misc/Unsafe;", "putOrderedObject", "(Ljava/lang/Object;JLjava/lang/Object;)V") \
   V(IntegerParseInt, "Ljava/lang/Integer;", "parseInt", "(Ljava/lang/String;)I") \
   V(LongParseLong, "Ljava/lang/Long;", "parseLong", "(Ljava/lang/String;)J") \
@@ -121,7 +121,8 @@
   V(JdkUnsafeCompareAndSetInt, "Ljdk/internal/misc/Unsafe;", "compareAndSetInt", "(Ljava/lang/Object;JII)Z") \
   V(JdkUnsafeCompareAndSwapInt, "Ljdk/internal/misc/Unsafe;", "compareAndSwapInt", "(Ljava/lang/Object;JII)Z") \
   V(JdkUnsafeGetIntVolatile, "Ljdk/internal/misc/Unsafe;", "getIntVolatile", "(Ljava/lang/Object;J)I") \
-  V(JdkUnsafePutObject, "Ljdk/internal/misc/Unsafe;", "putObject", "(Ljava/lang/Object;JLjava/lang/Object;)V") \
+  V(JdkUnsafePutReference, "Ljdk/internal/misc/Unsafe;", "putReference", "(Ljava/lang/Object;JLjava/lang/Object;)V") \
+  V(JdkUnsafeStoreFence, "Ljdk/internal/misc/Unsafe;", "storeFence", "()V") \
   V(JdkUnsafeGetArrayBaseOffsetForComponentType, "Ljdk/internal/misc/Unsafe;", "getArrayBaseOffsetForComponentType", "(Ljava/lang/Class;)I") \
   V(JdkUnsafeGetArrayIndexScaleForComponentType, "Ljdk/internal/misc/Unsafe;", "getArrayIndexScaleForComponentType", "(Ljava/lang/Class;)I") \
   V(FieldGetArtField, "Ljava/lang/reflect/Field;", "getArtField", "()J") \

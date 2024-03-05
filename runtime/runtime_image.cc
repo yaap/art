@@ -17,13 +17,12 @@
 #include "runtime_image.h"
 
 #include <lz4.h>
-#include <sstream>
 #include <unistd.h>
 
 #include "android-base/file.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
-
+#include "arch/instruction_set.h"
 #include "base/arena_allocator.h"
 #include "base/arena_containers.h"
 #include "base/bit_utils.h"
@@ -113,13 +112,14 @@ class RuntimeImageHelper {
     // size, relocate native pointers inside classes and ImTables.
     RelocateNativePointers();
 
-    // Generate the bitmap section, stored page aligned after the sections data
-    // and of size `object_section_size_` page aligned.
+    // Generate the bitmap section, stored kElfSegmentAlignment-aligned after the sections data and
+    // of size `object_section_size_` rounded up to kCardSize to match the bitmap size expected by
+    // Loader::Init at art::gc::space::ImageSpace.
     size_t sections_end = sections_[ImageHeader::kSectionMetadata].End();
     image_bitmap_ = gc::accounting::ContinuousSpaceBitmap::Create(
         "image bitmap",
         reinterpret_cast<uint8_t*>(image_begin_),
-        RoundUp(object_section_size_, kPageSize));
+        RoundUp(object_section_size_, gc::accounting::CardTable::kCardSize));
     for (uint32_t offset : object_offsets_) {
       DCHECK(IsAligned<kObjectAlignment>(image_begin_ + sizeof(ImageHeader) + offset));
       image_bitmap_.Set(
@@ -127,8 +127,11 @@ class RuntimeImageHelper {
     }
     const size_t bitmap_bytes = image_bitmap_.Size();
     auto* bitmap_section = &sections_[ImageHeader::kSectionImageBitmap];
-    *bitmap_section = ImageSection(RoundUp(sections_end, kPageSize),
-                                   RoundUp(bitmap_bytes, kPageSize));
+    // The offset of the bitmap section should be aligned to kElfSegmentAlignment to enable mapping
+    // the section from file to memory. However the section size doesn't have to be rounded up as
+    // it is located at the end of the file. When mapping file contents to memory, if the last page
+    // of the mapping is only partially filled with data, the rest will be zero-filled.
+    *bitmap_section = ImageSection(RoundUp(sections_end, kElfSegmentAlignment), bitmap_bytes);
 
     // Compute boot image checksum and boot image components, to be stored in
     // the header.
@@ -145,7 +148,7 @@ class RuntimeImageHelper {
     }
 
     header_ = ImageHeader(
-        /* image_reservation_size= */ RoundUp(sections_end, kPageSize),
+        /* image_reservation_size= */ RoundUp(sections_end, kElfSegmentAlignment),
         /* component_count= */ 1,
         image_begin_,
         sections_end,
@@ -431,7 +434,7 @@ class RuntimeImageHelper {
       // generated in the image and put in the class table, boot classpath
       // classes will be put in the class table.
       ObjPtr<mirror::ClassLoader> class_loader = klass->GetClassLoader();
-      if (class_loader == loader_.Get() || class_loader == nullptr) {
+      if (klass->IsResolved() && (class_loader == loader_.Get() || class_loader == nullptr)) {
         handles_.NewHandle(klass);
       }
       return true;
@@ -477,6 +480,7 @@ class RuntimeImageHelper {
 
       for (size_t i = 0, num_interfaces = cls->NumDirectInterfaces(); i < num_interfaces; ++i) {
         other_class.Assign(cls->GetDirectInterface(i));
+        DCHECK(other_class != nullptr);
         if (!CanEmit(other_class)) {
           return false;
         }
@@ -488,8 +492,9 @@ class RuntimeImageHelper {
       if (cls == nullptr) {
         return true;
       }
+      DCHECK(cls->IsResolved());
       // Only emit classes that are resolved and not erroneous.
-      if (!cls->IsResolved() || cls->IsErroneous()) {
+      if (cls->IsErroneous()) {
         return false;
       }
 
@@ -668,7 +673,7 @@ class RuntimeImageHelper {
     explicit NativePointerVisitor(RuntimeImageHelper* helper) : helper_(helper) {}
 
     template <typename T>
-    T* operator()(T* ptr, void** dest_addr ATTRIBUTE_UNUSED) const {
+    T* operator()(T* ptr, [[maybe_unused]] void** dest_addr) const {
       return helper_->NativeLocationInImage(ptr, /* must_have_relocation= */ true);
     }
 
@@ -809,25 +814,25 @@ class RuntimeImageHelper {
     ScopedTrace relocate_native_pointers("Relocate native pointers");
     ScopedObjectAccess soa(Thread::Current());
     NativePointerVisitor visitor(this);
-    for (auto entry : classes_) {
+    for (auto&& entry : classes_) {
       mirror::Class* cls = reinterpret_cast<mirror::Class*>(&objects_[entry.second]);
       cls->FixupNativePointers(cls, kRuntimePointerSize, visitor);
       RelocateMethodPointerArrays(cls, visitor);
     }
-    for (auto it : array_classes_) {
-      mirror::Class* cls = reinterpret_cast<mirror::Class*>(&objects_[it.second]);
+    for (auto&& entry : array_classes_) {
+      mirror::Class* cls = reinterpret_cast<mirror::Class*>(&objects_[entry.second]);
       cls->FixupNativePointers(cls, kRuntimePointerSize, visitor);
       RelocateMethodPointerArrays(cls, visitor);
     }
-    for (auto it : native_relocations_) {
-      if (it.second.first == NativeRelocationKind::kImTable) {
-        ImTable* im_table = reinterpret_cast<ImTable*>(im_tables_.data() + it.second.second);
+    for (auto&& entry : native_relocations_) {
+      if (entry.second.first == NativeRelocationKind::kImTable) {
+        ImTable* im_table = reinterpret_cast<ImTable*>(im_tables_.data() + entry.second.second);
         RelocateImTable(im_table, visitor);
       }
     }
-    for (auto it : dex_caches_) {
-      mirror::DexCache* cache = reinterpret_cast<mirror::DexCache*>(&objects_[it.second]);
-      RelocateDexCacheArrays(cache, *it.first, visitor);
+    for (auto&& entry : dex_caches_) {
+      mirror::DexCache* cache = reinterpret_cast<mirror::DexCache*>(&objects_[entry.second]);
+      RelocateDexCacheArrays(cache, *entry.first, visitor);
     }
   }
 
@@ -1187,11 +1192,11 @@ class RuntimeImageHelper {
         : image_(image), copy_offset_(copy_offset) {}
 
     // We do not visit native roots. These are handled with other logic.
-    void VisitRootIfNonNull(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED)
-        const {
+    void VisitRootIfNonNull(
+        [[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {
       LOG(FATAL) << "UNREACHABLE";
     }
-    void VisitRoot(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED) const {
+    void VisitRoot([[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {
       LOG(FATAL) << "UNREACHABLE";
     }
 
@@ -1210,9 +1215,8 @@ class RuntimeImageHelper {
     }
 
     // java.lang.ref.Reference visitor.
-    void operator()(ObjPtr<mirror::Class> klass ATTRIBUTE_UNUSED,
-                    ObjPtr<mirror::Reference> ref) const
-        REQUIRES_SHARED(Locks::mutator_lock_) {
+    void operator()([[maybe_unused]] ObjPtr<mirror::Class> klass,
+                    ObjPtr<mirror::Reference> ref) const REQUIRES_SHARED(Locks::mutator_lock_) {
       operator()(ref, mirror::Reference::ReferentOffset(), /* is_static */ false);
     }
 
@@ -1812,21 +1816,28 @@ class RuntimeImageHelper {
   friend class NativePointerVisitor;
 };
 
-static std::string GetOatPath() {
-  const std::string& data_dir = Runtime::Current()->GetProcessDataDirectory();
-  if (data_dir.empty()) {
-    // The data ditectory is empty for tests.
+std::string RuntimeImage::GetRuntimeImageDir(const std::string& app_data_dir) {
+  if (app_data_dir.empty()) {
+    // The data directory is empty for tests.
     return "";
   }
-  return data_dir + "/cache/oat_primary/";
+  return app_data_dir + "/cache/oat_primary/";
 }
 
 // Note: this may return a relative path for tests.
-std::string RuntimeImage::GetRuntimeImagePath(const std::string& dex_location) {
+std::string RuntimeImage::GetRuntimeImagePath(const std::string& app_data_dir,
+                                              const std::string& dex_location,
+                                              const std::string& isa) {
   std::string basename = android::base::Basename(dex_location);
   std::string filename = ReplaceFileExtension(basename, "art");
 
-  return GetOatPath() + GetInstructionSetString(kRuntimeISA) + "/" + filename;
+  return GetRuntimeImageDir(app_data_dir) + isa + "/" + filename;
+}
+
+std::string RuntimeImage::GetRuntimeImagePath(const std::string& dex_location) {
+  return GetRuntimeImagePath(Runtime::Current()->GetProcessDataDirectory(),
+                             dex_location,
+                             GetInstructionSetString(kRuntimeISA));
 }
 
 static bool EnsureDirectoryExists(const std::string& directory, std::string* error_msg) {
@@ -1847,7 +1858,7 @@ bool RuntimeImage::WriteImageToDisk(std::string* error_msg) {
     *error_msg = "Cannot generate an app image without a boot image";
     return false;
   }
-  std::string oat_path = GetOatPath();
+  std::string oat_path = GetRuntimeImageDir(Runtime::Current()->GetProcessDataDirectory());
   if (!oat_path.empty() && !EnsureDirectoryExists(oat_path, error_msg)) {
     return false;
   }

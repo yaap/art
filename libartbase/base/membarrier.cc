@@ -47,37 +47,48 @@ namespace art {
 
 #if defined(__NR_membarrier)
 
-int membarrier(MembarrierCommand command) {
+static bool IsMemBarrierSupported() {
   // Check kernel version supports membarrier(2).
+  // MEMBARRIER_CMD_QUERY is supported since Linux 4.3.
+  // MEMBARRIER_CMD_PRIVATE_EXPEDITED is supported since Linux 4.14.
+  // MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE is supported since Linux 4.16.
+  // Lowest Linux version useful for ART is 4.14.
   static constexpr int kRequiredMajor = 4;
-  static constexpr int kRequiredMinor = 16;
+  static constexpr int kRequiredMinor = 14;
   struct utsname uts;
   int major, minor;
   if (uname(&uts) != 0 ||
       strcmp(uts.sysname, "Linux") != 0 ||
       sscanf(uts.release, "%d.%d", &major, &minor) != 2 ||
       (major < kRequiredMajor || (major == kRequiredMajor && minor < kRequiredMinor))) {
-    errno = ENOSYS;
-    return -1;
+    return false;
   }
 #if defined(__BIONIC__)
   // Avoid calling membarrier on older Android versions where membarrier may be barred by secomp
   // causing the current process to be killed. The probing here could be considered expensive so
   // endeavour not to repeat too often.
-  static int api_level = android_get_device_api_level();
+  int api_level = android_get_device_api_level();
   if (api_level < __ANDROID_API_Q__) {
+    return false;
+  }
+#endif  // __BIONIC__
+  return true;
+}
+
+int membarrier(MembarrierCommand command) {
+  static const bool membarrier_supported = IsMemBarrierSupported();
+  if (UNLIKELY(!membarrier_supported)) {
     errno = ENOSYS;
     return -1;
   }
-#endif  // __BIONIC__
   return syscall(__NR_membarrier, static_cast<int>(command), 0);
 }
 
 #else  // __NR_membarrier
 
-int membarrier(MembarrierCommand command ATTRIBUTE_UNUSED) {
+int membarrier([[maybe_unused]] MembarrierCommand command) {
   // In principle this could be supported on linux, but Android's prebuilt glibc does not include
-  // the system call number defintions (b/111199492).
+  // the system call number definitions (b/111199492).
   errno = ENOSYS;
   return -1;
 }

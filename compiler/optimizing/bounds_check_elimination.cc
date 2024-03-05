@@ -1047,14 +1047,14 @@ class BCEVisitor final : public HGraphVisitor {
 
     HDiv* div = nullptr;
     int64_t const_divisor = 0;
-    if (HMul* mul = instruction->GetRight()->AsMul()) {
+    if (HMul* mul = instruction->GetRight()->AsMulOrNull()) {
       if (!mul->GetLeft()->IsDiv() || !mul->GetRight()->IsConstant()) {
         return false;
       }
       div = mul->GetLeft()->AsDiv();
       const_divisor = Int64FromConstant(mul->GetRight()->AsConstant());
-    } else if (HAdd* add = instruction->GetRight()->AsAdd()) {
-      HShl* shl = add->GetRight()->AsShl();
+    } else if (HAdd* add = instruction->GetRight()->AsAddOrNull()) {
+      HShl* shl = add->GetRight()->AsShlOrNull();
       if (!is_needed_shl(shl)) {
         return false;
       }
@@ -1070,8 +1070,8 @@ class BCEVisitor final : public HGraphVisitor {
         return false;
       }
       const_divisor = (1LL << n) + 1;
-    } else if (HSub* sub = instruction->GetRight()->AsSub()) {
-      HShl* shl = sub->GetLeft()->AsShl();
+    } else if (HSub* sub = instruction->GetRight()->AsSubOrNull()) {
+      HShl* shl = sub->GetLeft()->AsShlOrNull();
       if (!is_needed_shl(shl)) {
         return false;
       }
@@ -1378,8 +1378,7 @@ class BCEVisitor final : public HGraphVisitor {
                                     HInstruction* array_length,
                                     HInstruction* base,
                                     int32_t min_c, int32_t max_c) {
-    HBoundsCheck* bounds_check =
-        first_index_bounds_check_map_.Get(array_length->GetId())->AsBoundsCheck();
+    HBoundsCheck* bounds_check = first_index_bounds_check_map_.Get(array_length->GetId());
     // Construct deoptimization on single or double bounds on range [base-min_c,base+max_c],
     // for example either for a[0]..a[3] just 3 or for a[base-1]..a[base+3] both base-1
     // and base+3, since we made the assumption any in between value may occur too.

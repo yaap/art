@@ -82,7 +82,6 @@ class Throwable;
 }  // namespace mirror
 
 namespace verifier {
-class MethodVerifier;
 class VerifierDeps;
 }  // namespace verifier
 
@@ -214,10 +213,10 @@ static constexpr size_t kSharedMethodHotnessThreshold = 0x1fff;
 // that is set mprotect(PROT_NONE).  Any attempt to read/write to this region will
 // result in a segmentation fault signal.  At any point, the thread's SP will be somewhere
 // between the stack_end and the highest address in stack memory.  An implicit stack
-// overflow check is a read of memory at a certain offset below the current SP (4K typically).
+// overflow check is a read of memory at a certain offset below the current SP (8K typically).
 // If the thread's SP is below the stack_end address this will be a read into the protected
 // region.  If the SP is above the stack_end address, the thread is guaranteed to have
-// at least 4K of space.  Because stack overflow checks are only performed in generated code,
+// at least 8K of space.  Because stack overflow checks are only performed in generated code,
 // if the thread makes a call out to a native function (through JNI), that native function
 // might only have 4K of memory (if the SP is adjacent to stack_end).
 
@@ -383,15 +382,8 @@ class Thread {
   // Set the flip function. This is done with all threads suspended, except for the calling thread.
   void SetFlipFunction(Closure* function);
 
-  // Ensure that thread flip function started running. If no other thread is executing
-  // it, the calling thread shall run the flip function and then notify other threads
-  // that have tried to do that concurrently. After this function returns, the
-  // `ThreadFlag::kPendingFlipFunction` is cleared but another thread may still
-  // run the flip function as indicated by the `ThreadFlag::kRunningFlipFunction`.
-  void EnsureFlipFunctionStarted(Thread* self) REQUIRES_SHARED(Locks::mutator_lock_);
-
   // Wait for the flip function to complete if still running on another thread.
-  void WaitForFlipFunction(Thread* self) REQUIRES_SHARED(Locks::mutator_lock_);
+  void WaitForFlipFunction(Thread* self);
 
   gc::accounting::AtomicStack<mirror::Object>* GetThreadLocalMarkStack() {
     CHECK(gUseReadBarrier);
@@ -524,10 +516,12 @@ class Thread {
     CHECK(tlsPtr_.jpeer == nullptr);
     return tlsPtr_.opeer;
   }
-  // GetPeer is not safe if called on another thread in the middle of the CC thread flip and
+  // GetPeer is not safe if called on another thread in the middle of the thread flip and
   // the thread's stack may have not been flipped yet and peer may be a from-space (stale) ref.
-  // This function will explicitly mark/forward it.
-  mirror::Object* GetPeerFromOtherThread() const REQUIRES_SHARED(Locks::mutator_lock_);
+  // This function will force a flip for the other thread if necessary.
+  // Since we hold a shared mutator lock, a new flip function cannot be concurrently
+  // installed
+  mirror::Object* GetPeerFromOtherThread() REQUIRES_SHARED(Locks::mutator_lock_);
 
   bool HasPeer() const {
     return tlsPtr_.jpeer != nullptr || tlsPtr_.opeer != nullptr;
@@ -949,6 +943,18 @@ class Thread {
   static constexpr ThreadOffset<pointer_size> ThreadLocalAllocStackEndOffset() {
     return ThreadOffsetFromTlsPtr<pointer_size>(OFFSETOF_MEMBER(tls_ptr_sized_values,
                                                                 thread_local_alloc_stack_end));
+  }
+
+  template <PointerSize pointer_size>
+  static constexpr ThreadOffset<pointer_size> TraceBufferIndexOffset() {
+    return ThreadOffsetFromTlsPtr<pointer_size>(
+        OFFSETOF_MEMBER(tls_ptr_sized_values, method_trace_buffer_index));
+  }
+
+  template <PointerSize pointer_size>
+  static constexpr ThreadOffset<pointer_size> TraceBufferPtrOffset() {
+    return ThreadOffsetFromTlsPtr<pointer_size>(
+        OFFSETOF_MEMBER(tls_ptr_sized_values, method_trace_buffer));
   }
 
   // Size of stack less any space reserved for stack overflow
@@ -1377,9 +1383,6 @@ class Thread {
     return false;
   }
 
-  void PushVerifier(verifier::MethodVerifier* verifier);
-  void PopVerifier(verifier::MethodVerifier* verifier);
-
   void InitStringEntryPoints();
 
   void ModifyDebugDisallowReadBarrier(int8_t delta) {
@@ -1740,6 +1743,19 @@ class Thread {
   // to do that concurrently.
   void RunFlipFunction(Thread* self, bool notify) REQUIRES_SHARED(Locks::mutator_lock_);
 
+  // Ensure that thread flip function started running. If no other thread is executing
+  // it, the calling thread shall run the flip function and then notify other threads
+  // that have tried to do that concurrently. After this function returns, the
+  // `ThreadFlag::kPendingFlipFunction` is cleared but another thread may still
+  // run the flip function as indicated by the `ThreadFlag::kRunningFlipFunction`.
+  // A non-zero 'old_state_and_flags' indicates that the thread should logically
+  // acquire mutator lock if we win the race to run the flip function, if a
+  // suspend request is not already set. A zero 'old_state_and_flags' indicates
+  // we already hold the mutator lock.
+  // Returns true if this call ran the flip function.
+  bool EnsureFlipFunctionStarted(Thread* self, StateAndFlags old_state_and_flags = StateAndFlags(0))
+      TRY_ACQUIRE_SHARED(true, Locks::mutator_lock_);
+
   static void ThreadExitCallback(void* arg);
 
   // Maximum number of suspend barriers.
@@ -1949,7 +1965,6 @@ class Thread {
                                thread_local_alloc_stack_end(nullptr),
                                mutator_lock(nullptr),
                                flip_function(nullptr),
-                               method_verifier(nullptr),
                                thread_local_mark_stack(nullptr),
                                async_exception(nullptr),
                                top_reflective_handle_scope(nullptr),
@@ -2098,9 +2113,6 @@ class Thread {
     // The function used for thread flip.
     Closure* flip_function;
 
-    // Current method verifier, used for root marking.
-    verifier::MethodVerifier* method_verifier;
-
     union {
       // Thread-local mark stack for the concurrent copying collector.
       gc::accounting::AtomicStack<mirror::Object>* thread_local_mark_stack;
@@ -2170,8 +2182,7 @@ class Thread {
   friend class QuickExceptionHandler;  // For dumping the stack.
   friend class ScopedThreadStateChange;
   friend class StubTest;  // For accessing entrypoints.
-  friend class ThreadList;  // For ~Thread and Destroy.
-
+  friend class ThreadList;  // For ~Thread, Destroy and EnsureFlipFunctionStarted.
   friend class EntrypointsOrderTest;  // To test the order of tls entries.
   friend class JniCompilerTest;  // For intercepting JNI entrypoint calls.
 

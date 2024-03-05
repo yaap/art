@@ -76,7 +76,7 @@ void SsaDeadPhiElimination::MarkDeadPhis() {
     HPhi* phi = worklist.back();
     worklist.pop_back();
     for (HInstruction* raw_input : phi->GetInputs()) {
-      HPhi* input = raw_input->AsPhi();
+      HPhi* input = raw_input->AsPhiOrNull();
       if (input != nullptr && input->IsDead()) {
         // Input is a dead phi. Revive it and add to the worklist. We make sure
         // that the phi was not dead initially (see definition of `initially_live`).

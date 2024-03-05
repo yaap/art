@@ -22,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/os.h"
@@ -32,7 +33,6 @@ namespace art {
 
 class MemMap;
 class OatDexFile;
-class ScopedTrace;
 class ZipArchive;
 
 enum class DexFileLoaderErrorCode {
@@ -62,7 +62,7 @@ class DexFileLoader {
 
   // Check whether a location denotes a multidex dex file. This is a very simple check: returns
   // whether the string contains the separator character.
-  static bool IsMultiDexLocation(const char* location);
+  static bool IsMultiDexLocation(std::string_view location);
 
   // Return the name of the index-th classes.dex in a multidex zip file. This is classes.dex for
   // index == 0, and classes{index + 1}.dex else.
@@ -71,6 +71,59 @@ class DexFileLoader {
   // Return the (possibly synthetic) dex location for a multidex entry. This is dex_location for
   // index == 0, and dex_location + multi-dex-separator + GetMultiDexClassesDexName(index) else.
   static std::string GetMultiDexLocation(size_t index, const char* dex_location);
+
+  // Returns combined checksum of one or more dex files (one checksum for the whole multidex set).
+  //
+  // This uses the source path provided to DexFileLoader constructor.
+  //
+  // Returns false on error.  Sets *checksum to nullopt for an empty set.
+  bool GetMultiDexChecksum(/*out*/ std::optional<uint32_t>* checksum,
+                           /*out*/ std::string* error_msg,
+                           /*out*/ bool* only_contains_uncompressed_dex = nullptr);
+
+  // Returns combined checksum of one or more dex files (one checksum for the whole multidex set).
+  //
+  // This uses already open dex files.
+  //
+  // It starts iteration at index 'i', which must be a primary dex file,
+  // and it sets 'i' to the next primary dex file or to end of the array.
+  template <typename DexFilePtrVector>  // array|vector<unique_ptr|DexFile|OatDexFile*>.
+  static uint32_t GetMultiDexChecksum(const DexFilePtrVector& dex_files,
+                                      /*inout*/ size_t* i) {
+    CHECK_LT(*i, dex_files.size()) << "No dex files";
+    std::optional<uint32_t> checksum;
+    for (; *i < dex_files.size(); ++(*i)) {
+      const auto* dex_file = &*dex_files[*i];
+      bool is_primary_dex = !IsMultiDexLocation(dex_file->GetLocation().c_str());
+      if (!checksum.has_value()) {                         // First dex file.
+        CHECK(is_primary_dex) << dex_file->GetLocation();  // Expect primary dex.
+      } else if (is_primary_dex) {                         // Later dex file.
+        break;  // Found another primary dex file, terminate iteration.
+      }
+      if (!is_primary_dex && dex_file->GetDexVersion() >= DexFile::kDexContainerVersion) {
+        if (dex_file->GetLocationChecksum() == dex_files[*i - 1]->GetLocationChecksum() + 1) {
+          continue;
+        }
+      }
+      checksum = checksum.value_or(kEmptyMultiDexChecksum) ^ dex_file->GetLocationChecksum();
+    }
+    CHECK(checksum.has_value());
+    return checksum.value();
+  }
+
+  // Calculate checksum of dex files in a vector, starting at index 0.
+  // It will CHECK that the whole vector is consumed (i.e. there is just one primary dex file).
+  template <typename DexFilePtrVector>
+  static uint32_t GetMultiDexChecksum(const DexFilePtrVector& dex_files) {
+    size_t i = 0;
+    uint32_t checksum = GetMultiDexChecksum(dex_files, &i);
+    CHECK_EQ(i, dex_files.size());
+    return checksum;
+  }
+
+  // Non-zero initial value for multi-dex to catch bugs if multi-dex checksum is compared
+  // directly to DexFile::GetLocationChecksum without going through GetMultiDexChecksum.
+  static constexpr uint32_t kEmptyMultiDexChecksum = 1;
 
   // Returns the canonical form of the given dex location.
   //
@@ -107,14 +160,14 @@ class DexFileLoader {
     return (pos == std::string::npos) ? std::string() : location.substr(pos);
   }
 
-  DexFileLoader(const char* filename, int fd, const std::string& location)
-      : filename_(filename),
-        file_(fd == -1 ? std::optional<File>() : File(fd, /*check_usage=*/false)),
-        location_(location) {}
+  DexFileLoader(const char* filename, const File* file, const std::string& location)
+      : filename_(filename), file_(file), location_(location) {
+    CHECK(file != nullptr);  // Must be non-null, but may be invalid.
+  }
 
   DexFileLoader(std::shared_ptr<DexFileContainer> container, const std::string& location)
       : root_container_(std::move(container)), location_(location) {
-    DCHECK(root_container_ != nullptr);
+    CHECK(root_container_ != nullptr);
   }
 
   DexFileLoader(const uint8_t* base, size_t size, const std::string& location);
@@ -123,22 +176,39 @@ class DexFileLoader {
 
   DexFileLoader(MemMap&& mem_map, const std::string& location);
 
-  DexFileLoader(int fd, const std::string& location)
-      : DexFileLoader(/*filename=*/location.c_str(), fd, location) {}
+  DexFileLoader(File* file, const std::string& location)
+      : DexFileLoader(/*filename=*/location.c_str(), file, location) {}
 
   DexFileLoader(const char* filename, const std::string& location)
-      : DexFileLoader(filename, /*fd=*/-1, location) {}
+      : DexFileLoader(filename, /*file=*/&kInvalidFile, location) {}
 
   explicit DexFileLoader(const std::string& location)
-      : DexFileLoader(location.c_str(), /*fd=*/-1, location) {}
+      : DexFileLoader(location.c_str(), /*file=*/&kInvalidFile, location) {}
 
   virtual ~DexFileLoader() {}
 
+  // Open singe dex file at the given offset within the container (usually 0).
+  // This intentionally ignores all other dex files in the container
+  std::unique_ptr<const DexFile> OpenOne(size_t header_offset,
+                                         uint32_t location_checksum,
+                                         const OatDexFile* oat_dex_file,
+                                         bool verify,
+                                         bool verify_checksum,
+                                         std::string* error_msg);
+
+  // Open single dex file (starting at offset 0 of the container).
+  // It expects only single dex file to be present and will fail otherwise.
   std::unique_ptr<const DexFile> Open(uint32_t location_checksum,
                                       const OatDexFile* oat_dex_file,
                                       bool verify,
                                       bool verify_checksum,
-                                      std::string* error_msg);
+                                      std::string* error_msg) {
+    std::unique_ptr<const DexFile> dex_file = OpenOne(
+        /*header_offset=*/0, location_checksum, oat_dex_file, verify, verify_checksum, error_msg);
+    // This API returns only singe DEX file, so check there is just single dex in the container.
+    CHECK(dex_file == nullptr || dex_file->IsDexContainerLastEntry()) << location_;
+    return dex_file;
+  }
 
   std::unique_ptr<const DexFile> Open(uint32_t location_checksum,
                                       bool verify,
@@ -195,7 +265,9 @@ class DexFileLoader {
   }
 
  protected:
-  bool InitAndReadMagic(uint32_t* magic, std::string* error_msg);
+  static const File kInvalidFile;  // Used for "no file descriptor" (-1).
+
+  bool InitAndReadMagic(size_t header_offset, uint32_t* magic, std::string* error_msg);
 
   // Ensure we have root container.  If we are backed by a file, memory-map it.
   // We can only do this for dex files since zip files might be too big to map.
@@ -244,14 +316,16 @@ class DexFileLoader {
                         const std::string& location,
                         bool verify,
                         bool verify_checksum,
-                        DexFileLoaderErrorCode* error_code,
-                        std::string* error_msg,
-                        std::vector<std::unique_ptr<const DexFile>>* dex_files) const;
+                        /*inout*/ size_t* multidex_count,
+                        /*out*/ DexFileLoaderErrorCode* error_code,
+                        /*out*/ std::string* error_msg,
+                        /*out*/ std::vector<std::unique_ptr<const DexFile>>* dex_files) const;
 
   // The DexFileLoader can be backed either by file or by memory (i.e. DexFileContainer).
   // We can not just mmap the file since APKs might be unreasonably large for 32-bit system.
   std::string filename_;
-  std::optional<File> file_;
+  const File* file_ = &kInvalidFile;
+  std::optional<File> owned_file_;  // May be used as backing storage for 'file_'.
   std::shared_ptr<DexFileContainer> root_container_;
   const std::string location_;
 };

@@ -17,6 +17,7 @@
 #include "oat_file_assistant_context.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include "android-base/stringprintf.h"
 #include "arch/instruction_set.h"
 #include "base/array_ref.h"
+#include "base/file_utils.h"
 #include "base/logging.h"
 #include "base/mem_map.h"
 #include "class_linker.h"
@@ -42,8 +44,8 @@ OatFileAssistantContext::OatFileAssistantContext(
   DCHECK_EQ(runtime_options_->boot_class_path.size(),
             runtime_options_->boot_class_path_locations.size());
   DCHECK_IMPLIES(
-      runtime_options_->boot_class_path_fds != nullptr,
-      runtime_options_->boot_class_path.size() == runtime_options_->boot_class_path_fds->size());
+      runtime_options_->boot_class_path_files.has_value(),
+      runtime_options_->boot_class_path.size() == runtime_options_->boot_class_path_files->size());
   // Opening dex files and boot images require MemMap.
   MemMap::Init();
 }
@@ -54,9 +56,9 @@ OatFileAssistantContext::OatFileAssistantContext(Runtime* runtime)
               .image_locations = runtime->GetImageLocations(),
               .boot_class_path = runtime->GetBootClassPath(),
               .boot_class_path_locations = runtime->GetBootClassPathLocations(),
-              .boot_class_path_fds = !runtime->GetBootClassPathFds().empty() ?
-                                         &runtime->GetBootClassPathFds() :
-                                         nullptr,
+              .boot_class_path_files = !runtime->GetBootClassPathFiles().empty() ?
+                                           runtime->GetBootClassPathFiles() :
+                                           std::optional<ArrayRef<File>>(),
               .deny_art_apex_data_files = runtime->DenyArtApexDataFiles(),
           })) {
   // Fetch boot image info from the runtime.
@@ -76,13 +78,13 @@ OatFileAssistantContext::OatFileAssistantContext(Runtime* runtime)
   // Fetch BCP checksums from the runtime.
   size_t bcp_index = 0;
   std::vector<std::string>* current_bcp_checksums = nullptr;
-  for (const DexFile* dex_file : runtime->GetClassLinker()->GetBootClassPath()) {
-    if (!DexFileLoader::IsMultiDexLocation(dex_file->GetLocation().c_str())) {
-      DCHECK_LT(bcp_index, runtime_options_->boot_class_path.size());
-      current_bcp_checksums = &bcp_checksums_by_index_[bcp_index++];
-    }
+  const std::vector<const DexFile*>& bcp_dex_files = runtime->GetClassLinker()->GetBootClassPath();
+  for (size_t i = 0; i < bcp_dex_files.size();) {
+    uint32_t checksum = DexFileLoader::GetMultiDexChecksum(bcp_dex_files, &i);
+    DCHECK_LT(bcp_index, runtime_options_->boot_class_path.size());
+    current_bcp_checksums = &bcp_checksums_by_index_[bcp_index++];
     DCHECK_NE(current_bcp_checksums, nullptr);
-    current_bcp_checksums->push_back(StringPrintf("/%08x", dex_file->GetLocationChecksum()));
+    current_bcp_checksums->push_back(StringPrintf("/%08x", checksum));
   }
   DCHECK_EQ(bcp_index, runtime_options_->boot_class_path.size());
 
@@ -121,12 +123,10 @@ OatFileAssistantContext::GetBootImageInfoList(InstructionSet isa) {
       ArrayRef<const std::string>(runtime_options_->image_locations),
       ArrayRef<const std::string>(runtime_options_->boot_class_path),
       ArrayRef<const std::string>(runtime_options_->boot_class_path_locations),
-      runtime_options_->boot_class_path_fds != nullptr ?
-          ArrayRef<const int>(*runtime_options_->boot_class_path_fds) :
-          ArrayRef<const int>(),
-      /*boot_class_path_image_fds=*/ArrayRef<const int>(),
-      /*boot_class_path_vdex_fds=*/ArrayRef<const int>(),
-      /*boot_class_path_oat_fds=*/ArrayRef<const int>(),
+      runtime_options_->boot_class_path_files.value_or(ArrayRef<File>()),
+      /*boot_class_path_image_files=*/{},
+      /*boot_class_path_vdex_files=*/{},
+      /*boot_class_path_oat_files=*/{},
       &GetApexVersions());
 
   std::string error_msg;
@@ -156,23 +156,20 @@ const std::vector<std::string>* OatFileAssistantContext::GetBcpChecksums(size_t 
     return &it->second;
   }
 
-  std::vector<uint32_t> checksums;
-  std::vector<std::string> dex_locations;
-  if (!ArtDexFileLoader::GetMultiDexChecksums(
-          runtime_options_->boot_class_path[bcp_index].c_str(),
-          &checksums,
-          &dex_locations,
-          error_msg,
-          runtime_options_->boot_class_path_fds != nullptr ?
-              (*runtime_options_->boot_class_path_fds)[bcp_index] :
-              -1)) {
+  std::optional<ArrayRef<File>> bcp_files = runtime_options_->boot_class_path_files;
+  File noFile;
+  File* file = bcp_files.has_value() ? &(*bcp_files)[bcp_index] : &noFile;
+  ArtDexFileLoader dex_loader(file, runtime_options_->boot_class_path[bcp_index]);
+  std::optional<uint32_t> checksum;
+  bool ok = dex_loader.GetMultiDexChecksum(&checksum, error_msg);
+  if (!ok) {
     return nullptr;
   }
 
-  DCHECK(!checksums.empty());
+  DCHECK(checksum.has_value());
   std::vector<std::string>& bcp_checksums = bcp_checksums_by_index_[bcp_index];
-  for (uint32_t checksum : checksums) {
-    bcp_checksums.push_back(StringPrintf("/%08x", checksum));
+  if (checksum.has_value()) {
+    bcp_checksums.push_back(StringPrintf("/%08x", checksum.value()));
   }
   return &bcp_checksums;
 }

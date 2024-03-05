@@ -28,6 +28,10 @@
 #include "utils/arm64/assembler_arm64.h"
 #endif
 
+#ifdef ART_ENABLE_CODEGEN_riscv64
+#include "utils/riscv64/assembler_riscv64.h"
+#endif
+
 #ifdef ART_ENABLE_CODEGEN_x86
 #include "utils/x86/assembler_x86.h"
 #endif
@@ -57,9 +61,6 @@ static std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline(
   ArmVIXLAssembler assembler(allocator);
 
   switch (abi) {
-    case kInterpreterAbi:  // Thread* is first argument (R0) in interpreter ABI.
-      ___ Ldr(pc, MemOperand(r0, offset.Int32Value()));
-      break;
     case kJniAbi: {  // Load via Thread* held in JNIEnv* in first argument (R0).
       vixl::aarch32::UseScratchRegisterScope temps(assembler.GetVIXLAssembler());
       const vixl::aarch32::Register temp_reg = temps.Acquire();
@@ -78,7 +79,7 @@ static std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline(
   size_t cs = __ CodeSize();
   std::unique_ptr<std::vector<uint8_t>> entry_stub(new std::vector<uint8_t>(cs));
   MemoryRegion code(entry_stub->data(), entry_stub->size());
-  __ FinalizeInstructions(code);
+  __ CopyInstructions(code);
 
   return std::move(entry_stub);
 }
@@ -95,11 +96,6 @@ static std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline(
   Arm64Assembler assembler(allocator);
 
   switch (abi) {
-    case kInterpreterAbi:  // Thread* is first argument (X0) in interpreter ABI.
-      __ JumpTo(Arm64ManagedRegister::FromXRegister(X0), Offset(offset.Int32Value()),
-          Arm64ManagedRegister::FromXRegister(IP1));
-
-      break;
     case kJniAbi:  // Load via Thread* held in JNIEnv* in first argument (X0).
       __ LoadRawPtr(Arm64ManagedRegister::FromXRegister(IP1),
                       Arm64ManagedRegister::FromXRegister(X0),
@@ -120,12 +116,46 @@ static std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline(
   size_t cs = __ CodeSize();
   std::unique_ptr<std::vector<uint8_t>> entry_stub(new std::vector<uint8_t>(cs));
   MemoryRegion code(entry_stub->data(), entry_stub->size());
-  __ FinalizeInstructions(code);
+  __ CopyInstructions(code);
 
   return std::move(entry_stub);
 }
 }  // namespace arm64
 #endif  // ART_ENABLE_CODEGEN_arm64
+
+#ifdef ART_ENABLE_CODEGEN_riscv64
+namespace riscv64 {
+static std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline(ArenaAllocator* allocator,
+                                                                    EntryPointCallingConvention abi,
+                                                                    ThreadOffset64 offset) {
+  Riscv64Assembler assembler(allocator);
+  ScratchRegisterScope srs(&assembler);
+  XRegister tmp = srs.AllocateXRegister();
+
+  switch (abi) {
+    case kJniAbi:  // Load via Thread* held in JNIEnv* in first argument (A0).
+      __ Loadd(tmp,
+               A0,
+               JNIEnvExt::SelfOffset(static_cast<size_t>(kRiscv64PointerSize)).Int32Value());
+      __ Loadd(tmp, tmp, offset.Int32Value());
+      __ Jr(tmp);
+      break;
+    case kQuickAbi:  // TR holds Thread*.
+      __ Loadd(tmp, TR, offset.Int32Value());
+      __ Jr(tmp);
+      break;
+  }
+
+  __ FinalizeCode();
+  size_t cs = __ CodeSize();
+  std::unique_ptr<std::vector<uint8_t>> entry_stub(new std::vector<uint8_t>(cs));
+  MemoryRegion code(entry_stub->data(), entry_stub->size());
+  __ CopyInstructions(code);
+
+  return std::move(entry_stub);
+}
+}  // namespace riscv64
+#endif  // ART_ENABLE_CODEGEN_riscv64
 
 #ifdef ART_ENABLE_CODEGEN_x86
 namespace x86 {
@@ -141,7 +171,7 @@ static std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline(ArenaAllocat
   size_t cs = __ CodeSize();
   std::unique_ptr<std::vector<uint8_t>> entry_stub(new std::vector<uint8_t>(cs));
   MemoryRegion code(entry_stub->data(), entry_stub->size());
-  __ FinalizeInstructions(code);
+  __ CopyInstructions(code);
 
   return std::move(entry_stub);
 }
@@ -162,7 +192,7 @@ static std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline(ArenaAllocat
   size_t cs = __ CodeSize();
   std::unique_ptr<std::vector<uint8_t>> entry_stub(new std::vector<uint8_t>(cs));
   MemoryRegion code(entry_stub->data(), entry_stub->size());
-  __ FinalizeInstructions(code);
+  __ CopyInstructions(code);
 
   return std::move(entry_stub);
 }
@@ -178,6 +208,10 @@ std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline64(InstructionSet is
 #ifdef ART_ENABLE_CODEGEN_arm64
     case InstructionSet::kArm64:
       return arm64::CreateTrampoline(&allocator, abi, offset);
+#endif
+#ifdef ART_ENABLE_CODEGEN_riscv64
+    case InstructionSet::kRiscv64:
+      return riscv64::CreateTrampoline(&allocator, abi, offset);
 #endif
 #ifdef ART_ENABLE_CODEGEN_x86_64
     case InstructionSet::kX86_64:

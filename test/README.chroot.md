@@ -60,26 +60,30 @@ Note that using this chroot-based approach requires root access to the device
            build and test:
             * For (32-bit) Arm:
                 ```bash
-                lunch arm_krait-eng
+                lunch arm_krait-trunk_staging-eng
                 ```
             * For (64-bit only) Arm64:
                 ```bash
-                lunch armv8-eng
+                lunch armv8-trunk_staging-eng
                 ```
             * For (32- and 64-bit) Arm64:
                 ```bash
-                lunch arm_v7_v8-eng
+                lunch arm_v7_v8-trunk_staging-eng
                 ```
             * For (32-bit) Intel x86:
                 ```bash
-                lunch silvermont-eng
+                lunch silvermont-trunk_staging-eng
+                ```
+            * For (64-bit) RISC-V:
+                ```bash
+                lunch aosp_riscv64-trunk_staging-eng
                 ```
         3. Set up the environment to use a pre-built ADB:
             ```bash
             export PATH="$(pwd)/prebuilts/runtime:$PATH"
             export ADB="$ANDROID_BUILD_TOP/prebuilts/runtime/adb"
             ```
-    * With a full Android (AOSP) `aosp/master` tree:
+    * With a full Android (AOSP) `aosp/main` tree:
         1. Initialize the environment:
             ```bash
             . ./build/envsetup.sh
@@ -88,19 +92,23 @@ Note that using this chroot-based approach requires root access to the device
            build and test:
             * For (32-bit) Arm:
                 ```bash
-                lunch aosp_arm-eng
+                lunch aosp_arm-trunk_staging-eng
                 ```
             * For (32- and 64-bit) Arm64:
                 ```bash
-                lunch aosp_arm64-eng
+                lunch aosp_arm64-trunk_staging-eng
                 ```
             * For (32-bit) Intel x86:
                 ```bash
-                lunch aosp_x86-eng
+                lunch aosp_x86-trunk_staging-eng
                 ```
             * For (32- and 64-bit) Intel x86-64:
                 ```bash
-                lunch aosp_x86_64-eng
+                lunch aosp_x86_64-trunk_staging-eng
+                ```
+            * For (64-bit) RISC-V:
+                ```bash
+                lunch aosp_riscv64-trunk_staging-eng
                 ```
         3. Build ADB:
             ```bash

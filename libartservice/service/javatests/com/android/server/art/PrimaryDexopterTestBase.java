@@ -150,8 +150,6 @@ public class PrimaryDexopterTestBase {
         lenient().when(pkgState.getPackageName()).thenReturn(PKG_NAME);
         lenient().when(pkgState.getPrimaryCpuAbi()).thenReturn("arm64-v8a");
         lenient().when(pkgState.getSecondaryCpuAbi()).thenReturn("armeabi-v7a");
-        lenient().when(pkgState.isSystem()).thenReturn(false);
-        lenient().when(pkgState.isUpdatedSystemApp()).thenReturn(false);
         lenient().when(pkgState.getAppId()).thenReturn(UID);
         lenient().when(pkgState.getSharedLibraryDependencies()).thenReturn(new ArrayList<>());
         lenient().when(pkgState.getStateForUser(any())).thenReturn(mPkgUserStateNotInstalled);
@@ -171,8 +169,13 @@ public class PrimaryDexopterTestBase {
     }
 
     protected GetDexoptNeededResult dexoptIsNotNeeded() {
+        return dexoptIsNotNeeded(true /* hasDexCode */);
+    }
+
+    protected GetDexoptNeededResult dexoptIsNotNeeded(boolean hasDexCode) {
         var result = new GetDexoptNeededResult();
         result.isDexoptNeeded = false;
+        result.hasDexCode = hasDexCode;
         return result;
     }
 
@@ -180,13 +183,14 @@ public class PrimaryDexopterTestBase {
         return dexoptIsNeeded(ArtifactsLocation.NONE_OR_ERROR);
     }
 
-    protected GetDexoptNeededResult dexoptIsNeeded(@ArtifactsLocation byte location) {
+    protected GetDexoptNeededResult dexoptIsNeeded(@ArtifactsLocation int location) {
         var result = new GetDexoptNeededResult();
         result.isDexoptNeeded = true;
         result.artifactsLocation = location;
         if (location != ArtifactsLocation.NONE_OR_ERROR) {
             result.isVdexUsable = true;
         }
+        result.hasDexCode = true;
         return result;
     }
 

@@ -92,19 +92,24 @@ public class TestSignum {
   /// CHECK-START: int TestSignum.signBoolean(boolean) select_generator (after)
   /// CHECK-NOT:                     Phi
 
-  /// CHECK-START: int TestSignum.signBoolean(boolean) instruction_simplifier$before_codegen (after)
+  /// CHECK-START: int TestSignum.signBoolean(boolean) instruction_simplifier$after_gvn (after)
   /// CHECK-DAG:     <<Arg:z\d+>>    ParameterValue
-  /// CHECK-DAG:     <<Zero:i\d+>>   IntConstant 0
-  /// CHECK-DAG:     <<Result:i\d+>> Compare [<<Arg>>,<<Zero>>]
-  /// CHECK-DAG:                     Return [<<Result>>]
+  /// CHECK-DAG:                     Return [<<Arg>>]
 
-  /// CHECK-START: int TestSignum.signBoolean(boolean) instruction_simplifier$before_codegen (after)
+  /// CHECK-START: int TestSignum.signBoolean(boolean) instruction_simplifier$after_gvn (after)
   /// CHECK-NOT:                     Select
 
   private static int signBoolean(boolean x) {
     // Note: D8 would replace the ternary expression `x ? 1 : 0` with `x`
     // but explicit `if` is preserved.
-    int src_x;
+
+    // Use `Integer.` here to have the clinit check now instead of later, which would block the
+    // optimization when run without an image.
+    int src_x = 0;
+    if (Integer.signum(src_x) == -1) {
+        return -1;
+    }
+
     if (x) {
       src_x = 1;
     } else {

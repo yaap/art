@@ -312,9 +312,6 @@ function run_art() {
               "$@"
   ret=$?
 
-  # Avoid polluting disk with 'oat' files after dalvikvm has finished.
-  cleanup_oat_directory_for_classpath "$@"
-
   # Forward exit code of dalvikvm.
   return $ret
 }
@@ -333,7 +330,11 @@ ALLOW_DEFAULT_JDWP="no"
 VERBOSE="no"
 CLEAN_OAT_FILES="yes"
 RUN_DEX2OAT="yes"
-EXTRA_OPTIONS=()
+# 'art' script is for benchmarking, so override:
+# - default JIT thresholds that are too conservative for benchmarking
+# - the eagerly releasing memory to the OS on explicit GC, which is more suited
+#   for multi-apps execution than benchmarks.
+EXTRA_OPTIONS=(-Xjitwarmupthreshold:4000 -Xjitthreshold:10000 -XX:+DisableEagerlyReleaseExplicitGC)
 DEX2OAT_FLAGS=()
 DEX2OAT_CLASSPATH=()
 GENERATE_APP_IMAGE="no"
@@ -618,8 +619,10 @@ if [ "$DEX2OAT_BCP" != "" ]; then
 fi
 
 if [ "$PERF" != "" ]; then
-  LAUNCH_WRAPPER="perf record -g --call-graph dwarf -F 10000 -o $ANDROID_DATA/perf.data -e cycles:u $LAUNCH_WRAPPER"
+  # -k is for supporting jitted code.
+  LAUNCH_WRAPPER="perf record -k 1 -g --call-graph dwarf -F 10000 -o $ANDROID_DATA/perf.data -e cycles:u $LAUNCH_WRAPPER"
   DEX2OAT_FLAGS+=(--generate-debug-info)
+  EXTRA_OPTIONS+=(-Xcompiler-option --generate-debug-info)
 fi
 
 if [ "$ALLOW_DEFAULT_JDWP" = "no" ]; then
@@ -649,6 +652,9 @@ if [ "$JIT_PROFILE" = "yes" ]; then
           ${EXTRA_OPTIONS[@]}                  \
           &> "$ANDROID_DATA/profile_gen.log"
   EXIT_STATUS=$?
+
+  # Remove generated oat files.
+  cleanup_oat_directory_for_classpath "$@"
 
   if [ $EXIT_STATUS != 0 ]; then
     echo "Profile run failed: " >&2
@@ -685,9 +691,16 @@ EXIT_STATUS=$?
 if [ "$PERF" != "" ]; then
   if [ "$PERF" = report ]; then
     perf report -i $ANDROID_DATA/perf.data
+  else
+    # Inject jitted code in perf.data. Keep the old perf.data for debugging.
+    mv $ANDROID_DATA/perf.data $ANDROID_DATA/perf.data.old
+    perf inject -j -i $ANDROID_DATA/perf.data.old -o $ANDROID_DATA/perf.data
+    echo "Perf data saved in: $ANDROID_DATA/perf.data. Generated oat files not removed."
   fi
-  echo "Perf data saved in: $ANDROID_DATA/perf.data"
 else
+  # Perf needs the odex files we generate for proper symbolization, so only remove them
+  # when not running with perf.
+  cleanup_oat_directory_for_classpath "$@"
   # Perf output is placed under $ANDROID_DATA so not cleaned when perf options used.
   clean_android_data
 fi

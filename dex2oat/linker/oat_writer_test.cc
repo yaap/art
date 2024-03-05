@@ -112,10 +112,8 @@ class OatTest : public CommonCompilerDriverTest {
                          /*profile_compilation_info*/nullptr,
                          CompactDexLevel::kCompactDexLevelNone);
     for (const DexFile* dex_file : dex_files) {
-      ArrayRef<const uint8_t> raw_dex_file(
-          reinterpret_cast<const uint8_t*>(&dex_file->GetHeader()),
-          dex_file->GetHeader().file_size_);
-      if (!oat_writer.AddRawDexFileSource(raw_dex_file,
+      if (!oat_writer.AddRawDexFileSource(dex_file->GetContainer(),
+                                          dex_file->Begin(),
                                           dex_file->GetLocation().c_str(),
                                           dex_file->GetLocationChecksum())) {
         return false;
@@ -463,9 +461,7 @@ TEST_F(OatTest, WriteRead) {
 
   ASSERT_TRUE(java_lang_dex_file_ != nullptr);
   const DexFile& dex_file = *java_lang_dex_file_;
-  uint32_t dex_file_checksum = dex_file.GetLocationChecksum();
-  const OatDexFile* oat_dex_file = oat_file->GetOatDexFile(dex_file.GetLocation().c_str(),
-                                                           &dex_file_checksum);
+  const OatDexFile* oat_dex_file = oat_file->GetOatDexFile(dex_file.GetLocation().c_str());
   ASSERT_TRUE(oat_dex_file != nullptr);
   CHECK_EQ(dex_file.GetLocationChecksum(), oat_dex_file->GetDexFileLocationChecksum());
   ScopedObjectAccess soa(Thread::Current());

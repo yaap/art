@@ -115,6 +115,8 @@ class LargeObjectSpace : public DiscontinuousSpace, public AllocSpace {
   // GetRangeAtomic returns Begin() and End() atomically, that is, it never returns Begin() and
   // End() from different allocations.
   virtual std::pair<uint8_t*, uint8_t*> GetBeginEndAtomic() const = 0;
+  // Clamp the space size to the given capacity.
+  virtual void ClampGrowthLimit(size_t capacity) = 0;
 
  protected:
   explicit LargeObjectSpace(const std::string& name, uint8_t* begin, uint8_t* end,
@@ -164,6 +166,7 @@ class LargeObjectMapSpace : public LargeObjectSpace {
   bool Contains(const mirror::Object* obj) const override NO_THREAD_SAFETY_ANALYSIS;
   void ForEachMemMap(std::function<void(const MemMap&)> func) const override REQUIRES(!lock_);
   std::pair<uint8_t*, uint8_t*> GetBeginEndAtomic() const override REQUIRES(!lock_);
+  void ClampGrowthLimit(size_t capacity ATTRIBUTE_UNUSED) override {}
 
  protected:
   struct LargeObject {
@@ -185,8 +188,6 @@ class LargeObjectMapSpace : public LargeObjectSpace {
 // A continuous large object space with a free-list to handle holes.
 class FreeListSpace final : public LargeObjectSpace {
  public:
-  static constexpr size_t kAlignment = kPageSize;
-
   virtual ~FreeListSpace();
   static FreeListSpace* Create(const std::string& name, size_t capacity);
   size_t AllocationSize(mirror::Object* obj, size_t* usable_size) override
@@ -199,18 +200,19 @@ class FreeListSpace final : public LargeObjectSpace {
   void Dump(std::ostream& os) const override REQUIRES(!lock_);
   void ForEachMemMap(std::function<void(const MemMap&)> func) const override REQUIRES(!lock_);
   std::pair<uint8_t*, uint8_t*> GetBeginEndAtomic() const override REQUIRES(!lock_);
+  void ClampGrowthLimit(size_t capacity) override REQUIRES(!lock_);
 
  protected:
   FreeListSpace(const std::string& name, MemMap&& mem_map, uint8_t* begin, uint8_t* end);
   size_t GetSlotIndexForAddress(uintptr_t address) const {
     DCHECK(Contains(reinterpret_cast<mirror::Object*>(address)));
-    return (address - reinterpret_cast<uintptr_t>(Begin())) / kAlignment;
+    return (address - reinterpret_cast<uintptr_t>(Begin())) / kLargeObjectAlignment;
   }
   size_t GetSlotIndexForAllocationInfo(const AllocationInfo* info) const;
   AllocationInfo* GetAllocationInfoForAddress(uintptr_t address);
   const AllocationInfo* GetAllocationInfoForAddress(uintptr_t address) const;
   uintptr_t GetAllocationAddressForSlot(size_t slot) const {
-    return reinterpret_cast<uintptr_t>(Begin()) + slot * kAlignment;
+    return reinterpret_cast<uintptr_t>(Begin()) + slot * kLargeObjectAlignment;
   }
   uintptr_t GetAddressForAllocationInfo(const AllocationInfo* info) const {
     return GetAllocationAddressForSlot(GetSlotIndexForAllocationInfo(info));

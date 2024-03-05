@@ -18,6 +18,7 @@
 #define ART_LIBDEXFILE_DEX_CLASS_ACCESSOR_H_
 
 #include "code_item_accessors.h"
+#include "dex/dex_file.h"
 #include "dex_file_types.h"
 #include "invoke_type.h"
 #include "modifiers.h"
@@ -177,11 +178,13 @@ class ClassAccessor {
   };
 
   template <typename DataType>
-  class DataIterator : public std::iterator<std::forward_iterator_tag, DataType> {
+  class DataIterator {
    public:
-    using value_type = typename std::iterator<std::forward_iterator_tag, DataType>::value_type;
-    using difference_type =
-        typename std::iterator<std::forward_iterator_tag, value_type>::difference_type;
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = DataType;
+    using difference_type = ptrdiff_t;
+    using pointer = value_type*;
+    using reference = value_type&;
 
     DataIterator(const DexFile& dex_file,
                  uint32_t position,
@@ -279,7 +282,7 @@ class ClassAccessor {
 
   ClassAccessor(const DexFile& dex_file,
                 const uint8_t* class_data,
-                uint32_t class_def_index = dex::kDexNoIndex,
+                uint32_t class_def_index = DexFile::kDexNoIndex32,
                 bool parse_hiddenapi_class_data = false);
 
   // Return the code item for a method.

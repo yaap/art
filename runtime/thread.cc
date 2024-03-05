@@ -29,6 +29,7 @@
 #include <cerrno>
 #include <iostream>
 #include <list>
+#include <optional>
 #include <sstream>
 
 #include "android-base/file.h"
@@ -109,7 +110,6 @@
 #include "thread-inl.h"
 #include "thread_list.h"
 #include "trace.h"
-#include "verifier/method_verifier.h"
 #include "verify_object.h"
 #include "well_known_classes-inl.h"
 
@@ -145,12 +145,16 @@ thread_local Thread* Thread::self_tls_ = nullptr;
 #endif
 
 static constexpr bool kVerifyImageObjectsMarked = kIsDebugBuild;
+// Amount of time (in microseconds) that we sleep if another thread is running
+// flip function of the thread that we are interested in.
+static constexpr size_t kSuspendTimeDuringFlip = 5'000;
 
 // For implicit overflow checks we reserve an extra piece of memory at the bottom
 // of the stack (lowest memory).  The higher portion of the memory
 // is protected against reads and the lower is available for use while
 // throwing the StackOverflow exception.
-constexpr size_t kStackOverflowProtectedSize = 4 * kMemoryToolStackGuardSizeScale * KB;
+ART_PAGE_SIZE_AGNOSTIC_DECLARE_AND_DEFINE(size_t, gStackOverflowProtectedSize,
+                                          kMemoryToolStackGuardSizeScale * gPageSize);
 
 static const char* kThreadNameDuringStartup = "<native thread without managed peer>";
 
@@ -731,7 +735,7 @@ static size_t FixStackSize(size_t stack_size) {
   }
 
   // Some systems require the stack size to be a multiple of the system page size, so round up.
-  stack_size = RoundUp(stack_size, kPageSize);
+  stack_size = RoundUp(stack_size, gPageSize);
 
   return stack_size;
 }
@@ -740,26 +744,26 @@ static size_t FixStackSize(size_t stack_size) {
 NO_INLINE
 static uint8_t* FindStackTop() {
   return reinterpret_cast<uint8_t*>(
-      AlignDown(__builtin_frame_address(0), kPageSize));
+      AlignDown(__builtin_frame_address(0), gPageSize));
 }
 
 // Install a protected region in the stack.  This is used to trigger a SIGSEGV if a stack
 // overflow is detected.  It is located right below the stack_begin_.
 ATTRIBUTE_NO_SANITIZE_ADDRESS
 void Thread::InstallImplicitProtection() {
-  uint8_t* pregion = tlsPtr_.stack_begin - kStackOverflowProtectedSize;
+  uint8_t* pregion = tlsPtr_.stack_begin - gStackOverflowProtectedSize;
   // Page containing current top of stack.
   uint8_t* stack_top = FindStackTop();
 
   // Try to directly protect the stack.
   VLOG(threads) << "installing stack protected region at " << std::hex <<
         static_cast<void*>(pregion) << " to " <<
-        static_cast<void*>(pregion + kStackOverflowProtectedSize - 1);
+        static_cast<void*>(pregion + gStackOverflowProtectedSize - 1);
   if (ProtectStack(/* fatal_on_error= */ false)) {
     // Tell the kernel that we won't be needing these pages any more.
     // NB. madvise will probably write zeroes into the memory (on linux it does).
     size_t unwanted_size =
-        reinterpret_cast<uintptr_t>(stack_top) - reinterpret_cast<uintptr_t>(pregion) - kPageSize;
+        reinterpret_cast<uintptr_t>(stack_top) - reinterpret_cast<uintptr_t>(pregion) - gPageSize;
     madvise(pregion, unwanted_size, MADV_DONTNEED);
     return;
   }
@@ -809,12 +813,12 @@ void Thread::InstallImplicitProtection() {
 #endif
       // Keep space uninitialized as it can overflow the stack otherwise (should Clang actually
       // auto-initialize this local variable).
-      volatile char space[kPageSize - (kAsanMultiplier * 256)] __attribute__((uninitialized));
-      char sink ATTRIBUTE_UNUSED = space[zero];  // NOLINT
+      volatile char space[gPageSize - (kAsanMultiplier * 256)] __attribute__((uninitialized));
+      [[maybe_unused]] char sink = space[zero];
       // Remove tag from the pointer. Nop in non-hwasan builds.
       uintptr_t addr = reinterpret_cast<uintptr_t>(
           __hwasan_tag_pointer != nullptr ? __hwasan_tag_pointer(space, 0) : space);
-      if (addr >= target + kPageSize) {
+      if (addr >= target + gPageSize) {
         Touch(target);
       }
       zero *= 2;  // Try to avoid tail recursion.
@@ -825,7 +829,7 @@ void Thread::InstallImplicitProtection() {
 
   VLOG(threads) << "(again) installing stack protected region at " << std::hex <<
       static_cast<void*>(pregion) << " to " <<
-      static_cast<void*>(pregion + kStackOverflowProtectedSize - 1);
+      static_cast<void*>(pregion + gStackOverflowProtectedSize - 1);
 
   // Protect the bottom of the stack to prevent read/write to it.
   ProtectStack(/* fatal_on_error= */ true);
@@ -833,7 +837,7 @@ void Thread::InstallImplicitProtection() {
   // Tell the kernel that we won't be needing these pages any more.
   // NB. madvise will probably write zeroes into the memory (on linux it does).
   size_t unwanted_size =
-      reinterpret_cast<uintptr_t>(stack_top) - reinterpret_cast<uintptr_t>(pregion) - kPageSize;
+      reinterpret_cast<uintptr_t>(stack_top) - reinterpret_cast<uintptr_t>(pregion) - gPageSize;
   madvise(pregion, unwanted_size, MADV_DONTNEED);
 }
 
@@ -1342,12 +1346,28 @@ bool Thread::InitStackHwm() {
   tlsPtr_.stack_begin = reinterpret_cast<uint8_t*>(read_stack_base);
   tlsPtr_.stack_size = read_stack_size;
 
-  // The minimum stack size we can cope with is the overflow reserved bytes (typically
-  // 8K) + the protected region size (4K) + another page (4K).  Typically this will
-  // be 8+4+4 = 16K.  The thread won't be able to do much with this stack even the GC takes
-  // between 8K and 12K.
-  uint32_t min_stack = GetStackOverflowReservedBytes(kRuntimeISA) + kStackOverflowProtectedSize
-    + 4 * KB;
+  // The minimum stack size we can cope with is the protected region size + stack overflow check
+  // region size + some memory for normal stack usage.
+  //
+  // The protected region is located at the beginning (lowest address) of the stack region.
+  // Therefore, it starts at a page-aligned address. Its size should be a multiple of page sizes.
+  // Typically, it is one page in size, however this varies in some configurations.
+  //
+  // The overflow reserved bytes is size of the stack overflow check region, located right after
+  // the protected region, so also starts at a page-aligned address. The size is discretionary.
+  // Typically it is 8K, but this varies in some configurations.
+  //
+  // The rest of the stack memory is available for normal stack usage. It is located right after
+  // the stack overflow check region, so its starting address isn't necessarily page-aligned. The
+  // size of the region is discretionary, however should be chosen in a way that the overall stack
+  // size is a multiple of page sizes. Historically, it is chosen to be at least 4 KB.
+  //
+  // On systems with 4K page size, typically the minimum stack size will be 4+8+4 = 16K.
+  // The thread won't be able to do much with this stack: even the GC takes between 8K and 12K.
+  DCHECK_ALIGNED_PARAM(static_cast<size_t>(gStackOverflowProtectedSize),
+                       static_cast<int32_t>(gPageSize));
+  size_t min_stack = gStackOverflowProtectedSize +
+      RoundUp(GetStackOverflowReservedBytes(kRuntimeISA) + 4 * KB, gPageSize);
   if (read_stack_size <= min_stack) {
     // Note, as we know the stack is small, avoid operations that could use a lot of stack.
     LogHelper::LogLineLowStack(__PRETTY_FUNCTION__,
@@ -1377,9 +1397,9 @@ bool Thread::InitStackHwm() {
     // to install our own region so we need to move the limits
     // of the stack to make room for it.
 
-    tlsPtr_.stack_begin += read_guard_size + kStackOverflowProtectedSize;
-    tlsPtr_.stack_end += read_guard_size + kStackOverflowProtectedSize;
-    tlsPtr_.stack_size -= read_guard_size + kStackOverflowProtectedSize;
+    tlsPtr_.stack_begin += read_guard_size + gStackOverflowProtectedSize;
+    tlsPtr_.stack_end += read_guard_size + gStackOverflowProtectedSize;
+    tlsPtr_.stack_size -= read_guard_size + gStackOverflowProtectedSize;
 
     InstallImplicitProtection();
   }
@@ -1606,25 +1626,8 @@ void Thread::ClearSuspendBarrier(AtomicInteger* target) {
 }
 
 void Thread::RunCheckpointFunction() {
-  // If this thread is suspended and another thread is running the checkpoint on its behalf,
-  // we may have a pending flip function that we need to run for the sake of those checkpoints
-  // that need to walk the stack. We should not see the flip function flags when the thread
-  // is running the checkpoint on its own.
-  StateAndFlags state_and_flags = GetStateAndFlags(std::memory_order_relaxed);
-  if (UNLIKELY(state_and_flags.IsAnyOfFlagsSet(FlipFunctionFlags()))) {
-    DCHECK(IsSuspended());
-    Thread* self = Thread::Current();
-    DCHECK(self != this);
-    if (state_and_flags.IsFlagSet(ThreadFlag::kPendingFlipFunction)) {
-      EnsureFlipFunctionStarted(self);
-      state_and_flags = GetStateAndFlags(std::memory_order_relaxed);
-      DCHECK(!state_and_flags.IsFlagSet(ThreadFlag::kPendingFlipFunction));
-    }
-    if (state_and_flags.IsFlagSet(ThreadFlag::kRunningFlipFunction)) {
-      WaitForFlipFunction(self);
-    }
-  }
-
+  DCHECK_EQ(Thread::Current(), this);
+  CHECK(!GetStateAndFlags(std::memory_order_relaxed).IsAnyOfFlagsSet(FlipFunctionFlags()));
   // Grab the suspend_count lock, get the next checkpoint and update all the checkpoint fields. If
   // there are no more checkpoints we will also clear the kCheckpointRequest flag.
   Closure* checkpoint;
@@ -1812,7 +1815,7 @@ bool Thread::RequestSynchronousCheckpoint(Closure* function, ThreadState suspend
           !self->GetStateAndFlags(std::memory_order_relaxed).IsAnyOfFlagsSet(FlipFunctionFlags()));
       EnsureFlipFunctionStarted(self);
       while (GetStateAndFlags(std::memory_order_acquire).IsAnyOfFlagsSet(FlipFunctionFlags())) {
-        sched_yield();
+        usleep(kSuspendTimeDuringFlip);
       }
 
       function->Run(this);
@@ -1824,12 +1827,8 @@ bool Thread::RequestSynchronousCheckpoint(Closure* function, ThreadState suspend
       DCHECK_NE(GetState(), ThreadState::kRunnable);
       bool updated = ModifySuspendCount(self, -1, nullptr, SuspendReason::kInternal);
       DCHECK(updated);
-    }
-
-    {
       // Imitate ResumeAll, the thread may be waiting on Thread::resume_cond_ since we raised its
       // suspend count. Now the suspend_count_ is lowered so we must do the broadcast.
-      MutexLock mu2(self, *Locks::thread_suspend_count_lock_);
       Thread::resume_cond_->Broadcast(self);
     }
 
@@ -1850,23 +1849,43 @@ void Thread::SetFlipFunction(Closure* function) {
   AtomicSetFlag(ThreadFlag::kPendingFlipFunction, std::memory_order_release);
 }
 
-void Thread::EnsureFlipFunctionStarted(Thread* self) {
-  while (true) {
-    StateAndFlags old_state_and_flags = GetStateAndFlags(std::memory_order_relaxed);
-    if (!old_state_and_flags.IsFlagSet(ThreadFlag::kPendingFlipFunction)) {
-      return;
-    }
+bool Thread::EnsureFlipFunctionStarted(Thread* self, StateAndFlags old_state_and_flags) {
+  bool become_runnable;
+  if (old_state_and_flags.GetValue() == 0) {
+    become_runnable = false;
+    old_state_and_flags = GetStateAndFlags(std::memory_order_relaxed);
+  } else {
+    become_runnable = true;
+    DCHECK(!old_state_and_flags.IsFlagSet(ThreadFlag::kSuspendRequest));
+  }
+
+  while (old_state_and_flags.IsFlagSet(ThreadFlag::kPendingFlipFunction)) {
     DCHECK(!old_state_and_flags.IsFlagSet(ThreadFlag::kRunningFlipFunction));
     StateAndFlags new_state_and_flags =
         old_state_and_flags.WithFlag(ThreadFlag::kRunningFlipFunction)
                            .WithoutFlag(ThreadFlag::kPendingFlipFunction);
+    if (become_runnable) {
+      DCHECK_EQ(self, this);
+      DCHECK_NE(self->GetState(), ThreadState::kRunnable);
+      new_state_and_flags = new_state_and_flags.WithState(ThreadState::kRunnable);
+    }
     if (tls32_.state_and_flags.CompareAndSetWeakAcquire(old_state_and_flags.GetValue(),
                                                         new_state_and_flags.GetValue())) {
+      if (become_runnable) {
+        GetMutatorLock()->TransitionFromSuspendedToRunnable(this);
+      }
+      art::Locks::mutator_lock_->AssertSharedHeld(self);
       RunFlipFunction(self, /*notify=*/ true);
       DCHECK(!GetStateAndFlags(std::memory_order_relaxed).IsAnyOfFlagsSet(FlipFunctionFlags()));
-      return;
+      return true;
+    } else {
+      old_state_and_flags = GetStateAndFlags(std::memory_order_relaxed);
+      if (become_runnable && old_state_and_flags.IsFlagSet(ThreadFlag::kSuspendRequest)) {
+        break;
+      }
     }
   }
+  return false;
 }
 
 void Thread::RunFlipFunction(Thread* self, bool notify) {
@@ -2148,8 +2167,7 @@ struct StackDumpVisitor : public MonitorObjectsStackVisitor {
 
   static constexpr size_t kMaxRepetition = 3u;
 
-  VisitMethodResult StartMethod(ArtMethod* m, size_t frame_nr ATTRIBUTE_UNUSED)
-      override
+  VisitMethodResult StartMethod(ArtMethod* m, [[maybe_unused]] size_t frame_nr) override
       REQUIRES_SHARED(Locks::mutator_lock_) {
     m = m->GetInterfaceMethodIfProxy(kRuntimePointerSize);
     ObjPtr<mirror::DexCache> dex_cache = m->GetDexCache();
@@ -2194,12 +2212,11 @@ struct StackDumpVisitor : public MonitorObjectsStackVisitor {
     return VisitMethodResult::kContinueMethod;
   }
 
-  VisitMethodResult EndMethod(ArtMethod* m ATTRIBUTE_UNUSED) override {
+  VisitMethodResult EndMethod([[maybe_unused]] ArtMethod* m) override {
     return VisitMethodResult::kContinueMethod;
   }
 
-  void VisitWaitingObject(ObjPtr<mirror::Object> obj, ThreadState state ATTRIBUTE_UNUSED)
-      override
+  void VisitWaitingObject(ObjPtr<mirror::Object> obj, [[maybe_unused]] ThreadState state) override
       REQUIRES_SHARED(Locks::mutator_lock_) {
     PrintObject(obj, "  - waiting on ", ThreadList::kInvalidThreadId);
   }
@@ -2348,6 +2365,7 @@ Thread::DumpOrder Thread::DumpStack(std::ostream& os,
   }
   DumpOrder dump_order = DumpOrder::kDefault;
   if (safe_to_dump || force_dump_stack) {
+    uint64_t nanotime = NanoTime();
     // If we're currently in native code, dump that stack before dumping the managed stack.
     if (dump_native_stack && (dump_for_abort || force_dump_stack || ShouldShowNativeStack(this))) {
       ArtMethod* method =
@@ -2359,6 +2377,11 @@ Thread::DumpOrder Thread::DumpStack(std::ostream& os,
     dump_order = DumpJavaStack(os,
                                /*check_suspended=*/ !force_dump_stack,
                                /*dump_locks=*/ !force_dump_stack);
+    Runtime* runtime = Runtime::Current();
+    std::optional<uint64_t> start = runtime != nullptr ? runtime->SiqQuitNanoTime() : std::nullopt;
+    if (start.has_value()) {
+      os << "DumpLatencyMs: " << static_cast<float>(nanotime - start.value()) / 1000000.0 << "\n";
+    }
   } else {
     os << "Not able to dump stack of thread that isn't suspended";
   }
@@ -2531,8 +2554,8 @@ class MonitorExitVisitor : public SingleRootVisitor {
   explicit MonitorExitVisitor(Thread* self) : self_(self) { }
 
   // NO_THREAD_SAFETY_ANALYSIS due to MonitorExit.
-  void VisitRoot(mirror::Object* entered_monitor, const RootInfo& info ATTRIBUTE_UNUSED)
-      override NO_THREAD_SAFETY_ANALYSIS {
+  void VisitRoot(mirror::Object* entered_monitor,
+                 [[maybe_unused]] const RootInfo& info) override NO_THREAD_SAFETY_ANALYSIS {
     if (self_->HoldsLock(entered_monitor)) {
       LOG(WARNING) << "Calling MonitorExit on object "
                    << entered_monitor << " (" << entered_monitor->PrettyTypeOf() << ")"
@@ -2571,16 +2594,17 @@ void Thread::Destroy(bool should_run_callbacks) {
 
   if (tlsPtr_.opeer != nullptr) {
     ScopedObjectAccess soa(self);
-    if (UNLIKELY(self->GetMethodTraceBuffer() != nullptr)) {
-      Trace::FlushThreadBuffer(self);
-      self->ResetMethodTraceBuffer();
-    }
     // We may need to call user-supplied managed code, do this before final clean-up.
     HandleUncaughtExceptions();
     RemoveFromThreadGroup();
     Runtime* runtime = Runtime::Current();
     if (runtime != nullptr && should_run_callbacks) {
       runtime->GetRuntimeCallbacks()->ThreadDeath(self);
+    }
+
+    if (UNLIKELY(self->GetMethodTraceBuffer() != nullptr)) {
+      Trace::FlushThreadBuffer(self);
+      self->ResetMethodTraceBuffer();
     }
 
     // this.nativePeer = 0;
@@ -3345,8 +3369,7 @@ jobjectArray Thread::CreateAnnotatedStackTrace(const ScopedObjectAccessAlreadyRu
           soaa_(soaa_in) {}
 
    protected:
-    VisitMethodResult StartMethod(ArtMethod* m, size_t frame_nr ATTRIBUTE_UNUSED)
-        override
+    VisitMethodResult StartMethod(ArtMethod* m, [[maybe_unused]] size_t frame_nr) override
         REQUIRES_SHARED(Locks::mutator_lock_) {
       ObjPtr<mirror::StackTraceElement> obj = CreateStackTraceElement(
           soaa_, m, GetDexPc(/* abort on error */ false));
@@ -3357,7 +3380,7 @@ jobjectArray Thread::CreateAnnotatedStackTrace(const ScopedObjectAccessAlreadyRu
       return VisitMethodResult::kContinueMethod;
     }
 
-    VisitMethodResult EndMethod(ArtMethod* m ATTRIBUTE_UNUSED) override {
+    VisitMethodResult EndMethod([[maybe_unused]] ArtMethod* m) override {
       lock_objects_.push_back({});
       lock_objects_[lock_objects_.size() - 1].swap(frame_lock_objects_);
 
@@ -3366,8 +3389,7 @@ jobjectArray Thread::CreateAnnotatedStackTrace(const ScopedObjectAccessAlreadyRu
       return VisitMethodResult::kContinueMethod;
     }
 
-    void VisitWaitingObject(ObjPtr<mirror::Object> obj, ThreadState state ATTRIBUTE_UNUSED)
-        override
+    void VisitWaitingObject(ObjPtr<mirror::Object> obj, [[maybe_unused]] ThreadState state) override
         REQUIRES_SHARED(Locks::mutator_lock_) {
       wait_jobject_.reset(soaa_.AddLocalReference<jobject>(obj));
     }
@@ -3377,9 +3399,8 @@ jobjectArray Thread::CreateAnnotatedStackTrace(const ScopedObjectAccessAlreadyRu
       wait_jobject_.reset(soaa_.AddLocalReference<jobject>(obj));
     }
     void VisitBlockedOnObject(ObjPtr<mirror::Object> obj,
-                              ThreadState state ATTRIBUTE_UNUSED,
-                              uint32_t owner_tid ATTRIBUTE_UNUSED)
-        override
+                              [[maybe_unused]] ThreadState state,
+                              [[maybe_unused]] uint32_t owner_tid) override
         REQUIRES_SHARED(Locks::mutator_lock_) {
       block_jobject_.reset(soaa_.AddLocalReference<jobject>(obj));
     }
@@ -4271,26 +4292,23 @@ class ReferenceMapVisitor : public StackVisitor {
 
   void VisitQuickFrameNonPrecise() REQUIRES_SHARED(Locks::mutator_lock_) {
     struct UndefinedVRegInfo {
-      UndefinedVRegInfo(ArtMethod* method ATTRIBUTE_UNUSED,
-                        const CodeInfo& code_info ATTRIBUTE_UNUSED,
-                        const StackMap& map ATTRIBUTE_UNUSED,
+      UndefinedVRegInfo([[maybe_unused]] ArtMethod* method,
+                        [[maybe_unused]] const CodeInfo& code_info,
+                        [[maybe_unused]] const StackMap& map,
                         RootVisitor& _visitor)
-          : visitor(_visitor) {
-      }
+          : visitor(_visitor) {}
 
       ALWAYS_INLINE
       void VisitStack(mirror::Object** ref,
-                      size_t stack_index ATTRIBUTE_UNUSED,
-                      const StackVisitor* stack_visitor)
-          REQUIRES_SHARED(Locks::mutator_lock_) {
+                      [[maybe_unused]] size_t stack_index,
+                      const StackVisitor* stack_visitor) REQUIRES_SHARED(Locks::mutator_lock_) {
         visitor(ref, JavaFrameRootInfo::kImpreciseVreg, stack_visitor);
       }
 
       ALWAYS_INLINE
       void VisitRegister(mirror::Object** ref,
-                         size_t register_index ATTRIBUTE_UNUSED,
-                         const StackVisitor* stack_visitor)
-          REQUIRES_SHARED(Locks::mutator_lock_) {
+                         [[maybe_unused]] size_t register_index,
+                         const StackVisitor* stack_visitor) REQUIRES_SHARED(Locks::mutator_lock_) {
         visitor(ref, JavaFrameRootInfo::kImpreciseVreg, stack_visitor);
       }
 
@@ -4441,9 +4459,6 @@ void Thread::VisitRoots(RootVisitor* visitor) {
       mapper.VisitShadowFrame(record->GetShadowFrame());
     }
   }
-  for (auto* verifier = tlsPtr_.method_verifier; verifier != nullptr; verifier = verifier->link_) {
-    verifier->VisitRoots(visitor, RootInfo(kRootNativeStack, thread_id));
-  }
   // Visit roots on this thread's stack
   RuntimeContextType context;
   RootCallbackVisitor visitor_to_callback(visitor, thread_id);
@@ -4541,8 +4556,8 @@ void Thread::VisitRoots(RootVisitor* visitor, VisitRootFlags flags) {
 
 class VerifyRootVisitor : public SingleRootVisitor {
  public:
-  void VisitRoot(mirror::Object* root, const RootInfo& info ATTRIBUTE_UNUSED)
-      override REQUIRES_SHARED(Locks::mutator_lock_) {
+  void VisitRoot(mirror::Object* root, [[maybe_unused]] const RootInfo& info) override
+      REQUIRES_SHARED(Locks::mutator_lock_) {
     VerifyObject(root);
   }
 };
@@ -4627,14 +4642,14 @@ std::ostream& operator<<(std::ostream& os, const Thread& thread) {
 }
 
 bool Thread::ProtectStack(bool fatal_on_error) {
-  void* pregion = tlsPtr_.stack_begin - kStackOverflowProtectedSize;
+  void* pregion = tlsPtr_.stack_begin - gStackOverflowProtectedSize;
   VLOG(threads) << "Protecting stack at " << pregion;
-  if (mprotect(pregion, kStackOverflowProtectedSize, PROT_NONE) == -1) {
+  if (mprotect(pregion, gStackOverflowProtectedSize, PROT_NONE) == -1) {
     if (fatal_on_error) {
       // b/249586057, LOG(FATAL) times out
       LOG(ERROR) << "Unable to create protected region in stack for implicit overflow check. "
           "Reason: "
-          << strerror(errno) << " size:  " << kStackOverflowProtectedSize;
+          << strerror(errno) << " size:  " << gStackOverflowProtectedSize;
       exit(1);
     }
     return false;
@@ -4643,19 +4658,9 @@ bool Thread::ProtectStack(bool fatal_on_error) {
 }
 
 bool Thread::UnprotectStack() {
-  void* pregion = tlsPtr_.stack_begin - kStackOverflowProtectedSize;
+  void* pregion = tlsPtr_.stack_begin - gStackOverflowProtectedSize;
   VLOG(threads) << "Unprotecting stack at " << pregion;
-  return mprotect(pregion, kStackOverflowProtectedSize, PROT_READ|PROT_WRITE) == 0;
-}
-
-void Thread::PushVerifier(verifier::MethodVerifier* verifier) {
-  verifier->link_ = tlsPtr_.method_verifier;
-  tlsPtr_.method_verifier = verifier;
-}
-
-void Thread::PopVerifier(verifier::MethodVerifier* verifier) {
-  CHECK_EQ(tlsPtr_.method_verifier, verifier);
-  tlsPtr_.method_verifier = verifier->link_;
+  return mprotect(pregion, gStackOverflowProtectedSize, PROT_READ|PROT_WRITE) == 0;
 }
 
 size_t Thread::NumberOfHeldMutexes() const {
@@ -4733,16 +4738,14 @@ bool Thread::IsAotCompiler() {
   return Runtime::Current()->IsAotCompiler();
 }
 
-mirror::Object* Thread::GetPeerFromOtherThread() const {
+mirror::Object* Thread::GetPeerFromOtherThread() {
   DCHECK(tlsPtr_.jpeer == nullptr);
-  mirror::Object* peer = tlsPtr_.opeer;
-  if (gUseReadBarrier && Current()->GetIsGcMarking()) {
-    // We may call Thread::Dump() in the middle of the CC thread flip and this thread's stack
-    // may have not been flipped yet and peer may be a from-space (stale) ref. So explicitly
-    // mark/forward it here.
-    peer = art::ReadBarrier::Mark(peer);
+  // Ensure that opeer is not obsolete.
+  EnsureFlipFunctionStarted(Thread::Current());
+  while (GetStateAndFlags(std::memory_order_acquire).IsAnyOfFlagsSet(FlipFunctionFlags())) {
+    usleep(kSuspendTimeDuringFlip);
   }
-  return peer;
+  return tlsPtr_.opeer;
 }
 
 void Thread::SetReadBarrierEntrypoints() {

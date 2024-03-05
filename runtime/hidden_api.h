@@ -331,24 +331,24 @@ ALWAYS_INLINE inline uint32_t GetRuntimeFlags(ArtMethod* method)
       case Intrinsics::kJdkUnsafeCASObject:
       case Intrinsics::kJdkUnsafeCompareAndSetInt:
       case Intrinsics::kJdkUnsafeCompareAndSetLong:
-      case Intrinsics::kJdkUnsafeCompareAndSetObject:
+      case Intrinsics::kJdkUnsafeCompareAndSetReference:
       case Intrinsics::kJdkUnsafeGetAndAddInt:
       case Intrinsics::kJdkUnsafeGetAndAddLong:
       case Intrinsics::kJdkUnsafeGetAndSetInt:
       case Intrinsics::kJdkUnsafeGetAndSetLong:
-      case Intrinsics::kJdkUnsafeGetAndSetObject:
+      case Intrinsics::kJdkUnsafeGetAndSetReference:
       case Intrinsics::kJdkUnsafeGetLongVolatile:
       case Intrinsics::kJdkUnsafeGetLongAcquire:
-      case Intrinsics::kJdkUnsafeGetObjectVolatile:
-      case Intrinsics::kJdkUnsafeGetObjectAcquire:
+      case Intrinsics::kJdkUnsafeGetReferenceVolatile:
+      case Intrinsics::kJdkUnsafeGetReferenceAcquire:
       case Intrinsics::kJdkUnsafeGetVolatile:
       case Intrinsics::kJdkUnsafeGetAcquire:
       case Intrinsics::kJdkUnsafePutLongOrdered:
       case Intrinsics::kJdkUnsafePutLongVolatile:
       case Intrinsics::kJdkUnsafePutLongRelease:
       case Intrinsics::kJdkUnsafePutObjectOrdered:
-      case Intrinsics::kJdkUnsafePutObjectVolatile:
-      case Intrinsics::kJdkUnsafePutObjectRelease:
+      case Intrinsics::kJdkUnsafePutReferenceVolatile:
+      case Intrinsics::kJdkUnsafePutReferenceRelease:
       case Intrinsics::kJdkUnsafePutOrdered:
       case Intrinsics::kJdkUnsafePutVolatile:
       case Intrinsics::kJdkUnsafePutRelease:
@@ -357,10 +357,12 @@ ALWAYS_INLINE inline uint32_t GetRuntimeFlags(ArtMethod* method)
       case Intrinsics::kJdkUnsafeFullFence:
       case Intrinsics::kJdkUnsafeGet:
       case Intrinsics::kJdkUnsafeGetLong:
-      case Intrinsics::kJdkUnsafeGetObject:
+      case Intrinsics::kJdkUnsafeGetByte:
+      case Intrinsics::kJdkUnsafeGetReference:
       case Intrinsics::kJdkUnsafePutLong:
       case Intrinsics::kJdkUnsafePut:
-      case Intrinsics::kJdkUnsafePutObject:
+      case Intrinsics::kJdkUnsafePutReference:
+      case Intrinsics::kJdkUnsafePutByte:
         return 0u;
       case Intrinsics::kFP16Ceil:
       case Intrinsics::kFP16Compare:
@@ -376,10 +378,12 @@ ALWAYS_INLINE inline uint32_t GetRuntimeFlags(ArtMethod* method)
       case Intrinsics::kFP16Rint:
       case Intrinsics::kUnsafeGet:
       case Intrinsics::kUnsafeGetLong:
+      case Intrinsics::kUnsafeGetByte:
       case Intrinsics::kUnsafeGetObject:
       case Intrinsics::kUnsafePutLong:
       case Intrinsics::kUnsafePut:
       case Intrinsics::kUnsafePutObject:
+      case Intrinsics::kUnsafePutByte:
         return kAccCorePlatformApi;
       default:
         // Remaining intrinsics are public API. We DCHECK that in SetIntrinsic().

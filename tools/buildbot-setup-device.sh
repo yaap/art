@@ -34,9 +34,7 @@ if [[ -n "$ART_TEST_ON_VM" ]]; then
 
     mkdir $ART_TEST_CHROOT/apex
     mkdir $ART_TEST_CHROOT/bin
-    mkdir $ART_TEST_CHROOT/data
-    mkdir $ART_TEST_CHROOT/data/local
-    mkdir $ART_TEST_CHROOT/data/local/tmp
+    mkdir -p $ART_TEST_CHROOT/data/local/tmp
     mkdir $ART_TEST_CHROOT/dev
     mkdir $ART_TEST_CHROOT/etc
     mkdir $ART_TEST_CHROOT/lib
@@ -45,12 +43,16 @@ if [[ -n "$ART_TEST_ON_VM" ]]; then
     mkdir $ART_TEST_CHROOT/sys
     mkdir $ART_TEST_CHROOT/system
     mkdir $ART_TEST_CHROOT/tmp
+    mkdir -p $ART_TEST_CHROOT/usr/lib
+    mkdir -p $ART_TEST_CHROOT/usr/share/gdb
 
-    sudo mount -t proc /proc art-test-chroot/proc
-    sudo mount -t sysfs /sys art-test-chroot/sys
-    sudo mount --bind /dev art-test-chroot/dev
-    sudo mount --bind /bin art-test-chroot/bin
-    sudo mount --bind /lib art-test-chroot/lib
+    sudo mount -t proc /proc $ART_TEST_CHROOT_BASENAME/proc
+    sudo mount -t sysfs /sys $ART_TEST_CHROOT_BASENAME/sys
+    sudo mount --bind /dev $ART_TEST_CHROOT_BASENAME/dev
+    sudo mount --bind /bin $ART_TEST_CHROOT_BASENAME/bin
+    sudo mount --bind /lib $ART_TEST_CHROOT_BASENAME/lib
+    sudo mount --bind /lib $ART_TEST_CHROOT_BASENAME/usr/lib
+    sudo mount --bind /usr/share/gdb $ART_TEST_CHROOT_BASENAME/usr/share/gdb
     $ART_CHROOT_CMD echo \"Hello from chroot! I am \$(uname -a).\"
   "
   exit 0
@@ -139,7 +141,7 @@ $verbose && adb logcat -p
 
 msginfo "Kill stalled dalvikvm processes"
 # 'ps' on M can sometimes hang.
-timeout 2s adb shell "ps" >/dev/null
+timeout 5s adb shell "ps" >/dev/null
 if [[ $? == 124 ]] && [[ "$ART_TEST_RUN_ON_ARM_FVP" != true ]]; then
   msginfo "Rebooting device to fix 'ps'"
   adb reboot
@@ -202,6 +204,11 @@ if [[ -n "$ART_TEST_CHROOT" ]]; then
   # Provide /sys/kernel/debug in chroot.
   adb shell mount | grep -q "^debugfs on $ART_TEST_CHROOT/sys/kernel/debug type debugfs " \
     || adb shell mount -t debugfs debugfs "$ART_TEST_CHROOT/sys/kernel/debug"
+  # Provide /sys/kernel/tracing in chroot. Using a bind mount is important,
+  # otherwise mounting tracefs multiple times confuses the
+  # android.hardware.atrace service.
+  adb shell mount | grep -q "^tracefs on $ART_TEST_CHROOT/sys/kernel/tracing type tracefs " \
+    || adb shell mount -o bind /sys/kernel/tracing "$ART_TEST_CHROOT/sys/kernel/tracing"
 
   # Provide /dev in chroot.
   adb shell mkdir -p "$ART_TEST_CHROOT/dev"

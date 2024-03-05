@@ -35,9 +35,9 @@ struct IntrusiveForwardListHook {
   explicit IntrusiveForwardListHook(const IntrusiveForwardListHook* hook) : next_hook(hook) { }
 
   // Allow copyable values but do not copy the hook, it is not part of the value.
-  IntrusiveForwardListHook(const IntrusiveForwardListHook& other ATTRIBUTE_UNUSED)
-      : next_hook(nullptr) { }
-  IntrusiveForwardListHook& operator=(const IntrusiveForwardListHook& src ATTRIBUTE_UNUSED) {
+  explicit IntrusiveForwardListHook([[maybe_unused]] const IntrusiveForwardListHook& other)
+      : next_hook(nullptr) {}
+  IntrusiveForwardListHook& operator=([[maybe_unused]] const IntrusiveForwardListHook& src) {
     return *this;
   }
 
@@ -59,8 +59,14 @@ template <typename T,
 class IntrusiveForwardList;
 
 template <typename T, typename HookTraits>
-class IntrusiveForwardListIterator : public std::iterator<std::forward_iterator_tag, T> {
+class IntrusiveForwardListIterator {
  public:
+  using iterator_category = std::forward_iterator_tag;
+  using value_type = T;
+  using difference_type = ptrdiff_t;
+  using pointer = value_type*;
+  using reference = value_type&;
+
   // Construct/copy/destroy (except the private constructor used by IntrusiveForwardList<>).
   IntrusiveForwardListIterator() : hook_(nullptr) { }
   IntrusiveForwardListIterator(const IntrusiveForwardListIterator& src) = default;

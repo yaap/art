@@ -36,7 +36,7 @@ class TestFaultHandler final : public FaultHandler {
         map_error_(),
         target_map_(MemMap::MapAnonymous("test-305-mmap",
                                          /* addr */ nullptr,
-                                         /* byte_count */ kPageSize,
+                                         /* byte_count */ gPageSize,
                                          /* prot */ PROT_NONE,
                                          /* low_4gb */ false,
                                          /* reuse */ false,
@@ -52,7 +52,7 @@ class TestFaultHandler final : public FaultHandler {
     manager_->RemoveHandler(this);
   }
 
-  bool Action(int sig, siginfo_t* siginfo, void* context ATTRIBUTE_UNUSED) override {
+  bool Action(int sig, siginfo_t* siginfo, [[maybe_unused]] void* context) override {
     CHECK_EQ(sig, SIGSEGV);
     CHECK_EQ(reinterpret_cast<uint32_t*>(siginfo->si_addr),
              GetTargetPointer()) << "Segfault on unexpected address!";

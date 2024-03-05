@@ -26,6 +26,7 @@
 #include "entrypoints/runtime_asm_entrypoints.h"
 #include "handle.h"
 #include "intrinsics_enum.h"
+#include "intrinsics_list.h"
 #include "jit/jit.h"
 #include "jvalue-inl.h"
 #include "method_handles-inl.h"
@@ -451,44 +452,75 @@ static bool DoVarHandleInvokeCommon(Thread* self,
     return false;
   }
 
-  StackHandleScope<2> hs(self);
   bool is_var_args = inst->HasVarArgs();
+  const uint32_t vRegC = is_var_args ? inst->VRegC_45cc() : inst->VRegC_4rcc();
   const uint16_t vRegH = is_var_args ? inst->VRegH_45cc() : inst->VRegH_4rcc();
+  StackHandleScope<4> hs(self);
+  Handle<mirror::VarHandle> var_handle = hs.NewHandle(
+      ObjPtr<mirror::VarHandle>::DownCast(shadow_frame.GetVRegReference(vRegC)));
+  ArtMethod* method = shadow_frame.GetMethod();
+  Handle<mirror::DexCache> dex_cache = hs.NewHandle(method->GetDexCache());
+  Handle<mirror::ClassLoader> class_loader = hs.NewHandle(method->GetClassLoader());
+  uint32_t var_args[Instruction::kMaxVarArgRegs];
+  std::optional<VarArgsInstructionOperands> var_args_operands(std::nullopt);
+  std::optional<RangeInstructionOperands> range_operands(std::nullopt);
+  InstructionOperands* all_operands;
+  if (is_var_args) {
+    inst->GetVarArgs(var_args, inst_data);
+    var_args_operands.emplace(var_args, inst->VRegA_45cc());
+    all_operands = &var_args_operands.value();
+  } else {
+    range_operands.emplace(inst->VRegC_4rcc(), inst->VRegA_4rcc());
+    all_operands = &range_operands.value();
+  }
+  NoReceiverInstructionOperands operands(all_operands);
   ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
+
+  // If the `ThreadLocalRandom` class is not yet initialized, do the `VarHandle` operation
+  // without creating a managed `MethodType` object. This avoids a circular initialization
+  // issue when `ThreadLocalRandom.<clinit>` indirectly calls `AtomicLong.compareAndSet()`
+  // (implemented with a `VarHandle`) and the `MethodType` caching circles back to the
+  // `ThreadLocalRandom` with uninitialized `seeder` and throws NPE.
+  //
+  // Do a quick test for "visibly initialized" without a read barrier and, if that fails,
+  // do a thorough test for "initialized" (including load acquire) with the read barrier.
+  ArtField* field = WellKnownClasses::java_util_concurrent_ThreadLocalRandom_seeder;
+  if (UNLIKELY(!field->GetDeclaringClass<kWithoutReadBarrier>()->IsVisiblyInitialized()) &&
+      !field->GetDeclaringClass()->IsInitialized()) {
+    VariableSizedHandleScope callsite_type_hs(self);
+    mirror::RawMethodType callsite_type(&callsite_type_hs);
+    if (!class_linker->ResolveMethodType(self,
+                                         dex::ProtoIndex(vRegH),
+                                         dex_cache,
+                                         class_loader,
+                                         callsite_type)) {
+      CHECK(self->IsExceptionPending());
+      return false;
+    }
+    return VarHandleInvokeAccessor(self,
+                                   shadow_frame,
+                                   var_handle,
+                                   callsite_type,
+                                   access_mode,
+                                   &operands,
+                                   result);
+  }
+
   Handle<mirror::MethodType> callsite_type(hs.NewHandle(
-      class_linker->ResolveMethodType(self, dex::ProtoIndex(vRegH), shadow_frame.GetMethod())));
+      class_linker->ResolveMethodType(self, dex::ProtoIndex(vRegH), dex_cache, class_loader)));
   // This implies we couldn't resolve one or more types in this VarHandle.
   if (UNLIKELY(callsite_type == nullptr)) {
     CHECK(self->IsExceptionPending());
     return false;
   }
 
-  const uint32_t vRegC = is_var_args ? inst->VRegC_45cc() : inst->VRegC_4rcc();
-  ObjPtr<mirror::Object> receiver(shadow_frame.GetVRegReference(vRegC));
-  Handle<mirror::VarHandle> var_handle(hs.NewHandle(ObjPtr<mirror::VarHandle>::DownCast(receiver)));
-  if (is_var_args) {
-    uint32_t args[Instruction::kMaxVarArgRegs];
-    inst->GetVarArgs(args, inst_data);
-    VarArgsInstructionOperands all_operands(args, inst->VRegA_45cc());
-    NoReceiverInstructionOperands operands(&all_operands);
-    return VarHandleInvokeAccessor(self,
-                                   shadow_frame,
-                                   var_handle,
-                                   callsite_type,
-                                   access_mode,
-                                   &operands,
-                                   result);
-  } else {
-    RangeInstructionOperands all_operands(inst->VRegC_4rcc(), inst->VRegA_4rcc());
-    NoReceiverInstructionOperands operands(&all_operands);
-    return VarHandleInvokeAccessor(self,
-                                   shadow_frame,
-                                   var_handle,
-                                   callsite_type,
-                                   access_mode,
-                                   &operands,
-                                   result);
-  }
+  return VarHandleInvokeAccessor(self,
+                                 shadow_frame,
+                                 var_handle,
+                                 callsite_type,
+                                 access_mode,
+                                 &operands,
+                                 result);
 }
 
 #define DO_VAR_HANDLE_ACCESSOR(_access_mode)                                                \
@@ -555,10 +587,7 @@ bool DoInvokePolymorphic(Thread* self,
 #define CASE_SIGNATURE_POLYMORPHIC_INTRINSIC(Name, ...) \
     case Intrinsics::k##Name:                           \
       return Do ## Name(self, shadow_frame, inst, inst_data, result);
-#include "intrinsics_list.h"
-    SIGNATURE_POLYMORPHIC_INTRINSICS_LIST(CASE_SIGNATURE_POLYMORPHIC_INTRINSIC)
-#undef INTRINSICS_LIST
-#undef SIGNATURE_POLYMORPHIC_INTRINSICS_LIST
+    ART_SIGNATURE_POLYMORPHIC_INTRINSICS_LIST(CASE_SIGNATURE_POLYMORPHIC_INTRINSIC)
 #undef CASE_SIGNATURE_POLYMORPHIC_INTRINSIC
     default:
       LOG(FATAL) << "Unreachable: " << invoke_method->GetIntrinsic();
@@ -609,6 +638,8 @@ static ObjPtr<mirror::Class> GetClassForBootstrapArgument(EncodedArrayValueItera
     case EncodedArrayValueIterator::ValueType::kAnnotation:
     case EncodedArrayValueIterator::ValueType::kNull:
       return nullptr;
+    case EncodedArrayValueIterator::ValueType::kEndOfInput:
+      UNREACHABLE();
   }
 }
 
@@ -691,6 +722,8 @@ static bool GetArgumentForBootstrapMethod(Thread* self,
       // determining the effect call site type based on the bootstrap
       // argument types.
       UNREACHABLE();
+    case EncodedArrayValueIterator::ValueType::kEndOfInput:
+      UNREACHABLE();
   }
 }
 
@@ -733,6 +766,8 @@ static bool PackArgumentForBootstrapMethod(Thread* self,
       // Unreachable - unsupported types that have been checked when
       // determining the effect call site type based on the bootstrap
       // argument types.
+      UNREACHABLE();
+    case EncodedArrayValueIterator::ValueType::kEndOfInput:
       UNREACHABLE();
   }
 }

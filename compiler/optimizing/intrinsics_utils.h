@@ -153,24 +153,34 @@ static inline bool IsVarHandleGet(HInvoke* invoke) {
   return access_mode == mirror::VarHandle::AccessModeTemplate::kGet;
 }
 
-static inline bool IsUnsafeGetObject(HInvoke* invoke) {
+static inline bool IsUnsafeGetReference(HInvoke* invoke) {
   switch (invoke->GetIntrinsic()) {
     case Intrinsics::kUnsafeGetObject:
     case Intrinsics::kUnsafeGetObjectVolatile:
-    case Intrinsics::kJdkUnsafeGetObject:
-    case Intrinsics::kJdkUnsafeGetObjectVolatile:
-    case Intrinsics::kJdkUnsafeGetObjectAcquire:
+    case Intrinsics::kJdkUnsafeGetReference:
+    case Intrinsics::kJdkUnsafeGetReferenceVolatile:
+    case Intrinsics::kJdkUnsafeGetReferenceAcquire:
       return true;
     default:
       return false;
   }
 }
 
-static inline bool IsUnsafeCASObject(HInvoke* invoke) {
+static inline bool IsUnsafeCASReference(HInvoke* invoke) {
   switch (invoke->GetIntrinsic()) {
     case Intrinsics::kUnsafeCASObject:
     case Intrinsics::kJdkUnsafeCASObject:
-    case Intrinsics::kJdkUnsafeCompareAndSetObject:
+    case Intrinsics::kJdkUnsafeCompareAndSetReference:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static inline bool IsUnsafeGetAndSetReference(HInvoke* invoke) {
+  switch (invoke->GetIntrinsic()) {
+    case Intrinsics::kUnsafeGetAndSetObject:
+    case Intrinsics::kJdkUnsafeGetAndSetReference:
       return true;
     default:
       return false;

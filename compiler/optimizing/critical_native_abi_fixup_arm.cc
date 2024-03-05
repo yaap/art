@@ -16,12 +16,8 @@
 
 #include "critical_native_abi_fixup_arm.h"
 
-#include "art_method-inl.h"
 #include "intrinsics.h"
-#include "jni/jni_internal.h"
 #include "nodes.h"
-#include "scoped_thread_state_change-inl.h"
-#include "well_known_classes.h"
 
 namespace art HIDDEN {
 namespace arm {
@@ -43,46 +39,7 @@ static void FixUpArguments(HInvokeStaticOrDirect* invoke) {
       break;  // Remaining arguments are passed on stack.
     }
     if (DataType::IsFloatingPointType(input_type)) {
-      bool is_double = (input_type == DataType::Type::kFloat64);
-      DataType::Type converted_type = is_double ? DataType::Type::kInt64 : DataType::Type::kInt32;
-      ArtMethod* resolved_method = is_double
-          ? WellKnownClasses::java_lang_Double_doubleToRawLongBits
-          : WellKnownClasses::java_lang_Float_floatToRawIntBits;
-      DCHECK(resolved_method != nullptr);
-      DCHECK(resolved_method->IsIntrinsic());
-      MethodReference target_method(nullptr, 0);
-      {
-        ScopedObjectAccess soa(Thread::Current());
-        target_method =
-            MethodReference(resolved_method->GetDexFile(), resolved_method->GetDexMethodIndex());
-      }
-      // Use arbitrary dispatch info that does not require the method argument.
-      HInvokeStaticOrDirect::DispatchInfo dispatch_info = {
-          MethodLoadKind::kBssEntry,
-          CodePtrLocation::kCallArtMethod,
-          /*method_load_data=*/ 0u
-      };
-      HBasicBlock* block = invoke->GetBlock();
-      ArenaAllocator* allocator = block->GetGraph()->GetAllocator();
-      HInvokeStaticOrDirect* new_input = new (allocator) HInvokeStaticOrDirect(
-          allocator,
-          /*number_of_arguments=*/ 1u,
-          converted_type,
-          invoke->GetDexPc(),
-          /*method_reference=*/ MethodReference(nullptr, dex::kDexNoIndex),
-          resolved_method,
-          dispatch_info,
-          kStatic,
-          target_method,
-          HInvokeStaticOrDirect::ClinitCheckRequirement::kNone,
-          !block->GetGraph()->IsDebuggable());
-      // The intrinsic has no side effects and does not need environment or dex cache on ARM.
-      new_input->SetSideEffects(SideEffects::None());
-      IntrinsicOptimizations opt(new_input);
-      opt.SetDoesNotNeedEnvironment();
-      new_input->SetRawInputAt(0u, input);
-      block->InsertInstructionBefore(new_input, invoke);
-      invoke->ReplaceInput(new_input, i);
+      InsertFpToIntegralIntrinsic(invoke, i);
     }
     reg = next_reg;
   }

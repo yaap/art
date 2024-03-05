@@ -46,7 +46,6 @@ query_build_vars=(
   HOST_OUT
   PRODUCT_COMPRESSED_APEX
   PRODUCT_OUT
-  TARGET_FLATTEN_APEX
 )
 vars="$($ANDROID_BUILD_TOP/build/soong/soong_ui.bash \
         --dumpvars-mode --vars="${query_build_vars[*]}")"
@@ -60,26 +59,22 @@ if [ ! -d $ANDROID_BUILD_TOP/frameworks/base ]; then
 fi
 
 deapex_binaries=(
-  blkid_static
   deapexer
   debugfs_static
   fsck.erofs
 )
 
-have_deapex_binaries=false
-if [[ "$TARGET_FLATTEN_APEX" != true ]]; then
-  have_deapex_binaries=true
-  for f in ${deapex_binaries[@]}; do
-    if [ ! -e "$HOST_OUT/bin/$f" ]; then
-      have_deapex_binaries=false
-    fi
-  done
-  if $have_deapex_binaries; then :; else
-    deapex_targets=( ${deapex_binaries[@]/%/-host} )
-    say "Building host binaries for deapexer: ${deapex_targets[*]}"
-    build/soong/soong_ui.bash --make-mode ${deapex_targets[@]} || \
-      die "Failed to build: ${deapex_targets[*]}"
+have_deapex_binaries=true
+for f in ${deapex_binaries[@]}; do
+  if [ ! -e "$HOST_OUT/bin/$f" ]; then
+    have_deapex_binaries=false
   fi
+done
+if $have_deapex_binaries; then :; else
+  deapex_targets=( ${deapex_binaries[@]/%/-host} )
+  say "Building host binaries for deapexer: ${deapex_targets[*]}"
+  build/soong/soong_ui.bash --make-mode ${deapex_targets[@]} || \
+    die "Failed to build: ${deapex_targets[*]}"
 fi
 
 # Fail early.
@@ -100,7 +95,7 @@ applicable APEXes if none is given on the command line.
   -l, --list-files    list the contents of the ext4 image (\`find\`-like style)
   -t, --print-tree    list the contents of the ext4 image (\`tree\`-like style)
   -s, --print-sizes   print the size in bytes of each file when listing contents
-  --bitness=32|64|multilib|auto  passed on to art_apex_test.py for non-host APEXes
+  --bitness=32|64|multilib|auto  passed on to art_apex_test.py
   -h, --help          display this help and exit
 
 EOF
@@ -167,11 +162,6 @@ if [ ${#apex_modules[@]} -eq 0 ]; then
     "com.android.art.debug"
     "com.android.art.testing"
   )
-  if [[ "$HOST_PREFER_32_BIT" = true ]]; then
-    say "Skipping com.android.art.host, as \`HOST_PREFER_32_BIT\` equals \`true\`"
-  else
-    apex_modules+=("com.android.art.host")
-  fi
 fi
 
 # Build the APEX packages (optional).
@@ -197,37 +187,23 @@ for apex_module in ${apex_modules[@]}; do
 
   art_apex_test_args="--tmpdir $work_dir"
   test_only_args=""
-  if [[ $apex_module = *.host ]]; then
-    apex_path="$HOST_OUT/apex/${apex_module}.zipapex"
-    art_apex_test_args="$art_apex_test_args --host"
-    test_only_args="--flavor debug"
-    # The host APEX is always built multilib.
-    art_apex_test_args="$art_apex_test_args --bitness=multilib"
+  art_apex_test_args="$art_apex_test_args $device_bitness_arg"
+  # Note: The Testing ART APEX is never built as a Compressed APEX.
+  if [[ "$PRODUCT_COMPRESSED_APEX" = true && $apex_module != *.testing ]]; then
+    apex_path="$PRODUCT_OUT/system/apex/${apex_module}.capex"
   else
-    art_apex_test_args="$art_apex_test_args $device_bitness_arg"
-    if [[ "$TARGET_FLATTEN_APEX" = true ]]; then
-      apex_path="$PRODUCT_OUT/system/apex/${apex_module}"
-      art_apex_test_args="$art_apex_test_args --flattened"
-    else
-      # Note: The Testing ART APEX is never built as a Compressed APEX.
-      if [[ "$PRODUCT_COMPRESSED_APEX" = true && $apex_module != *.testing ]]; then
-        apex_path="$PRODUCT_OUT/system/apex/${apex_module}.capex"
-      else
-        apex_path="$PRODUCT_OUT/system/apex/${apex_module}.apex"
-      fi
-    fi
-    if $have_deapex_binaries; then
-      art_apex_test_args="$art_apex_test_args --deapexer $HOST_OUT/bin/deapexer"
-      art_apex_test_args="$art_apex_test_args --debugfs $HOST_OUT/bin/debugfs_static"
-      art_apex_test_args="$art_apex_test_args --fsckerofs $HOST_OUT/bin/fsck.erofs"
-      art_apex_test_args="$art_apex_test_args --blkid $HOST_OUT/bin/blkid_static"
-    fi
-    case $apex_module in
-      (*.debug)   test_only_args="--flavor debug";;
-      (*.testing) test_only_args="--flavor testing";;
-      (*)         test_only_args="--flavor release";;
-    esac
+    apex_path="$PRODUCT_OUT/system/apex/${apex_module}.apex"
   fi
+  if $have_deapex_binaries; then
+    art_apex_test_args="$art_apex_test_args --deapexer $HOST_OUT/bin/deapexer"
+    art_apex_test_args="$art_apex_test_args --debugfs $HOST_OUT/bin/debugfs_static"
+    art_apex_test_args="$art_apex_test_args --fsckerofs $HOST_OUT/bin/fsck.erofs"
+  fi
+  case $apex_module in
+    (*.debug)   test_only_args="--flavor debug";;
+    (*.testing) test_only_args="--flavor testing";;
+    (*)         test_only_args="--flavor release";;
+  esac
   say "APEX package path: $apex_path"
 
   # List the contents of the APEX image (optional).

@@ -25,6 +25,9 @@
 #ifdef ART_ENABLE_CODEGEN_arm64
 #include "arm64/jni_macro_assembler_arm64.h"
 #endif
+#ifdef ART_ENABLE_CODEGEN_riscv64
+#include "riscv64/jni_macro_assembler_riscv64.h"
+#endif
 #ifdef ART_ENABLE_CODEGEN_x86
 #include "x86/jni_macro_assembler_x86.h"
 #endif
@@ -34,6 +37,7 @@
 #include "base/casts.h"
 #include "base/globals.h"
 #include "base/memory_region.h"
+#include "gc_root.h"
 
 namespace art HIDDEN {
 
@@ -79,6 +83,10 @@ MacroAsm64UniquePtr JNIMacroAssembler<PointerSize::k64>::Create(
     case InstructionSet::kArm64:
       return MacroAsm64UniquePtr(new (allocator) arm64::Arm64JNIMacroAssembler(allocator));
 #endif
+#ifdef ART_ENABLE_CODEGEN_riscv64
+    case InstructionSet::kRiscv64:
+      return MacroAsm64UniquePtr(new (allocator) riscv64::Riscv64JNIMacroAssembler(allocator));
+#endif
 #ifdef ART_ENABLE_CODEGEN_x86_64
     case InstructionSet::kX86_64:
       return MacroAsm64UniquePtr(new (allocator) x86_64::X86_64JNIMacroAssembler(allocator));
@@ -89,5 +97,22 @@ MacroAsm64UniquePtr JNIMacroAssembler<PointerSize::k64>::Create(
       UNREACHABLE();
   }
 }
+
+template <PointerSize kPointerSize>
+void JNIMacroAssembler<kPointerSize>::LoadGcRootWithoutReadBarrier(ManagedRegister dest,
+                                                                   ManagedRegister base,
+                                                                   MemberOffset offs) {
+  static_assert(sizeof(uint32_t) == sizeof(GcRoot<mirror::Object>));
+  Load(dest, base, offs, sizeof(uint32_t));
+}
+
+template
+void JNIMacroAssembler<PointerSize::k32>::LoadGcRootWithoutReadBarrier(ManagedRegister dest,
+                                                                       ManagedRegister base,
+                                                                       MemberOffset offs);
+template
+void JNIMacroAssembler<PointerSize::k64>::LoadGcRootWithoutReadBarrier(ManagedRegister dest,
+                                                                       ManagedRegister base,
+                                                                       MemberOffset offs);
 
 }  // namespace art

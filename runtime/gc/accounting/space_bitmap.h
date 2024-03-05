@@ -102,7 +102,9 @@ class SpaceBitmap {
   bool AtomicTestAndSet(const mirror::Object* obj);
 
   // Fill the bitmap with zeroes.  Returns the bitmap's memory to the system as a side-effect.
-  void Clear();
+  // If `release_eagerly` is true, this method will also try to give back the
+  // memory to the OS eagerly.
+  void Clear(bool release_eagerly = true);
 
   // Clear a range covered by the bitmap using madvise if possible.
   void ClearRange(const mirror::Object* begin, const mirror::Object* end);
@@ -179,10 +181,12 @@ class SpaceBitmap {
   }
 
   void SetHeapSize(size_t bytes) {
-    // TODO: Un-map the end of the mem map.
     heap_limit_ = heap_begin_ + bytes;
-    bitmap_size_ = OffsetToIndex(bytes) * sizeof(intptr_t);
+    bitmap_size_ = ComputeBitmapSize(bytes);
     CHECK_EQ(HeapSize(), bytes);
+    if (mem_map_.IsValid()) {
+      mem_map_.SetSize(bitmap_size_);
+    }
   }
 
   uintptr_t HeapBegin() const {

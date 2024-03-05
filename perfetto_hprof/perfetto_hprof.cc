@@ -438,10 +438,10 @@ class ReferredObjectsFinder {
     referred_objects_->emplace_back(std::move(field_name), ref);
   }
 
-  void VisitRootIfNonNull(art::mirror::CompressedReference<art::mirror::Object>* root
-                              ATTRIBUTE_UNUSED) const {}
-  void VisitRoot(art::mirror::CompressedReference<art::mirror::Object>* root
-                     ATTRIBUTE_UNUSED) const {}
+  void VisitRootIfNonNull(
+      [[maybe_unused]] art::mirror::CompressedReference<art::mirror::Object>* root) const {}
+  void VisitRoot(
+      [[maybe_unused]] art::mirror::CompressedReference<art::mirror::Object>* root) const {}
 
  private:
   // We can use a raw Object* pointer here, because there are no concurrent GC threads after the
@@ -507,8 +507,10 @@ perfetto::protos::pbzero::HeapGraphType::Kind ProtoClassKind(uint32_t class_flag
   using perfetto::protos::pbzero::HeapGraphType;
   switch (class_flags) {
     case art::mirror::kClassFlagNormal:
+    case art::mirror::kClassFlagRecord:
       return HeapGraphType::KIND_NORMAL;
     case art::mirror::kClassFlagNoReferenceFields:
+    case art::mirror::kClassFlagNoReferenceFields | art::mirror::kClassFlagRecord:
       return HeapGraphType::KIND_NOREFERENCES;
     case art::mirror::kClassFlagString | art::mirror::kClassFlagNoReferenceFields:
       return HeapGraphType::KIND_STRING;
@@ -592,8 +594,12 @@ std::vector<std::pair<std::string, art::mirror::Object*>> GetReferences(art::mir
   std::vector<std::pair<std::string, art::mirror::Object*>> referred_objects;
   ReferredObjectsFinder objf(&referred_objects, emit_field_ids);
 
-  if (klass->GetClassFlags() != art::mirror::kClassFlagNormal &&
-      klass->GetClassFlags() != art::mirror::kClassFlagPhantomReference) {
+  uint32_t klass_flags = klass->GetClassFlags();
+  if (klass_flags != art::mirror::kClassFlagNormal &&
+      klass_flags != art::mirror::kClassFlagSoftReference &&
+      klass_flags != art::mirror::kClassFlagWeakReference &&
+      klass_flags != art::mirror::kClassFlagFinalizerReference &&
+      klass_flags != art::mirror::kClassFlagPhantomReference) {
     obj->VisitReferences(objf, art::VoidFunctor());
   } else {
     for (art::mirror::Class* cls = klass; cls != nullptr; cls = cls->GetSuperClass().Ptr()) {
@@ -801,9 +807,13 @@ class HeapGraphDumper {
                       art::mirror::Class* klass,
                       perfetto::protos::pbzero::HeapGraphObject* object_proto)
       REQUIRES_SHARED(art::Locks::mutator_lock_) {
-    const bool emit_field_ids = klass->GetClassFlags() != art::mirror::kClassFlagObjectArray &&
-                                klass->GetClassFlags() != art::mirror::kClassFlagNormal &&
-                                klass->GetClassFlags() != art::mirror::kClassFlagPhantomReference;
+    const uint32_t klass_flags = klass->GetClassFlags();
+    const bool emit_field_ids = klass_flags != art::mirror::kClassFlagObjectArray &&
+                                klass_flags != art::mirror::kClassFlagNormal &&
+                                klass_flags != art::mirror::kClassFlagSoftReference &&
+                                klass_flags != art::mirror::kClassFlagWeakReference &&
+                                klass_flags != art::mirror::kClassFlagFinalizerReference &&
+                                klass_flags != art::mirror::kClassFlagPhantomReference;
     std::vector<std::pair<std::string, art::mirror::Object*>> referred_objects =
         GetReferences(obj, klass, emit_field_ids);
 

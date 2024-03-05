@@ -187,8 +187,8 @@ static uint32_t EnableDebugFeatures(uint32_t runtime_flags) {
 
   const bool safe_mode = (runtime_flags & DEBUG_ENABLE_SAFEMODE) != 0;
   if (safe_mode) {
-    // Only quicken oat files.
-    runtime->AddCompilerOption("--compiler-filter=quicken");
+    // Only verify oat files.
+    runtime->AddCompilerOption("--compiler-filter=verify");
     runtime->SetSafeMode(true);
     runtime_flags &= ~DEBUG_ENABLE_SAFEMODE;
   }
@@ -266,8 +266,8 @@ static void ZygoteHooks_nativePostZygoteFork(JNIEnv*, jclass) {
   Runtime::Current()->PostZygoteFork();
 }
 
-static void ZygoteHooks_nativePostForkSystemServer(JNIEnv* env ATTRIBUTE_UNUSED,
-                                                   jclass klass ATTRIBUTE_UNUSED,
+static void ZygoteHooks_nativePostForkSystemServer([[maybe_unused]] JNIEnv* env,
+                                                   [[maybe_unused]] jclass klass,
                                                    jint runtime_flags) {
   // Reload the current flags first. In case we need to take actions based on them.
   Runtime::Current()->ReloadAllFlags(__FUNCTION__);
@@ -347,10 +347,12 @@ static void ZygoteHooks_nativePostForkChild(JNIEnv* env,
 
   runtime->GetHeap()->PostForkChildAction(thread);
 
-  // Setup an app startup complete task in case the app doesn't notify it
-  // through VMRuntime::notifyStartupCompleted.
-  static constexpr uint64_t kMaxAppStartupTimeNs = MsToNs(5000);  // 5 seconds
-  runtime->GetHeap()->AddHeapTask(new StartupCompletedTask(NanoTime() + kMaxAppStartupTimeNs));
+  if (!is_zygote) {
+    // Setup an app startup complete task in case the app doesn't notify it
+    // through VMRuntime::notifyStartupCompleted.
+    static constexpr uint64_t kMaxAppStartupTimeNs = MsToNs(5000);  // 5 seconds
+    runtime->GetHeap()->AddHeapTask(new StartupCompletedTask(NanoTime() + kMaxAppStartupTimeNs));
+  }
 
   if (runtime->GetJit() != nullptr) {
     if (!is_system_server) {
@@ -364,7 +366,7 @@ static void ZygoteHooks_nativePostForkChild(JNIEnv* env,
 
   // Update tracing.
   if (Trace::GetMethodTracingMode() != TracingMode::kTracingInactive) {
-    Trace::TraceOutputMode output_mode = Trace::GetOutputMode();
+    TraceOutputMode output_mode = Trace::GetOutputMode();
     Trace::TraceMode trace_mode = Trace::GetMode();
     size_t buffer_size = Trace::GetBufferSize();
     int flags = Trace::GetFlags();
@@ -375,7 +377,7 @@ static void ZygoteHooks_nativePostForkChild(JNIEnv* env,
 
     // Only restart if it was streaming mode.
     // TODO: Expose buffer size, so we can also do file mode.
-    if (output_mode == Trace::TraceOutputMode::kStreaming) {
+    if (output_mode == TraceOutputMode::kStreaming) {
       static constexpr size_t kMaxProcessNameLength = 100;
       char name_buf[kMaxProcessNameLength] = {};
       int rc = pthread_getname_np(pthread_self(), name_buf, kMaxProcessNameLength);
@@ -441,18 +443,18 @@ static void ZygoteHooks_nativePostForkChild(JNIEnv* env,
   }
 }
 
-static void ZygoteHooks_startZygoteNoThreadCreation(JNIEnv* env ATTRIBUTE_UNUSED,
-                                                    jclass klass ATTRIBUTE_UNUSED) {
+static void ZygoteHooks_startZygoteNoThreadCreation([[maybe_unused]] JNIEnv* env,
+                                                    [[maybe_unused]] jclass klass) {
   Runtime::Current()->SetZygoteNoThreadSection(true);
 }
 
-static void ZygoteHooks_stopZygoteNoThreadCreation(JNIEnv* env ATTRIBUTE_UNUSED,
-                                                   jclass klass ATTRIBUTE_UNUSED) {
+static void ZygoteHooks_stopZygoteNoThreadCreation([[maybe_unused]] JNIEnv* env,
+                                                   [[maybe_unused]] jclass klass) {
   Runtime::Current()->SetZygoteNoThreadSection(false);
 }
 
-static jboolean ZygoteHooks_nativeZygoteLongSuspendOk(JNIEnv* env ATTRIBUTE_UNUSED,
-                                                    jclass klass ATTRIBUTE_UNUSED) {
+static jboolean ZygoteHooks_nativeZygoteLongSuspendOk([[maybe_unused]] JNIEnv* env,
+                                                      [[maybe_unused]] jclass klass) {
   // Indefinite thread suspensions are not OK if we're supposed to be JIT-compiling for other
   // processes.  We only care about JIT compilation that affects other processes.  The zygote
   // itself doesn't run appreciable amounts of Java code when running single-threaded, so
@@ -463,7 +465,6 @@ static jboolean ZygoteHooks_nativeZygoteLongSuspendOk(JNIEnv* env ATTRIBUTE_UNUS
   static bool explicitlyDisabled = Runtime::Current()->IsJavaZygoteForkLoopRequired();
   return (isJitZygote || explicitlyDisabled) ? JNI_FALSE : JNI_TRUE;
 }
-
 
 static JNINativeMethod gMethods[] = {
   NATIVE_METHOD(ZygoteHooks, nativePreFork, "()J"),

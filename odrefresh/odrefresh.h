@@ -26,6 +26,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "android-base/function_ref.h"
 #include "android-base/result.h"
 #include "base/os.h"
 #include "com_android_apex.h"
@@ -35,6 +36,7 @@
 #include "odr_config.h"
 #include "odr_metrics.h"
 #include "odrefresh/odrefresh.h"
+#include "tools/cmdline_builder.h"
 
 namespace art {
 namespace odrefresh {
@@ -164,15 +166,15 @@ class OnDeviceRefresh final {
   // Constructor with injections. For testing and internal use only.
   OnDeviceRefresh(const OdrConfig& config,
                   const std::string& cache_info_filename,
-                  std::unique_ptr<ExecUtils> exec_utils);
+                  std::unique_ptr<ExecUtils> exec_utils,
+                  android::base::function_ref<bool()> check_compilation_space);
 
   // Returns the exit code and specifies what should be compiled in `compilation_options`.
   WARN_UNUSED ExitCode
   CheckArtifactsAreUpToDate(OdrMetrics& metrics,
                             /*out*/ CompilationOptions* compilation_options) const;
 
-  WARN_UNUSED ExitCode Compile(OdrMetrics& metrics,
-                               const CompilationOptions& compilation_options) const;
+  WARN_UNUSED ExitCode Compile(OdrMetrics& metrics, CompilationOptions compilation_options) const;
 
   WARN_UNUSED bool RemoveArtifactsDirectory() const;
 
@@ -331,7 +333,7 @@ class OnDeviceRefresh final {
              const std::vector<std::string>& boot_classpath,
              const std::vector<std::string>& input_boot_images,
              const OdrArtifacts& artifacts,
-             const std::vector<std::string>& extra_args,
+             tools::CmdlineBuilder&& extra_args,
              /*inout*/ std::vector<std::unique_ptr<File>>& readonly_files_raii) const;
 
   WARN_UNUSED CompilationResult
@@ -383,6 +385,8 @@ class OnDeviceRefresh final {
   const time_t start_time_;
 
   std::unique_ptr<ExecUtils> exec_utils_;
+
+  android::base::function_ref<bool()> check_compilation_space_;
 
   DISALLOW_COPY_AND_ASSIGN(OnDeviceRefresh);
 };

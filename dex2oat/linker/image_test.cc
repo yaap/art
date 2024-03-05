@@ -64,41 +64,44 @@ TEST_F(ImageTest, TestImageLayout) {
 }
 
 TEST_F(ImageTest, ImageHeaderIsValid) {
-    uint32_t image_begin = ART_BASE_ADDRESS;
-    uint32_t image_size_ = 16 * KB;
-    uint32_t image_roots = ART_BASE_ADDRESS + (1 * KB);
-    uint32_t oat_checksum = 0;
-    uint32_t oat_file_begin = ART_BASE_ADDRESS + (4 * KB);  // page aligned
-    uint32_t oat_data_begin = ART_BASE_ADDRESS + (8 * KB);  // page aligned
-    uint32_t oat_data_end = ART_BASE_ADDRESS + (9 * KB);
-    uint32_t oat_file_end = ART_BASE_ADDRESS + (10 * KB);
-    ImageSection sections[ImageHeader::kSectionCount];
-    uint32_t image_reservation_size = RoundUp(oat_file_end - image_begin, kPageSize);
-    ImageHeader image_header(image_reservation_size,
-                             /*component_count=*/ 1u,
-                             image_begin,
-                             image_size_,
-                             sections,
-                             image_roots,
-                             oat_checksum,
-                             oat_file_begin,
-                             oat_data_begin,
-                             oat_data_end,
-                             oat_file_end,
-                             /*boot_image_begin=*/ 0u,
-                             /*boot_image_size=*/ 0u,
-                             /*boot_image_component_count=*/ 0u,
-                             /*boot_image_checksum=*/ 0u,
-                             sizeof(void*));
+  uint32_t image_begin = ART_BASE_ADDRESS;
+  uint32_t image_size_ = kElfSegmentAlignment;
+  uint32_t image_roots = ART_BASE_ADDRESS + (1 * KB);
+  uint32_t oat_checksum = 0;
+  uint32_t oat_file_begin = ART_BASE_ADDRESS + (kElfSegmentAlignment);
+  uint32_t oat_data_begin = ART_BASE_ADDRESS + (2 * kElfSegmentAlignment);
+  uint32_t oat_data_end = ART_BASE_ADDRESS + (2 * kElfSegmentAlignment + 1 * KB);
+  uint32_t oat_file_end = ART_BASE_ADDRESS + (2 * kElfSegmentAlignment + 2 * KB);
+  ImageSection sections[ImageHeader::kSectionCount];
+  uint32_t image_reservation_size = RoundUp(oat_file_end - image_begin, kElfSegmentAlignment);
+  ImageHeader image_header(image_reservation_size,
+                           /*component_count=*/ 1u,
+                           image_begin,
+                           image_size_,
+                           sections,
+                           image_roots,
+                           oat_checksum,
+                           oat_file_begin,
+                           oat_data_begin,
+                           oat_data_end,
+                           oat_file_end,
+                           /*boot_image_begin=*/ 0u,
+                           /*boot_image_size=*/ 0u,
+                           /*boot_image_component_count=*/ 0u,
+                           /*boot_image_checksum=*/ 0u,
+                           sizeof(void*));
 
-    ASSERT_TRUE(image_header.IsValid());
-    ASSERT_TRUE(!image_header.IsAppImage());
+  ASSERT_TRUE(image_header.IsValid());
 
-    char* magic = const_cast<char*>(image_header.GetMagic());
-    strcpy(magic, "");  // bad magic
-    ASSERT_FALSE(image_header.IsValid());
-    strcpy(magic, "art\n000");  // bad version
-    ASSERT_FALSE(image_header.IsValid());
+  // Please note that for the following condition to be true, the above values should be chosen in
+  // a way that image_reservation_size != RoundUp(image_size_, kElfSegmentAlignment).
+  ASSERT_TRUE(!image_header.IsAppImage());
+
+  char* magic = const_cast<char*>(image_header.GetMagic());
+  strcpy(magic, "");  // bad magic
+  ASSERT_FALSE(image_header.IsValid());
+  strcpy(magic, "art\n000");  // bad version
+  ASSERT_FALSE(image_header.IsValid());
 }
 
 // Test that pointer to quick code is the same in
@@ -107,6 +110,7 @@ TEST_F(ImageTest, ImageHeaderIsValid) {
 // only if the copied method and the origin method are located in the
 // same oat file.
 TEST_F(ImageTest, TestDefaultMethods) {
+  TEST_DISABLED_FOR_RISCV64();
   CompilationHelper helper;
   Compile(ImageHeader::kStorageModeUncompressed,
           /*max_image_block_size=*/std::numeric_limits<uint32_t>::max(),
@@ -206,6 +210,68 @@ TEST_F(ImageTest, TestSuperWithAccessChecks) {
           "SuperWithAccessChecks",
           /*image_classes=*/ {"LSubClass;", "LImplementsClass;"},
           /*image_classes_failing_aot_clinit=*/ {"LSubClass;", "LImplementsClass;"});
+}
+
+// Regression test for b/297453985, where we used to generate a bogus image
+// checksum.
+TEST_F(ImageTest, ImageChecksum) {
+  uint32_t image_begin = ART_BASE_ADDRESS;
+  uint32_t image_roots = ART_BASE_ADDRESS + (1 * KB);
+  ImageSection sections[ImageHeader::kSectionCount];
+  // We require bitmap section to be at least kElfSegmentAlignment.
+  sections[ImageHeader::kSectionImageBitmap] = ImageSection(0, kElfSegmentAlignment);
+  ImageHeader image_header(/*image_reservation_size=*/ kElfSegmentAlignment,
+                           /*component_count=*/ 1u,
+                           image_begin,
+                           /*image_size=*/ sizeof(ImageHeader),
+                           sections,
+                           image_roots,
+                           /*oat_checksum=*/ 0u,
+                           /*oat_file_begin=*/ 0u,
+                           /*oat_data_begin=*/ 0u,
+                           /*oat_data_end=*/ 0u,
+                           /*oat_file_end=*/ 0u,
+                           /*boot_image_begin=*/ 0u,
+                           /*boot_image_size=*/ 0u,
+                           /*boot_image_component_count=*/ 0u,
+                           /*boot_image_checksum=*/ 0u,
+                           sizeof(void*));
+    ASSERT_TRUE(image_header.IsValid());
+
+    std::string error_msg;
+    ImageFileGuard image_file;
+    ScratchFile location;
+    image_file.reset(OS::CreateEmptyFile(location.GetFilename().c_str()));
+    const uint8_t* data = reinterpret_cast<const uint8_t*>(&image_header);
+    std::unique_ptr<uint8_t> bitmap(new uint8_t[kElfSegmentAlignment]);
+    memset(bitmap.get(), 0, kElfSegmentAlignment);
+    ASSERT_EQ(image_header.GetImageChecksum(), 0u);
+    ASSERT_TRUE(image_header.WriteData(
+        image_file,
+        data,
+        bitmap.get(),
+        ImageHeader::kStorageModeUncompressed,
+        /*max_image_block_size=*/std::numeric_limits<uint32_t>::max(),
+        /*update_checksum=*/ true,
+        &error_msg)) << error_msg;
+
+    uint32_t first_checksum = image_header.GetImageChecksum();
+    // Reset the image checksum, `WriteData` updated it.
+    image_header.SetImageChecksum(0u);
+
+    // Change the header to ensure the checksum will be different.
+    image_header.SetOatChecksum(0xFFFF);
+
+    ASSERT_TRUE(image_header.WriteData(
+        image_file,
+        data,
+        bitmap.get(),
+        ImageHeader::kStorageModeUncompressed,
+        /*max_image_block_size=*/std::numeric_limits<uint32_t>::max(),
+        /*update_checksum=*/ true,
+        &error_msg)) << error_msg;
+
+    ASSERT_NE(first_checksum, image_header.GetImageChecksum());
 }
 
 }  // namespace linker

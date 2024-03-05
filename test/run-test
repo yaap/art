@@ -353,7 +353,7 @@ if True:
     elif arg == "--gdb-dex2oat-args":
       shift()
       gdb_dex2oat_args = arg
-      run_args += ['--gdb-dex2oat-args "{gdb_dex2oat_args}"']
+      run_args += [f'--gdb-dex2oat-args="{gdb_dex2oat_args}"']
       shift()
     elif arg == "--debug":
       run_args += ["--debug"]
@@ -408,6 +408,9 @@ if True:
       shift()
     elif arg == "--interpreter":
       run_args += ["--interpreter"]
+      shift()
+    elif arg == "--switch-interpreter":
+      run_args += ["--switch-interpreter"]
       shift()
     elif arg == "--jit":
       run_args += ["--jit"]
@@ -516,27 +519,6 @@ if True:
       target_mode = "no"
       DEX_LOCATION = tmp_dir
       host_lib_root = f"{OUT_DIR}/soong/host/linux_bionic-x86"
-      shift()
-    elif arg == "--runtime-extracted-zipapex":
-      shift()
-      # TODO Should we allow the java.library.path to search the zipapex too?
-      # Not needed at the moment and adding it will be complicated so for now
-      # we'll ignore this.
-      run_args += [f'--host --runtime-extracted-zipapex "{arg}"']
-      target_mode = "no"
-      DEX_LOCATION = tmp_dir
-      shift()
-    elif arg == "--runtime-zipapex":
-      shift()
-      # TODO Should we allow the java.library.path to search the zipapex too?
-      # Not needed at the moment and adding it will be complicated so for now
-      # we'll ignore this.
-      run_args += [f'--host --runtime-zipapex "{arg}"']
-      target_mode = "no"
-      DEX_LOCATION = tmp_dir
-      # apex_payload.zip is quite large we need a high enough ulimit to
-      # extract it. 512mb should be good enough.
-      file_ulimit = 512000
       shift()
     elif arg == "--timeout":
       shift()
@@ -801,14 +783,14 @@ if True:
         "    --with-agent <agent>  Run the test with the given agent loaded with -agentpath:\n"
         "    --debuggable          Whether to compile Java code for a debugger.\n"
         "    --gdb                 Run under gdb; incompatible with some tests.\n"
-        "    --gdb-dex2oat         Run dex2oat under the prebuilt lldb.\n"
+        "    --gdb-dex2oat         Run dex2oat under the prebuilt gdb.\n"
         "    --gdbserver           Start gdbserver (defaults to port :5039).\n"
         "    --gdbserver-port <port>\n"
         "                          Start gdbserver with the given COMM (see man gdbserver).\n"
         "    --gdbserver-bin <binary>\n"
         "                          Use the given binary as gdbserver.\n"
         "    --gdb-arg             Pass an option to gdb or gdbserver.\n"
-        "    --gdb-dex2oat-args    Pass options separated by ';' to lldb for dex2oat.\n"
+        "    --gdb-dex2oat-args    Pass options separated by ';' to gdb for dex2oat.\n"
         "    --simpleperf          Wraps the dalvikvm invocation in 'simpleperf record ...\n"
         "                          ... simpleperf report' and dumps stats to stdout.\n"
         "    --temp-path [path]    Location where to execute the tests.\n"
@@ -843,11 +825,6 @@ if True:
         "                          (if applicable) to run the test with.\n"
         "    --64                  Run the test in 64-bit mode\n"
         "    --bionic              Use the (host, 64-bit only) linux_bionic libc runtime\n"
-        "    --runtime-zipapex [file]\n"
-        "                          Use the given zipapex file to provide runtime binaries\n"
-        "    --runtime-extracted-zipapex [dir]\n"
-        "                          Use the given extracted zipapex directory to provide\n"
-        "                          runtime binaries\n"
         "    --timeout n           Test timeout in seconds\n"
         "    --trace               Run with method tracing\n"
         "    --strace              Run with syscall tracing from strace.\n"
@@ -994,6 +971,18 @@ if True:
     runner.chmod(0o777)
     return runner
 
+  def do_dump_cfg():
+    assert run_optimizing == "true", ("The CFG can be dumped only in"
+                                      " optimizing mode")
+    if target_mode == "yes":
+      if ON_VM:
+        run(f'{SCP_CMD} "{SSH_USER}@${SSH_HOST}:{CHROOT}/{cfg_output_dir}/'
+            f'{cfg_output} {dump_cfg_path}"')
+      else:
+        run(f"adb pull {chroot}/{cfg_output_dir}/{cfg_output} {dump_cfg_path}")
+    else:
+      run(f"cp {cfg_output_dir}/{cfg_output} {dump_cfg_path}")
+
   # Test might not execute anything but we still expect the output files to exist.
   Path(test_stdout).touch()
   Path(test_stderr).touch()
@@ -1022,13 +1011,18 @@ if True:
     else:
       run("adb push {} {}".format(push_files, chroot_dex_location))
 
-    if ON_VM:
-      run(f"{SSH_CMD} {CHROOT_CMD} bash {DEX_LOCATION}/run.sh",
-          fail_message=f"Runner {chroot_dex_location}/run.sh failed")
-    else:
-      chroot_prefix = f"chroot {chroot}" if chroot else ""
-      run(f"adb shell {chroot_prefix} sh {DEX_LOCATION}/run.sh",
-          fail_message=f"Runner {chroot_dex_location}/run.sh failed")
+    try:
+      if ON_VM:
+        run(f"{SSH_CMD} {CHROOT_CMD} bash {DEX_LOCATION}/run.sh",
+            fail_message=f"Runner {chroot_dex_location}/run.sh failed")
+      else:
+        chroot_prefix = f"chroot {chroot}" if chroot else ""
+        run(f"adb shell {chroot_prefix} sh {DEX_LOCATION}/run.sh",
+            fail_message=f"Runner {chroot_dex_location}/run.sh failed")
+    finally:
+      # Copy the generated CFG to the specified path.
+      if dump_cfg == "true":
+        do_dump_cfg()
 
     # Copy the on-device stdout/stderr to host.
     pull_files = [test_stdout, test_stderr, "expected-stdout.txt", "expected-stderr.txt"]
@@ -1069,30 +1063,26 @@ if True:
     run(f'''echo "ABI: 'x86_64'" | cat - "{test_stdout}" "{test_stderr}"'''
         f"""| {ANDROID_BUILD_TOP}/development/scripts/stack | tail -n 3000""")
   print("####################", flush=True)
-  if proc_out.returncode != 0 or proc_err.returncode != 0:
-    kind = ((["stdout"] if proc_out.returncode != 0 else []) +
-            (["stderr"] if proc_err.returncode != 0 else []))
-    fail("{} did not match the expected file".format(" and ".join(kind)))
 
-  if run_checker == "yes":
-    if target_mode == "yes":
-      if ON_VM:
-        run(f'{SCP_CMD} "{SSH_USER}@${SSH_HOST}:{CHROOT}/{cfg_output_dir}/{cfg_output}"')
-      else:
-        run(f'adb pull "{chroot}/{cfg_output_dir}/{cfg_output}"')
-    run(f'"{checker}" -q {checker_args} "{cfg_output}" "{tmp_dir}"',
-        fail_message="CFG checker failed")
+  try:
+    if proc_out.returncode != 0 or proc_err.returncode != 0:
+      kind = ((["stdout"] if proc_out.returncode != 0 else []) +
+              (["stderr"] if proc_err.returncode != 0 else []))
+      fail("{} did not match the expected file".format(" and ".join(kind)))
 
-  # Copy the generated CFG to the specified path.
-  if dump_cfg == "true":
-    assert run_optimizing == "true", "The CFG can be dumped only in optimizing mode"
-    if target_mode == "yes":
-      if ON_VM:
-        run(f'{SCP_CMD} "{SSH_USER}@${SSH_HOST}:{CHROOT}/{cfg_output_dir}/{cfg_output} {dump_cfg_output}"')
-      else:
-        run(f"adb pull {chroot}/{cfg_output_dir}/{cfg_output} {dump_cfg_path}")
-    else:
-      run(f"cp {cfg_output_dir}/{cfg_output} {dump_cfg_path}")
+    if run_checker == "yes":
+      if target_mode == "yes":
+        if ON_VM:
+          run(f'{SCP_CMD} "{SSH_USER}@{SSH_HOST}:{CHROOT}/{cfg_output_dir}/'
+              f'{cfg_output}" "{tmp_dir}"')
+        else:
+          run(f'adb pull "{chroot}/{cfg_output_dir}/{cfg_output}"')
+      run(f'"{checker}" -q {checker_args} "{cfg_output}" "{tmp_dir}"',
+          fail_message="CFG checker failed")
+  finally:
+    # Copy the generated CFG to the specified path.
+    if dump_cfg == "true":
+      do_dump_cfg()
 
   clean_up(passed=True)
   print(f"{COLOR_GREEN}{test_dir}: PASSED{COLOR_NORMAL}")

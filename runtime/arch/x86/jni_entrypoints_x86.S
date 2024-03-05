@@ -173,7 +173,7 @@ DEFINE_FUNCTION art_jni_dlsym_lookup_critical_stub
     // Calculate the base address of the managed frame.
     leal (%esp, %eax, 1), %eax
 
-    leal 1(%eax), %ecx            // Prepare namaged SP tagged for a GenericJNI frame.
+    leal 1(%eax), %ecx            // Prepare managed SP tagged for a GenericJNI frame.
     testl LITERAL(ACCESS_FLAGS_METHOD_IS_NATIVE), ART_METHOD_ACCESS_FLAGS_OFFSET(%ebx)
     jnz .Lcritical_skip_prepare_runtime_method
 
@@ -221,9 +221,8 @@ DEFINE_FUNCTION art_jni_dlsym_lookup_critical_stub
 
     // Check for exception.
     test %eax, %eax
-    jz .Lcritical_deliver_exception
-
     CFI_REMEMBER_STATE
+    jz .Lcritical_deliver_exception
 
     // Remember our return PC in EDX.
     movl __SIZEOF_POINTER__(%ebx), %edx
@@ -268,9 +267,9 @@ DEFINE_FUNCTION art_jni_dlsym_lookup_critical_stub
 
     // Do the tail call.
     jmp *%eax
-    CFI_RESTORE_STATE_AND_DEF_CFA %esp, FRAME_SIZE_SAVE_REFS_AND_ARGS
 
 .Lcritical_deliver_exception:
+    CFI_RESTORE_STATE_AND_DEF_CFA %esp, FRAME_SIZE_SAVE_REFS_AND_ARGS
     DELIVER_PENDING_EXCEPTION_FRAME_READY
 END_FUNCTION art_jni_dlsym_lookup_critical_stub
 

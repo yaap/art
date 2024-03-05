@@ -45,9 +45,7 @@ bool CompactDexFile::IsMagicValid() const {
   return IsMagicValid(header_->magic_);
 }
 
-bool CompactDexFile::IsVersionValid() const {
-  return IsVersionValid(header_->magic_);
-}
+bool CompactDexFile::IsVersionValid() const { return IsVersionValid(header_->magic_.data()); }
 
 bool CompactDexFile::SupportsDefaultMethods() const {
   return (GetHeader().GetFeatureFlags() &
@@ -84,13 +82,11 @@ uint32_t CompactDexFile::CalculateChecksum() const {
 }
 
 CompactDexFile::CompactDexFile(const uint8_t* base,
-                               size_t size,
                                const std::string& location,
                                uint32_t location_checksum,
                                const OatDexFile* oat_dex_file,
                                std::shared_ptr<DexFileContainer> container)
     : DexFile(base,
-              size,
               location,
               location_checksum,
               oat_dex_file,

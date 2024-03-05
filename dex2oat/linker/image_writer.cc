@@ -76,6 +76,7 @@
 #include "mirror/object_array-inl.h"
 #include "mirror/string-inl.h"
 #include "mirror/var_handle.h"
+#include "nterp_helpers-inl.h"
 #include "nterp_helpers.h"
 #include "oat.h"
 #include "oat_file.h"
@@ -116,18 +117,261 @@ constexpr double kImageInternTableMaxLoadFactor = 0.6;
 // Separate objects into multiple bins to optimize dirty memory use.
 static constexpr bool kBinObjects = true;
 
+namespace {
+
+// Dirty object data from dirty-image-objects.
+struct DirtyEntry {
+  // Reference field name and type.
+  struct RefInfo {
+    std::string_view name;
+    std::string_view type;
+  };
+
+  std::string_view class_descriptor;
+  // A "path" from class object to the dirty object. If empty -- the class itself is dirty.
+  std::vector<RefInfo> reference_path;
+  uint32_t sort_key = std::numeric_limits<uint32_t>::max();
+};
+
+// Parse dirty-image-object line of the format:
+// <class_descriptor>[.<reference_field_name>:<reference_field_type>]* [<sort_key>]
+std::optional<DirtyEntry> ParseDirtyEntry(std::string_view entry_str) {
+  DirtyEntry entry;
+  std::vector<std::string_view> tokens;
+  Split(entry_str, ' ', &tokens);
+  if (tokens.empty()) {
+    // entry_str is empty.
+    return std::nullopt;
+  }
+
+  std::string_view path_to_root = tokens[0];
+  // Parse sort_key if present, otherwise it will be uint32::max by default.
+  if (tokens.size() > 1) {
+    std::from_chars_result res =
+        std::from_chars(tokens[1].data(), tokens[1].data() + tokens[1].size(), entry.sort_key);
+    if (res.ec != std::errc()) {
+      LOG(WARNING) << "Failed to parse dirty object sort key: \"" << entry_str << "\"";
+      return std::nullopt;
+    }
+  }
+
+  std::vector<std::string_view> path_components;
+  Split(path_to_root, '.', &path_components);
+  if (path_components.empty()) {
+    return std::nullopt;
+  }
+  entry.class_descriptor = path_components[0];
+  for (size_t i = 1; i < path_components.size(); ++i) {
+    std::string_view name_and_type = path_components[i];
+    std::vector<std::string_view> ref_data;
+    Split(name_and_type, ':', &ref_data);
+    if (ref_data.size() != 2) {
+      LOG(WARNING) << "Failed to parse dirty object reference field: \"" << entry_str << "\"";
+      return std::nullopt;
+    }
+
+    std::string_view field_name = ref_data[0];
+    std::string_view field_type = ref_data[1];
+    entry.reference_path.push_back({field_name, field_type});
+  }
+
+  return entry;
+}
+
+// Calls VisitFunc for each non-null (reference)Object/ArtField pair.
+// Doesn't work with ObjectArray instances, because array elements don't have ArtField.
+class ReferenceFieldVisitor {
+ public:
+  using VisitFunc = std::function<void(mirror::Object&, ArtField&)>;
+
+  explicit ReferenceFieldVisitor(VisitFunc visit_func) : visit_func_(std::move(visit_func)) {}
+
+  void operator()(ObjPtr<mirror::Object> obj, MemberOffset offset, bool is_static) const
+      REQUIRES_SHARED(Locks::mutator_lock_) {
+    CHECK(!obj->IsObjectArray());
+    mirror::Object* field_obj =
+        obj->GetFieldObject<mirror::Object, kVerifyNone, kWithoutReadBarrier>(offset);
+    // Skip fields that contain null.
+    if (field_obj == nullptr) {
+      return;
+    }
+    // Skip self references.
+    if (field_obj == obj.Ptr()) {
+      return;
+    }
+
+    ArtField* field = nullptr;
+    // Don't use Object::FindFieldByOffset, because it can't find instance fields in classes.
+    // field = obj->FindFieldByOffset(offset);
+    if (is_static) {
+      CHECK(obj->IsClass());
+      field = ArtField::FindStaticFieldWithOffset(obj->AsClass(), offset.Uint32Value());
+    } else {
+      field = ArtField::
+          FindInstanceFieldWithOffset</*kExactOffset*/ true, kVerifyNone, kWithoutReadBarrier>(
+              obj->GetClass<kVerifyNone, kWithoutReadBarrier>(), offset.Uint32Value());
+    }
+    DCHECK(field != nullptr);
+    visit_func_(*field_obj, *field);
+  }
+
+  void operator()([[maybe_unused]] ObjPtr<mirror::Class> klass, ObjPtr<mirror::Reference> ref) const
+      REQUIRES_SHARED(Locks::mutator_lock_) {
+    operator()(ref, mirror::Reference::ReferentOffset(), /* is_static */ false);
+  }
+
+  void VisitRootIfNonNull([[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const
+      REQUIRES_SHARED(Locks::mutator_lock_) {
+    DCHECK(false) << "ReferenceFieldVisitor shouldn't visit roots";
+  }
+
+  void VisitRoot([[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const
+      REQUIRES_SHARED(Locks::mutator_lock_) {
+    DCHECK(false) << "ReferenceFieldVisitor shouldn't visit roots";
+  }
+
+ private:
+  VisitFunc visit_func_;
+};
+
+// Finds Class objects for descriptors of dirty entries.
+// Map keys are string_views, that point to strings from `dirty_image_objects`.
+// If there is no Class for a descriptor, the result map will have an entry with nullptr value.
+static HashMap<std::string_view, mirror::Object*> FindClassesByDescriptor(
+    const std::vector<std::string>& dirty_image_objects) REQUIRES_SHARED(Locks::mutator_lock_) {
+  HashMap<std::string_view, mirror::Object*> descriptor_to_class;
+  // Collect class descriptors that are used in dirty-image-objects.
+  for (const std::string& entry : dirty_image_objects) {
+    auto it = std::find_if(entry.begin(), entry.end(), [](char c) { return c == '.' || c == ' '; });
+    size_t descriptor_len = std::distance(entry.begin(), it);
+
+    std::string_view descriptor = std::string_view(entry).substr(0, descriptor_len);
+    descriptor_to_class.insert(std::make_pair(descriptor, nullptr));
+  }
+
+  // Find Class objects for collected descriptors.
+  auto visitor = [&](Object* obj) REQUIRES_SHARED(Locks::mutator_lock_) {
+    DCHECK(obj != nullptr);
+    if (obj->IsClass()) {
+      std::string temp;
+      const char* descriptor = obj->AsClass()->GetDescriptor(&temp);
+      auto it = descriptor_to_class.find(descriptor);
+      if (it != descriptor_to_class.end()) {
+        it->second = obj;
+      }
+    }
+  };
+  Runtime::Current()->GetHeap()->VisitObjects(visitor);
+
+  return descriptor_to_class;
+}
+
+// Get all objects that match dirty_entries by path from class.
+// Map values are sort_keys from DirtyEntry.
+HashMap<mirror::Object*, uint32_t> MatchDirtyObjectPaths(
+    const std::vector<std::string>& dirty_image_objects) REQUIRES_SHARED(Locks::mutator_lock_) {
+  auto get_array_element = [](mirror::Object* cur_obj, const DirtyEntry::RefInfo& ref_info)
+                               REQUIRES_SHARED(Locks::mutator_lock_) -> mirror::Object* {
+    if (!cur_obj->IsObjectArray()) {
+      return nullptr;
+    }
+    int32_t idx = 0;
+    std::from_chars_result idx_parse_res =
+        std::from_chars(ref_info.name.data(), ref_info.name.data() + ref_info.name.size(), idx);
+    if (idx_parse_res.ec != std::errc()) {
+      return nullptr;
+    }
+
+    ObjPtr<ObjectArray<mirror::Object>> array = cur_obj->AsObjectArray<mirror::Object>();
+    if (idx < 0 || idx >= array->GetLength()) {
+      return nullptr;
+    }
+
+    ObjPtr<mirror::Object> next_obj =
+        array->GetWithoutChecks<kVerifyNone, kWithoutReadBarrier>(idx);
+    if (next_obj == nullptr) {
+      return nullptr;
+    }
+
+    std::string temp;
+    if (next_obj->GetClass<kVerifyNone, kWithoutReadBarrier>()->GetDescriptor(&temp) !=
+        ref_info.type) {
+      return nullptr;
+    }
+    return next_obj.Ptr();
+  };
+  auto get_object_field =
+      [](mirror::Object* cur_obj, const DirtyEntry::RefInfo& ref_info)
+          REQUIRES_SHARED(Locks::mutator_lock_) {
+            mirror::Object* next_obj = nullptr;
+            ReferenceFieldVisitor::VisitFunc visit_func =
+                [&](mirror::Object& ref_obj, ArtField& ref_field)
+                    REQUIRES_SHARED(Locks::mutator_lock_) {
+                      if (ref_field.GetName() == ref_info.name &&
+                          ref_field.GetTypeDescriptor() == ref_info.type) {
+                        next_obj = &ref_obj;
+                      }
+                    };
+            ReferenceFieldVisitor visitor(visit_func);
+            cur_obj->VisitReferences</*kVisitNativeRoots=*/false, kVerifyNone, kWithoutReadBarrier>(
+                visitor, visitor);
+
+            return next_obj;
+          };
+
+  HashMap<mirror::Object*, uint32_t> dirty_objects;
+  const HashMap<std::string_view, mirror::Object*> descriptor_to_class =
+      FindClassesByDescriptor(dirty_image_objects);
+  for (const std::string& entry_str : dirty_image_objects) {
+    const std::optional<DirtyEntry> entry = ParseDirtyEntry(entry_str);
+    if (entry == std::nullopt) {
+      continue;
+    }
+
+    auto root_it = descriptor_to_class.find(entry->class_descriptor);
+    if (root_it == descriptor_to_class.end() || root_it->second == nullptr) {
+      LOG(WARNING) << "Class not found: \"" << entry->class_descriptor << "\"";
+      continue;
+    }
+
+    mirror::Object* cur_obj = root_it->second;
+    for (const DirtyEntry::RefInfo& ref_info : entry->reference_path) {
+      if (std::all_of(
+              ref_info.name.begin(), ref_info.name.end(), [](char c) { return std::isdigit(c); })) {
+        cur_obj = get_array_element(cur_obj, ref_info);
+      } else {
+        cur_obj = get_object_field(cur_obj, ref_info);
+      }
+      if (cur_obj == nullptr) {
+        LOG(WARNING) << ART_FORMAT("Failed to find field \"{}:{}\", entry: \"{}\"",
+                                   ref_info.name,
+                                   ref_info.type,
+                                   entry_str);
+        break;
+      }
+    }
+    if (cur_obj == nullptr) {
+      continue;
+    }
+
+    dirty_objects.insert(std::make_pair(cur_obj, entry->sort_key));
+  }
+
+  return dirty_objects;
+}
+
+}  // namespace
+
 static ObjPtr<mirror::ObjectArray<mirror::Object>> AllocateBootImageLiveObjects(
     Thread* self, Runtime* runtime) REQUIRES_SHARED(Locks::mutator_lock_) {
   ClassLinker* class_linker = runtime->GetClassLinker();
-  // The objects used for the Integer.valueOf() intrinsic must remain live even if references
+  // The objects used for intrinsics must remain live even if references
   // to them are removed using reflection. Image roots are not accessible through reflection,
   // so the array we construct here shall keep them alive.
   StackHandleScope<1> hs(self);
-  Handle<mirror::ObjectArray<mirror::Object>> integer_cache =
-      hs.NewHandle(IntrinsicObjects::LookupIntegerCache(self, class_linker));
   size_t live_objects_size =
       enum_cast<size_t>(ImageHeader::kIntrinsicObjectsStart) +
-      ((integer_cache != nullptr) ? (/* cache */ 1u + integer_cache->GetLength()) : 0u);
+      IntrinsicObjects::GetNumberOfIntrinsicObjects();
   ObjPtr<mirror::ObjectArray<mirror::Object>> live_objects =
       mirror::ObjectArray<mirror::Object>::Alloc(
           self, GetClassRoot<mirror::ObjectArray<mirror::Object>>(class_linker), live_objects_size);
@@ -151,21 +395,7 @@ static ObjPtr<mirror::ObjectArray<mirror::Object>> AllocateBootImageLiveObjects(
   set_entry(ImageHeader::kClearedJniWeakSentinel, runtime->GetSentinel().Read());
 
   DCHECK_EQ(index, enum_cast<int32_t>(ImageHeader::kIntrinsicObjectsStart));
-  if (integer_cache != nullptr) {
-    live_objects->Set(index++, integer_cache.Get());
-    for (int32_t i = 0, length = integer_cache->GetLength(); i != length; ++i) {
-      live_objects->Set(index++, integer_cache->Get(i));
-    }
-  }
-  CHECK_EQ(index, live_objects->GetLength());
-
-  if (kIsDebugBuild && integer_cache != nullptr) {
-    CHECK_EQ(integer_cache.Get(), IntrinsicObjects::GetIntegerValueOfCache(live_objects));
-    for (int32_t i = 0, len = integer_cache->GetLength(); i != len; ++i) {
-      CHECK_EQ(integer_cache->GetWithoutChecks(i),
-               IntrinsicObjects::GetIntegerValueOfObject(live_objects, i));
-    }
-  }
+  IntrinsicObjects::FillIntrinsicObjects(live_objects, index);
   return live_objects;
 }
 
@@ -274,13 +504,6 @@ bool ImageWriter::PrepareImageAddressSpace(TimingLogger* timings) {
     TimingLogger::ScopedTiming t("CalculateNewObjectOffsets", timings);
     ScopedObjectAccess soa(self);
     CalculateNewObjectOffsets();
-
-    // If dirty_image_objects_ is present - try optimizing object layout.
-    // It can only be done after the first CalculateNewObjectOffsets,
-    // because calculated offsets are used to match dirty objects between imgdiag and dex2oat.
-    if (compiler_options_.IsBootImage() && dirty_image_objects_ != nullptr) {
-      TryRecalculateOffsetsWithDirtyObjects();
-    }
   }
 
   // This needs to happen after CalculateNewObjectOffsets since it relies on intern_table_bytes_ and
@@ -482,7 +705,7 @@ void ImageWriter::SetImageBinSlot(mirror::Object* object, BinSlot bin_slot) {
   DCHECK(IsImageBinSlotAssigned(object));
 }
 
-ImageWriter::Bin ImageWriter::AssignImageBinSlot(mirror::Object* object, size_t oat_index) {
+ImageWriter::Bin ImageWriter::GetImageBin(mirror::Object* object) {
   DCHECK(object != nullptr);
 
   // The magic happens here. We segregate objects into different bins based
@@ -531,17 +754,7 @@ ImageWriter::Bin ImageWriter::AssignImageBinSlot(mirror::Object* object, size_t 
     } else if (klass->IsClassClass()) {
       bin = Bin::kClassVerified;
       ObjPtr<mirror::Class> as_klass = object->AsClass<kVerifyNone>();
-
-      // Move known dirty objects into their own sections. This includes:
-      //   - classes with dirty static fields.
-      auto is_dirty = [&](ObjPtr<mirror::Class> k) REQUIRES_SHARED(Locks::mutator_lock_) {
-        std::string temp;
-        std::string_view descriptor = k->GetDescriptor(&temp);
-        return dirty_image_objects_->find(descriptor) != dirty_image_objects_->end();
-      };
-      if (dirty_image_objects_ != nullptr && is_dirty(as_klass)) {
-        bin = Bin::kKnownDirty;
-      } else if (as_klass->IsVisiblyInitialized<kVerifyNone>()) {
+      if (as_klass->IsVisiblyInitialized<kVerifyNone>()) {
         bin = Bin::kClassInitialized;
 
         // If the class's static fields are all final, put it into a separate bin
@@ -579,7 +792,6 @@ ImageWriter::Bin ImageWriter::AssignImageBinSlot(mirror::Object* object, size_t 
     // else bin = kBinRegular
   }
 
-  AssignImageBinSlot(object, oat_index, bin);
   return bin;
 }
 
@@ -669,7 +881,7 @@ void ImageWriter::UpdateImageBinSlotOffset(mirror::Object* object,
 
 bool ImageWriter::AllocMemory() {
   for (ImageInfo& image_info : image_infos_) {
-    const size_t length = RoundUp(image_info.CreateImageSections().first, kPageSize);
+    const size_t length = RoundUp(image_info.CreateImageSections().first, kElfSegmentAlignment);
 
     std::string error_msg;
     image_info.image_ = MemMap::MapAnonymous("image writer image",
@@ -683,9 +895,12 @@ bool ImageWriter::AllocMemory() {
     }
 
     // Create the image bitmap, only needs to cover mirror object section which is up to image_end_.
+    // The covered size is rounded up to kCardSize to match the bitmap size expected by Loader::Init
+    // at art::gc::space::ImageSpace.
     CHECK_LE(image_info.image_end_, length);
-    image_info.image_bitmap_ = gc::accounting::ContinuousSpaceBitmap::Create(
-        "image bitmap", image_info.image_.Begin(), RoundUp(image_info.image_end_, kPageSize));
+    image_info.image_bitmap_ = gc::accounting::ContinuousSpaceBitmap::Create("image bitmap",
+        image_info.image_.Begin(),
+        RoundUp(image_info.image_end_, gc::accounting::CardTable::kCardSize));
     if (!image_info.image_bitmap_.IsValid()) {
       LOG(ERROR) << "Failed to allocate memory for image bitmap";
       return false;
@@ -705,16 +920,15 @@ class ImageWriter::PruneObjectReferenceVisitor {
       : image_writer_(image_writer), early_exit_(early_exit), visited_(visited), result_(result) {}
 
   ALWAYS_INLINE void VisitRootIfNonNull(
-      mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED) const
-      REQUIRES_SHARED(Locks::mutator_lock_) { }
+      [[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const
+      REQUIRES_SHARED(Locks::mutator_lock_) {}
 
-  ALWAYS_INLINE void VisitRoot(
-      mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED) const
-      REQUIRES_SHARED(Locks::mutator_lock_) { }
+  ALWAYS_INLINE void VisitRoot([[maybe_unused]] mirror::CompressedReference<mirror::Object>* root)
+      const REQUIRES_SHARED(Locks::mutator_lock_) {}
 
-  ALWAYS_INLINE void operator() (ObjPtr<mirror::Object> obj,
-                                 MemberOffset offset,
-                                 bool is_static ATTRIBUTE_UNUSED) const
+  ALWAYS_INLINE void operator()(ObjPtr<mirror::Object> obj,
+                                MemberOffset offset,
+                                [[maybe_unused]] bool is_static) const
       REQUIRES_SHARED(Locks::mutator_lock_) {
     mirror::Object* ref =
         obj->GetFieldObject<mirror::Object, kVerifyNone, kWithoutReadBarrier>(offset);
@@ -747,8 +961,8 @@ class ImageWriter::PruneObjectReferenceVisitor {
     }
   }
 
-  ALWAYS_INLINE void operator() (ObjPtr<mirror::Class> klass ATTRIBUTE_UNUSED,
-                                 ObjPtr<mirror::Reference> ref) const
+  ALWAYS_INLINE void operator()([[maybe_unused]] ObjPtr<mirror::Class> klass,
+                                ObjPtr<mirror::Reference> ref) const
       REQUIRES_SHARED(Locks::mutator_lock_) {
     operator()(ref, mirror::Reference::ReferentOffset(), /* is_static */ false);
   }
@@ -1376,6 +1590,8 @@ class ImageWriter::LayoutHelper {
       REQUIRES_SHARED(Locks::mutator_lock_);
   bool TryAssignBinSlot(ObjPtr<mirror::Object> obj, size_t oat_index)
       REQUIRES_SHARED(Locks::mutator_lock_);
+  ImageWriter::Bin AssignImageBinSlot(ObjPtr<mirror::Object> object, size_t oat_index)
+      REQUIRES_SHARED(Locks::mutator_lock_);
   void AssignImageBinSlot(ObjPtr<mirror::Object> object, size_t oat_index, Bin bin)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -1581,10 +1797,9 @@ class ImageWriter::LayoutHelper::CollectStringReferenceVisitor {
   }
 
   // Collects info for managed fields that reference managed Strings.
-  void operator() (ObjPtr<mirror::Object> obj,
-                   MemberOffset member_offset,
-                   bool is_static ATTRIBUTE_UNUSED) const
-      REQUIRES_SHARED(Locks::mutator_lock_) {
+  void operator()(ObjPtr<mirror::Object> obj,
+                  MemberOffset member_offset,
+                  [[maybe_unused]] bool is_static) const REQUIRES_SHARED(Locks::mutator_lock_) {
     ObjPtr<mirror::Object> referred_obj =
         obj->GetFieldObject<mirror::Object, kVerifyNone, kWithoutReadBarrier>(member_offset);
 
@@ -1595,8 +1810,7 @@ class ImageWriter::LayoutHelper::CollectStringReferenceVisitor {
   }
 
   ALWAYS_INLINE
-  void operator() (ObjPtr<mirror::Class> klass ATTRIBUTE_UNUSED,
-                   ObjPtr<mirror::Reference> ref) const
+  void operator()([[maybe_unused]] ObjPtr<mirror::Class> klass, ObjPtr<mirror::Reference> ref) const
       REQUIRES_SHARED(Locks::mutator_lock_) {
     operator()(ref, mirror::Reference::ReferentOffset(), /* is_static */ false);
   }
@@ -1614,25 +1828,25 @@ class ImageWriter::LayoutHelper::VisitReferencesVisitor {
       : helper_(helper), oat_index_(oat_index) {}
 
   // We do not visit native roots. These are handled with other logic.
-  void VisitRootIfNonNull(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED)
-      const {
+  void VisitRootIfNonNull(
+      [[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {
     LOG(FATAL) << "UNREACHABLE";
   }
-  void VisitRoot(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED) const {
+  void VisitRoot([[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {
     LOG(FATAL) << "UNREACHABLE";
   }
 
   ALWAYS_INLINE void operator()(ObjPtr<mirror::Object> obj,
                                 MemberOffset offset,
-                                bool is_static ATTRIBUTE_UNUSED) const
+                                [[maybe_unused]] bool is_static) const
       REQUIRES_SHARED(Locks::mutator_lock_) {
     mirror::Object* ref =
         obj->GetFieldObject<mirror::Object, kVerifyNone, kWithoutReadBarrier>(offset);
     VisitReference(ref);
   }
 
-  ALWAYS_INLINE void operator() (ObjPtr<mirror::Class> klass ATTRIBUTE_UNUSED,
-                                 ObjPtr<mirror::Reference> ref) const
+  ALWAYS_INLINE void operator()([[maybe_unused]] ObjPtr<mirror::Class> klass,
+                                ObjPtr<mirror::Reference> ref) const
       REQUIRES_SHARED(Locks::mutator_lock_) {
     operator()(ref, mirror::Reference::ReferentOffset(), /* is_static */ false);
   }
@@ -1733,17 +1947,13 @@ void ImageWriter::LayoutHelper::ProcessDexFileObjects(Thread* self) {
     DCHECK(entry.first != nullptr);
     ObjPtr<mirror::Class> klass = entry.first->AsClass();
     size_t oat_index = entry.second;
-    DCHECK(!image_writer_->IsInBootImage(klass.Ptr()));
-    DCHECK(!image_writer_->IsImageBinSlotAssigned(klass.Ptr()));
     image_writer_->RecordNativeRelocations(klass, oat_index);
-    Bin klass_bin = image_writer_->AssignImageBinSlot(klass.Ptr(), oat_index);
-    bin_objects_[oat_index][enum_cast<size_t>(klass_bin)].push_back(klass.Ptr());
+    AssignImageBinSlot(klass.Ptr(), oat_index);
 
     auto method_pointer_array_visitor =
         [&](ObjPtr<mirror::PointerArray> pointer_array) REQUIRES_SHARED(Locks::mutator_lock_) {
           constexpr Bin bin = kBinObjects ? Bin::kInternalClean : Bin::kRegular;
-          image_writer_->AssignImageBinSlot(pointer_array.Ptr(), oat_index, bin);
-          bin_objects_[oat_index][enum_cast<size_t>(bin)].push_back(pointer_array.Ptr());
+          AssignImageBinSlot(pointer_array.Ptr(), oat_index, bin);
           // No need to add to the work queue. The class reference, if not in the boot image
           // (that is, when compiling the primary boot image), is already in the work queue.
         };
@@ -1840,7 +2050,6 @@ void ImageWriter::LayoutHelper::ProcessInterns(Thread* self) {
     DCHECK(it != image_writer->dex_file_oat_index_map_.end()) << dex_file->GetLocation();
     const size_t oat_index = it->second;
     // Assign bin slots for strings defined in this dex file in StringId (lexicographical) order.
-    auto& string_bin_objects = bin_objects_[oat_index][enum_cast<size_t>(Bin::kString)];
     for (size_t i = 0, count = dex_file->NumStringIds(); i != count; ++i) {
       uint32_t utf16_length;
       const char* utf8_data = dex_file->StringDataAndUtf16LengthByIdx(dex::StringIndex(i),
@@ -1853,9 +2062,8 @@ void ImageWriter::LayoutHelper::ProcessInterns(Thread* self) {
         DCHECK(string != nullptr);
         DCHECK(!image_writer->IsInBootImage(string));
         if (!image_writer->IsImageBinSlotAssigned(string)) {
-          Bin bin = image_writer->AssignImageBinSlot(string, oat_index);
+          Bin bin = AssignImageBinSlot(string, oat_index);
           DCHECK_EQ(bin, kBinObjects ? Bin::kString : Bin::kRegular);
-          string_bin_objects.push_back(string);
         } else {
           // We have already seen this string in a previous dex file.
           DCHECK(dex_file != image_writer->compiler_options_.GetDexFilesForOatFile().front());
@@ -2260,11 +2468,18 @@ bool ImageWriter::LayoutHelper::TryAssignBinSlot(ObjPtr<mirror::Object> obj, siz
   }
   bool assigned = false;
   if (!image_writer_->IsImageBinSlotAssigned(obj.Ptr())) {
-    Bin bin = image_writer_->AssignImageBinSlot(obj.Ptr(), oat_index);
-    bin_objects_[oat_index][enum_cast<size_t>(bin)].push_back(obj.Ptr());
+    AssignImageBinSlot(obj.Ptr(), oat_index);
     assigned = true;
   }
   return assigned;
+}
+
+ImageWriter::Bin ImageWriter::LayoutHelper::AssignImageBinSlot(ObjPtr<mirror::Object> object,
+                                                               size_t oat_index) {
+  DCHECK(object != nullptr);
+  Bin bin = image_writer_->GetImageBin(object.Ptr());
+  AssignImageBinSlot(object.Ptr(), oat_index, bin);
+  return bin;
 }
 
 void ImageWriter::LayoutHelper::AssignImageBinSlot(
@@ -2334,6 +2549,16 @@ void ImageWriter::CalculateNewObjectOffsets() {
             ImageHeader::kBootImageLiveObjects)).Ptr();
   }
 
+  // If dirty_image_objects_ is present - try optimizing object layout.
+  // Parse dirty-image-objects entries and put them in dirty_objects_ map, which is then used in
+  // `AssignImageBinSlot` method to put the objects in dirty bin.
+  if (compiler_options_.IsBootImage() && dirty_image_objects_ != nullptr) {
+    dirty_objects_ = MatchDirtyObjectPaths(*dirty_image_objects_);
+    LOG(INFO) << ART_FORMAT("Matched {} out of {} dirty-image-objects",
+                            dirty_objects_.size(),
+                            dirty_image_objects_->size());
+  }
+
   LayoutHelper layout_helper(this);
   layout_helper.ProcessDexFileObjects(self);
   layout_helper.ProcessRoots(self);
@@ -2362,7 +2587,7 @@ void ImageWriter::CalculateNewObjectOffsets() {
   for (ImageInfo& image_info : image_infos_) {
     image_info.image_begin_ = global_image_begin_ + image_offset;
     image_info.image_offset_ = image_offset;
-    image_info.image_size_ = RoundUp(image_info.CreateImageSections().first, kPageSize);
+    image_info.image_size_ = RoundUp(image_info.CreateImageSections().first, kElfSegmentAlignment);
     // There should be no gaps until the next image.
     image_offset += image_info.image_size_;
   }
@@ -2382,149 +2607,6 @@ void ImageWriter::CalculateNewObjectOffsets() {
     ImageInfo& image_info = GetImageInfo(relocation.oat_index);
     relocation.offset += image_info.GetBinSlotOffset(bin_type);
   }
-}
-
-std::optional<HashMap<mirror::Object*, uint32_t>> ImageWriter::MatchDirtyObjectOffsets(
-    const HashMap<uint32_t, DirtyEntry>& dirty_entries) REQUIRES_SHARED(Locks::mutator_lock_) {
-  HashMap<mirror::Object*, uint32_t> dirty_objects;
-  bool mismatch_found = false;
-
-  auto visitor = [&](Object* obj) REQUIRES_SHARED(Locks::mutator_lock_) {
-    DCHECK(obj != nullptr);
-    if (mismatch_found) {
-      return;
-    }
-    if (!IsImageBinSlotAssigned(obj)) {
-      return;
-    }
-
-    uint8_t* image_address = reinterpret_cast<uint8_t*>(GetImageAddress(obj));
-    uint32_t offset = static_cast<uint32_t>(image_address - global_image_begin_);
-
-    auto entry_it = dirty_entries.find(offset);
-    if (entry_it == dirty_entries.end()) {
-      return;
-    }
-
-    const DirtyEntry& entry = entry_it->second;
-
-    const bool is_class = obj->IsClass();
-    const uint32_t descriptor_hash =
-        is_class ? obj->AsClass()->DescriptorHash() : obj->GetClass()->DescriptorHash();
-
-    if (is_class != entry.is_class || descriptor_hash != entry.descriptor_hash) {
-      LOG(WARNING) << "Dirty image objects offset mismatch (outdated file?)";
-      mismatch_found = true;
-      return;
-    }
-
-    dirty_objects.insert(std::make_pair(obj, entry.sort_key));
-  };
-  Runtime::Current()->GetHeap()->VisitObjects(visitor);
-
-  // A single mismatch indicates that dirty-image-objects layout differs from
-  // current ImageWriter layout. In this case any "valid" matches are likely to be accidental,
-  // so there's no point in optimizing the layout with such data.
-  if (mismatch_found) {
-    return {};
-  }
-  if (dirty_objects.size() != dirty_entries.size()) {
-    LOG(WARNING) << "Dirty image objects missing offsets (outdated file?)";
-    return {};
-  }
-  return dirty_objects;
-}
-
-void ImageWriter::ResetObjectOffsets() {
-  const size_t image_infos_size = image_infos_.size();
-  image_infos_.clear();
-  image_infos_.resize(image_infos_size);
-
-  native_object_relocations_.clear();
-
-  // CalculateNewObjectOffsets stores image offsets of the objects in lock words,
-  // while original lock words are preserved in saved_hashcode_map.
-  // Restore original lock words.
-  auto visitor = [&](Object* obj) REQUIRES_SHARED(Locks::mutator_lock_) {
-    DCHECK(obj != nullptr);
-    const auto it = saved_hashcode_map_.find(obj);
-    obj->SetLockWord(it != saved_hashcode_map_.end() ? LockWord::FromHashCode(it->second, 0u) :
-                                                       LockWord::Default(),
-                     false);
-  };
-  Runtime::Current()->GetHeap()->VisitObjects(visitor);
-
-  saved_hashcode_map_.clear();
-}
-
-void ImageWriter::TryRecalculateOffsetsWithDirtyObjects() {
-  const std::optional<HashMap<uint32_t, ImageWriter::DirtyEntry>> dirty_entries =
-      ParseDirtyObjectOffsets(*dirty_image_objects_);
-  if (!dirty_entries || dirty_entries->empty()) {
-    return;
-  }
-
-  std::optional<HashMap<mirror::Object*, uint32_t>> dirty_objects =
-      MatchDirtyObjectOffsets(*dirty_entries);
-  if (!dirty_objects || dirty_objects->empty()) {
-    return;
-  }
-  // Calculate offsets again, now with dirty object offsets.
-  LOG(INFO) << "Recalculating object offsets using dirty-image-objects";
-  dirty_objects_ = std::move(*dirty_objects);
-  ResetObjectOffsets();
-  CalculateNewObjectOffsets();
-}
-
-std::optional<HashMap<uint32_t, ImageWriter::DirtyEntry>> ImageWriter::ParseDirtyObjectOffsets(
-    const HashSet<std::string>& dirty_image_objects) REQUIRES_SHARED(Locks::mutator_lock_) {
-  HashMap<uint32_t, DirtyEntry> dirty_entries;
-
-  // Go through each dirty-image-object line, parse only lines of the format:
-  // "dirty_obj: <offset> <type> <descriptor_hash> <sort_key>"
-  // <offset> -- decimal uint32.
-  // <type> -- "class" or "instance" (defines if descriptor is referring to a class or an instance).
-  // <descriptor_hash> -- decimal uint32 (from DescriptorHash() method).
-  // <sort_key> -- decimal uint32 (defines order of the object inside the dirty bin).
-  const std::string prefix = "dirty_obj:";
-  for (const std::string& entry_str : dirty_image_objects) {
-    // Skip the lines of old dirty-image-object format.
-    if (std::strncmp(entry_str.data(), prefix.data(), prefix.size()) != 0) {
-      continue;
-    }
-
-    const std::vector<std::string> tokens = android::base::Split(entry_str, " ");
-    if (tokens.size() != 5) {
-      LOG(WARNING) << "Invalid dirty image objects format: \"" << entry_str << "\"";
-      return {};
-    }
-
-    uint32_t offset = 0;
-    std::from_chars_result res =
-        std::from_chars(tokens[1].data(), tokens[1].data() + tokens[1].size(), offset);
-    if (res.ec != std::errc()) {
-      LOG(WARNING) << "Couldn't parse dirty object offset: \"" << entry_str << "\"";
-      return {};
-    }
-
-    DirtyEntry entry;
-    entry.is_class = (tokens[2] == "class");
-    res = std::from_chars(
-        tokens[3].data(), tokens[3].data() + tokens[3].size(), entry.descriptor_hash);
-    if (res.ec != std::errc()) {
-      LOG(WARNING) << "Couldn't parse dirty object descriptor hash: \"" << entry_str << "\"";
-      return {};
-    }
-    res = std::from_chars(tokens[4].data(), tokens[4].data() + tokens[4].size(), entry.sort_key);
-    if (res.ec != std::errc()) {
-      LOG(WARNING) << "Couldn't parse dirty object marker: \"" << entry_str << "\"";
-      return {};
-    }
-
-    dirty_entries.insert(std::make_pair(offset, entry));
-  }
-
-  return dirty_entries;
 }
 
 std::pair<size_t, dchecked_vector<ImageSection>>
@@ -2641,7 +2723,7 @@ void ImageWriter::CreateHeader(size_t oat_index, size_t component_count) {
   const uint8_t* oat_data_end = image_info.oat_data_begin_ + image_info.oat_size_;
 
   uint32_t image_reservation_size = image_info.image_size_;
-  DCHECK_ALIGNED(image_reservation_size, kPageSize);
+  DCHECK_ALIGNED(image_reservation_size, kElfSegmentAlignment);
   uint32_t current_component_count = 1u;
   if (compiler_options_.IsAppImage()) {
     DCHECK_EQ(oat_index, 0u);
@@ -2652,9 +2734,9 @@ void ImageWriter::CreateHeader(size_t oat_index, size_t component_count) {
     if (oat_index == 0u) {
       const ImageInfo& last_info = image_infos_.back();
       const uint8_t* end = last_info.oat_file_begin_ + last_info.oat_loaded_size_;
-      DCHECK_ALIGNED(image_info.image_begin_, kPageSize);
-      image_reservation_size =
-          dchecked_integral_cast<uint32_t>(RoundUp(end - image_info.image_begin_, kPageSize));
+      DCHECK_ALIGNED(image_info.image_begin_, kElfSegmentAlignment);
+      image_reservation_size = dchecked_integral_cast<uint32_t>(
+          RoundUp(end - image_info.image_begin_, kElfSegmentAlignment));
       current_component_count = component_count;
     } else {
       image_reservation_size = 0u;
@@ -2686,7 +2768,11 @@ void ImageWriter::CreateHeader(size_t oat_index, size_t component_count) {
   // Finally bitmap section.
   const size_t bitmap_bytes = image_info.image_bitmap_.Size();
   auto* bitmap_section = &sections[ImageHeader::kSectionImageBitmap];
-  *bitmap_section = ImageSection(RoundUp(image_end, kPageSize), RoundUp(bitmap_bytes, kPageSize));
+  // The offset of the bitmap section should be aligned to kElfSegmentAlignment to enable mapping
+  // the section from file to memory. However the section size doesn't have to be rounded up as it
+  // is located at the end of the file. When mapping file contents to memory, if the last page of
+  // the mapping is only partially filled with data, the rest will be zero-filled.
+  *bitmap_section = ImageSection(RoundUp(image_end, kElfSegmentAlignment), bitmap_bytes);
   if (VLOG_IS_ON(compiler)) {
     LOG(INFO) << "Creating header for " << oat_filenames_[oat_index];
     size_t idx = 0;
@@ -2735,17 +2821,19 @@ ArtMethod* ImageWriter::GetImageMethodAddress(ArtMethod* method) {
 const void* ImageWriter::GetIntrinsicReferenceAddress(uint32_t intrinsic_data) {
   DCHECK(compiler_options_.IsBootImage());
   switch (IntrinsicObjects::DecodePatchType(intrinsic_data)) {
-    case IntrinsicObjects::PatchType::kIntegerValueOfArray: {
+    case IntrinsicObjects::PatchType::kValueOfArray: {
+      uint32_t index = IntrinsicObjects::DecodePatchIndex(intrinsic_data);
       const uint8_t* base_address =
           reinterpret_cast<const uint8_t*>(GetImageAddress(boot_image_live_objects_));
       MemberOffset data_offset =
-          IntrinsicObjects::GetIntegerValueOfArrayDataOffset(boot_image_live_objects_);
+          IntrinsicObjects::GetValueOfArrayDataOffset(boot_image_live_objects_, index);
       return base_address + data_offset.Uint32Value();
     }
-    case IntrinsicObjects::PatchType::kIntegerValueOfObject: {
+    case IntrinsicObjects::PatchType::kValueOfObject: {
       uint32_t index = IntrinsicObjects::DecodePatchIndex(intrinsic_data);
-      ObjPtr<mirror::Object> value =
-          IntrinsicObjects::GetIntegerValueOfObject(boot_image_live_objects_, index);
+      ObjPtr<mirror::Object> value = IntrinsicObjects::GetValueOfObject(boot_image_live_objects_,
+                                                                        /* start_index= */ 0u,
+                                                                        index);
       return GetImageAddress(value.Ptr());
     }
   }
@@ -2759,17 +2847,17 @@ class ImageWriter::FixupRootVisitor : public RootVisitor {
   explicit FixupRootVisitor(ImageWriter* image_writer) : image_writer_(image_writer) {
   }
 
-  void VisitRoots(mirror::Object*** roots ATTRIBUTE_UNUSED,
-                  size_t count ATTRIBUTE_UNUSED,
-                  const RootInfo& info ATTRIBUTE_UNUSED)
-      override REQUIRES_SHARED(Locks::mutator_lock_) {
+  void VisitRoots([[maybe_unused]] mirror::Object*** roots,
+                  [[maybe_unused]] size_t count,
+                  [[maybe_unused]] const RootInfo& info) override
+      REQUIRES_SHARED(Locks::mutator_lock_) {
     LOG(FATAL) << "Unsupported";
   }
 
   void VisitRoots(mirror::CompressedReference<mirror::Object>** roots,
                   size_t count,
-                  const RootInfo& info ATTRIBUTE_UNUSED)
-      override REQUIRES_SHARED(Locks::mutator_lock_) {
+                  [[maybe_unused]] const RootInfo& info) override
+      REQUIRES_SHARED(Locks::mutator_lock_) {
     for (size_t i = 0; i < count; ++i) {
       // Copy the reference. Since we do not have the address for recording the relocation,
       // it needs to be recorded explicitly by the user of FixupRootVisitor.
@@ -3034,15 +3122,15 @@ class ImageWriter::FixupVisitor {
   }
 
   // We do not visit native roots. These are handled with other logic.
-  void VisitRootIfNonNull(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED)
-      const {
+  void VisitRootIfNonNull(
+      [[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {
     LOG(FATAL) << "UNREACHABLE";
   }
-  void VisitRoot(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED) const {
+  void VisitRoot([[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {
     LOG(FATAL) << "UNREACHABLE";
   }
 
-  void operator()(ObjPtr<Object> obj, MemberOffset offset, bool is_static ATTRIBUTE_UNUSED) const
+  void operator()(ObjPtr<Object> obj, MemberOffset offset, [[maybe_unused]] bool is_static) const
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(Locks::heap_bitmap_lock_) {
     ObjPtr<Object> ref = obj->GetFieldObject<Object, kVerifyNone, kWithoutReadBarrier>(offset);
     // Copy the reference and record the fixup if necessary.
@@ -3051,8 +3139,7 @@ class ImageWriter::FixupVisitor {
   }
 
   // java.lang.ref.Reference visitor.
-  void operator()(ObjPtr<mirror::Class> klass ATTRIBUTE_UNUSED,
-                  ObjPtr<mirror::Reference> ref) const
+  void operator()([[maybe_unused]] ObjPtr<mirror::Class> klass, ObjPtr<mirror::Reference> ref) const
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(Locks::heap_bitmap_lock_) {
     operator()(ref, mirror::Reference::ReferentOffset(), /* is_static */ false);
   }
@@ -3122,14 +3209,14 @@ class ImageWriter::FixupClassVisitor final : public FixupVisitor {
   FixupClassVisitor(ImageWriter* image_writer, Object* copy)
       : FixupVisitor(image_writer, copy) {}
 
-  void operator()(ObjPtr<Object> obj, MemberOffset offset, bool is_static ATTRIBUTE_UNUSED) const
+  void operator()(ObjPtr<Object> obj, MemberOffset offset, [[maybe_unused]] bool is_static) const
       REQUIRES(Locks::mutator_lock_, Locks::heap_bitmap_lock_) {
     DCHECK(obj->IsClass());
     FixupVisitor::operator()(obj, offset, /*is_static*/false);
   }
 
-  void operator()(ObjPtr<mirror::Class> klass ATTRIBUTE_UNUSED,
-                  ObjPtr<mirror::Reference> ref ATTRIBUTE_UNUSED) const
+  void operator()([[maybe_unused]] ObjPtr<mirror::Class> klass,
+                  [[maybe_unused]] ObjPtr<mirror::Reference> ref) const
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(Locks::heap_bitmap_lock_) {
     LOG(FATAL) << "Reference not expected here.";
   }
@@ -3367,15 +3454,22 @@ void ImageWriter::CopyAndFixupMethod(ArtMethod* orig,
         nullptr, Runtime::Current()->GetClassLinker()->GetImagePointerSize());
   }
 
-  if (!orig->IsRuntimeMethod() &&
-      (compiler_options_.IsBootImage() || compiler_options_.IsBootImageExtension())) {
-    orig->SetMemorySharedMethod();
+  if (!orig->IsRuntimeMethod()) {
+    // If we're compiling a boot image and we have a profile, set methods as
+    // being shared memory (to avoid dirtying them with hotness counter). We
+    // expect important methods to be AOT, and non-important methods to be run
+    // in the interpreter.
+    if (CompilerFilter::DependsOnProfile(compiler_options_.GetCompilerFilter()) &&
+        (compiler_options_.IsBootImage() || compiler_options_.IsBootImageExtension())) {
+      orig->SetMemorySharedMethod();
+    }
   }
 
   memcpy(copy, orig, ArtMethod::Size(target_ptr_size_));
 
   CopyAndFixupReference(copy->GetDeclaringClassAddressWithoutBarrier(),
                         orig->GetDeclaringClassUnchecked<kWithoutReadBarrier>());
+  ResetNterpFastPathFlags(copy, orig);
 
   // OatWriter replaces the code_ with an offset value. Here we re-adjust to a pointer relative to
   // oat_begin_
@@ -3405,7 +3499,7 @@ void ImageWriter::CopyAndFixupMethod(ArtMethod* orig,
       }
       CHECK(found_one) << "Expected to find callee save method but got " << orig->PrettyMethod();
       CHECK(copy->IsRuntimeMethod());
-      CHECK(copy->GetEntryPointFromQuickCompiledCode() == nullptr);
+      CHECK(copy->GetEntryPointFromQuickCompiledCodePtrSize(target_ptr_size_) == nullptr);
       quick_code = nullptr;
     }
   } else {
@@ -3576,14 +3670,13 @@ void ImageWriter::UpdateOatFileHeader(size_t oat_index, const OatHeader& oat_hea
   }
 }
 
-ImageWriter::ImageWriter(
-    const CompilerOptions& compiler_options,
-    uintptr_t image_begin,
-    ImageHeader::StorageMode image_storage_mode,
-    const std::vector<std::string>& oat_filenames,
-    const HashMap<const DexFile*, size_t>& dex_file_oat_index_map,
-    jobject class_loader,
-    const HashSet<std::string>* dirty_image_objects)
+ImageWriter::ImageWriter(const CompilerOptions& compiler_options,
+                         uintptr_t image_begin,
+                         ImageHeader::StorageMode image_storage_mode,
+                         const std::vector<std::string>& oat_filenames,
+                         const HashMap<const DexFile*, size_t>& dex_file_oat_index_map,
+                         jobject class_loader,
+                         const std::vector<std::string>* dirty_image_objects)
     : compiler_options_(compiler_options),
       boot_image_begin_(Runtime::Current()->GetHeap()->GetBootImagesStartAddress()),
       boot_image_size_(Runtime::Current()->GetHeap()->GetBootImagesSize()),
@@ -3668,6 +3761,33 @@ void ImageWriter::CopyAndFixupPointer(
 template <typename ValueType>
 void ImageWriter::CopyAndFixupPointer(void* object, MemberOffset offset, ValueType src_value) {
   return CopyAndFixupPointer(object, offset, src_value, target_ptr_size_);
+}
+
+void ImageWriter::ResetNterpFastPathFlags(ArtMethod* copy, ArtMethod* orig) {
+  DCHECK(copy != nullptr);
+  DCHECK(orig != nullptr);
+  if (orig->IsRuntimeMethod() || orig->IsProxyMethod()) {
+    return;  // !IsRuntimeMethod() and !IsProxyMethod() for GetShortyView()
+  }
+
+  // Clear old nterp fast path flags.
+  if (copy->HasNterpEntryPointFastPathFlag()) {
+    copy->ClearNterpEntryPointFastPathFlag();  // Flag has other uses, clear it conditionally.
+  }
+  copy->ClearNterpInvokeFastPathFlag();
+
+  // Check if nterp fast paths available on target ISA.
+  std::string_view shorty = orig->GetShortyView();  // Use orig, copy's class not yet ready.
+  uint32_t new_nterp_flags =
+      GetNterpFastPathFlags(shorty, copy->GetAccessFlags(), compiler_options_.GetInstructionSet());
+
+  // Set new nterp fast path flags, if approporiate.
+  if ((new_nterp_flags & kAccNterpEntryPointFastPathFlag) != 0) {
+    copy->SetNterpEntryPointFastPathFlag();
+  }
+  if ((new_nterp_flags & kAccNterpInvokeFastPathFlag) != 0) {
+    copy->SetNterpInvokeFastPathFlag();
+  }
 }
 
 }  // namespace linker

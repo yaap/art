@@ -55,6 +55,7 @@ constexpr const char* kExtendedPublicLibrariesFileSuffix = ".txt";
 constexpr const char* kApexLibrariesConfigFile = "/linkerconfig/apex.libraries.config.txt";
 constexpr const char* kVendorPublicLibrariesFile = "/vendor/etc/public.libraries.txt";
 constexpr const char* kLlndkLibrariesFile = "/apex/com.android.vndk.v{}/etc/llndk.libraries.{}.txt";
+constexpr const char* kLlndkLibrariesNoVndkFile = "/system/etc/llndk.libraries.txt";
 constexpr const char* kVndkLibrariesFile = "/apex/com.android.vndk.v{}/etc/vndksp.libraries.{}.txt";
 
 
@@ -200,7 +201,7 @@ static std::string InitVendorPublicLibraries() {
 // contains the extended public libraries that are loaded from the system namespace.
 static std::string InitProductPublicLibraries() {
   std::vector<std::string> sonames;
-  if (is_product_vndk_version_defined()) {
+  if (is_product_treblelized()) {
     ReadExtensionLibraries("/product/etc", &sonames);
   }
   std::string libs = android::base::Join(sonames, ':');
@@ -217,7 +218,7 @@ static std::string InitExtendedPublicLibraries() {
   std::vector<std::string> sonames;
   ReadExtensionLibraries("/system/etc", &sonames);
   ReadExtensionLibraries("/system_ext/etc", &sonames);
-  if (!is_product_vndk_version_defined()) {
+  if (!is_product_treblelized()) {
     ReadExtensionLibraries("/product/etc", &sonames);
   }
   std::string libs = android::base::Join(sonames, ':');
@@ -225,9 +226,30 @@ static std::string InitExtendedPublicLibraries() {
   return libs;
 }
 
+bool IsVendorVndkEnabled() {
+#if defined(ART_TARGET_ANDROID)
+  return android::base::GetProperty("ro.vndk.version", "") != "";
+#else
+  return true;
+#endif
+}
+
+bool IsProductVndkEnabled() {
+#if defined(ART_TARGET_ANDROID)
+  return android::base::GetProperty("ro.product.vndk.version", "") != "";
+#else
+  return true;
+#endif
+}
+
 static std::string InitLlndkLibrariesVendor() {
-  std::string config_file = kLlndkLibrariesFile;
-  InsertVndkVersionStr(&config_file, false);
+  std::string config_file;
+  if (IsVendorVndkEnabled()) {
+    config_file = kLlndkLibrariesFile;
+    InsertVndkVersionStr(&config_file, false);
+  } else {
+    config_file = kLlndkLibrariesNoVndkFile;
+  }
   auto sonames = ReadConfig(config_file, always_true);
   if (!sonames.ok()) {
     LOG_ALWAYS_FATAL("%s: %s", config_file.c_str(), sonames.error().message().c_str());
@@ -239,12 +261,17 @@ static std::string InitLlndkLibrariesVendor() {
 }
 
 static std::string InitLlndkLibrariesProduct() {
-  if (!is_product_vndk_version_defined()) {
-    ALOGD("InitLlndkLibrariesProduct: No product VNDK version defined");
+  if (!is_product_treblelized()) {
+    ALOGD("InitLlndkLibrariesProduct: Product is not treblelized");
     return "";
   }
-  std::string config_file = kLlndkLibrariesFile;
-  InsertVndkVersionStr(&config_file, true);
+  std::string config_file;
+  if (IsProductVndkEnabled()) {
+    config_file = kLlndkLibrariesFile;
+    InsertVndkVersionStr(&config_file, true);
+  } else {
+    config_file = kLlndkLibrariesNoVndkFile;
+  }
   auto sonames = ReadConfig(config_file, always_true);
   if (!sonames.ok()) {
     LOG_ALWAYS_FATAL("%s: %s", config_file.c_str(), sonames.error().message().c_str());
@@ -256,6 +283,11 @@ static std::string InitLlndkLibrariesProduct() {
 }
 
 static std::string InitVndkspLibrariesVendor() {
+  if (!IsVendorVndkEnabled()) {
+    ALOGD("InitVndkspLibrariesVendor: VNDK is deprecated with vendor");
+    return "";
+  }
+
   std::string config_file = kVndkLibrariesFile;
   InsertVndkVersionStr(&config_file, false);
   auto sonames = ReadConfig(config_file, always_true);
@@ -269,8 +301,8 @@ static std::string InitVndkspLibrariesVendor() {
 }
 
 static std::string InitVndkspLibrariesProduct() {
-  if (!is_product_vndk_version_defined()) {
-    ALOGD("InitVndkspLibrariesProduct: No product VNDK version defined");
+  if (!IsProductVndkEnabled()) {
+    ALOGD("InitVndkspLibrariesProduct: VNDK is deprecated with product");
     return "";
   }
   std::string config_file = kVndkLibrariesFile;
@@ -393,9 +425,14 @@ const std::map<std::string, std::string>& apex_public_libraries() {
   return public_libraries;
 }
 
-bool is_product_vndk_version_defined() {
+bool is_product_treblelized() {
 #if defined(ART_TARGET_ANDROID)
-  return android::sysprop::VndkProperties::product_vndk_version().has_value();
+  // Product is not treblelized iff launching version is prior to R and
+  // ro.product.vndk.version is not defined
+  static bool product_treblelized =
+      !(android::base::GetIntProperty("ro.product.first_api_level", 0) < __ANDROID_API_R__ &&
+        !android::sysprop::VndkProperties::product_vndk_version().has_value());
+  return product_treblelized;
 #else
   return false;
 #endif

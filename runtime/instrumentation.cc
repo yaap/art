@@ -111,8 +111,8 @@ Instrumentation::Instrumentation()
     : run_exit_hooks_(false),
       instrumentation_level_(InstrumentationLevel::kInstrumentNothing),
       forced_interpret_only_(false),
-      have_method_entry_listeners_(false),
-      have_method_exit_listeners_(false),
+      have_method_entry_listeners_(0),
+      have_method_exit_listeners_(0),
       have_method_unwind_listeners_(false),
       have_dex_pc_listeners_(false),
       have_field_read_listeners_(false),
@@ -727,15 +727,14 @@ static bool HasEvent(Instrumentation::InstrumentationEvent expected, uint32_t ev
   return (events & expected) != 0;
 }
 
-static void PotentiallyAddListenerTo(Instrumentation::InstrumentationEvent event,
+static bool PotentiallyAddListenerTo(Instrumentation::InstrumentationEvent event,
                                      uint32_t events,
                                      std::list<InstrumentationListener*>& list,
-                                     InstrumentationListener* listener,
-                                     bool* has_listener)
+                                     InstrumentationListener* listener)
     REQUIRES(Locks::mutator_lock_, !Locks::thread_list_lock_, !Locks::classlinker_classes_lock_) {
   Locks::mutator_lock_->AssertExclusiveHeld(Thread::Current());
   if (!HasEvent(event, events)) {
-    return;
+    return false;
   }
   // If there is a free slot in the list, we insert the listener in that slot.
   // Otherwise we add it to the end of the list.
@@ -745,21 +744,66 @@ static void PotentiallyAddListenerTo(Instrumentation::InstrumentationEvent event
   } else {
     list.push_back(listener);
   }
-  *has_listener = true;
+  return true;
 }
 
-void Instrumentation::AddListener(InstrumentationListener* listener, uint32_t events) {
+static void PotentiallyAddListenerTo(Instrumentation::InstrumentationEvent event,
+                                     uint32_t events,
+                                     std::list<InstrumentationListener*>& list,
+                                     InstrumentationListener* listener,
+                                     bool* has_listener)
+    REQUIRES(Locks::mutator_lock_, !Locks::thread_list_lock_, !Locks::classlinker_classes_lock_) {
+  if (PotentiallyAddListenerTo(event, events, list, listener)) {
+    *has_listener = true;
+  }
+}
+
+static void PotentiallyAddListenerTo(Instrumentation::InstrumentationEvent event,
+                                     uint32_t events,
+                                     std::list<InstrumentationListener*>& list,
+                                     InstrumentationListener* listener,
+                                     uint8_t* has_listener,
+                                     uint8_t flag)
+    REQUIRES(Locks::mutator_lock_, !Locks::thread_list_lock_, !Locks::classlinker_classes_lock_) {
+  if (PotentiallyAddListenerTo(event, events, list, listener)) {
+    *has_listener = *has_listener | flag;
+  }
+}
+
+void Instrumentation::AddListener(InstrumentationListener* listener,
+                                  uint32_t events,
+                                  bool is_trace_listener) {
   Locks::mutator_lock_->AssertExclusiveHeld(Thread::Current());
-  PotentiallyAddListenerTo(kMethodEntered,
-                           events,
-                           method_entry_listeners_,
-                           listener,
-                           &have_method_entry_listeners_);
-  PotentiallyAddListenerTo(kMethodExited,
-                           events,
-                           method_exit_listeners_,
-                           listener,
-                           &have_method_exit_listeners_);
+  if (is_trace_listener) {
+    PotentiallyAddListenerTo(kMethodEntered,
+                             events,
+                             method_entry_fast_trace_listeners_,
+                             listener,
+                             &have_method_entry_listeners_,
+                             kFastTraceListeners);
+  } else {
+    PotentiallyAddListenerTo(kMethodEntered,
+                             events,
+                             method_entry_slow_listeners_,
+                             listener,
+                             &have_method_entry_listeners_,
+                             kSlowMethodEntryExitListeners);
+  }
+  if (is_trace_listener) {
+    PotentiallyAddListenerTo(kMethodExited,
+                             events,
+                             method_exit_fast_trace_listeners_,
+                             listener,
+                             &have_method_exit_listeners_,
+                             kFastTraceListeners);
+  } else {
+    PotentiallyAddListenerTo(kMethodExited,
+                             events,
+                             method_exit_slow_listeners_,
+                             listener,
+                             &have_method_exit_listeners_,
+                             kSlowMethodEntryExitListeners);
+  }
   PotentiallyAddListenerTo(kMethodUnwind,
                            events,
                            method_unwind_listeners_,
@@ -808,15 +852,14 @@ void Instrumentation::AddListener(InstrumentationListener* listener, uint32_t ev
   }
 }
 
-static void PotentiallyRemoveListenerFrom(Instrumentation::InstrumentationEvent event,
+static bool PotentiallyRemoveListenerFrom(Instrumentation::InstrumentationEvent event,
                                           uint32_t events,
                                           std::list<InstrumentationListener*>& list,
-                                          InstrumentationListener* listener,
-                                          bool* has_listener)
+                                          InstrumentationListener* listener)
     REQUIRES(Locks::mutator_lock_, !Locks::thread_list_lock_, !Locks::classlinker_classes_lock_) {
   Locks::mutator_lock_->AssertExclusiveHeld(Thread::Current());
   if (!HasEvent(event, events)) {
-    return;
+    return false;
   }
   auto it = std::find(list.begin(), list.end(), listener);
   if (it != list.end()) {
@@ -825,28 +868,73 @@ static void PotentiallyRemoveListenerFrom(Instrumentation::InstrumentationEvent 
     *it = nullptr;
   }
 
-  // Check if the list contains any non-null listener, and update 'has_listener'.
+  // Check if the list contains any non-null listener.
   for (InstrumentationListener* l : list) {
     if (l != nullptr) {
-      *has_listener = true;
-      return;
+      return false;
     }
   }
-  *has_listener = false;
+
+  return true;
 }
 
-void Instrumentation::RemoveListener(InstrumentationListener* listener, uint32_t events) {
+static void PotentiallyRemoveListenerFrom(Instrumentation::InstrumentationEvent event,
+                                          uint32_t events,
+                                          std::list<InstrumentationListener*>& list,
+                                          InstrumentationListener* listener,
+                                          bool* has_listener)
+    REQUIRES(Locks::mutator_lock_, !Locks::thread_list_lock_, !Locks::classlinker_classes_lock_) {
+  if (PotentiallyRemoveListenerFrom(event, events, list, listener)) {
+    *has_listener = false;
+  }
+}
+
+static void PotentiallyRemoveListenerFrom(Instrumentation::InstrumentationEvent event,
+                                          uint32_t events,
+                                          std::list<InstrumentationListener*>& list,
+                                          InstrumentationListener* listener,
+                                          uint8_t* has_listener,
+                                          uint8_t flag)
+    REQUIRES(Locks::mutator_lock_, !Locks::thread_list_lock_, !Locks::classlinker_classes_lock_) {
+  if (PotentiallyRemoveListenerFrom(event, events, list, listener)) {
+    *has_listener = *has_listener & ~flag;
+  }
+}
+
+void Instrumentation::RemoveListener(InstrumentationListener* listener,
+                                     uint32_t events,
+                                     bool is_trace_listener) {
   Locks::mutator_lock_->AssertExclusiveHeld(Thread::Current());
-  PotentiallyRemoveListenerFrom(kMethodEntered,
-                                events,
-                                method_entry_listeners_,
-                                listener,
-                                &have_method_entry_listeners_);
-  PotentiallyRemoveListenerFrom(kMethodExited,
-                                events,
-                                method_exit_listeners_,
-                                listener,
-                                &have_method_exit_listeners_);
+  if (is_trace_listener) {
+    PotentiallyRemoveListenerFrom(kMethodEntered,
+                                  events,
+                                  method_entry_fast_trace_listeners_,
+                                  listener,
+                                  &have_method_entry_listeners_,
+                                  kFastTraceListeners);
+  } else {
+    PotentiallyRemoveListenerFrom(kMethodEntered,
+                                  events,
+                                  method_entry_slow_listeners_,
+                                  listener,
+                                  &have_method_entry_listeners_,
+                                  kSlowMethodEntryExitListeners);
+  }
+  if (is_trace_listener) {
+    PotentiallyRemoveListenerFrom(kMethodExited,
+                                  events,
+                                  method_exit_fast_trace_listeners_,
+                                  listener,
+                                  &have_method_exit_listeners_,
+                                  kFastTraceListeners);
+  } else {
+    PotentiallyRemoveListenerFrom(kMethodExited,
+                                  events,
+                                  method_exit_slow_listeners_,
+                                  listener,
+                                  &have_method_exit_listeners_,
+                                  kSlowMethodEntryExitListeners);
+  }
   PotentiallyRemoveListenerFrom(kMethodUnwind,
                                 events,
                                 method_unwind_listeners_,
@@ -899,12 +987,9 @@ Instrumentation::InstrumentationLevel Instrumentation::GetCurrentInstrumentation
   return instrumentation_level_;
 }
 
-bool Instrumentation::RequiresInstrumentationInstallation(InstrumentationLevel new_level) const {
-  // We need to reinstall instrumentation if we go to a different level.
-  return GetCurrentInstrumentationLevel() != new_level;
-}
-
-void Instrumentation::ConfigureStubs(const char* key, InstrumentationLevel desired_level) {
+void Instrumentation::ConfigureStubs(const char* key,
+                                     InstrumentationLevel desired_level,
+                                     bool try_switch_to_non_debuggable) {
   // Store the instrumentation level for this key or remove it.
   if (desired_level == InstrumentationLevel::kInstrumentNothing) {
     // The client no longer needs instrumentation.
@@ -914,7 +999,7 @@ void Instrumentation::ConfigureStubs(const char* key, InstrumentationLevel desir
     requested_instrumentation_levels_.Overwrite(key, desired_level);
   }
 
-  UpdateStubs();
+  UpdateStubs(try_switch_to_non_debuggable);
 }
 
 void Instrumentation::UpdateInstrumentationLevel(InstrumentationLevel requested_level) {
@@ -923,7 +1008,9 @@ void Instrumentation::UpdateInstrumentationLevel(InstrumentationLevel requested_
 
 void Instrumentation::EnableEntryExitHooks(const char* key) {
   DCHECK(Runtime::Current()->IsJavaDebuggable());
-  ConfigureStubs(key, InstrumentationLevel::kInstrumentWithEntryExitHooks);
+  ConfigureStubs(key,
+                 InstrumentationLevel::kInstrumentWithEntryExitHooks,
+                 /*try_switch_to_non_debuggable=*/false);
 }
 
 void Instrumentation::MaybeRestoreInstrumentationStack() {
@@ -960,22 +1047,33 @@ void Instrumentation::MaybeRestoreInstrumentationStack() {
   }
 }
 
-void Instrumentation::UpdateStubs() {
+void Instrumentation::UpdateStubs(bool try_switch_to_non_debuggable) {
   // Look for the highest required instrumentation level.
   InstrumentationLevel requested_level = InstrumentationLevel::kInstrumentNothing;
   for (const auto& v : requested_instrumentation_levels_) {
     requested_level = std::max(requested_level, v.second);
   }
 
-  if (!RequiresInstrumentationInstallation(requested_level)) {
+  if (GetCurrentInstrumentationLevel() == requested_level) {
     // We're already set.
     return;
   }
+
   Thread* const self = Thread::Current();
   Runtime* runtime = Runtime::Current();
   Locks::mutator_lock_->AssertExclusiveHeld(self);
   Locks::thread_list_lock_->AssertNotHeld(self);
+  // The following needs to happen in the same order.
+  // 1. Update the instrumentation level
+  // 2. Switch the runtime to non-debuggable if requested. We switch to non-debuggable only when
+  // the instrumentation level is set to kInstrumentNothing. So this needs to happen only after
+  // updating the instrumentation level.
+  // 3. Update the entry points. We use AOT code only if we aren't debuggable runtime. So update
+  // entrypoints after switching the instrumentation level.
   UpdateInstrumentationLevel(requested_level);
+  if (try_switch_to_non_debuggable) {
+    MaybeSwitchRuntimeDebugState(self);
+  }
   InstallStubsClassVisitor visitor(this);
   runtime->GetClassLinker()->VisitClasses(&visitor);
   if (requested_level > InstrumentationLevel::kInstrumentNothing) {
@@ -985,7 +1083,7 @@ void Instrumentation::UpdateStubs() {
   }
 }
 
-static void ResetQuickAllocEntryPointsForThread(Thread* thread, void* arg ATTRIBUTE_UNUSED) {
+static void ResetQuickAllocEntryPointsForThread(Thread* thread, [[maybe_unused]] void* arg) {
   thread->ResetQuickAllocEntryPointsForThread();
 }
 
@@ -1070,6 +1168,8 @@ std::string Instrumentation::EntryPointString(const void* code) {
     return "generic jni";
   } else if (Runtime::Current()->GetOatFileManager().ContainsPc(code)) {
     return "oat";
+  } else if (OatQuickMethodHeader::IsStub(reinterpret_cast<const uint8_t*>(code)).value_or(false)) {
+    return "stub";
   }
   return "unknown";
 }
@@ -1219,9 +1319,9 @@ bool Instrumentation::IsDeoptimized(ArtMethod* method) {
   return IsDeoptimizedMethod(method);
 }
 
-void Instrumentation::DisableDeoptimization(const char* key) {
+void Instrumentation::DisableDeoptimization(const char* key, bool try_switch_to_non_debuggable) {
   // Remove any instrumentation support added for deoptimization.
-  ConfigureStubs(key, InstrumentationLevel::kInstrumentNothing);
+  ConfigureStubs(key, InstrumentationLevel::kInstrumentNothing, try_switch_to_non_debuggable);
   Locks::mutator_lock_->AssertExclusiveHeld(Thread::Current());
   // Undeoptimized selected methods.
   while (true) {
@@ -1259,12 +1359,22 @@ void Instrumentation::MaybeSwitchRuntimeDebugState(Thread* self) {
 }
 
 void Instrumentation::DeoptimizeEverything(const char* key) {
-  ConfigureStubs(key, InstrumentationLevel::kInstrumentWithInterpreter);
+  // We want to switch to non-debuggable only when the debugger / profile tools are detaching.
+  // This call is used for supporting debug related features (ex: single stepping across all
+  // threads) while the debugger is still connected.
+  ConfigureStubs(key,
+                 InstrumentationLevel::kInstrumentWithInterpreter,
+                 /*try_switch_to_non_debuggable=*/false);
 }
 
 void Instrumentation::UndeoptimizeEverything(const char* key) {
   CHECK(InterpreterStubsInstalled());
-  ConfigureStubs(key, InstrumentationLevel::kInstrumentNothing);
+  // We want to switch to non-debuggable only when the debugger / profile tools are detaching.
+  // This is used when we no longer need to run in interpreter. The debugger is still connected
+  // so don't switch the runtime. We use "DisableDeoptimization" when detaching the debugger.
+  ConfigureStubs(key,
+                 InstrumentationLevel::kInstrumentNothing,
+                 /*try_switch_to_non_debuggable=*/false);
 }
 
 void Instrumentation::EnableMethodTracing(const char* key,
@@ -1276,7 +1386,8 @@ void Instrumentation::EnableMethodTracing(const char* key,
   } else {
     level = InstrumentationLevel::kInstrumentWithEntryExitHooks;
   }
-  ConfigureStubs(key, level);
+  // We are enabling method tracing here and need to stay in debuggable.
+  ConfigureStubs(key, level, /*try_switch_to_non_debuggable=*/false);
 
   MutexLock mu(Thread::Current(), *Locks::thread_list_lock_);
   for (Thread* thread : Runtime::Current()->GetThreadList()->GetList()) {
@@ -1285,7 +1396,11 @@ void Instrumentation::EnableMethodTracing(const char* key,
 }
 
 void Instrumentation::DisableMethodTracing(const char* key) {
-  ConfigureStubs(key, InstrumentationLevel::kInstrumentNothing);
+  // We no longer need to be in debuggable runtime since we are stopping method tracing. If no
+  // other debugger / profiling tools are active switch back to non-debuggable.
+  ConfigureStubs(key,
+                 InstrumentationLevel::kInstrumentNothing,
+                 /*try_switch_to_non_debuggable=*/true);
 }
 
 const void* Instrumentation::GetCodeForInvoke(ArtMethod* method) {
@@ -1323,7 +1438,12 @@ const void* Instrumentation::GetMaybeInstrumentedCodeForInvoke(ArtMethod* method
 void Instrumentation::MethodEnterEventImpl(Thread* thread, ArtMethod* method) const {
   DCHECK(!method->IsRuntimeMethod());
   if (HasMethodEntryListeners()) {
-    for (InstrumentationListener* listener : method_entry_listeners_) {
+    for (InstrumentationListener* listener : method_entry_slow_listeners_) {
+      if (listener != nullptr) {
+        listener->MethodEntered(thread, method);
+      }
+    }
+    for (InstrumentationListener* listener : method_entry_fast_trace_listeners_) {
       if (listener != nullptr) {
         listener->MethodEntered(thread, method);
       }
@@ -1337,7 +1457,12 @@ void Instrumentation::MethodExitEventImpl(Thread* thread,
                                           OptionalFrame frame,
                                           MutableHandle<mirror::Object>& return_value) const {
   if (HasMethodExitListeners()) {
-    for (InstrumentationListener* listener : method_exit_listeners_) {
+    for (InstrumentationListener* listener : method_exit_slow_listeners_) {
+      if (listener != nullptr) {
+        listener->MethodExited(thread, method, frame, return_value);
+      }
+    }
+    for (InstrumentationListener* listener : method_exit_fast_trace_listeners_) {
       if (listener != nullptr) {
         listener->MethodExited(thread, method, frame, return_value);
       }
@@ -1354,7 +1479,12 @@ template<> void Instrumentation::MethodExitEventImpl(Thread* thread,
     StackHandleScope<1> hs(self);
     if (method->GetInterfaceMethodIfProxy(kRuntimePointerSize)->GetReturnTypePrimitive() !=
         Primitive::kPrimNot) {
-      for (InstrumentationListener* listener : method_exit_listeners_) {
+      for (InstrumentationListener* listener : method_exit_slow_listeners_) {
+        if (listener != nullptr) {
+          listener->MethodExited(thread, method, frame, return_value);
+        }
+      }
+      for (InstrumentationListener* listener : method_exit_fast_trace_listeners_) {
         if (listener != nullptr) {
           listener->MethodExited(thread, method, frame, return_value);
         }

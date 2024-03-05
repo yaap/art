@@ -2649,9 +2649,9 @@ bool MethodVerifier<kVerifierDebug>::CodeFlowVerifyInstruction(uint32_t* start_g
             !cast_type.IsUnresolvedTypes() && !orig_type.IsUnresolvedTypes() &&
             cast_type.HasClass() &&             // Could be conflict type, make sure it has a class.
             !cast_type.GetClass()->IsInterface() &&
-            (orig_type.IsZeroOrNull() ||
-                orig_type.IsStrictlyAssignableFrom(
-                    cast_type.Merge(orig_type, &reg_types_, this), this))) {
+            !orig_type.IsZeroOrNull() &&
+            orig_type.IsStrictlyAssignableFrom(
+                cast_type.Merge(orig_type, &reg_types_, this), this)) {
           RegisterLine* update_line = RegisterLine::Create(code_item_accessor_.RegistersSize(),
                                                            allocator_,
                                                            GetRegTypeCache());
@@ -4147,12 +4147,14 @@ ArtMethod* MethodVerifier<kVerifierDebug>::VerifyInvocationArgs(
       // We cannot differentiate on whether this is a class change error or just
       // a missing method. This will be handled at runtime.
       Fail(VERIFY_ERROR_NO_METHOD) << "Unable to find referenced class from invoke-super";
+      VerifyInvocationArgsUnresolvedMethod(inst, method_type, is_range);
       return nullptr;
     }
     if (reference_type.GetClass()->IsInterface()) {
       if (!GetDeclaringClass().HasClass()) {
         Fail(VERIFY_ERROR_NO_CLASS) << "Unable to resolve the full class of 'this' used in an"
                                     << "interface invoke-super";
+        VerifyInvocationArgsUnresolvedMethod(inst, method_type, is_range);
         return nullptr;
       } else if (!reference_type.IsStrictlyAssignableFrom(GetDeclaringClass(), this)) {
         Fail(VERIFY_ERROR_CLASS_CHANGE)
@@ -4161,6 +4163,7 @@ ArtMethod* MethodVerifier<kVerifierDebug>::VerifyInvocationArgs(
             << dex_file_->PrettyMethod(dex_method_idx_) << " to method "
             << dex_file_->PrettyMethod(method_idx) << " references "
             << "non-super-interface type " << mirror::Class::PrettyClass(reference_type.GetClass());
+        VerifyInvocationArgsUnresolvedMethod(inst, method_type, is_range);
         return nullptr;
       }
     } else {
@@ -4169,6 +4172,7 @@ ArtMethod* MethodVerifier<kVerifierDebug>::VerifyInvocationArgs(
         Fail(VERIFY_ERROR_NO_METHOD) << "unknown super class in invoke-super from "
                                     << dex_file_->PrettyMethod(dex_method_idx_)
                                     << " to super " << res_method->PrettyMethod();
+        VerifyInvocationArgsUnresolvedMethod(inst, method_type, is_range);
         return nullptr;
       }
       if (!reference_type.IsStrictlyAssignableFrom(GetDeclaringClass(), this) ||
@@ -4178,6 +4182,7 @@ ArtMethod* MethodVerifier<kVerifierDebug>::VerifyInvocationArgs(
                                     << " to super " << super
                                     << "." << res_method->GetName()
                                     << res_method->GetSignature();
+        VerifyInvocationArgsUnresolvedMethod(inst, method_type, is_range);
         return nullptr;
       }
     }
@@ -4950,9 +4955,10 @@ MethodVerifier::MethodVerifier(Thread* self,
                                bool allow_thread_suspension,
                                bool aot_mode)
     : self_(self),
+      handles_(self),
       arena_stack_(arena_pool),
       allocator_(&arena_stack_),
-      reg_types_(class_linker, can_load_classes, allocator_, allow_thread_suspension),
+      reg_types_(class_linker, can_load_classes, allocator_, handles_, allow_thread_suspension),
       reg_table_(allocator_),
       work_insn_idx_(dex::kDexNoIndex),
       dex_method_idx_(dex_method_idx),
@@ -4966,11 +4972,9 @@ MethodVerifier::MethodVerifier(Thread* self,
       class_linker_(class_linker),
       verifier_deps_(verifier_deps),
       link_(nullptr) {
-  self->PushVerifier(this);
 }
 
 MethodVerifier::~MethodVerifier() {
-  Thread::Current()->PopVerifier(this);
   STLDeleteElements(&failure_messages_);
 }
 
@@ -5168,10 +5172,9 @@ MethodVerifier::FailureData MethodVerifier::VerifyMethod(Thread* self,
 MethodVerifier* MethodVerifier::CalculateVerificationInfo(
       Thread* self,
       ArtMethod* method,
+      Handle<mirror::DexCache> dex_cache,
+      Handle<mirror::ClassLoader> class_loader,
       uint32_t dex_pc) {
-  StackHandleScope<2> hs(self);
-  Handle<mirror::DexCache> dex_cache(hs.NewHandle(method->GetDexCache()));
-  Handle<mirror::ClassLoader> class_loader(hs.NewHandle(method->GetClassLoader()));
   std::unique_ptr<impl::MethodVerifier<false>> verifier(
       new impl::MethodVerifier<false>(self,
                                       Runtime::Current()->GetClassLinker(),
@@ -5305,22 +5308,6 @@ MethodVerifier* MethodVerifier::CreateVerifier(Thread* self,
                                          access_flags,
                                          verify_to_dump,
                                          api_level);
-}
-
-void MethodVerifier::Init(ClassLinker* class_linker) {
-  art::verifier::RegTypeCache::Init(class_linker);
-}
-
-void MethodVerifier::Shutdown() {
-  verifier::RegTypeCache::ShutDown();
-}
-
-void MethodVerifier::VisitStaticRoots(RootVisitor* visitor) {
-  RegTypeCache::VisitStaticRoots(visitor);
-}
-
-void MethodVerifier::VisitRoots(RootVisitor* visitor, const RootInfo& root_info) {
-  reg_types_.VisitRoots(visitor, root_info);
 }
 
 std::ostream& MethodVerifier::Fail(VerifyError error, bool pending_exc) {

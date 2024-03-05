@@ -20,7 +20,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <array>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -51,7 +53,6 @@
 #include "dex/art_dex_file_loader.h"
 #include "dex/dex_file_loader.h"
 #include "exec_utils.h"
-#include "fmt/format.h"
 #include "gc/accounting/space_bitmap-inl.h"
 #include "gc/task_processor.h"
 #include "image-inl.h"
@@ -77,8 +78,6 @@ namespace {
 using ::android::base::Join;
 using ::android::base::StringAppendF;
 using ::android::base::StringPrintf;
-
-using ::fmt::literals::operator""_format;  // NOLINT
 
 // We do not allow the boot image and extensions to take more than 1GiB. They are
 // supposed to be much smaller and allocating more that this would likely fail anyway.
@@ -108,19 +107,19 @@ ImageSpace::ImageSpace(const std::string& image_filename,
 }
 
 static int32_t ChooseRelocationOffsetDelta(int32_t min_delta, int32_t max_delta) {
-  CHECK_ALIGNED(min_delta, kPageSize);
-  CHECK_ALIGNED(max_delta, kPageSize);
+  CHECK_ALIGNED(min_delta, kElfSegmentAlignment);
+  CHECK_ALIGNED(max_delta, kElfSegmentAlignment);
   CHECK_LT(min_delta, max_delta);
 
   int32_t r = GetRandomNumber<int32_t>(min_delta, max_delta);
   if (r % 2 == 0) {
-    r = RoundUp(r, kPageSize);
+    r = RoundUp(r, kElfSegmentAlignment);
   } else {
-    r = RoundDown(r, kPageSize);
+    r = RoundDown(r, kElfSegmentAlignment);
   }
   CHECK_LE(min_delta, r);
   CHECK_GE(max_delta, r);
-  CHECK_ALIGNED(r, kPageSize);
+  CHECK_ALIGNED(r, kElfSegmentAlignment);
   return r;
 }
 
@@ -335,7 +334,7 @@ class ImageSpace::PatchObjectVisitor final {
   }
 
   template <typename T>
-  T* operator()(T* ptr, void** dest_addr ATTRIBUTE_UNUSED) const {
+  T* operator()(T* ptr, [[maybe_unused]] void** dest_addr) const {
     return (ptr != nullptr) ? native_visitor_(ptr) : nullptr;
   }
 
@@ -376,9 +375,9 @@ class ImageSpace::PatchObjectVisitor final {
     this->operator()(ref, mirror::Reference::ReferentOffset(), /*is_static=*/ false);
   }
   // Ignore class native roots; not called from VisitReferences() for kVisitNativeRoots == false.
-  void VisitRootIfNonNull(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED)
-      const {}
-  void VisitRoot(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED) const {}
+  void VisitRootIfNonNull(
+      [[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {}
+  void VisitRoot([[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {}
 
   template <typename T> void VisitNativeDexCacheArray(mirror::NativeArray<T>* array)
       REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -519,8 +518,8 @@ class ImageSpace::RemapInternedStringsVisitor {
   // Visitor for VisitReferences().
   ALWAYS_INLINE void operator()(ObjPtr<mirror::Object> object,
                                 MemberOffset field_offset,
-                                bool is_static ATTRIBUTE_UNUSED)
-      const REQUIRES_SHARED(Locks::mutator_lock_) {
+                                [[maybe_unused]] bool is_static) const
+      REQUIRES_SHARED(Locks::mutator_lock_) {
     ObjPtr<mirror::Object> old_value =
         object->GetFieldObject<mirror::Object, kVerifyNone, kWithoutReadBarrier>(field_offset);
     if (old_value != nullptr &&
@@ -541,9 +540,9 @@ class ImageSpace::RemapInternedStringsVisitor {
     this->operator()(ref, mirror::Reference::ReferentOffset(), /*is_static=*/ false);
   }
   // Ignore class native roots; not called from VisitReferences() for kVisitNativeRoots == false.
-  void VisitRootIfNonNull(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED)
-      const {}
-  void VisitRoot(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED) const {}
+  void VisitRootIfNonNull(
+      [[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {}
+  void VisitRoot([[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {}
 
  private:
   mirror::Class* GetStringClass() REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -598,7 +597,8 @@ class ImageSpace::Loader {
         return nullptr;
       }
 
-      uint32_t expected_reservation_size = RoundUp(image_header.GetImageSize(), kPageSize);
+      uint32_t expected_reservation_size = RoundUp(image_header.GetImageSize(),
+          kElfSegmentAlignment);
       if (!CheckImageReservationSize(*space, expected_reservation_size, error_msg) ||
           !CheckImageComponentCount(*space, /*expected_component_count=*/ 1u, error_msg)) {
         return nullptr;
@@ -733,7 +733,7 @@ class ImageSpace::Loader {
     // The location we want to map from is the first aligned page after the end of the stored
     // (possibly compressed) data.
     const size_t image_bitmap_offset =
-        RoundUp(sizeof(ImageHeader) + image_header.GetDataSize(), kPageSize);
+        RoundUp(sizeof(ImageHeader) + image_header.GetDataSize(), kElfSegmentAlignment);
     const size_t end_of_bitmap = image_bitmap_offset + bitmap_section.Size();
     if (end_of_bitmap != image_file_size) {
       *error_msg = StringPrintf(
@@ -999,8 +999,11 @@ class ImageSpace::Loader {
     const bool is_compressed = image_header.HasCompressedBlock();
     if (!is_compressed && allow_direct_mapping) {
       uint8_t* address = (image_reservation != nullptr) ? image_reservation->Begin() : nullptr;
+      // The reserved memory size is aligned up to kElfSegmentAlignment to ensure
+      // that the next reserved area will be aligned to the value.
       return MemMap::MapFileAtAddress(address,
-                                      image_header.GetImageSize(),
+                                      CondRoundUp<kPageSizeAgnostic>(image_header.GetImageSize(),
+                                                                     kElfSegmentAlignment),
                                       PROT_READ | PROT_WRITE,
                                       MAP_PRIVATE,
                                       fd,
@@ -1013,8 +1016,11 @@ class ImageSpace::Loader {
     }
 
     // Reserve output and copy/decompress into it.
+    // The reserved memory size is aligned up to kElfSegmentAlignment to ensure
+    // that the next reserved area will be aligned to the value.
     MemMap map = MemMap::MapAnonymous(image_location,
-                                      image_header.GetImageSize(),
+                                      CondRoundUp<kPageSizeAgnostic>(image_header.GetImageSize(),
+                                                                     kElfSegmentAlignment),
                                       PROT_READ | PROT_WRITE,
                                       /*low_4gb=*/ true,
                                       image_reservation,
@@ -1055,6 +1061,7 @@ class ImageSpace::Loader {
         Thread* const self = Thread::Current();
         static constexpr size_t kMinBlocks = 2u;
         const bool use_parallel = pool != nullptr && image_header.GetBlockCount() >= kMinBlocks;
+        bool failed_decompression = false;
         for (const ImageHeader::Block& block : image_header.GetBlocks(temp_map.Begin())) {
           auto function = [&](Thread*) {
             const uint64_t start2 = NanoTime();
@@ -1062,8 +1069,11 @@ class ImageSpace::Loader {
             bool result = block.Decompress(/*out_ptr=*/map.Begin(),
                                            /*in_ptr=*/temp_map.Begin(),
                                            error_msg);
-            if (!result && error_msg != nullptr) {
-              *error_msg = "Failed to decompress image block " + *error_msg;
+            if (!result) {
+              failed_decompression = true;
+              if (error_msg != nullptr) {
+                *error_msg = "Failed to decompress image block " + *error_msg;
+              }
             }
             VLOG(image) << "Decompress block " << block.GetDataSize() << " -> "
                         << block.GetImageSize() << " in " << PrettyDuration(NanoTime() - start2);
@@ -1085,6 +1095,10 @@ class ImageSpace::Loader {
         VLOG(image) << "Decompressing image took " << PrettyDuration(time) << " ("
                     << PrettySize(static_cast<uint64_t>(map.Size()) * MsToNs(1000) / (time + 1))
                     << "/s)";
+        if (failed_decompression) {
+          DCHECK(error_msg == nullptr || !error_msg->empty());
+          return MemMap::Invalid();
+        }
       } else {
         DCHECK(!allow_direct_mapping);
         // We do not allow direct mapping for boot image extensions compiled to a memfd.
@@ -1182,15 +1196,14 @@ class ImageSpace::Loader {
 
     // Fix up separately since we also need to fix up method entrypoints.
     ALWAYS_INLINE void VisitRootIfNonNull(
-        mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED) const {}
+        [[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {}
 
-    ALWAYS_INLINE void VisitRoot(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED)
-        const {}
+    ALWAYS_INLINE void VisitRoot(
+        [[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {}
 
     ALWAYS_INLINE void operator()(ObjPtr<mirror::Object> obj,
                                   MemberOffset offset,
-                                  bool is_static ATTRIBUTE_UNUSED) const
-        NO_THREAD_SAFETY_ANALYSIS {
+                                  [[maybe_unused]] bool is_static) const NO_THREAD_SAFETY_ANALYSIS {
       // Space is not yet added to the heap, don't do a read barrier.
       mirror::Object* ref = obj->GetFieldObject<mirror::Object, kVerifyNone, kWithoutReadBarrier>(
           offset);
@@ -1741,16 +1754,18 @@ bool ImageSpace::BootImageLayout::ValidateOatFile(
   std::string art_location = ExpandLocation(base_location, bcp_index);
   std::string oat_filename = ImageHeader::GetOatLocationFromImageLocation(art_filename);
   std::string oat_location = ImageHeader::GetOatLocationFromImageLocation(art_location);
-  int oat_fd =
-      bcp_index < boot_class_path_oat_fds_.size() ? boot_class_path_oat_fds_[bcp_index] : -1;
-  int vdex_fd =
-      bcp_index < boot_class_path_vdex_fds_.size() ? boot_class_path_vdex_fds_[bcp_index] : -1;
+  int oat_fd = bcp_index < boot_class_path_oat_files_.size()
+      ? boot_class_path_oat_files_[bcp_index].Fd()
+      : -1;
+  int vdex_fd = bcp_index < boot_class_path_vdex_files_.size()
+      ? boot_class_path_vdex_files_[bcp_index].Fd()
+      : -1;
   auto dex_filenames =
       ArrayRef<const std::string>(boot_class_path_).SubArray(bcp_index, component_count);
-  auto dex_fds =
-      bcp_index + component_count < boot_class_path_fds_.size() ?
-          ArrayRef<const int>(boot_class_path_fds_).SubArray(bcp_index, component_count) :
-          ArrayRef<const int>();
+  ArrayRef<File> dex_files =
+      bcp_index + component_count < boot_class_path_files_.size() ?
+          ArrayRef<File>(boot_class_path_files_).SubArray(bcp_index, component_count) :
+          ArrayRef<File>();
   // We open the oat file here only for validating that it's up-to-date. We don't open it as
   // executable or mmap it to a reserved space. This `OatFile` object will be dropped after
   // validation, and will not go into the `ImageSpace`.
@@ -1765,7 +1780,7 @@ bool ImageSpace::BootImageLayout::ValidateOatFile(
         /*executable=*/ false,
         /*low_4gb=*/ false,
         dex_filenames,
-        dex_fds,
+        dex_files,
         /*reservation=*/ nullptr,
         error_msg));
   } else {
@@ -1776,7 +1791,7 @@ bool ImageSpace::BootImageLayout::ValidateOatFile(
         /*executable=*/ false,
         /*low_4gb=*/ false,
         dex_filenames,
-        dex_fds,
+        dex_files,
         /*reservation=*/ nullptr,
         error_msg));
   }
@@ -1787,7 +1802,8 @@ bool ImageSpace::BootImageLayout::ValidateOatFile(
                               error_msg->c_str());
     return false;
   }
-  if (!ImageSpace::ValidateOatFile(*oat_file, error_msg, dex_filenames, dex_fds, apex_versions_)) {
+  if (!ImageSpace::ValidateOatFile(
+          *oat_file, error_msg, dex_filenames, dex_files, apex_versions_)) {
     return false;
   }
   return true;
@@ -1801,9 +1817,9 @@ bool ImageSpace::BootImageLayout::ReadHeader(const std::string& base_location,
   DCHECK_LT(bcp_index, boot_class_path_.size());
 
   std::string actual_filename = ExpandLocation(base_filename, bcp_index);
-  int bcp_image_fd = bcp_index < boot_class_path_image_fds_.size()
-      ? boot_class_path_image_fds_[bcp_index]
-      : -1;
+  int bcp_image_fd = bcp_index < boot_class_path_image_files_.size() ?
+                         boot_class_path_image_files_[bcp_index].Fd() :
+                         -1;
   ImageHeader header;
   // When BCP image is provided as FD, it needs to be dup'ed (since it's stored in unique_fd) so
   // that it can later be used in LoadComponents.
@@ -1901,7 +1917,7 @@ bool ImageSpace::BootImageLayout::CompileBootclasspathElements(
     // TODO: Rewrite ProfileCompilationInfo to provide a better interface and
     // to store the dex locations in uncompressed section of the file.
     auto collect_fn = [&dex_locations](const std::string& dex_location,
-                                       uint32_t checksum ATTRIBUTE_UNUSED) {
+                                       [[maybe_unused]] uint32_t checksum) {
       dex_locations.insert(dex_location);  // Just collect locations.
       return false;                        // Do not read the profile data.
     };
@@ -2191,8 +2207,8 @@ bool ImageSpace::BootImageLayout::LoadFromSystem(InstructionSet image_isa,
                                                  bool allow_in_memory_compilation,
                                                  /*out*/ std::string* error_msg) {
   auto filename_fn = [image_isa](const std::string& location,
-                                 /*out*/std::string* filename,
-                                 /*out*/std::string* err_msg ATTRIBUTE_UNUSED) {
+                                 /*out*/ std::string* filename,
+                                 [[maybe_unused]] /*out*/ std::string* err_msg) {
     *filename = GetSystemImageFilename(location.c_str(), image_isa);
     return true;
   };
@@ -2201,37 +2217,41 @@ bool ImageSpace::BootImageLayout::LoadFromSystem(InstructionSet image_isa,
 
 class ImageSpace::BootImageLoader {
  public:
+  // Creates an instance.
+  // `apex_versions` is created from `Runtime::GetApexVersions` and must outlive this instance.
   BootImageLoader(const std::vector<std::string>& boot_class_path,
                   const std::vector<std::string>& boot_class_path_locations,
-                  const std::vector<int>& boot_class_path_fds,
-                  const std::vector<int>& boot_class_path_image_fds,
-                  const std::vector<int>& boot_class_path_vdex_fds,
-                  const std::vector<int>& boot_class_path_oat_fds,
+                  ArrayRef<File> boot_class_path_files,
+                  ArrayRef<File> boot_class_path_image_files,
+                  ArrayRef<File> boot_class_path_vdex_files,
+                  ArrayRef<File> boot_class_path_oat_files,
                   const std::vector<std::string>& image_locations,
                   InstructionSet image_isa,
                   bool relocate,
-                  bool executable)
+                  bool executable,
+                  const std::string* apex_versions)
       : boot_class_path_(boot_class_path),
         boot_class_path_locations_(boot_class_path_locations),
-        boot_class_path_fds_(boot_class_path_fds),
-        boot_class_path_image_fds_(boot_class_path_image_fds),
-        boot_class_path_vdex_fds_(boot_class_path_vdex_fds),
-        boot_class_path_oat_fds_(boot_class_path_oat_fds),
+        boot_class_path_files_(boot_class_path_files),
+        boot_class_path_image_files_(boot_class_path_image_files),
+        boot_class_path_vdex_files_(boot_class_path_vdex_files),
+        boot_class_path_oat_files_(boot_class_path_oat_files),
         image_locations_(image_locations),
         image_isa_(image_isa),
         relocate_(relocate),
         executable_(executable),
-        has_system_(false) {
-  }
+        has_system_(false),
+        apex_versions_(apex_versions) {}
 
   void FindImageFiles() {
     BootImageLayout layout(image_locations_,
                            boot_class_path_,
                            boot_class_path_locations_,
-                           boot_class_path_fds_,
-                           boot_class_path_image_fds_,
-                           boot_class_path_vdex_fds_,
-                           boot_class_path_oat_fds_);
+                           boot_class_path_files_,
+                           boot_class_path_image_files_,
+                           boot_class_path_vdex_files_,
+                           boot_class_path_oat_files_,
+                           apex_versions_);
     std::string image_location = layout.GetPrimaryImageLocation();
     std::string system_filename;
     bool found_image = FindImageFilenameImpl(image_location.c_str(),
@@ -2833,12 +2853,12 @@ class ImageSpace::BootImageLoader {
                    android::base::unique_fd vdex_fd,
                    android::base::unique_fd oat_fd,
                    ArrayRef<const std::string> dex_filenames,
-                   ArrayRef<const int> dex_fds,
+                   ArrayRef<File> dex_files,
                    bool validate_oat_file,
                    ArrayRef<const std::unique_ptr<ImageSpace>> dependencies,
                    TimingLogger* logger,
-                   /*inout*/MemMap* image_reservation,
-                   /*out*/std::string* error_msg) {
+                   /*inout*/ MemMap* image_reservation,
+                   /*out*/ std::string* error_msg) {
     // VerifyImageAllocations() will be called later in Runtime::Init()
     // as some class roots like ArtMethod::java_lang_reflect_ArtMethod_
     // and ArtField::java_lang_reflect_ArtField_, which are used from
@@ -2855,24 +2875,24 @@ class ImageSpace::BootImageLoader {
 
       DCHECK_EQ(vdex_fd.get() != -1, oat_fd.get() != -1);
       if (vdex_fd.get() == -1) {
-        oat_file.reset(OatFile::Open(/*zip_fd=*/ -1,
+        oat_file.reset(OatFile::Open(/*zip_fd=*/-1,
                                      oat_filename,
                                      oat_location,
                                      executable_,
-                                     /*low_4gb=*/ false,
+                                     /*low_4gb=*/false,
                                      dex_filenames,
-                                     dex_fds,
+                                     dex_files,
                                      image_reservation,
                                      error_msg));
       } else {
-        oat_file.reset(OatFile::Open(/*zip_fd=*/ -1,
+        oat_file.reset(OatFile::Open(/*zip_fd=*/-1,
                                      vdex_fd.get(),
                                      oat_fd.get(),
                                      oat_location,
                                      executable_,
-                                     /*low_4gb=*/ false,
+                                     /*low_4gb=*/false,
                                      dex_filenames,
-                                     dex_fds,
+                                     dex_files,
                                      image_reservation,
                                      error_msg));
         // We no longer need the file descriptors and they will be closed by
@@ -3037,8 +3057,8 @@ class ImageSpace::BootImageLoader {
         image_fd = std::move(chunk.art_fd);
       } else {
         size_t pos = chunk.start_index + i;
-        int arg_image_fd = pos < boot_class_path_image_fds_.size() ? boot_class_path_image_fds_[pos]
-            : -1;
+        int arg_image_fd =
+            pos < boot_class_path_image_files_.size() ? boot_class_path_image_files_[pos].Fd() : -1;
         if (arg_image_fd >= 0) {
           image_fd.reset(DupCloexec(arg_image_fd));
         }
@@ -3109,8 +3129,10 @@ class ImageSpace::BootImageLoader {
       size_t bcp_chunk_size = (chunk.image_space_count == 1u) ? chunk.component_count : 1u;
 
       size_t pos = chunk.start_index + i;
-      auto boot_class_path_fds = boot_class_path_fds_.empty() ? ArrayRef<const int>()
-          : boot_class_path_fds_.SubArray(/*pos=*/ pos, bcp_chunk_size);
+      ArrayRef<File> boot_class_path_files =
+          boot_class_path_files_.empty() ?
+              ArrayRef<File>() :
+              boot_class_path_files_.SubArray(/*pos=*/pos, bcp_chunk_size);
 
       // Select vdex and oat FD if any exists.
       android::base::unique_fd vdex_fd;
@@ -3119,8 +3141,8 @@ class ImageSpace::BootImageLoader {
         DCHECK_EQ(locations.size(), 1u);
         vdex_fd = std::move(chunk.vdex_fd);
       } else {
-        int arg_vdex_fd = pos < boot_class_path_vdex_fds_.size() ? boot_class_path_vdex_fds_[pos]
-            : -1;
+        int arg_vdex_fd =
+            pos < boot_class_path_vdex_files_.size() ? boot_class_path_vdex_files_[pos].Fd() : -1;
         if (arg_vdex_fd >= 0) {
           vdex_fd.reset(DupCloexec(arg_vdex_fd));
         }
@@ -3129,8 +3151,8 @@ class ImageSpace::BootImageLoader {
         DCHECK_EQ(locations.size(), 1u);
         oat_fd = std::move(chunk.oat_fd);
       } else {
-        int arg_oat_fd = pos < boot_class_path_oat_fds_.size() ? boot_class_path_oat_fds_[pos]
-            : -1;
+        int arg_oat_fd =
+            pos < boot_class_path_oat_files_.size() ? boot_class_path_oat_files_[pos].Fd() : -1;
         if (arg_oat_fd >= 0) {
           oat_fd.reset(DupCloexec(arg_oat_fd));
         }
@@ -3139,8 +3161,8 @@ class ImageSpace::BootImageLoader {
       if (!OpenOatFile(space,
                        std::move(vdex_fd),
                        std::move(oat_fd),
-                       boot_class_path_.SubArray(/*pos=*/ pos, bcp_chunk_size),
-                       boot_class_path_fds,
+                       boot_class_path_.SubArray(/*pos=*/pos, bcp_chunk_size),
+                       boot_class_path_files,
                        validate_oat_file,
                        dependencies,
                        logger,
@@ -3157,8 +3179,8 @@ class ImageSpace::BootImageLoader {
   MemMap ReserveBootImageMemory(uint8_t* addr,
                                 uint32_t reservation_size,
                                 /*out*/std::string* error_msg) {
-    DCHECK_ALIGNED(reservation_size, kPageSize);
-    DCHECK_ALIGNED(addr, kPageSize);
+    DCHECK_ALIGNED(reservation_size, kElfSegmentAlignment);
+    DCHECK_ALIGNED(addr, kElfSegmentAlignment);
     return MemMap::MapAnonymous("Boot image reservation",
                                 addr,
                                 reservation_size,
@@ -3173,7 +3195,7 @@ class ImageSpace::BootImageLoader {
                              /*inout*/MemMap* image_reservation,
                              /*out*/MemMap* extra_reservation,
                              /*out*/std::string* error_msg) {
-    DCHECK_ALIGNED(extra_reservation_size, kPageSize);
+    DCHECK_ALIGNED(extra_reservation_size, kElfSegmentAlignment);
     DCHECK(!extra_reservation->IsValid());
     size_t expected_size = image_reservation->IsValid() ? image_reservation->Size() : 0u;
     if (extra_reservation_size != expected_size) {
@@ -3199,15 +3221,16 @@ class ImageSpace::BootImageLoader {
 
   const ArrayRef<const std::string> boot_class_path_;
   const ArrayRef<const std::string> boot_class_path_locations_;
-  const ArrayRef<const int> boot_class_path_fds_;
-  const ArrayRef<const int> boot_class_path_image_fds_;
-  const ArrayRef<const int> boot_class_path_vdex_fds_;
-  const ArrayRef<const int> boot_class_path_oat_fds_;
+  ArrayRef<File> boot_class_path_files_;
+  ArrayRef<File> boot_class_path_image_files_;
+  ArrayRef<File> boot_class_path_vdex_files_;
+  ArrayRef<File> boot_class_path_oat_files_;
   const ArrayRef<const std::string> image_locations_;
   const InstructionSet image_isa_;
   const bool relocate_;
   const bool executable_;
   bool has_system_;
+  const std::string* apex_versions_;
 };
 
 bool ImageSpace::BootImageLoader::LoadFromSystem(
@@ -3221,10 +3244,11 @@ bool ImageSpace::BootImageLoader::LoadFromSystem(
   BootImageLayout layout(image_locations_,
                          boot_class_path_,
                          boot_class_path_locations_,
-                         boot_class_path_fds_,
-                         boot_class_path_image_fds_,
-                         boot_class_path_vdex_fds_,
-                         boot_class_path_oat_fds_);
+                         boot_class_path_files_,
+                         boot_class_path_image_files_,
+                         boot_class_path_vdex_files_,
+                         boot_class_path_oat_files_,
+                         apex_versions_);
   if (!layout.LoadFromSystem(image_isa_, allow_in_memory_compilation, error_msg)) {
     return false;
   }
@@ -3254,10 +3278,11 @@ bool ImageSpace::IsBootClassPathOnDisk(InstructionSet image_isa) {
   BootImageLayout layout(ArrayRef<const std::string>(runtime->GetImageLocations()),
                          ArrayRef<const std::string>(runtime->GetBootClassPath()),
                          ArrayRef<const std::string>(runtime->GetBootClassPathLocations()),
-                         ArrayRef<const int>(runtime->GetBootClassPathFds()),
-                         ArrayRef<const int>(runtime->GetBootClassPathImageFds()),
-                         ArrayRef<const int>(runtime->GetBootClassPathVdexFds()),
-                         ArrayRef<const int>(runtime->GetBootClassPathOatFds()));
+                         runtime->GetBootClassPathFiles(),
+                         runtime->GetBootClassPathImageFiles(),
+                         runtime->GetBootClassPathVdexFiles(),
+                         runtime->GetBootClassPathOatFiles(),
+                         &runtime->GetApexVersions());
   const std::string image_location = layout.GetPrimaryImageLocation();
   std::unique_ptr<ImageHeader> image_header;
   std::string error_msg;
@@ -3276,26 +3301,26 @@ bool ImageSpace::IsBootClassPathOnDisk(InstructionSet image_isa) {
   return image_header != nullptr;
 }
 
-bool ImageSpace::LoadBootImage(
-    const std::vector<std::string>& boot_class_path,
-    const std::vector<std::string>& boot_class_path_locations,
-    const std::vector<int>& boot_class_path_fds,
-    const std::vector<int>& boot_class_path_image_fds,
-    const std::vector<int>& boot_class_path_vdex_fds,
-    const std::vector<int>& boot_class_path_odex_fds,
-    const std::vector<std::string>& image_locations,
-    const InstructionSet image_isa,
-    bool relocate,
-    bool executable,
-    size_t extra_reservation_size,
-    bool allow_in_memory_compilation,
-    /*out*/std::vector<std::unique_ptr<ImageSpace>>* boot_image_spaces,
-    /*out*/MemMap* extra_reservation) {
+bool ImageSpace::LoadBootImage(const std::vector<std::string>& boot_class_path,
+                               const std::vector<std::string>& boot_class_path_locations,
+                               ArrayRef<File> boot_class_path_files,
+                               ArrayRef<File> boot_class_path_image_files,
+                               ArrayRef<File> boot_class_path_vdex_files,
+                               ArrayRef<File> boot_class_path_odex_files,
+                               const std::vector<std::string>& image_locations,
+                               const InstructionSet image_isa,
+                               bool relocate,
+                               bool executable,
+                               size_t extra_reservation_size,
+                               bool allow_in_memory_compilation,
+                               const std::string& apex_versions,
+                               /*out*/ std::vector<std::unique_ptr<ImageSpace>>* boot_image_spaces,
+                               /*out*/ MemMap* extra_reservation) {
   ScopedTrace trace(__FUNCTION__);
 
   DCHECK(boot_image_spaces != nullptr);
   DCHECK(boot_image_spaces->empty());
-  DCHECK_ALIGNED(extra_reservation_size, kPageSize);
+  DCHECK_ALIGNED(extra_reservation_size, kElfSegmentAlignment);
   DCHECK(extra_reservation != nullptr);
   DCHECK_NE(image_isa, InstructionSet::kNone);
 
@@ -3305,14 +3330,15 @@ bool ImageSpace::LoadBootImage(
 
   BootImageLoader loader(boot_class_path,
                          boot_class_path_locations,
-                         boot_class_path_fds,
-                         boot_class_path_image_fds,
-                         boot_class_path_vdex_fds,
-                         boot_class_path_odex_fds,
+                         boot_class_path_files,
+                         boot_class_path_image_files,
+                         boot_class_path_vdex_files,
+                         boot_class_path_odex_files,
                          image_locations,
                          image_isa,
                          relocate,
-                         executable);
+                         executable,
+                         &apex_versions);
   loader.FindImageFiles();
 
   // Collect all the errors.
@@ -3423,17 +3449,13 @@ bool ImageSpace::ValidateApexVersions(const OatHeader& oat_header,
 
 bool ImageSpace::ValidateOatFile(const OatFile& oat_file, std::string* error_msg) {
   DCHECK(Runtime::Current() != nullptr);
-  return ValidateOatFile(oat_file,
-                         error_msg,
-                         ArrayRef<const std::string>(),
-                         ArrayRef<const int>(),
-                         Runtime::Current()->GetApexVersions());
+  return ValidateOatFile(oat_file, error_msg, {}, {}, Runtime::Current()->GetApexVersions());
 }
 
 bool ImageSpace::ValidateOatFile(const OatFile& oat_file,
                                  std::string* error_msg,
                                  ArrayRef<const std::string> dex_filenames,
-                                 ArrayRef<const int> dex_fds,
+                                 ArrayRef<File> dex_files,
                                  const std::string& apex_versions) {
   if (!ValidateApexVersions(oat_file.GetOatHeader(),
                             apex_versions,
@@ -3446,71 +3468,52 @@ bool ImageSpace::ValidateOatFile(const OatFile& oat_file,
   if (oat_file.GetOatHeader().GetKeyValueStoreSize() != 0 &&
       oat_file.GetOatHeader().IsConcurrentCopying() != gUseReadBarrier) {
     *error_msg =
-        "ValidateOatFile found read barrier state mismatch (oat file: {}, runtime: {})"_format(
-            oat_file.GetOatHeader().IsConcurrentCopying(), gUseReadBarrier);
+        ART_FORMAT("ValidateOatFile found read barrier state mismatch (oat file: {}, runtime: {})",
+                   oat_file.GetOatHeader().IsConcurrentCopying(),
+                   gUseReadBarrier);
     return false;
   }
 
-  size_t dex_file_index = 0;
-  for (const OatDexFile* oat_dex_file : oat_file.GetOatDexFiles()) {
-    // Skip multidex locations - These will be checked when we visit their
-    // corresponding primary non-multidex location.
-    if (DexFileLoader::IsMultiDexLocation(oat_dex_file->GetDexFileLocation().c_str())) {
-      continue;
-    }
-
+  size_t dex_file_index = 0;  // Counts only primary dex files.
+  const std::vector<const OatDexFile*>& oat_dex_files = oat_file.GetOatDexFiles();
+  for (size_t i = 0; i < oat_dex_files.size();) {
     DCHECK(dex_filenames.empty() || dex_file_index < dex_filenames.size());
-    const std::string& dex_file_location =
-        dex_filenames.empty() ? oat_dex_file->GetDexFileLocation() : dex_filenames[dex_file_index];
-    int dex_fd = dex_file_index < dex_fds.size() ? dex_fds[dex_file_index] : -1;
+    const std::string& dex_file_location = dex_filenames.empty() ?
+                                               oat_dex_files[i]->GetDexFileLocation() :
+                                               dex_filenames[dex_file_index];
+    File no_file;  // Invalid object.
+    File& dex_file = dex_file_index < dex_files.size() ? dex_files[dex_file_index] : no_file;
     dex_file_index++;
 
-    std::vector<uint32_t> checksums;
-    std::vector<std::string> dex_locations_ignored;
-    if (!ArtDexFileLoader::GetMultiDexChecksums(
-            dex_file_location.c_str(), &checksums, &dex_locations_ignored, error_msg, dex_fd)) {
-      *error_msg = StringPrintf("ValidateOatFile failed to get checksums of dex file '%s' "
-                                "referenced by oat file %s: %s",
-                                dex_file_location.c_str(),
-                                oat_file.GetLocation().c_str(),
-                                error_msg->c_str());
+    if (DexFileLoader::IsMultiDexLocation(oat_dex_files[i]->GetDexFileLocation())) {
+      return false;  // Expected primary dex file.
+    }
+    uint32_t oat_checksum = DexFileLoader::GetMultiDexChecksum(oat_dex_files, &i);
+
+    // Original checksum.
+    std::optional<uint32_t> dex_checksum;
+    ArtDexFileLoader dex_loader(&dex_file, dex_file_location);
+    bool ok = dex_loader.GetMultiDexChecksum(&dex_checksum, error_msg);
+    if (!ok) {
+      *error_msg = StringPrintf(
+          "ValidateOatFile failed to get checksum of dex file '%s' "
+          "referenced by oat file %s: %s",
+          dex_file_location.c_str(),
+          oat_file.GetLocation().c_str(),
+          error_msg->c_str());
       return false;
     }
-    CHECK(!checksums.empty());
-    if (checksums[0] != oat_dex_file->GetDexFileLocationChecksum()) {
-      *error_msg = StringPrintf("ValidateOatFile found checksum mismatch between oat file "
-                                "'%s' and dex file '%s' (0x%x != 0x%x)",
-                                oat_file.GetLocation().c_str(),
-                                dex_file_location.c_str(),
-                                oat_dex_file->GetDexFileLocationChecksum(),
-                                checksums[0]);
+    CHECK(dex_checksum.has_value());
+
+    if (oat_checksum != dex_checksum) {
+      *error_msg = StringPrintf(
+          "ValidateOatFile found checksum mismatch between oat file "
+          "'%s' and dex file '%s' (0x%x != 0x%x)",
+          oat_file.GetLocation().c_str(),
+          dex_file_location.c_str(),
+          oat_checksum,
+          dex_checksum.value());
       return false;
-    }
-
-    // Verify checksums for any related multidex entries.
-    for (size_t i = 1; i < checksums.size(); i++) {
-      std::string multi_dex_location = DexFileLoader::GetMultiDexLocation(
-          i,
-          dex_file_location.c_str());
-      const OatDexFile* multi_dex = oat_file.GetOatDexFile(multi_dex_location.c_str(),
-                                                           nullptr,
-                                                           error_msg);
-      if (multi_dex == nullptr) {
-        *error_msg = StringPrintf("ValidateOatFile oat file '%s' is missing entry '%s'",
-                                  oat_file.GetLocation().c_str(),
-                                  multi_dex_location.c_str());
-        return false;
-      }
-
-      if (checksums[i] != multi_dex->GetDexFileLocationChecksum()) {
-        *error_msg = StringPrintf("ValidateOatFile found checksum mismatch between oat file "
-                                  "'%s' and dex file '%s' (0x%x != 0x%x)",
-                                  oat_file.GetLocation().c_str(),
-                                  multi_dex_location.c_str(),
-                                  multi_dex->GetDexFileLocationChecksum(),
-                                  checksums[i]);
-        return false;
-      }
     }
   }
   return true;
@@ -3558,15 +3561,14 @@ std::string ImageSpace::GetBootClassPathChecksums(
   ArrayRef<const DexFile* const> boot_class_path_tail =
       ArrayRef<const DexFile* const>(boot_class_path).SubArray(bcp_pos);
   DCHECK(boot_class_path_tail.empty() ||
-         !DexFileLoader::IsMultiDexLocation(boot_class_path_tail.front()->GetLocation().c_str()));
-  for (const DexFile* dex_file : boot_class_path_tail) {
-    if (!DexFileLoader::IsMultiDexLocation(dex_file->GetLocation().c_str())) {
-      if (!boot_image_checksum.empty()) {
-        boot_image_checksum += ':';
-      }
-      boot_image_checksum += kDexFileChecksumPrefix;
+         !DexFileLoader::IsMultiDexLocation(boot_class_path_tail.front()->GetLocation()));
+  for (size_t i = 0; i < boot_class_path_tail.size();) {
+    uint32_t checksum = DexFileLoader::GetMultiDexChecksum(boot_class_path_tail, &i);
+    if (!boot_image_checksum.empty()) {
+      boot_image_checksum += ':';
     }
-    StringAppendF(&boot_image_checksum, "/%08x", dex_file->GetLocationChecksum());
+    boot_image_checksum += kDexFileChecksumPrefix;
+    StringAppendF(&boot_image_checksum, "/%08x", checksum);
   }
   return boot_image_checksum;
 }
@@ -3667,11 +3669,11 @@ bool ImageSpace::VerifyBootClassPathChecksums(
         CHECK_NE(num_dex_files, 0u);
         const std::string main_location = oat_file->GetOatDexFiles()[0]->GetDexFileLocation();
         CHECK_EQ(main_location, boot_class_path_locations[bcp_pos + space_index]);
-        CHECK(!DexFileLoader::IsMultiDexLocation(main_location.c_str()));
+        CHECK(!DexFileLoader::IsMultiDexLocation(main_location));
         size_t num_base_locations = 1u;
         for (size_t i = 1u; i != num_dex_files; ++i) {
           if (!DexFileLoader::IsMultiDexLocation(
-                  oat_file->GetOatDexFiles()[i]->GetDexFileLocation().c_str())) {
+                  oat_file->GetOatDexFiles()[i]->GetDexFileLocation())) {
             CHECK_EQ(image_space_count, 1u);  // We can find base locations only for --single-image.
             ++num_base_locations;
           }
@@ -3759,7 +3761,7 @@ std::vector<std::string> ImageSpace::ExpandMultiImageLocations(
     if (last_dex_dot != std::string::npos) {
       name.resize(last_dex_dot);
     }
-    locations.push_back(base + name + extension);
+    locations.push_back(ART_FORMAT("{}{}{}", base, name, extension));
   }
   return locations;
 }
@@ -3779,8 +3781,8 @@ void ImageSpace::ReleaseMetadata() {
   const ImageSection& metadata = GetImageHeader().GetMetadataSection();
   VLOG(image) << "Releasing " << metadata.Size() << " image metadata bytes";
   // Avoid using ZeroAndReleasePages since the zero fill might not be word atomic.
-  uint8_t* const page_begin = AlignUp(Begin() + metadata.Offset(), kPageSize);
-  uint8_t* const page_end = AlignDown(Begin() + metadata.End(), kPageSize);
+  uint8_t* const page_begin = AlignUp(Begin() + metadata.Offset(), gPageSize);
+  uint8_t* const page_end = AlignDown(Begin() + metadata.End(), gPageSize);
   if (page_begin < page_end) {
     CHECK_NE(madvise(page_begin, page_end - page_begin, MADV_DONTNEED), -1) << "madvise failed";
   }

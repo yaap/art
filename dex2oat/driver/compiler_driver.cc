@@ -274,12 +274,12 @@ CompilerDriver::CompilerDriver(
 }
 
 CompilerDriver::~CompilerDriver() {
-  compiled_methods_.Visit([this](const DexFileReference& ref ATTRIBUTE_UNUSED,
-                                 CompiledMethod* method) {
-    if (method != nullptr) {
-      CompiledMethod::ReleaseSwapAllocatedCompiledMethod(GetCompiledMethodStorage(), method);
-    }
-  });
+  compiled_methods_.Visit(
+      [this]([[maybe_unused]] const DexFileReference& ref, CompiledMethod* method) {
+        if (method != nullptr) {
+          CompiledMethod::ReleaseSwapAllocatedCompiledMethod(GetCompiledMethodStorage(), method);
+        }
+      });
 }
 
 
@@ -459,19 +459,24 @@ static void CompileMethodQuick(
     const DexFile& dex_file,
     Handle<mirror::DexCache> dex_cache,
     ProfileCompilationInfo::ProfileIndexType profile_index) {
-  auto quick_fn = [profile_index](
-      Thread* self ATTRIBUTE_UNUSED,
-      CompilerDriver* driver,
-      const dex::CodeItem* code_item,
-      uint32_t access_flags,
-      InvokeType invoke_type,
-      uint16_t class_def_idx,
-      uint32_t method_idx,
-      Handle<mirror::ClassLoader> class_loader,
-      const DexFile& dex_file,
-      Handle<mirror::DexCache> dex_cache) {
+  auto quick_fn = [profile_index]([[maybe_unused]] Thread* self,
+                                  CompilerDriver* driver,
+                                  const dex::CodeItem* code_item,
+                                  uint32_t access_flags,
+                                  InvokeType invoke_type,
+                                  uint16_t class_def_idx,
+                                  uint32_t method_idx,
+                                  Handle<mirror::ClassLoader> class_loader,
+                                  const DexFile& dex_file,
+                                  Handle<mirror::DexCache> dex_cache) {
     DCHECK(driver != nullptr);
+    const VerificationResults* results = driver->GetVerificationResults();
+    DCHECK(results != nullptr);
+    MethodReference method_ref(&dex_file, method_idx);
     CompiledMethod* compiled_method = nullptr;
+    if (results->IsUncompilableMethod(method_ref)) {
+      return compiled_method;
+    }
 
     if ((access_flags & kAccNative) != 0) {
       // Are we extracting only and have support for generic JNI down calls?
@@ -496,14 +501,9 @@ static void CompileMethodQuick(
       // Method is annotated with @NeverCompile and should not be compiled.
     } else {
       const CompilerOptions& compiler_options = driver->GetCompilerOptions();
-      const VerificationResults* results = driver->GetVerificationResults();
-      DCHECK(results != nullptr);
-      MethodReference method_ref(&dex_file, method_idx);
       // Don't compile class initializers unless kEverything.
       bool compile = (compiler_options.GetCompilerFilter() == CompilerFilter::kEverything) ||
          ((access_flags & kAccConstructor) == 0) || ((access_flags & kAccStatic) == 0);
-      // Check if it's an uncompilable method found by the verifier.
-      compile = compile && !results->IsUncompilableMethod(method_ref);
       // Check if we should compile based on the profile.
       compile = compile && ShouldCompileBasedOnProfile(compiler_options, profile_index, method_ref);
 
@@ -760,7 +760,7 @@ static void EnsureVerifiedOrVerifyAtRuntime(jobject jclass_loader,
   }
 }
 
-void CompilerDriver::PrepareDexFilesForOatFile(TimingLogger* timings ATTRIBUTE_UNUSED) {
+void CompilerDriver::PrepareDexFilesForOatFile([[maybe_unused]] TimingLogger* timings) {
   compiled_classes_.AddDexFiles(GetCompilerOptions().GetDexFilesForOatFile());
 }
 
@@ -1016,7 +1016,7 @@ static void VerifyClassesContainingIntrinsicsAreImageClasses(HashSet<std::string
 #define CHECK_INTRINSIC_OWNER_CLASS(_, __, ___, ____, _____, ClassName, ______, _______) \
   CHECK(image_classes->find(std::string_view(ClassName)) != image_classes->end());
 
-  INTRINSICS_LIST(CHECK_INTRINSIC_OWNER_CLASS)
+  ART_INTRINSICS_LIST(CHECK_INTRINSIC_OWNER_CLASS)
 #undef CHECK_INTRINSIC_OWNER_CLASS
 }
 
@@ -1230,8 +1230,7 @@ class ClinitImageUpdate {
   // Visitor for VisitReferences.
   void operator()(ObjPtr<mirror::Object> object,
                   MemberOffset field_offset,
-                  bool is_static ATTRIBUTE_UNUSED) const
-      REQUIRES_SHARED(Locks::mutator_lock_) {
+                  [[maybe_unused]] bool is_static) const REQUIRES_SHARED(Locks::mutator_lock_) {
     mirror::Object* ref = object->GetFieldObject<mirror::Object>(field_offset);
     if (ref != nullptr) {
       VisitClinitClassesObject(ref);
@@ -1239,13 +1238,13 @@ class ClinitImageUpdate {
   }
 
   // java.lang.ref.Reference visitor for VisitReferences.
-  void operator()(ObjPtr<mirror::Class> klass ATTRIBUTE_UNUSED,
-                  ObjPtr<mirror::Reference> ref ATTRIBUTE_UNUSED) const {}
+  void operator()([[maybe_unused]] ObjPtr<mirror::Class> klass,
+                  [[maybe_unused]] ObjPtr<mirror::Reference> ref) const {}
 
   // Ignore class native roots.
-  void VisitRootIfNonNull(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED)
-      const {}
-  void VisitRoot(mirror::CompressedReference<mirror::Object>* root ATTRIBUTE_UNUSED) const {}
+  void VisitRootIfNonNull(
+      [[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {}
+  void VisitRoot([[maybe_unused]] mirror::CompressedReference<mirror::Object>* root) const {}
 
   void Walk() REQUIRES_SHARED(Locks::mutator_lock_) {
     // Find all the already-marked classes.
@@ -1711,6 +1710,7 @@ static void LoadAndUpdateStatus(const ClassAccessor& accessor,
     // a boot image class, or a class in a different dex file for multidex, and
     // we should not update the status in that case.
     if (&cls->GetDexFile() == &accessor.GetDexFile()) {
+      VLOG(compiler) << "Updating class status of " << std::string(descriptor) << " to " << status;
       ObjectLock<mirror::Class> lock(self, cls);
       mirror::Class::SetStatus(cls, status, self);
     }
@@ -1753,6 +1753,8 @@ bool CompilerDriver::FastVerify(jobject jclass_loader,
       !GetCompilerOptions().IsAnyCompilationEnabled() &&
       !GetCompilerOptions().IsGeneratingImage();
 
+  const bool is_generating_image = GetCompilerOptions().IsGeneratingImage();
+
   // We successfully validated the dependencies, now update class status
   // of verified classes. Note that the dependencies also record which classes
   // could not be fully verified; we could try again, but that would hurt verification
@@ -1776,6 +1778,16 @@ bool CompilerDriver::FastVerify(jobject jclass_loader,
         // fail, but that's OK.
         compiled_classes_.Insert(ref, existing, status);
       } else {
+        if (is_generating_image &&
+            status == ClassStatus::kVerifiedNeedsAccessChecks &&
+            GetCompilerOptions().IsImageClass(accessor.GetDescriptor())) {
+          // If the class will be in the image, we can rely on the ArtMethods
+          // telling that they need access checks.
+          VLOG(compiler) << "Promoting "
+                         << std::string(accessor.GetDescriptor())
+                         << " from needs access checks to verified given it is an image class";
+          status = ClassStatus::kVerified;
+        }
         // Update the class status, so later compilation stages know they don't need to verify
         // the class.
         LoadAndUpdateStatus(accessor, status, class_loader, soa.Self());
@@ -1783,7 +1795,7 @@ bool CompilerDriver::FastVerify(jobject jclass_loader,
 
       // Vdex marks class as unverified for two reasons only:
       // 1. It has a hard failure, or
-      // 2. Once of its method needs lock counting.
+      // 2. One of its method needs lock counting.
       //
       // The optimizing compiler expects a method to not have a hard failure before
       // compiling it, so for simplicity just disable any compilation of methods
@@ -2143,6 +2155,7 @@ class InitializeClassVisitor : public CompilationVisitor {
       // Also return early and don't store the class status in the recorded class status.
       return;
     }
+
     ClassStatus old_status = klass->GetStatus();
     // Only try to initialize classes that were successfully verified.
     if (klass->IsVerified()) {
@@ -2777,7 +2790,7 @@ std::string CompilerDriver::GetMemoryUsageString(bool extended) const {
   const size_t java_alloc = heap->GetBytesAllocated();
   oss << "arena alloc=" << PrettySize(max_arena_alloc_) << " (" << max_arena_alloc_ << "B)";
   oss << " java alloc=" << PrettySize(java_alloc) << " (" << java_alloc << "B)";
-#if defined(__BIONIC__) || defined(__GLIBC__)
+#if defined(__BIONIC__) || defined(__GLIBC__) || defined(ANDROID_HOST_MUSL)
   const struct mallinfo info = mallinfo();
   const size_t allocated_space = static_cast<size_t>(info.uordblks);
   const size_t free_space = static_cast<size_t>(info.fordblks);

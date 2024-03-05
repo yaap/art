@@ -14,15 +14,23 @@
  * limitations under the License.
  */
 
+#include "adbconnection.h"
+
+#include <jni.h>
+#include <sys/eventfd.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <sys/un.h>
+
 #include <array>
 #include <cstddef>
 #include <iterator>
 
-#include "adbconnection.h"
-
 #include "adbconnection/client.h"
 #include "android-base/endian.h"
 #include "android-base/stringprintf.h"
+#include "android-base/unique_fd.h"
 #include "art_field-inl.h"
 #include "art_method-alloc-inl.h"
 #include "base/file_utils.h"
@@ -32,26 +40,18 @@
 #include "base/mutex.h"
 #include "base/socket_peer_is_trusted.h"
 #include "debugger.h"
+#include "fd_transport.h"
+#include "jdwpargs.h"
 #include "jni/java_vm_ext.h"
 #include "jni/jni_env_ext.h"
 #include "mirror/class-alloc-inl.h"
 #include "mirror/throwable.h"
 #include "nativehelper/scoped_local_ref.h"
+#include "poll.h"
 #include "runtime-inl.h"
 #include "runtime_callbacks.h"
 #include "scoped_thread_state_change-inl.h"
 #include "well_known_classes.h"
-
-#include "fd_transport.h"
-
-#include "poll.h"
-
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <sys/uio.h>
-#include <sys/un.h>
-#include <sys/eventfd.h>
-#include <jni.h>
 
 namespace adbconnection {
 
@@ -484,10 +484,6 @@ void AdbConnectionState::SendAgentFds(bool require_handshake) {
   }
 }
 
-android::base::unique_fd AdbConnectionState::ReadFdFromAdb() {
-  return android::base::unique_fd(adbconnection_client_receive_jdwp_fd(control_ctx_.get()));
-}
-
 bool AdbConnectionState::SetupAdbConnection() {
   int sleep_ms = 500;
   const int sleep_max_ms = 2 * 1000;
@@ -552,18 +548,17 @@ void AdbConnectionState::RunPollLoop(art::Thread* self) {
     while (!shutting_down_ && control_ctx_) {
       bool should_listen_on_connection = !agent_has_socket_ && !sent_agent_fds_;
       struct pollfd pollfds[4] = {
-        { sleep_event_fd_, POLLIN, 0 },
-        // -1 as an fd causes it to be ignored by poll
-        { (agent_loaded_ ? local_agent_control_sock_ : -1), POLLIN, 0 },
-        // Check for the control_sock_ actually going away. Only do this if we don't have an active
-        // connection.
-        { (adb_connection_socket_ == -1 ? adbconnection_client_pollfd(control_ctx_.get()) : -1),
-          POLLIN | POLLRDHUP, 0 },
-        // if we have not loaded the agent either the adb_connection_socket_ is -1 meaning we don't
-        // have a real connection yet or the socket through adb needs to be listened to for incoming
-        // data that the agent or this plugin can handle.
-        { should_listen_on_connection ? adb_connection_socket_ : -1, POLLIN | POLLRDHUP, 0 }
-      };
+          {sleep_event_fd_, POLLIN, 0},
+          // -1 as an fd causes it to be ignored by poll
+          {(agent_loaded_ ? local_agent_control_sock_ : -1), POLLIN, 0},
+          // Check for the control_sock_ actually going away. We always monitor for POLLIN, even if
+          // we already have an adbd socket. This allows to reject incoming debugger connection if
+          // there is already have one connected.
+          {adbconnection_client_pollfd(control_ctx_.get()), POLLIN | POLLRDHUP, 0},
+          // if we have not loaded the agent either the adb_connection_socket_ is -1 meaning we
+          // don't have a real connection yet or the socket through adb needs to be listened to for
+          // incoming data that the agent or this plugin can handle.
+          {should_listen_on_connection ? adb_connection_socket_ : -1, POLLIN | POLLRDHUP, 0}};
       int res = TEMP_FAILURE_RETRY(poll(pollfds, 4, -1));
       if (res < 0) {
         PLOG(ERROR) << "Failed to poll!";
@@ -860,19 +855,65 @@ bool ValidateJdwpOptions(const std::string& opts) {
   return res;
 }
 
+#if defined(__ANDROID__)
+void FixLogfile(JdwpArgs& parameters) {
+  const std::string kLogfile = "logfile";
+  // On Android, an app will not have write access to the cwd (which is "/").
+  // If a relative path was provided, we need to patch it with a writable
+  // location. For now, we use /data/data/<PKG_NAME>.
+  // Note that /data/local/tmp/ was also considered but it not a good candidate since apps don't
+  // have write access to it.
+
+  if (!parameters.contains(kLogfile)) {
+    return;
+  }
+
+  std::string& logfile = parameters.get(kLogfile);
+  if (logfile.front() == '/') {
+    // We only fix logfile if it is not using an absolute path
+    return;
+  }
+
+  std::string packageName = art::Runtime::Current()->GetProcessPackageName();
+  if (packageName.empty()) {
+    VLOG(jdwp) << "Unable to fix relative path logfile='" + logfile + "' without package name.";
+    return;
+  }
+  parameters.put(kLogfile, "/data/data/" + packageName + "/" + logfile);
+}
+#else
+void FixLogfile(JdwpArgs&) {}
+#endif
+
 std::string AdbConnectionState::MakeAgentArg() {
   const std::string& opts = art::Runtime::Current()->GetJdwpOptions();
   DCHECK(ValidateJdwpOptions(opts));
+
+  VLOG(jdwp) << "Raw jdwp options '" + opts + "'";
+  JdwpArgs parameters = JdwpArgs(opts);
+
+  // See the comment above for why we need to be server=y. Since the agent defaults to server=n
+  // we must always set it.
+  parameters.put("server", "y");
+
+  // See the comment above for why we need to be suspend=n. Since the agent defaults to
+  // suspend=y we must always set it.
+  parameters.put("suspend", "n");
+
+  std::string ddm_already_active = "n";
+  if (notified_ddm_active_) {
+    ddm_already_active = "y";
+  }
+  parameters.put("ddm_already_active", ddm_already_active);
+
+  parameters.put("transport", "dt_fd_forward");
+  parameters.put("address", std::to_string(remote_agent_control_sock_));
+
+  // If logfile is relative, we need to fix it.
+  FixLogfile(parameters);
+
   // TODO Get agent_name_ from something user settable?
-  return agent_name_ + "=" + opts + (opts.empty() ? "" : ",") +
-      "ddm_already_active=" + (notified_ddm_active_ ? "y" : "n") + "," +
-      // See the comment above for why we need to be server=y. Since the agent defaults to server=n
-      // we will add it if it wasn't already present for the convenience of the user.
-      (ContainsArgument(opts, "server=y") ? "" : "server=y,") +
-      // See the comment above for why we need to be suspend=n. Since the agent defaults to
-      // suspend=y we will add it if it wasn't already present.
-      (ContainsArgument(opts, "suspend=n") ? "" : "suspend=n,") +
-      "transport=dt_fd_forward,address=" + std::to_string(remote_agent_control_sock_);
+  return agent_name_ + "=" + parameters.join();
 }
 
 void AdbConnectionState::StopDebuggerThreads() {

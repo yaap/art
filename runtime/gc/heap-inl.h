@@ -193,8 +193,7 @@ inline mirror::Object* Heap::AllocObjectWithAllocator(Thread* self,
     }
     if (bytes_tl_bulk_allocated > 0) {
       starting_gc_num = GetCurrentGcNum();
-      size_t num_bytes_allocated_before =
-          num_bytes_allocated_.fetch_add(bytes_tl_bulk_allocated, std::memory_order_relaxed);
+      size_t num_bytes_allocated_before = AddBytesAllocated(bytes_tl_bulk_allocated);
       new_num_bytes_allocated = num_bytes_allocated_before + bytes_tl_bulk_allocated;
       // Only trace when we get an increase in the number of bytes allocated. This happens when
       // obtaining a new TLAB and isn't often enough to hurt performance according to golem.
@@ -292,7 +291,9 @@ inline mirror::Object* Heap::AllocLargeObject(Thread* self,
   mirror::Object* obj = AllocObjectWithAllocator<kInstrumented, false, PreFenceVisitor>
                         (self, *klass, byte_count, kAllocatorTypeLOS, pre_fence_visitor);
   // Java Heap Profiler check and sample allocation.
-  JHPCheckNonTlabSampleAllocation(self, obj, byte_count);
+  if (GetHeapSampler().IsEnabled()) {
+    JHPCheckNonTlabSampleAllocation(self, obj, byte_count);
+  }
   return obj;
 }
 
@@ -441,7 +442,7 @@ inline bool Heap::ShouldAllocLargeObject(ObjPtr<mirror::Class> c, size_t byte_co
   return byte_count >= large_object_threshold_ && (c->IsPrimitiveArray() || c->IsStringClass());
 }
 
-inline bool Heap::IsOutOfMemoryOnAllocation(AllocatorType allocator_type ATTRIBUTE_UNUSED,
+inline bool Heap::IsOutOfMemoryOnAllocation([[maybe_unused]] AllocatorType allocator_type,
                                             size_t alloc_size,
                                             bool grow) {
   size_t old_target = target_footprint_.load(std::memory_order_relaxed);

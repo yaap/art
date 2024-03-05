@@ -89,19 +89,8 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
   V(StringBuilderLength)                    \
   V(StringBuilderToString)                  \
   /* 1.8 */                                 \
-  V(UnsafeGetAndAddInt)                     \
-  V(UnsafeGetAndAddLong)                    \
-  V(UnsafeGetAndSetInt)                     \
-  V(UnsafeGetAndSetLong)                    \
-  V(UnsafeGetAndSetObject)                  \
   V(MethodHandleInvokeExact)                \
-  V(MethodHandleInvoke)                     \
-  /* OpenJDK 11 */                          \
-  V(JdkUnsafeGetAndAddInt)                  \
-  V(JdkUnsafeGetAndAddLong)                 \
-  V(JdkUnsafeGetAndSetInt)                  \
-  V(JdkUnsafeGetAndSetLong)                 \
-  V(JdkUnsafeGetAndSetObject)
+  V(MethodHandleInvoke)
 
 class InvokeRuntimeCallingConvention : public CallingConvention<Register, XmmRegister> {
  public:
@@ -196,7 +185,7 @@ class FieldAccessCallingConventionX86 : public FieldAccessCallingConvention {
             ? Location::RegisterLocation(EDX)
             : Location::RegisterLocation(ECX));
   }
-  Location GetFpuLocation(DataType::Type type ATTRIBUTE_UNUSED) const override {
+  Location GetFpuLocation([[maybe_unused]] DataType::Type type) const override {
     return Location::FpuRegisterLocation(XMM0);
   }
 
@@ -635,7 +624,7 @@ class CodeGeneratorX86 : public CodeGenerator {
 
   Address LiteralCaseTable(HX86PackedSwitch* switch_instr, Register reg, Register value);
 
-  void Finalize(CodeAllocator* allocator) override;
+  void Finalize() override;
 
   // Fast path implementation of ReadBarrier::Barrier for a heap
   // reference field load when Baker's read barriers are used.

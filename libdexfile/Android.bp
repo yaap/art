@@ -173,6 +173,7 @@ art_cc_library {
         // dependency - see comment for libdexfile_support. It shouldn't be used
         // for any other purpose.
         "//external/perfetto",
+        "//frameworks/base/services/core/jni",
         "//system/core/debuggerd",
         "//system/extras/simpleperf",
         "//system/unwinding/libunwindstack",
@@ -287,18 +288,20 @@ art_cc_defaults {
         "dex/compact_dex_file_test.cc",
         "dex/compact_offset_table_test.cc",
         "dex/descriptors_names_test.cc",
-        "dex/test_dex_file_builder_test.cc",
         "dex/dex_file_loader_test.cc",
         "dex/dex_file_verifier_test.cc",
         "dex/dex_instruction_test.cc",
+        "dex/fuzzer_corpus_test.cc",
         "dex/primitive_test.cc",
         "dex/string_reference_test.cc",
+        "dex/test_dex_file_builder_test.cc",
         "dex/type_lookup_table_test.cc",
         "dex/utf_test.cc",
     ],
     data: [
         ":art-gtest-jars-GetMethodSignature",
         ":art-gtest-jars-Lookup",
+        ":art-gtest-jars-DexFuzzerFolder",
         ":art-gtest-jars-Main",
         ":art-gtest-jars-MainEmptyUncompressed",
         ":art-gtest-jars-MultiDex",
@@ -306,12 +309,8 @@ art_cc_defaults {
         ":art-gtest-jars-VerifierDeps",
     ],
     header_libs: ["jni_headers"],
-    static_libs: [
-        "libziparchive",
-    ],
     shared_libs: [
         "libunwindstack",
-        "libz", // libziparchive dependency; must be repeated here since it's a static lib.
     ],
 }
 
@@ -453,8 +452,6 @@ art_cc_library_static {
         "//apex_available:platform",
         "com.android.art",
         "com.android.art.debug",
-        "com.android.media",
-        "com.android.media.swcodec",
         "com.android.runtime",
     ],
 }

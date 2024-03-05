@@ -23,6 +23,13 @@ package {
     default_applicable_licenses: ["art_license"],
 }
 
+soong_config_module_type_import {
+    from: "art/build/SoongConfig.bp",
+    module_types: [
+        "art_module_cc_genrule",
+    ],
+}
+
 python_binary_host {
     name: "generate_operator_out",
     srcs: [
@@ -104,6 +111,45 @@ sh_binary {
             ],
         },
         darwin: {
+            enabled: false,
+        },
+    },
+}
+
+art_module_cc_genrule {
+    name: "check_cfi",
+
+    // disable the target when prebuilt modules are used
+    enabled: false,
+    soong_config_variables: {
+        source_build: {
+            enabled: true,
+        },
+    },
+    tool_files: [
+        "check_cfi.py",
+    ],
+    tools: [
+        "llvm-dwarfdump",
+        "llvm-objdump",
+    ],
+    srcs: [
+        ":libart-unstripped",
+    ],
+    out: [
+        "check_cfi.txt",
+    ],
+    cmd: "$(location check_cfi.py) " +
+        "--dwarfdump $(location llvm-dwarfdump) " +
+        "--objdump $(location llvm-objdump) " +
+        "--out $(out) $(in)",
+
+    target: {
+        windows: {
+            // When the module is enabled globally in the soong_config_variables
+            // stanza above, it gets enabled on windows too. Hence we need to
+            // disable it explicitly.
+            // TODO(b/172480617): Clean up with that.
             enabled: false,
         },
     },

@@ -10,7 +10,6 @@
   modes: [device],
   names: ["jsr166.ExecutorsTest#testTimedCallable",
           "jsr166.RecursiveActionTest#testJoinIgnoresInterruptsOutsideForkJoinPool",
-          "libcore.java.lang.ref.ReferenceQueueTest#testRemoveWithDelayedResultAndTimeout",
           "libcore.java.text.DecimalFormatTest#testWhitespaceError",
           "libcore.java.text.DecimalFormatTest#testWhitespaceTolerated",
           "libcore.java.text.DecimalFormatTest#test_exponentSeparator",

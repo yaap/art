@@ -141,6 +141,16 @@ class AssemblerTestBase : public testing::Test {
   virtual std::vector<std::string> GetAssemblerCommand() {
     InstructionSet isa = GetIsa();
     switch (isa) {
+      case InstructionSet::kRiscv64:
+        // TODO(riscv64): Support compression (RV32C) in assembler and tests (add `c` to `-march=`).
+        return {FindTool("clang"),
+                "--compile",
+                "-target",
+                "riscv64-linux-gnu",
+                "-march=rv64imafd_zba_zbb",
+                // Force the assembler to fully emit branch instructions instead of leaving
+                // offsets unresolved with relocation information for the linker.
+                "-mno-relax"};
       case InstructionSet::kX86:
         return {FindTool("clang"), "--compile", "-target", "i386-linux-gnu"};
       case InstructionSet::kX86_64:
@@ -159,6 +169,15 @@ class AssemblerTestBase : public testing::Test {
                 "--no-print-imm-hex",
                 "--triple",
                 "thumbv7a-linux-gnueabi"};
+      case InstructionSet::kRiscv64:
+        return {FindTool("llvm-objdump"),
+                "--disassemble",
+                "--no-print-imm-hex",
+                "--no-show-raw-insn",
+                // Disassemble Standard Extensions supported by the assembler.
+                "--mattr=+F,+D,+A,+Zba,+Zbb",
+                "-M",
+                "no-aliases"};
       default:
         return {
             FindTool("llvm-objdump"), "--disassemble", "--no-print-imm-hex", "--no-show-raw-insn"};

@@ -107,17 +107,15 @@ ArrayRef<const ManagedRegister> X86_64JniCallingConvention::CalleeSaveScratchReg
 ArrayRef<const ManagedRegister> X86_64JniCallingConvention::ArgumentScratchRegisters() const {
   DCHECK(!IsCriticalNative());
   ArrayRef<const ManagedRegister> scratch_regs(kCoreArgumentRegisters);
-  if (kIsDebugBuild) {
-    X86_64ManagedRegister return_reg = ReturnRegister().AsX86_64();
-    auto return_reg_overlaps = [return_reg](ManagedRegister reg) {
-      return return_reg.Overlaps(reg.AsX86_64());
-    };
-    CHECK(std::none_of(scratch_regs.begin(), scratch_regs.end(), return_reg_overlaps));
-  }
+  DCHECK(std::none_of(scratch_regs.begin(),
+                      scratch_regs.end(),
+                      [return_reg = ReturnRegister().AsX86_64()](ManagedRegister reg) {
+                        return return_reg.Overlaps(reg.AsX86_64());
+                      }));
   return scratch_regs;
 }
 
-static ManagedRegister ReturnRegisterForShorty(const char* shorty, bool jni ATTRIBUTE_UNUSED) {
+static ManagedRegister ReturnRegisterForShorty(const char* shorty, [[maybe_unused]] bool jni) {
   if (shorty[0] == 'F' || shorty[0] == 'D') {
     return X86_64ManagedRegister::FromXmmRegister(XMM0);
   } else if (shorty[0] == 'J') {

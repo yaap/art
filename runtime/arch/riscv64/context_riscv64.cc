@@ -23,11 +23,7 @@
 #include "quick/quick_method_frame_info.h"
 #include "thread-current-inl.h"
 
-#if __has_feature(hwaddress_sanitizer)
-#include <sanitizer/hwasan_interface.h>
-#else
-#define __hwasan_handle_longjmp(sp)
-#endif
+extern "C" __attribute__((weak)) void __hwasan_handle_longjmp(const void* sp_dst);
 
 namespace art {
 namespace riscv64 {
@@ -48,7 +44,7 @@ void Riscv64Context::Reset() {
 
 void Riscv64Context::FillCalleeSaves(uint8_t* frame, const QuickMethodFrameInfo& frame_info) {
   // RA is at top of the frame
-  DCHECK_NE(frame_info.CoreSpillMask() & ~(1u << RA), 0u);
+  DCHECK_NE(frame_info.CoreSpillMask() & (1u << RA), 0u);
   gprs_[RA] = CalleeSaveAddress(frame, 0, frame_info.FrameSizeInBytes());
 
   // Core registers come first, from the highest down to the lowest, with the exception of RA/X1.
@@ -144,7 +140,9 @@ void Riscv64Context::DoLongJump() {
   gprs[TR] = reinterpret_cast<uintptr_t>(Thread::Current());
 
   // Tell HWASan about the new stack top.
-  __hwasan_handle_longjmp(reinterpret_cast<void*>(gprs[SP]));
+  if (__hwasan_handle_longjmp != nullptr) {
+    __hwasan_handle_longjmp(reinterpret_cast<void*>(gprs[SP]));
+  }
   art_quick_do_long_jump(gprs, fprs);
 }
 

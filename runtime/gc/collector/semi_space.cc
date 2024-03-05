@@ -209,7 +209,6 @@ void SemiSpace::MarkingPhase() {
   const int64_t to_bytes = bytes_moved_;
   const uint64_t from_objects = from_space_->GetObjectsAllocated();
   const uint64_t to_objects = objects_moved_;
-  CHECK_LE(to_objects, from_objects);
   // Note: Freed bytes can be negative if we copy form a compacted space to a free-list backed
   // space.
   RecordFree(ObjectBytePair(from_objects - to_objects, from_bytes - to_bytes));
@@ -376,7 +375,7 @@ inline void SemiSpace::MarkStackPush(Object* obj) {
 }
 
 static inline size_t CopyAvoidingDirtyingPages(void* dest, const void* src, size_t size) {
-  if (LIKELY(size <= static_cast<size_t>(kPageSize))) {
+  if (LIKELY(size <= static_cast<size_t>(gPageSize))) {
     // We will dirty the current page and somewhere in the middle of the next page. This means
     // that the next object copied will also dirty that page.
     // TODO: Worth considering the last object copied? We may end up dirtying one page which is
@@ -394,19 +393,19 @@ static inline size_t CopyAvoidingDirtyingPages(void* dest, const void* src, size
   // Process the start of the page. The page must already be dirty, don't bother with checking.
   const uint8_t* byte_src = reinterpret_cast<const uint8_t*>(src);
   const uint8_t* limit = byte_src + size;
-  size_t page_remain = AlignUp(byte_dest, kPageSize) - byte_dest;
+  size_t page_remain = AlignUp(byte_dest, gPageSize) - byte_dest;
   // Copy the bytes until the start of the next page.
   memcpy(dest, src, page_remain);
   byte_src += page_remain;
   byte_dest += page_remain;
-  DCHECK_ALIGNED(reinterpret_cast<uintptr_t>(byte_dest), kPageSize);
+  DCHECK_ALIGNED_PARAM(reinterpret_cast<uintptr_t>(byte_dest), gPageSize);
   DCHECK_ALIGNED(reinterpret_cast<uintptr_t>(byte_dest), sizeof(uintptr_t));
   DCHECK_ALIGNED(reinterpret_cast<uintptr_t>(byte_src), sizeof(uintptr_t));
-  while (byte_src + kPageSize < limit) {
+  while (byte_src + gPageSize < limit) {
     bool all_zero = true;
     uintptr_t* word_dest = reinterpret_cast<uintptr_t*>(byte_dest);
     const uintptr_t* word_src = reinterpret_cast<const uintptr_t*>(byte_src);
-    for (size_t i = 0; i < kPageSize / sizeof(*word_src); ++i) {
+    for (size_t i = 0; i < gPageSize / sizeof(*word_src); ++i) {
       // Assumes the destination of the copy is all zeros.
       if (word_src[i] != 0) {
         all_zero = false;
@@ -415,10 +414,10 @@ static inline size_t CopyAvoidingDirtyingPages(void* dest, const void* src, size
     }
     if (all_zero) {
       // Avoided copying into the page since it was all zeros.
-      saved_bytes += kPageSize;
+      saved_bytes += gPageSize;
     }
-    byte_src += kPageSize;
-    byte_dest += kPageSize;
+    byte_src += gPageSize;
+    byte_dest += gPageSize;
   }
   // Handle the part of the page at the end.
   memcpy(byte_dest, byte_src, limit - byte_src);
@@ -467,12 +466,13 @@ mirror::Object* SemiSpace::MarkObject(mirror::Object* root) {
 }
 
 void SemiSpace::MarkHeapReference(mirror::HeapReference<mirror::Object>* obj_ptr,
-                                  bool do_atomic_update ATTRIBUTE_UNUSED) {
+                                  [[maybe_unused]] bool do_atomic_update) {
   MarkObject(obj_ptr);
 }
 
-void SemiSpace::VisitRoots(mirror::Object*** roots, size_t count,
-                           const RootInfo& info ATTRIBUTE_UNUSED) {
+void SemiSpace::VisitRoots(mirror::Object*** roots,
+                           size_t count,
+                           [[maybe_unused]] const RootInfo& info) {
   for (size_t i = 0; i < count; ++i) {
     auto* root = roots[i];
     auto ref = StackReference<mirror::Object>::FromMirrorPtr(*root);
@@ -485,8 +485,9 @@ void SemiSpace::VisitRoots(mirror::Object*** roots, size_t count,
   }
 }
 
-void SemiSpace::VisitRoots(mirror::CompressedReference<mirror::Object>** roots, size_t count,
-                           const RootInfo& info ATTRIBUTE_UNUSED) {
+void SemiSpace::VisitRoots(mirror::CompressedReference<mirror::Object>** roots,
+                           size_t count,
+                           [[maybe_unused]] const RootInfo& info) {
   for (size_t i = 0; i < count; ++i) {
     MarkObjectIfNotInToSpace(roots[i]);
   }
@@ -610,7 +611,7 @@ mirror::Object* SemiSpace::IsMarked(mirror::Object* obj) {
 
 bool SemiSpace::IsNullOrMarkedHeapReference(mirror::HeapReference<mirror::Object>* object,
                                             // SemiSpace does the GC in a pause. No CAS needed.
-                                            bool do_atomic_update ATTRIBUTE_UNUSED) {
+                                            [[maybe_unused]] bool do_atomic_update) {
   mirror::Object* obj = object->AsMirrorPtr();
   if (obj == nullptr) {
     return true;
