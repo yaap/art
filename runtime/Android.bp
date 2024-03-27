@@ -823,10 +823,6 @@ art_cc_library {
     ],
     afdo: true,
     target: {
-        android_arm64: {
-            cflags: ["-fsplit-machine-functions"],
-            ldflags: ["-fsplit-machine-functions"],
-        },
         android: {
             lto: {
                 thin: true,

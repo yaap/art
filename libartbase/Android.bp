@@ -220,10 +220,6 @@ art_cc_library {
                 enabled: false,
             },
         },
-        android_arm64: {
-            cflags: ["-fsplit-machine-functions"],
-            ldflags: ["-fsplit-machine-functions"],
-        }
     },
     afdo: true,
 }
