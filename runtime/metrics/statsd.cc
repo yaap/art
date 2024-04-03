@@ -416,30 +416,18 @@ class StatsdBackend : public MetricsBackend {
 
 std::unique_ptr<MetricsBackend> CreateStatsdBackend() { return std::make_unique<StatsdBackend>(); }
 
-AStatsManager_PullAtomCallbackReturn DeviceStatusCallback(int32_t atom_tag,
-                                                          AStatsEventList* data,
-                                                          [[maybe_unused]] void* cookie) {
-  if (atom_tag == statsd::ART_DEVICE_STATUS) {
-    Runtime* runtime = Runtime::Current();
-    int32_t boot_image_status;
-    if (runtime->GetHeap()->HasBootImageSpace() && !runtime->HasImageWithProfile()) {
-      boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_FULL;
-    } else if (runtime->GetHeap()->HasBootImageSpace() &&
-               runtime->GetHeap()->GetBootImageSpaces()[0]->GetProfileFiles().empty()) {
-      boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_MINIMAL;
-    } else {
-      boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_NONE;
-    }
-    statsd::addAStatsEvent(data, atom_tag, boot_image_status);
-    return AStatsManager_PULL_SUCCESS;
+void ReportDeviceMetrics() {
+  Runtime* runtime = Runtime::Current();
+  int32_t boot_image_status;
+  if (runtime->GetHeap()->HasBootImageSpace() && !runtime->HasImageWithProfile()) {
+    boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_FULL;
+  } else if (runtime->GetHeap()->HasBootImageSpace() &&
+             runtime->GetHeap()->GetBootImageSpaces()[0]->GetProfileFiles().empty()) {
+    boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_MINIMAL;
+  } else {
+    boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_NONE;
   }
-
-  return AStatsManager_PULL_SKIP;
-}
-
-void SetupCallbackForDeviceStatus() {
-  AStatsManager_setPullAtomCallback(
-      statsd::ART_DEVICE_STATUS, /*metadata=*/nullptr, DeviceStatusCallback, /*cookie=*/nullptr);
+  statsd::stats_write(statsd::ART_DEVICE_DATUM_REPORTED, boot_image_status);
 }
 
 }  // namespace metrics
