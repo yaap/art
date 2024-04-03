@@ -29,7 +29,7 @@
 #include "thread_list.h"
 #include "verify_object.h"
 
-namespace art {
+namespace art HIDDEN {
 
 static jobject Thread_currentThread(JNIEnv* env, jclass) {
   ScopedFastNativeObjectAccess soa(env);
@@ -108,6 +108,7 @@ static jint Thread_nativeGetStatus(JNIEnv* env, jobject java_thread, jboolean ha
     case ThreadState::kWaitingForGcThreadFlip:         return kJavaWaiting;
     case ThreadState::kNativeForAbort:                 return kJavaWaiting;
     case ThreadState::kSuspended:                      return kJavaRunnable;
+    case ThreadState::kInvalidState:                   break;
     // Don't add a 'default' here so the compiler can spot incompatible enum changes.
   }
   LOG(ERROR) << "Unexpected thread state: " << internal_thread_state;
@@ -147,11 +148,8 @@ static void Thread_setNativeName(JNIEnv* env, jobject peer, jstring java_name) {
   // thread list lock to avoid this, as setting the thread name causes mutator to lock/unlock
   // in the DDMS send code.
   ThreadList* thread_list = Runtime::Current()->GetThreadList();
-  bool timed_out;
   // Take suspend thread lock to avoid races with threads trying to suspend this one.
-  Thread* thread = thread_list->SuspendThreadByPeer(peer,
-                                                    SuspendReason::kInternal,
-                                                    &timed_out);
+  Thread* thread = thread_list->SuspendThreadByPeer(peer, SuspendReason::kInternal);
   if (thread != nullptr) {
     {
       ScopedObjectAccess soa(env);
@@ -159,9 +157,6 @@ static void Thread_setNativeName(JNIEnv* env, jobject peer, jstring java_name) {
     }
     bool resumed = thread_list->Resume(thread, SuspendReason::kInternal);
     DCHECK(resumed);
-  } else if (timed_out) {
-    LOG(ERROR) << "Trying to set thread name to '" << name.c_str() << "' failed as the thread "
-        "failed to suspend within a generous timeout.";
   }
 }
 

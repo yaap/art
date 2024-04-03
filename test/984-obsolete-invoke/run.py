@@ -17,3 +17,6 @@
 
 def run(ctx, args):
   ctx.default_run(args, jvmti=True)
+
+  if args.jvm:
+    ctx.expected_stdout = ctx.expected_stdout.with_suffix(".jvm.txt")

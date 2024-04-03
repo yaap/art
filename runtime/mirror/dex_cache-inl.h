@@ -25,7 +25,7 @@
 #include "art_method.h"
 #include "base/atomic_pair.h"
 #include "base/casts.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "class_linker.h"
 #include "dex/dex_file.h"
 #include "gc_root-inl.h"
@@ -40,7 +40,7 @@
 
 #include <atomic>
 
-namespace art {
+namespace art HIDDEN {
 namespace mirror {
 
 template<typename DexCachePair>

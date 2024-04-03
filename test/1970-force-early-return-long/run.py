@@ -21,3 +21,7 @@ def run(ctx, args):
   test_args = ["DISABLE_CLASS_LOAD_TESTS"] if args.jvm else []
 
   ctx.default_run(args, jvmti=True, test_args=test_args)
+
+  # The RI has changed how the Thread toString conversion is done.
+  if args.jvm:
+    ctx.expected_stdout = ctx.expected_stdout.with_suffix(".jvm.txt")

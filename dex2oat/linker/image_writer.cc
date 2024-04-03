@@ -30,9 +30,9 @@
 #include "art_field-inl.h"
 #include "art_method-inl.h"
 #include "base/callee_save_type.h"
-#include "base/enums.h"
 #include "base/globals.h"
 #include "base/logging.h"  // For VLOG.
+#include "base/pointer_size.h"
 #include "base/stl_util.h"
 #include "base/unix_file/fd_file.h"
 #include "class_linker-inl.h"
@@ -41,7 +41,6 @@
 #include "dex/dex_file_types.h"
 #include "driver/compiler_options.h"
 #include "elf/elf_utils.h"
-#include "elf_file.h"
 #include "entrypoints/entrypoint_utils-inl.h"
 #include "gc/accounting/card_table-inl.h"
 #include "gc/accounting/heap_bitmap.h"
@@ -54,7 +53,6 @@
 #include "gc/space/space-inl.h"
 #include "gc/verification.h"
 #include "handle_scope-inl.h"
-#include "image-inl.h"
 #include "imt_conflict_table.h"
 #include "indirect_reference_table-inl.h"
 #include "intern_table-inl.h"
@@ -78,9 +76,11 @@
 #include "mirror/var_handle.h"
 #include "nterp_helpers-inl.h"
 #include "nterp_helpers.h"
-#include "oat.h"
-#include "oat_file.h"
-#include "oat_file_manager.h"
+#include "oat/elf_file.h"
+#include "oat/image-inl.h"
+#include "oat/oat.h"
+#include "oat/oat_file.h"
+#include "oat/oat_file_manager.h"
 #include "optimizing/intrinsic_objects.h"
 #include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
@@ -571,6 +571,7 @@ bool ImageWriter::Write(int image_fd,
     for (size_t i = 0; i < oat_filenames_.size(); ++i) {
       CreateHeader(i, component_count);
       CopyAndFixupNativeData(i);
+      CopyAndFixupJniStubMethods(i);
     }
   }
 
@@ -1463,6 +1464,17 @@ void ImageWriter::RecordNativeRelocations(ObjPtr<mirror::Class> klass, size_t oa
     for (auto& m : klass->GetMethods(target_ptr_size_)) {
       AssignMethodOffset(&m, type, oat_index);
     }
+    // Only write JNI stub methods in boot images, but not in boot image extensions and app images.
+    // And the write only happens in non-debuggable since we never use AOT code for debuggable.
+    if (compiler_options_.IsBootImage() &&
+        compiler_options_.IsJniCompilationEnabled() &&
+        !compiler_options_.GetDebuggable()) {
+      for (auto& m : klass->GetMethods(target_ptr_size_)) {
+        if (m.IsNative() && !m.IsIntrinsic()) {
+          AssignJniStubMethodOffset(&m, oat_index);
+        }
+      }
+    }
     (any_dirty ? dirty_methods_ : clean_methods_) += num_methods;
   }
   // Assign offsets for all runtime methods in the IMT since these may hold conflict tables
@@ -1542,6 +1554,20 @@ void ImageWriter::AssignMethodOffset(ArtMethod* method,
   native_object_relocations_.insert(
       std::make_pair(method, NativeObjectRelocation{oat_index, offset, type}));
   image_info.IncrementBinSlotSize(bin_type, ArtMethod::Size(target_ptr_size_));
+}
+
+void ImageWriter::AssignJniStubMethodOffset(ArtMethod* method, size_t oat_index) {
+  CHECK(method->IsNative());
+  auto it = jni_stub_map_.find(JniStubKey(method));
+  if (it == jni_stub_map_.end()) {
+    ImageInfo& image_info = GetImageInfo(oat_index);
+    constexpr Bin bin_type = Bin::kJniStubMethod;
+    size_t offset = image_info.GetBinSlotSize(bin_type);
+    jni_stub_map_.Put(std::make_pair(
+        JniStubKey(method),
+        std::make_pair(method, JniStubMethodRelocation{oat_index, offset})));
+    image_info.IncrementBinSlotSize(bin_type, static_cast<size_t>(target_ptr_size_));
+  }
 }
 
 class ImageWriter::LayoutHelper {
@@ -2607,6 +2633,14 @@ void ImageWriter::CalculateNewObjectOffsets() {
     ImageInfo& image_info = GetImageInfo(relocation.oat_index);
     relocation.offset += image_info.GetBinSlotOffset(bin_type);
   }
+
+  // Update the JNI stub methods by adding their bin sums.
+  for (auto& pair : jni_stub_map_) {
+    JniStubMethodRelocation& relocation = pair.second.second;
+    constexpr Bin bin_type = Bin::kJniStubMethod;
+    ImageInfo& image_info = GetImageInfo(relocation.oat_index);
+    relocation.offset += image_info.GetBinSlotOffset(bin_type);
+  }
 }
 
 std::pair<size_t, dchecked_vector<ImageSection>>
@@ -2655,11 +2689,17 @@ ImageWriter::ImageInfo::CreateImageSections() const {
       ImageSection(GetBinSlotOffset(Bin::kRuntimeMethod), GetBinSlotSize(Bin::kRuntimeMethod));
 
   /*
+   * JNI Stub Methods section
+   */
+  sections[ImageHeader::kSectionJniStubMethods] =
+      ImageSection(GetBinSlotOffset(Bin::kJniStubMethod), GetBinSlotSize(Bin::kJniStubMethod));
+
+  /*
    * Interned Strings section
    */
 
   // Round up to the alignment the string table expects. See HashSet::WriteToMemory.
-  size_t cur_pos = RoundUp(sections[ImageHeader::kSectionRuntimeMethods].End(), sizeof(uint64_t));
+  size_t cur_pos = RoundUp(sections[ImageHeader::kSectionJniStubMethods].End(), sizeof(uint64_t));
 
   const ImageSection& interned_strings_section =
       sections[ImageHeader::kSectionInternedStrings] =
@@ -2808,7 +2848,7 @@ void ImageWriter::CreateHeader(size_t oat_index, size_t component_count) {
       boot_image_size_,
       boot_image_components,
       boot_image_checksums,
-      static_cast<uint32_t>(target_ptr_size_));
+      target_ptr_size_);
 }
 
 ArtMethod* ImageWriter::GetImageMethodAddress(ArtMethod* method) {
@@ -3027,6 +3067,21 @@ void ImageWriter::CopyAndFixupNativeData(size_t oat_index) {
       // The ClassSet was inserted at the beginning.
       CHECK_EQ(temp_class_table.classes_[0].size(), table.size());
     }
+  }
+}
+
+void ImageWriter::CopyAndFixupJniStubMethods(size_t oat_index) {
+  const ImageInfo& image_info = GetImageInfo(oat_index);
+  // Copy method's address to JniStubMethods section.
+  for (auto& pair : jni_stub_map_) {
+    JniStubMethodRelocation& relocation = pair.second.second;
+    // Only work with JNI stubs that are in the current oat file.
+    if (relocation.oat_index != oat_index) {
+      continue;
+    }
+    void** address = reinterpret_cast<void**>(image_info.image_.Begin() + relocation.offset);
+    ArtMethod* method = pair.second.first;
+    CopyAndFixupPointer(address, method);
   }
 }
 
@@ -3514,6 +3569,18 @@ void ImageWriter::CopyAndFixupMethod(ArtMethod* orig,
 
       // JNI entrypoint:
       if (orig->IsNative()) {
+        // Find boot JNI stub for those methods that skipped AOT compilation and don't need
+        // clinit check.
+        bool still_needs_clinit_check = orig->StillNeedsClinitCheck<kWithoutReadBarrier>();
+        if (!still_needs_clinit_check &&
+            !compiler_options_.IsBootImage() &&
+            quick_code == GetOatAddress(StubType::kQuickGenericJNITrampoline)) {
+          ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
+          const void* boot_jni_stub = class_linker->FindBootJniStub(orig);
+          if (boot_jni_stub != nullptr) {
+            quick_code = boot_jni_stub;
+          }
+        }
         // The native method's pointer is set to a stub to lookup via dlsym.
         // Note this is not the code_ pointer, that is handled above.
         StubType stub_type = orig->IsCriticalNative() ? StubType::kJNIDlsymLookupCriticalTrampoline
@@ -3580,7 +3647,6 @@ ImageWriter::Bin ImageWriter::BinTypeForNativeRelocationType(NativeObjectRelocat
     case NativeObjectRelocationType::kGcRootPointer:
       return Bin::kMetadata;
   }
-  UNREACHABLE();
 }
 
 size_t ImageWriter::GetOatIndex(mirror::Object* obj) const {
@@ -3684,6 +3750,8 @@ ImageWriter::ImageWriter(const CompilerOptions& compiler_options,
       image_objects_offset_begin_(0),
       target_ptr_size_(InstructionSetPointerSize(compiler_options.GetInstructionSet())),
       image_infos_(oat_filenames.size()),
+      jni_stub_map_(JniStubKeyHash(compiler_options.GetInstructionSet()),
+                    JniStubKeyEquals(compiler_options.GetInstructionSet())),
       dirty_methods_(0u),
       clean_methods_(0u),
       app_class_loader_(class_loader),

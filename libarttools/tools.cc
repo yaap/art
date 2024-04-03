@@ -28,14 +28,25 @@
 #include <system_error>
 #include <vector>
 
+#include "android-base/function_ref.h"
 #include "android-base/logging.h"
+#include "android-base/result.h"
+#include "android-base/strings.h"
 #include "base/macros.h"
+#include "fstab/fstab.h"
 
 namespace art {
 namespace tools {
 
 namespace {
 
+using ::android::base::ConsumeSuffix;
+using ::android::base::function_ref;
+using ::android::base::Result;
+using ::android::base::StartsWith;
+using ::android::fs_mgr::Fstab;
+using ::android::fs_mgr::FstabEntry;
+using ::android::fs_mgr::ReadFstabFromProcMounts;
 using ::std::placeholders::_1;
 
 // Returns true if `path_prefix` matches `pattern` or can be a prefix of a path that matches
@@ -141,6 +152,46 @@ std::vector<std::string> Glob(const std::vector<std::string>& patterns, std::str
 
 std::string EscapeGlob(const std::string& str) {
   return std::regex_replace(str, std::regex(R"re(\*|\?|\[)re"), "[$&]");
+}
+
+bool PathStartsWith(std::string_view path, std::string_view prefix) {
+  CHECK(!prefix.empty() && !path.empty() && prefix[0] == '/' && path[0] == '/')
+      << ART_FORMAT("path={}, prefix={}", path, prefix);
+  ConsumeSuffix(&prefix, "/");
+  return StartsWith(path, prefix) &&
+         (path.length() == prefix.length() || path[prefix.length()] == '/');
+}
+
+static Result<std::vector<FstabEntry>> GetProcMountsMatches(
+    function_ref<bool(std::string_view)> predicate) {
+  Fstab fstab;
+  if (!ReadFstabFromProcMounts(&fstab)) {
+    return Errorf("Failed to read fstab from /proc/mounts");
+  }
+  std::vector<FstabEntry> entries;
+  for (FstabEntry& entry : fstab) {
+    // Ignore swap areas as a swap area doesn't have a meaningful `mount_point` (a.k.a., `fs_file`)
+    // field, according to fstab(5). In addition, ignore any other entries whose mount points are
+    // not absolute paths, just in case there are other fs types that also have an meaningless mount
+    // point.
+    if (entry.fs_type == "swap" || !StartsWith(entry.mount_point, '/')) {
+      continue;
+    }
+    if (predicate(entry.mount_point)) {
+      entries.push_back(std::move(entry));
+    }
+  }
+  return entries;
+}
+
+Result<std::vector<FstabEntry>> GetProcMountsAncestorsOfPath(std::string_view path) {
+  return GetProcMountsMatches(
+      [&](std::string_view mount_point) { return PathStartsWith(path, mount_point); });
+}
+
+Result<std::vector<FstabEntry>> GetProcMountsDescendantsOfPath(std::string_view path) {
+  return GetProcMountsMatches(
+      [&](std::string_view mount_point) { return PathStartsWith(mount_point, path); });
 }
 
 }  // namespace tools

@@ -27,12 +27,12 @@
 #include <vector>
 
 #include "base/array_ref.h"
-#include "base/enums.h"
 #include "base/hash_map.h"
 #include "base/intrusive_forward_list.h"
 #include "base/locks.h"
 #include "base/macros.h"
 #include "base/mutex.h"
+#include "base/pointer_size.h"
 #include "dex/class_accessor.h"
 #include "dex/dex_file_types.h"
 #include "gc_root.h"
@@ -41,10 +41,11 @@
 #include "jni.h"
 #include "mirror/class.h"
 #include "mirror/object.h"
-#include "oat_file.h"
+#include "oat/jni_stub_hash_map.h"
+#include "oat/oat_file.h"
 #include "verifier/verifier_enums.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class ArtField;
 class ArtMethod;
@@ -158,7 +159,7 @@ class AllocatorVisitor {
       REQUIRES_SHARED(Locks::classlinker_classes_lock_, Locks::mutator_lock_) = 0;
 };
 
-class ClassLinker {
+class EXPORT ClassLinker {
  public:
   static constexpr bool kAppImageMayContainStrings = true;
 
@@ -888,6 +889,17 @@ class ClassLinker {
   ClassTable* GetBootClassTable() REQUIRES_SHARED(Locks::classlinker_classes_lock_) {
     return boot_class_table_.get();
   }
+  // Find a matching JNI stub from boot images that we could reuse as entrypoint.
+  const void* FindBootJniStub(ArtMethod* method)
+      REQUIRES_SHARED(Locks::mutator_lock_) {
+    return FindBootJniStub(JniStubKey(method));
+  }
+
+  const void* FindBootJniStub(uint32_t flags, std::string_view shorty) {
+    return FindBootJniStub(JniStubKey(flags, shorty));
+  }
+
+  const void* FindBootJniStub(JniStubKey key);
 
  protected:
   virtual bool InitializeClass(Thread* self,
@@ -1409,6 +1421,10 @@ class ClassLinker {
   Mutex critical_native_code_with_clinit_check_lock_;
   std::map<ArtMethod*, void*> critical_native_code_with_clinit_check_
       GUARDED_BY(critical_native_code_with_clinit_check_lock_);
+
+  // Load unique JNI stubs from boot images. If the subsequently loaded native methods could find a
+  // matching stub, then reuse it without JIT/AOT compilation.
+  JniStubHashMap<const void*> boot_image_jni_stubs_;
 
   std::unique_ptr<ClassHierarchyAnalysis> cha_;
 

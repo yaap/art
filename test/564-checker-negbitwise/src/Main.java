@@ -280,6 +280,72 @@ public class Main {
     return ~a | ~b;
   }
 
+  /**
+   * Check that we transform a And+Sub into a bic
+   */
+
+  /// CHECK-START-ARM: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_arm (before)
+  /// CHECK: <<HAnd:i\d+>> And [<<Left:i\d+>>,<<Right:i\d+>>]
+  /// CHECK:               Sub [<<Left>>,<<HAnd>>]
+
+  /// CHECK-START-ARM: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_arm (after)
+  /// CHECK-NOT: And
+
+  /// CHECK-START-ARM: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_arm (after)
+  /// CHECK-NOT: Sub
+
+  /// CHECK-START-ARM: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_arm (after)
+  /// CHECK:     BitwiseNegatedRight kind:And
+
+  /// CHECK-START-ARM64: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_arm64 (before)
+  /// CHECK: <<HAnd:i\d+>> And [<<Left:i\d+>>,<<Right:i\d+>>]
+  /// CHECK:               Sub [<<Left>>,<<HAnd>>]
+
+  /// CHECK-START-ARM64: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_arm64 (after)
+  /// CHECK-NOT: And
+
+  /// CHECK-START-ARM64: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_arm64 (after)
+  /// CHECK-NOT: Sub
+
+  /// CHECK-START-ARM64: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_arm64 (after)
+  /// CHECK:     BitwiseNegatedRight kind:And
+  public static int $noinline$AndSubIntoBic(int a, int b) {
+      return a - (a & b);
+  }
+
+  /**
+   * Check that we transform a And+Sub into a bic. Alternative version where the and is inverted.
+   */
+
+  /// CHECK-START-ARM: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_arm (before)
+  /// CHECK: <<HAnd:i\d+>> And [<<Left:i\d+>>,<<Right:i\d+>>]
+  /// CHECK:               Sub [<<Right>>,<<HAnd>>]
+
+  /// CHECK-START-ARM: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_arm (after)
+  /// CHECK-NOT: And
+
+  /// CHECK-START-ARM: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_arm (after)
+  /// CHECK-NOT: Sub
+
+  /// CHECK-START-ARM: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_arm (after)
+  /// CHECK:     BitwiseNegatedRight kind:And
+
+  /// CHECK-START-ARM64: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_arm64 (before)
+  /// CHECK: <<HAnd:i\d+>> And [<<Left:i\d+>>,<<Right:i\d+>>]
+  /// CHECK:               Sub [<<Right>>,<<HAnd>>]
+
+  /// CHECK-START-ARM64: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_arm64 (after)
+  /// CHECK-NOT: And
+
+  /// CHECK-START-ARM64: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_arm64 (after)
+  /// CHECK-NOT: Sub
+
+  /// CHECK-START-ARM64: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_arm64 (after)
+  /// CHECK:     BitwiseNegatedRight kind:And
+  public static int $noinline$AndSubIntoBic_v2(int a, int b) {
+      return b - (a & b);
+  }
+
   public static void main(String[] args) {
     assertIntEquals(0xe,   $opt$noinline$notAnd(0xf, 0x1));
     assertLongEquals(~0x0, $opt$noinline$notOr(0xf, 0x1));
@@ -287,5 +353,7 @@ public class Main {
     assertIntEquals(0xe,  $opt$noinline$notAndConstant(0x1));
     assertIntEquals(0xe,   $opt$noinline$notAndMultipleUses(0xf, 0x1));
     assertIntEquals(~0x1,  $opt$noinline$deMorganOr(0x3, 0x1));
+    assertIntEquals(0x2, $noinline$AndSubIntoBic(0x3, 0x1));
+    assertIntEquals(0x2, $noinline$AndSubIntoBic_v2(0x1, 0x3));
   }
 }

@@ -41,9 +41,6 @@ class BlockInfo : public ArenaObject<kArenaAllocSsaLiveness> {
         live_out_(allocator, number_of_ssa_values, false, kArenaAllocSsaLiveness),
         kill_(allocator, number_of_ssa_values, false, kArenaAllocSsaLiveness) {
     UNUSED(block_);
-    live_in_.ClearAllBits();
-    live_out_.ClearAllBits();
-    kill_.ClearAllBits();
   }
 
  private:

@@ -38,16 +38,11 @@ BitVector::BitVector(bool expandable,
   static_assert(sizeof(*storage_) * 8u == kWordBits, "word bits");
 }
 
-BitVector::BitVector(uint32_t start_bits,
-                     bool expandable,
-                     Allocator* allocator)
-  : BitVector(expandable,
-              allocator,
-              BitsToWords(start_bits),
-              static_cast<uint32_t*>(allocator->Alloc(BitsToWords(start_bits) * kWordBytes))) {
-  // We don't know if the allocator cleared things.
-  ClearAllBits();
-}
+BitVector::BitVector(uint32_t start_bits, bool expandable, Allocator* allocator)
+    : BitVector(expandable,
+                allocator,
+                BitsToWords(start_bits),
+                static_cast<uint32_t*>(allocator->Alloc(BitsToWords(start_bits) * kWordBytes))) {}
 
 BitVector::BitVector(const BitVector& src,
                      bool expandable,
@@ -374,33 +369,6 @@ void BitVector::EnsureSize(uint32_t idx) {
 
 Allocator* BitVector::GetAllocator() const {
   return allocator_;
-}
-
-void BaseBitVectorArray::Resize(size_t rows, size_t cols, bool clear) {
-  DCHECK(IsExpandable());
-  if (clear) {
-    Clear();
-  }
-  cols = RoundUp(cols, BitVector::kWordBits);
-  num_columns_ = cols;
-  num_rows_ = rows;
-  // Ensure size
-  GetRawData().SetBit(num_rows_ * num_columns_ - 1);
-  GetRawData().ClearBit(num_rows_ * num_columns_ - 1);
-}
-
-// In order to improve performance we do this in 4-byte blocks. Clang should be
-// able to optimize this to larger blocks if possible.
-void BaseBitVectorArray::UnionRows(size_t dest_row, size_t other) {
-  DCHECK_LT(dest_row, num_rows_);
-  DCHECK_LT(other, num_rows_);
-  size_t block_words = num_columns_ / BitVector::kWordBits;
-  uint32_t* dest =
-      GetRawData().GetRawStorage() + ((dest_row * num_columns_) / BitVector::kWordBits);
-  uint32_t* source = GetRawData().GetRawStorage() + ((other * num_columns_) / BitVector::kWordBits);
-  for (uint32_t i = 0; i < block_words; ++i, ++dest, ++source) {
-    *dest = (*dest) | (*source);
-  }
 }
 
 }  // namespace art

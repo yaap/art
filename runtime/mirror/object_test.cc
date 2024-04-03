@@ -25,7 +25,7 @@
 #include "art_field-inl.h"
 #include "art_method-inl.h"
 #include "asm_support.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "class-alloc-inl.h"
 #include "class-inl.h"
 #include "class_linker-inl.h"
@@ -45,7 +45,7 @@
 #include "scoped_thread_state_change-inl.h"
 #include "string-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace mirror {
 
 class ObjectTest : public CommonRuntimeTest {

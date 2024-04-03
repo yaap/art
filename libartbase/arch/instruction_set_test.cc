@@ -18,7 +18,7 @@
 
 #include <gtest/gtest.h>
 
-#include "base/enums.h"
+#include "base/pointer_size.h"
 
 namespace art {
 

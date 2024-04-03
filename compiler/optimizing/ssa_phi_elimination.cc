@@ -143,7 +143,6 @@ bool SsaRedundantPhiElimination::Run() {
                                        graph_->GetCurrentInstructionId(),
                                        /* expandable= */ false,
                                        kArenaAllocSsaPhiElimination);
-  visited_phis_in_cycle.ClearAllBits();
   ScopedArenaVector<HPhi*> cycle_worklist(allocator.Adapter(kArenaAllocSsaPhiElimination));
 
   while (!worklist.empty()) {

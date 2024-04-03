@@ -17,14 +17,14 @@
 #ifndef ART_RUNTIME_MIRROR_REFERENCE_H_
 #define ART_RUNTIME_MIRROR_REFERENCE_H_
 
-#include "base/enums.h"
 #include "base/locks.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "obj_ptr.h"
 #include "object.h"
 #include "read_barrier_option.h"
 
-namespace art {
+namespace art HIDDEN {
 
 namespace gc {
 

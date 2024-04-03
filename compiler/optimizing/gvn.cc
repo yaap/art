@@ -248,7 +248,7 @@ class ValueSet : public ArenaObject<kArenaAllocGvn> {
   // Iterates over buckets with impure instructions (even indices) and deletes
   // the ones on which 'cond' returns true.
   template<typename Functor>
-  void DeleteAllImpureWhich(Functor cond) {
+  void DeleteAllImpureWhich(Functor&& cond) {
     for (size_t i = 0; i < num_buckets_; i += 2) {
       Node* node = buckets_[i];
       Node* previous = nullptr;
@@ -353,16 +353,13 @@ class ValueSet : public ArenaObject<kArenaAllocGvn> {
  */
 class GlobalValueNumberer : public ValueObject {
  public:
-  GlobalValueNumberer(HGraph* graph,
-                      const SideEffectsAnalysis& side_effects)
+  GlobalValueNumberer(HGraph* graph, const SideEffectsAnalysis& side_effects)
       : graph_(graph),
         allocator_(graph->GetArenaStack()),
         side_effects_(side_effects),
         sets_(graph->GetBlocks().size(), nullptr, allocator_.Adapter(kArenaAllocGvn)),
         visited_blocks_(
-            &allocator_, graph->GetBlocks().size(), /* expandable= */ false, kArenaAllocGvn) {
-    visited_blocks_.ClearAllBits();
-  }
+            &allocator_, graph->GetBlocks().size(), /* expandable= */ false, kArenaAllocGvn) {}
 
   bool Run();
 

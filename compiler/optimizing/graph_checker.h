@@ -30,7 +30,7 @@ namespace art HIDDEN {
 class CodeGenerator;
 
 // A control-flow graph visitor performing various checks.
-class GraphChecker : public HGraphDelegateVisitor {
+class GraphChecker final : public HGraphDelegateVisitor {
  public:
   explicit GraphChecker(HGraph* graph,
                         CodeGenerator* codegen = nullptr,
@@ -43,9 +43,7 @@ class GraphChecker : public HGraphDelegateVisitor {
         uses_per_instruction_(allocator_.Adapter(kArenaAllocGraphChecker)),
         instructions_per_block_(allocator_.Adapter(kArenaAllocGraphChecker)),
         phis_per_block_(allocator_.Adapter(kArenaAllocGraphChecker)),
-        codegen_(codegen) {
-    seen_ids_.ClearAllBits();
-  }
+        codegen_(codegen) {}
 
   // Check the whole graph. The pass_change parameter indicates whether changes
   // may have occurred during the just executed pass. The default value is
@@ -59,6 +57,8 @@ class GraphChecker : public HGraphDelegateVisitor {
   void VisitPhi(HPhi* phi) override;
 
   void VisitArraySet(HArraySet* instruction) override;
+  void VisitInstanceFieldSet(HInstanceFieldSet* instruction) override;
+  void VisitStaticFieldSet(HStaticFieldSet* instruction) override;
   void VisitBinaryOperation(HBinaryOperation* op) override;
   void VisitBooleanNot(HBooleanNot* instruction) override;
   void VisitBoundType(HBoundType* instruction) override;
@@ -92,6 +92,9 @@ class GraphChecker : public HGraphDelegateVisitor {
   void HandleTypeCheckInstruction(HTypeCheckInstruction* instruction);
   void HandleLoop(HBasicBlock* loop_header);
   void HandleBooleanInput(HInstruction* instruction, size_t input_index);
+
+  template <typename GetWriteBarrierKind>
+  void CheckWriteBarrier(HInstruction* instruction, GetWriteBarrierKind&& get_write_barrier_kind);
 
   // Was the last visit of the graph valid?
   bool IsValid() const {

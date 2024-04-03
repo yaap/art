@@ -46,7 +46,7 @@ public class HaddAltChar {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddAltChar.halving_add_unsigned(char[], char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd
@@ -97,7 +97,7 @@ public class HaddAltChar {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddAltChar.halving_add_also_unsigned(char[], char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd
@@ -138,7 +138,7 @@ public class HaddAltChar {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddAltChar.rounding_halving_add_unsigned(char[], char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd
@@ -191,7 +191,7 @@ public class HaddAltChar {
   //
   //
   /// CHECK-START-ARM64: void HaddAltChar.rounding_halving_add_also_unsigned(char[], char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd
@@ -232,7 +232,7 @@ public class HaddAltChar {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddAltChar.halving_add_unsigned_constant(char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd
@@ -282,7 +282,7 @@ public class HaddAltChar {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddAltChar.halving_add_also_unsigned_constant(char[], char[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd

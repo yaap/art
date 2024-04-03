@@ -46,7 +46,6 @@ inline size_t AtomicDexRefMap<DexFileReferenceType, Value>::NumberOfDexIndices(
   if (std::is_same<DexFileReferenceType, TypeReference>::value) {
     return dex_file->NumTypeIds();
   }
-  UNREACHABLE();
 }
 
 template <typename DexFileReferenceType, typename Value>

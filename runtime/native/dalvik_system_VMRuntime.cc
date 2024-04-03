@@ -32,7 +32,7 @@ extern "C" void android_set_application_target_sdk_version(uint32_t version);
 #include "android-base/properties.h"
 #include "arch/instruction_set.h"
 #include "art_method-inl.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "base/sdk_version.h"
 #include "class_linker-inl.h"
 #include "class_loader_context.h"
@@ -66,7 +66,7 @@ extern "C" void android_set_application_target_sdk_version(uint32_t version);
 #include "thread-inl.h"
 #include "thread_list.h"
 
-namespace art {
+namespace art HIDDEN {
 
 using android::base::StringPrintf;
 
@@ -590,6 +590,15 @@ static JNINativeMethod gMethods[] = {
 };
 
 void register_dalvik_system_VMRuntime(JNIEnv* env) {
+  if (Runtime::Current()->GetTargetSdkVersion() <= static_cast<uint32_t>(SdkVersion::kU)) {
+    real_register_dalvik_system_VMRuntime(env);
+  } else {
+    Runtime::Current()->Abort(
+        "Call to internal function 'register_dalvik_system_VMRuntime' is not allowed");
+  }
+}
+
+void real_register_dalvik_system_VMRuntime(JNIEnv* env) {
   REGISTER_NATIVE_METHODS("dalvik/system/VMRuntime");
 }
 

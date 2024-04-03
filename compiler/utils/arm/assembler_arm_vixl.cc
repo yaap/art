@@ -173,9 +173,6 @@ int32_t ArmVIXLAssembler::GetAllowedLoadOffsetBits(LoadOperandType type) {
     case kLoadWordPair:
       // We can encode imm8:'00' offset.
       return 0xff << 2;
-    default:
-      LOG(FATAL) << "UNREACHABLE";
-      UNREACHABLE();
   }
 }
 
@@ -192,9 +189,6 @@ int32_t ArmVIXLAssembler::GetAllowedStoreOffsetBits(StoreOperandType type) {
     case kStoreWordPair:
       // We can encode imm8:'00' offset.
       return 0xff << 2;
-    default:
-      LOG(FATAL) << "UNREACHABLE";
-      UNREACHABLE();
   }
 }
 
@@ -212,9 +206,6 @@ static bool CanHoldLoadOffsetThumb(LoadOperandType type, int offset) {
       return IsAbsoluteUint<10>(offset) && IsAligned<4>(offset);  // VFP addressing mode.
     case kLoadWordPair:
       return IsAbsoluteUint<10>(offset) && IsAligned<4>(offset);
-    default:
-      LOG(FATAL) << "UNREACHABLE";
-      UNREACHABLE();
   }
 }
 
@@ -230,9 +221,6 @@ static bool CanHoldStoreOffsetThumb(StoreOperandType type, int offset) {
       return IsAbsoluteUint<10>(offset) && IsAligned<4>(offset);  // VFP addressing mode.
     case kStoreWordPair:
       return IsAbsoluteUint<10>(offset) && IsAligned<4>(offset);
-    default:
-      LOG(FATAL) << "UNREACHABLE";
-      UNREACHABLE();
   }
 }
 

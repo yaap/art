@@ -20,7 +20,6 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
-#include <strstream>
 
 #include <jni.h>
 

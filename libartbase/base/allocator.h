@@ -28,7 +28,7 @@ static constexpr bool kEnableTrackingAllocator = false;
 
 class Allocator {
  public:
-  static Allocator* GetMallocAllocator();
+  static Allocator* GetCallocAllocator();
   static Allocator* GetNoopAllocator();
 
   Allocator() {}

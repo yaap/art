@@ -37,6 +37,38 @@ class MyClassNatives {
     // Normal native
     native int fooI(int x);
     // Normal native
+    native int fooL(Object x);
+    // Normal native
+    native void fooI_V(int x);
+    // Normal native
+    native byte fooI_B(int x);
+    // Normal native
+    native char fooI_C(int x);
+    // Normal native
+    native short fooI_S(int x);
+    // Normal native
+    native boolean fooI_Z(int x);
+    // Normal native
+    native long fooI_J(int x);
+    // Normal native
+    native float fooI_F(int x);
+    // Normal native
+    native double fooI_D(int x);
+    // Normal native
+    native Object fooI_L(int x);
+    // Normal native
+    static native int sfooI(int x);
+    // Normal native
+    static native int sfooB(byte x);
+    // Normal native
+    static native int sfooC(char x);
+    // Normal native
+    static native int sfooS(short x);
+    // Normal native
+    static native int sfooZ(boolean x);
+    // Normal native
+    static native int sfooL(Object x);
+    // Normal native
     native int fooII(int x, int y);
     // Normal native
     native long fooJJ(long x, long y);
@@ -156,6 +188,52 @@ class MyClassNatives {
     // Normal native
     static native long returnLong();
 
+    // Normal native
+    static native int sfoo7FI(float f1, float f2, float f3, float f4, float f5, float f6,
+        float f7, int i1);
+    // Normal native
+    static native int sfoo3F5DI(float f1, float f2, float f3, double d1, double d2, double d3,
+        double d4, double d5, int i1);
+    // Normal native
+    static native int sfoo3F6DI(float f1, float f2, float f3, double d1, double d2, double d3,
+        double d4, double d5, double d6, int i1);
+    // Normal native
+    native int fooL4I(Object o1, int i1, int i2, int i3, int i4);
+    // Normal native
+    native int fooL5I(Object o1, int i1, int i2, int i3, int i4, int i5);
+    // Normal native
+    native int fooL3IJC(Object o1, int i1, int i2, int i3, long l1, char c1);
+    // Normal native
+    native int fooL3IJCS(Object o1, int i1, int i2, int i3, long l1, char c1, short s1);
+    // Normal native
+    native int foo9F(float f1, float f2, float f3, float f4, float f5, float f6, float f7,
+        float f8, float f9);
+    // Normal native
+    native int foo7FDF(float f1, float f2, float f3, float f4, float f5, float f6, float f7,
+        double d1, float f8);
+    // Normal native
+    native int foo7FIFF(float f1, float f2, float f3, float f4, float f5, float f6, float f7,
+        int i1, float f8, float f9);
+    // Normal native
+    native int foo7I(int i1, int i2, int i3, int i4, int i5, int i6, int i7);
+    // Normal native
+    native int foo5IJI(int i1, int i2, int i3, int i4, int i5, long l1, int i6);
+    // Normal native
+    native int foo5IFII(int i1, int i2, int i3, int i4, int i5, float f1, int i6, int i7);
+    // Normal native
+    native int foo2FL(float f1, float f2, Object o1);
+    // Normal native
+    native int fooFDL(float f1, double f2, Object o1);
+    // Normal native
+    native int foo3FL(float f1, float f2, float f3, Object o1);
+    // Normal native
+    native int foo2FIL(float f1, float f2, int i1, Object o1);
+    // Normal native
+    native int foo2IFL(int i1, int i2, float f1, Object o1);
+    // Normal native
+    native int fooICFL(int i1, char c1, float f1, Object o1);
+    // Normal native
+    native int fooICIL(int i1, char c1, int i2, Object o1);
 
 
     @FastNative
@@ -284,6 +362,38 @@ class MyClassNatives {
     @FastNative
     static native long returnLong_Fast();
 
+    @FastNative
+    native boolean fooI_Z_Fast(int i);
+    @FastNative
+    native long fooI_J_Fast(int i);
+    @FastNative
+    native int fooICFL_Fast(int i1, char c1, float f1, Object o1);
+    @FastNative
+    native int foo2IFL_Fast(int i1, int i2, float f1, Object o1);
+    @FastNative
+    native int fooICIL_Fast(int i1, char c1, int i2, Object o1);
+    @FastNative
+    native int fooFDL_Fast(float f1, double d1, Object o1);
+    @FastNative
+    native int foo2FL_Fast(float f1, float f2, Object o1);
+    @FastNative
+    native int foo3FL_Fast(float f1, float f2, float f3, Object o1);
+    @FastNative
+    native int foo2FIL_Fast(float f1, float f2, int i1, Object o1);
+    @FastNative
+    native int foo7F_Fast(float f1, float f2, float f3, float f4, float f5, float f6, float f7);
+    @FastNative
+    native int foo3F5D_Fast(float f1, float f2, float f3, double d1, double d2, double d3,
+        double d4, double d5);
+    @FastNative
+    native int foo3F6D_Fast(float f1, float f2, float f3, double d1, double d2, double d3,
+        double d4, double d5, double d6);
+    @FastNative
+    native int fooL5I_Fast(Object o1, int i1, int i2, int i3, int i4, int i5);
+    @FastNative
+    native int fooL3IJC_Fast(Object o1, int i1, int i2, int i3, long l1, char c1);
+    @FastNative
+    native int fooL3IJCS_Fast(Object o1, int i1, int i2, int i3, long l1, char c1, short s1);
 
 
     @CriticalNative
@@ -326,6 +436,15 @@ class MyClassNatives {
     @CriticalNative
     static native long returnLong_Critical();
 
+    @CriticalNative
+    static native int foo7F_Critical(float f1, float f2, float f3, float f4, float f5, float f6,
+        float f7);
+    @CriticalNative
+    static native int foo3F5D_Critical(float f1, float f2, float f3, double d1, double d2,
+        double d3, double d4, double d5);
+    @CriticalNative
+    static native int foo3F6D_Critical(float f1, float f2, float f3, double d1, double d2,
+        double d3, double d4, double d5, double d6);
 
 
     // Check for @FastNative/@CriticalNative annotation presence [or lack of presence].

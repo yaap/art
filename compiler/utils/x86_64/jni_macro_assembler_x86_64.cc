@@ -610,7 +610,7 @@ void X86_64JNIMacroAssembler::DeliverPendingException() {
 }
 
 std::unique_ptr<JNIMacroLabel> X86_64JNIMacroAssembler::CreateLabel() {
-  return std::unique_ptr<JNIMacroLabel>(new X86_64JNIMacroLabel());
+  return std::unique_ptr<JNIMacroLabel>(new (asm_.GetAllocator()) X86_64JNIMacroLabel());
 }
 
 void X86_64JNIMacroAssembler::Jump(JNIMacroLabel* label) {
@@ -624,9 +624,6 @@ static Condition UnaryConditionToX86_64Condition(JNIMacroUnaryCondition cond) {
       return kZero;
     case JNIMacroUnaryCondition::kNotZero:
       return kNotZero;
-    default:
-      LOG(FATAL) << "Not implemented condition: " << static_cast<int>(cond);
-      UNREACHABLE();
   }
 }
 

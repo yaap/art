@@ -73,16 +73,14 @@ class FdFile : public RandomAccessFile {
   int64_t GetLength() const override;
   int64_t Write(const char* buf, int64_t byte_count, int64_t offset) override WARN_UNUSED;
 
-  int Flush() override WARN_UNUSED;
+  int Flush() override WARN_UNUSED { return Flush(/*flush_metadata=*/false); }
 
   // Short for SetLength(0); Flush(); Close();
   // If the file was opened with a path name and unlink = true, also calls Unlink() on the path.
   // Note that it is the the caller's responsibility to avoid races.
   bool Erase(bool unlink = false);
 
-  // Call unlink() if the file was opened with a path, and if open() with the name shows that
-  // the file descriptor of this file is still up-to-date. This is still racy, though, and it
-  // is up to the caller to ensure correctness in a multi-process setup.
+  // Call unlink(), though only if FilePathMatchesFd() returns true.
   bool Unlink();
 
   // Try to Flush(), then try to Close(); If either fails, call Erase().
@@ -110,6 +108,15 @@ class FdFile : public RandomAccessFile {
   bool WriteFully(const void* buffer, size_t byte_count) WARN_UNUSED;
   bool PwriteFully(const void* buffer, size_t byte_count, size_t offset) WARN_UNUSED;
 
+  // Change the file path, though only if FilePathMatchesFd() returns true.
+  //
+  // If a file at new_path already exists, it will be replaced.
+  // On Linux, the rename syscall will fail unless the source and destination are on the same
+  // mounted filesystem.
+  // This function is not expected to modify the file data itself, instead it modifies the inodes of
+  // the source and destination directories, and therefore the function flushes those file
+  // descriptors following the rename.
+  bool Rename(const std::string& new_path);
   // Copy data from another file.
   bool Copy(FdFile* input_file, int64_t offset, int64_t size);
   // Clears the file content and resets the file offset to 0.
@@ -164,6 +171,14 @@ class FdFile : public RandomAccessFile {
  private:
   template <bool kUseOffset>
   bool WriteFullyGeneric(const void* buffer, size_t byte_count, size_t offset);
+
+  int Flush(bool flush_metadata) WARN_UNUSED;
+
+  // The file path we hold for the file descriptor may be invalid, or may not even exist (e.g. if
+  // the FdFile wasn't initialised with a path). This helper function checks if calling open() on
+  // the file path (if it is set) returns the expected up-to-date file descriptor. This is still
+  // racy, though, and it is up to the caller to ensure correctness in a multi-process setup.
+  bool FilePathMatchesFd();
 
   void Destroy();  // For ~FdFile and operator=(&&).
 

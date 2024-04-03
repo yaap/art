@@ -15,7 +15,7 @@
  */
 
 #include "art_method.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "jni.h"
 #include "mirror/array-inl.h"
 #include "mirror/class-inl.h"

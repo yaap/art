@@ -20,8 +20,8 @@
 #include <locale>
 
 #include "base/casts.h"
-#include "base/enums.h"
 #include "base/memory_tool.h"
+#include "base/pointer_size.h"
 #include "class_linker.h"
 #include "class_root-inl.h"
 #include "common_runtime_test.h"
@@ -45,7 +45,7 @@
 #include "transaction.h"
 #include "unstarted_runtime_list.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace interpreter {
 
 // Deleter to be used with ShadowFrame::CreateDeoptimizedFrame objects.
@@ -1305,7 +1305,9 @@ TEST_F(UnstartedRuntimeTest, ClassGetSignatureAnnotation) {
     oss << elem->AsString()->ToModifiedUtf8();
   }
   std::string output_string = oss.str();
-  ASSERT_EQ(output_string, "<E:Ljava/lang/Object;>Ljava/lang/Object;Ljava/util/Collection<TE;>;");
+  ASSERT_EQ(output_string,
+            "<E:Ljava/lang/Object;>Ljava/lang/Object;Ljava/util/SequencedCollection<TE;>;"
+            "Ljava/util/Collection<TE;>;");
 }
 
 TEST_F(UnstartedRuntimeTest, ConstructorNewInstance0) {

@@ -104,7 +104,7 @@ public class HaddOther {
   /// CHECK: VecHalvingAdd
   //
   /// CHECK-START-ARM64: void HaddOther.test_no_hadd_sum_cast_plus_const(short[], short[], short[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd

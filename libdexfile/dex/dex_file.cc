@@ -29,9 +29,9 @@
 #include <type_traits>
 
 #include "android-base/stringprintf.h"
-#include "base/enums.h"
 #include "base/hiddenapi_domain.h"
 #include "base/leb128.h"
+#include "base/pointer_size.h"
 #include "base/stl_util.h"
 #include "class_accessor-inl.h"
 #include "compact_dex_file.h"

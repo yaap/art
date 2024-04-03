@@ -37,12 +37,12 @@
 #include "base/array_ref.h"
 #include "base/bit_memory_region.h"
 #include "base/callee_save_type.h"
-#include "base/enums.h"
 #include "base/file_utils.h"
 #include "base/globals.h"
 #include "base/macros.h"
 #include "base/memfd.h"
 #include "base/os.h"
+#include "base/pointer_size.h"
 #include "base/scoped_flock.h"
 #include "base/stl_util.h"
 #include "base/string_view_cpp20.h"
@@ -55,21 +55,21 @@
 #include "exec_utils.h"
 #include "gc/accounting/space_bitmap-inl.h"
 #include "gc/task_processor.h"
-#include "image-inl.h"
-#include "image.h"
 #include "intern_table-inl.h"
 #include "mirror/class-inl.h"
 #include "mirror/executable-inl.h"
 #include "mirror/object-inl.h"
 #include "mirror/object-refvisitor-inl.h"
 #include "mirror/var_handle.h"
-#include "oat.h"
-#include "oat_file.h"
+#include "oat/image-inl.h"
+#include "oat/image.h"
+#include "oat/oat.h"
+#include "oat/oat_file.h"
 #include "profile/profile_compilation_info.h"
 #include "runtime.h"
 #include "space-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace gc {
 namespace space {
 
@@ -1125,7 +1125,10 @@ class ImageSpace::Loader {
    public:
     ALWAYS_INLINE bool InSource(uintptr_t) const { return false; }
     ALWAYS_INLINE bool InDest(uintptr_t) const { return false; }
-    ALWAYS_INLINE uintptr_t ToDest(uintptr_t) const { UNREACHABLE(); }
+    ALWAYS_INLINE uintptr_t ToDest(uintptr_t) const {
+      LOG(FATAL) << "Unreachable";
+      UNREACHABLE();
+    }
   };
 
   template <typename Range0, typename Range1 = EmptyRange, typename Range2 = EmptyRange>
@@ -2615,6 +2618,9 @@ class ImageSpace::BootImageLoader {
       };
       image_header.VisitPackedImTables(method_table_visitor, space->Begin(), kPointerSize);
       image_header.VisitPackedImtConflictTables(method_table_visitor, space->Begin(), kPointerSize);
+      image_header.VisitJniStubMethods</*kUpdate=*/ true>(method_table_visitor,
+                                                          space->Begin(),
+                                                          kPointerSize);
 
       // Patch the intern table.
       if (image_header.GetInternedStringsSection().Size() != 0u) {

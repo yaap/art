@@ -19,7 +19,9 @@
 
 #include <memory>
 
-namespace art {
+#include "base/macros.h"
+
+namespace art HIDDEN {
 namespace metrics {
 
 class MetricsBackend;
@@ -27,10 +29,10 @@ class MetricsBackend;
 // Statsd is only supported on Android
 #ifdef __ANDROID__
 std::unique_ptr<MetricsBackend> CreateStatsdBackend();
-void ReportDeviceMetrics();
+void SetupCallbackForDeviceStatus();
 #else
 inline std::unique_ptr<MetricsBackend> CreateStatsdBackend() { return nullptr; }
-inline void ReportDeviceMetrics() {}
+inline void SetupCallbackForDeviceStatus() {}
 #endif
 
 }  // namespace metrics

@@ -34,7 +34,6 @@ bool CompilerFilter::IsAotCompilationEnabled(Filter filter) {
     case CompilerFilter::kEverythingProfile:
     case CompilerFilter::kEverything: return true;
   }
-  UNREACHABLE();
 }
 
 bool CompilerFilter::IsJniCompilationEnabled(Filter filter) {
@@ -49,7 +48,6 @@ bool CompilerFilter::IsJniCompilationEnabled(Filter filter) {
     case CompilerFilter::kEverythingProfile:
     case CompilerFilter::kEverything: return true;
   }
-  UNREACHABLE();
 }
 
 bool CompilerFilter::IsAnyCompilationEnabled(Filter filter) {
@@ -68,7 +66,6 @@ bool CompilerFilter::IsVerificationEnabled(Filter filter) {
     case CompilerFilter::kEverythingProfile:
     case CompilerFilter::kEverything: return true;
   }
-  UNREACHABLE();
 }
 
 bool CompilerFilter::DependsOnImageChecksum(Filter filter) {
@@ -89,7 +86,6 @@ bool CompilerFilter::DependsOnProfile(Filter filter) {
     case CompilerFilter::kSpeedProfile:
     case CompilerFilter::kEverythingProfile: return true;
   }
-  UNREACHABLE();
 }
 
 CompilerFilter::Filter CompilerFilter::GetNonProfileDependentFilterFrom(Filter filter) {
@@ -110,7 +106,6 @@ CompilerFilter::Filter CompilerFilter::GetNonProfileDependentFilterFrom(Filter f
     case CompilerFilter::kEverythingProfile:
       return CompilerFilter::kEverything;
   }
-  UNREACHABLE();
 }
 
 CompilerFilter::Filter CompilerFilter::GetSafeModeFilterFrom(Filter filter) {
@@ -129,7 +124,6 @@ CompilerFilter::Filter CompilerFilter::GetSafeModeFilterFrom(Filter filter) {
     case CompilerFilter::kEverythingProfile:
       return CompilerFilter::kVerify;
   }
-  UNREACHABLE();
 }
 
 bool CompilerFilter::IsAsGoodAs(Filter current, Filter target) {
@@ -151,7 +145,6 @@ std::string CompilerFilter::NameOfFilter(Filter filter) {
     case CompilerFilter::kEverythingProfile: return "everything-profile";
     case CompilerFilter::kEverything: return "everything";
   }
-  UNREACHABLE();
 }
 
 bool CompilerFilter::ParseCompilerFilter(const char* option, Filter* filter) {

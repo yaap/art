@@ -56,6 +56,7 @@ class ReadBarrierSystemArrayCopySlowPathRISCV64 : public SlowPathCodeRISCV64 {
     XRegister tmp_reg = tmp_.AsRegister<XRegister>();
 
     __ Bind(GetEntryLabel());
+    // The source range and destination pointer were initialized before entering the slow-path.
     Riscv64Label slow_copy_loop;
     __ Bind(&slow_copy_loop);
     __ Loadwu(tmp_reg, src_curr_addr, 0);
@@ -928,6 +929,76 @@ void IntrinsicCodeGeneratorRISCV64::VisitStringIndexOfAfter(HInvoke* invoke) {
   GenerateVisitStringIndexOf(invoke, GetAssembler(), codegen_, /* start_at_zero= */ false);
 }
 
+void IntrinsicLocationsBuilderRISCV64::VisitStringNewStringFromBytes(HInvoke* invoke) {
+  LocationSummary* locations = new (allocator_) LocationSummary(
+      invoke, LocationSummary::kCallOnMainAndSlowPath, kIntrinsified);
+  InvokeRuntimeCallingConvention calling_convention;
+  locations->SetInAt(0, Location::RegisterLocation(calling_convention.GetRegisterAt(0)));
+  locations->SetInAt(1, Location::RegisterLocation(calling_convention.GetRegisterAt(1)));
+  locations->SetInAt(2, Location::RegisterLocation(calling_convention.GetRegisterAt(2)));
+  locations->SetInAt(3, Location::RegisterLocation(calling_convention.GetRegisterAt(3)));
+  locations->SetOut(calling_convention.GetReturnLocation(DataType::Type::kReference));
+}
+
+void IntrinsicCodeGeneratorRISCV64::VisitStringNewStringFromBytes(HInvoke* invoke) {
+  Riscv64Assembler* assembler = GetAssembler();
+  LocationSummary* locations = invoke->GetLocations();
+  XRegister byte_array = locations->InAt(0).AsRegister<XRegister>();
+
+  SlowPathCodeRISCV64* slow_path =
+      new (codegen_->GetScopedAllocator()) IntrinsicSlowPathRISCV64(invoke);
+  codegen_->AddSlowPath(slow_path);
+  __ Beqz(byte_array, slow_path->GetEntryLabel());
+
+  codegen_->InvokeRuntime(kQuickAllocStringFromBytes, invoke, invoke->GetDexPc(), slow_path);
+  CheckEntrypointTypes<kQuickAllocStringFromBytes, void*, void*, int32_t, int32_t, int32_t>();
+  __ Bind(slow_path->GetExitLabel());
+}
+
+void IntrinsicLocationsBuilderRISCV64::VisitStringNewStringFromChars(HInvoke* invoke) {
+  LocationSummary* locations =
+      new (allocator_) LocationSummary(invoke, LocationSummary::kCallOnMainOnly, kIntrinsified);
+  InvokeRuntimeCallingConvention calling_convention;
+  locations->SetInAt(0, Location::RegisterLocation(calling_convention.GetRegisterAt(0)));
+  locations->SetInAt(1, Location::RegisterLocation(calling_convention.GetRegisterAt(1)));
+  locations->SetInAt(2, Location::RegisterLocation(calling_convention.GetRegisterAt(2)));
+  locations->SetOut(calling_convention.GetReturnLocation(DataType::Type::kReference));
+}
+
+void IntrinsicCodeGeneratorRISCV64::VisitStringNewStringFromChars(HInvoke* invoke) {
+  // No need to emit code checking whether `locations->InAt(2)` is a null
+  // pointer, as callers of the native method
+  //
+  //   java.lang.StringFactory.newStringFromChars(int offset, int charCount, char[] data)
+  //
+  // all include a null check on `data` before calling that method.
+  codegen_->InvokeRuntime(kQuickAllocStringFromChars, invoke, invoke->GetDexPc());
+  CheckEntrypointTypes<kQuickAllocStringFromChars, void*, int32_t, int32_t, void*>();
+}
+
+void IntrinsicLocationsBuilderRISCV64::VisitStringNewStringFromString(HInvoke* invoke) {
+  LocationSummary* locations = new (allocator_) LocationSummary(
+      invoke, LocationSummary::kCallOnMainAndSlowPath, kIntrinsified);
+  InvokeRuntimeCallingConvention calling_convention;
+  locations->SetInAt(0, Location::RegisterLocation(calling_convention.GetRegisterAt(0)));
+  locations->SetOut(calling_convention.GetReturnLocation(DataType::Type::kReference));
+}
+
+void IntrinsicCodeGeneratorRISCV64::VisitStringNewStringFromString(HInvoke* invoke) {
+  Riscv64Assembler* assembler = GetAssembler();
+  LocationSummary* locations = invoke->GetLocations();
+  XRegister string_to_copy = locations->InAt(0).AsRegister<XRegister>();
+
+  SlowPathCodeRISCV64* slow_path =
+      new (codegen_->GetScopedAllocator()) IntrinsicSlowPathRISCV64(invoke);
+  codegen_->AddSlowPath(slow_path);
+  __ Beqz(string_to_copy, slow_path->GetEntryLabel());
+
+  codegen_->InvokeRuntime(kQuickAllocStringFromString, invoke, invoke->GetDexPc(), slow_path);
+  CheckEntrypointTypes<kQuickAllocStringFromString, void*, void*>();
+  __ Bind(slow_path->GetExitLabel());
+}
+
 static void GenerateSet(CodeGeneratorRISCV64* codegen,
                         std::memory_order order,
                         Location value,
@@ -1002,6 +1073,122 @@ static void EmitLoadReserved(Riscv64Assembler* assembler,
   }
 }
 
+void IntrinsicLocationsBuilderRISCV64::VisitStringEquals(HInvoke* invoke) {
+  LocationSummary* locations =
+      new (allocator_) LocationSummary(invoke, LocationSummary::kNoCall, kIntrinsified);
+  locations->SetInAt(0, Location::RequiresRegister());
+  locations->SetInAt(1, Location::RequiresRegister());
+  locations->AddTemp(Location::RequiresRegister());
+  // TODO: If the String.equals() is used only for an immediately following HIf, we can
+  // mark it as emitted-at-use-site and emit branches directly to the appropriate blocks.
+  // Then we shall need an extra temporary register instead of the output register.
+  locations->SetOut(Location::RequiresRegister(), Location::kOutputOverlap);
+}
+
+void IntrinsicCodeGeneratorRISCV64::VisitStringEquals(HInvoke* invoke) {
+  Riscv64Assembler* assembler = GetAssembler();
+  LocationSummary* locations = invoke->GetLocations();
+
+  // Get offsets of count, value, and class fields within a string object.
+  const int32_t count_offset = mirror::String::CountOffset().Int32Value();
+  const int32_t value_offset = mirror::String::ValueOffset().Int32Value();
+  const int32_t class_offset = mirror::Object::ClassOffset().Int32Value();
+
+  XRegister str = locations->InAt(0).AsRegister<XRegister>();
+  XRegister arg = locations->InAt(1).AsRegister<XRegister>();
+  XRegister out = locations->Out().AsRegister<XRegister>();
+
+  ScratchRegisterScope srs(assembler);
+  XRegister temp = srs.AllocateXRegister();
+  XRegister temp1 = locations->GetTemp(0).AsRegister<XRegister>();
+
+  Riscv64Label loop;
+  Riscv64Label end;
+  Riscv64Label return_true;
+  Riscv64Label return_false;
+
+  DCHECK(!invoke->CanDoImplicitNullCheckOn(invoke->InputAt(0)));
+
+  StringEqualsOptimizations optimizations(invoke);
+  if (!optimizations.GetArgumentNotNull()) {
+    // Check if input is null, return false if it is.
+    __ Beqz(arg, &return_false);
+  }
+
+  // Reference equality check, return true if same reference.
+  __ Beq(str, arg, &return_true);
+
+  if (!optimizations.GetArgumentIsString()) {
+    // Instanceof check for the argument by comparing class fields.
+    // All string objects must have the same type since String cannot be subclassed.
+    // Receiver must be a string object, so its class field is equal to all strings' class fields.
+    // If the argument is a string object, its class field must be equal to receiver's class field.
+    //
+    // As the String class is expected to be non-movable, we can read the class
+    // field from String.equals' arguments without read barriers.
+    AssertNonMovableStringClass();
+    // /* HeapReference<Class> */ temp = str->klass_
+    __ Loadwu(temp, str, class_offset);
+    // /* HeapReference<Class> */ temp1 = arg->klass_
+    __ Loadwu(temp1, arg, class_offset);
+    // Also, because we use the previously loaded class references only in the
+    // following comparison, we don't need to unpoison them.
+    __ Bne(temp, temp1, &return_false);
+  }
+
+  // Load `count` fields of this and argument strings.
+  __ Loadwu(temp, str, count_offset);
+  __ Loadwu(temp1, arg, count_offset);
+  // Check if `count` fields are equal, return false if they're not.
+  // Also compares the compression style, if differs return false.
+  __ Bne(temp, temp1, &return_false);
+
+  // Assertions that must hold in order to compare strings 8 bytes at a time.
+  // Ok to do this because strings are zero-padded to kObjectAlignment.
+  DCHECK_ALIGNED(value_offset, 8);
+  static_assert(IsAligned<8>(kObjectAlignment), "String of odd length is not zero padded");
+
+  // Return true if both strings are empty. Even with string compression `count == 0` means empty.
+  static_assert(static_cast<uint32_t>(mirror::StringCompressionFlag::kCompressed) == 0u,
+                "Expecting 0=compressed, 1=uncompressed");
+  __ Beqz(temp, &return_true);
+
+  if (mirror::kUseStringCompression) {
+    // For string compression, calculate the number of bytes to compare (not chars).
+    // This could in theory exceed INT32_MAX, so treat temp as unsigned.
+    __ Andi(temp1, temp, 1);     // Extract compression flag.
+    __ Srliw(temp, temp, 1u);    // Extract length.
+    __ Sllw(temp, temp, temp1);  // Calculate number of bytes to compare.
+  }
+
+  // Store offset of string value in preparation for comparison loop
+  __ Li(temp1, value_offset);
+
+  XRegister temp2 = srs.AllocateXRegister();
+  // Loop to compare strings 8 bytes at a time starting at the front of the string.
+  __ Bind(&loop);
+  __ Add(out, str, temp1);
+  __ Ld(out, out, 0);
+  __ Add(temp2, arg, temp1);
+  __ Ld(temp2, temp2, 0);
+  __ Addi(temp1, temp1, sizeof(uint64_t));
+  __ Bne(out, temp2, &return_false);
+  // With string compression, we have compared 8 bytes, otherwise 4 chars.
+  __ Addi(temp, temp, mirror::kUseStringCompression ? -8 : -4);
+  __ Bgt(temp, Zero, &loop);
+
+  // Return true and exit the function.
+  // If loop does not result in returning false, we return true.
+  __ Bind(&return_true);
+  __ Li(out, 1);
+  __ J(&end);
+
+  // Return false and exit the function.
+  __ Bind(&return_false);
+  __ Li(out, 0);
+  __ Bind(&end);
+}
+
 static void EmitStoreConditional(Riscv64Assembler* assembler,
                                  DataType::Type type,
                                  XRegister ptr,
@@ -1068,25 +1255,28 @@ static void GenerateCompareAndSet(Riscv64Assembler* assembler,
   }
   EmitLoadReserved(assembler, type, ptr, old_value, load_aqrl);
   XRegister to_store = new_value;
-  if (mask != kNoXRegister) {
-    DCHECK_EQ(expected2, kNoXRegister);
-    DCHECK_NE(masked, kNoXRegister);
-    __ And(masked, old_value, mask);
-    __ Bne(masked, expected, cmp_failure);
-    // The `old_value` does not need to be preserved as the caller shall use `masked`
-    // to return the old value if needed.
-    to_store = old_value;
-    // TODO(riscv64): We could XOR the old and new value before the loop and use a single XOR here
-    // instead of the XOR+OR. (The `new_value` is either Zero or a temporary we can clobber.)
-    __ Xor(to_store, old_value, masked);
-    __ Or(to_store, to_store, new_value);
-  } else if (expected2 != kNoXRegister) {
-    Riscv64Label match2;
-    __ Beq(old_value, expected2, &match2, /*is_bare=*/ true);
-    __ Bne(old_value, expected, cmp_failure);
-    __ Bind(&match2);
-  } else {
-    __ Bne(old_value, expected, cmp_failure);
+  {
+    ScopedLrScExtensionsRestriction slser(assembler);
+    if (mask != kNoXRegister) {
+      DCHECK_EQ(expected2, kNoXRegister);
+      DCHECK_NE(masked, kNoXRegister);
+      __ And(masked, old_value, mask);
+      __ Bne(masked, expected, cmp_failure);
+      // The `old_value` does not need to be preserved as the caller shall use `masked`
+      // to return the old value if needed.
+      to_store = old_value;
+      // TODO(riscv64): We could XOR the old and new value before the loop and use a single XOR here
+      // instead of the XOR+OR. (The `new_value` is either Zero or a temporary we can clobber.)
+      __ Xor(to_store, old_value, masked);
+      __ Or(to_store, to_store, new_value);
+    } else if (expected2 != kNoXRegister) {
+      Riscv64Label match2;
+      __ Beq(old_value, expected2, &match2, /*is_bare=*/ true);
+      __ Bne(old_value, expected, cmp_failure);
+      __ Bind(&match2);
+    } else {
+      __ Bne(old_value, expected, cmp_failure);
+    }
   }
   EmitStoreConditional(assembler, type, ptr, store_result, to_store, store_aqrl);
   if (strong) {
@@ -1497,111 +1687,115 @@ void IntrinsicCodeGeneratorRISCV64::VisitSystemArrayCopy(HInvoke* invoke) {
                                temp2,
                                optimizations.GetCountIsDestinationLength(),
                                dest_position_sign_checked);
-  {
-    // We use a block to end the scratch scope before the write barrier, thus
-    // freeing the temporary registers so they can be used in `MarkGCCard`.
-    ScratchRegisterScope srs(assembler);
-    bool emit_rb = codegen_->EmitBakerReadBarrier();
-    XRegister temp3 =
-        emit_rb ? locations->GetTemp(2).AsRegister<XRegister>() : srs.AllocateXRegister();
 
-    auto check_non_primitive_array_class = [&](XRegister klass, XRegister temp) {
-      // No read barrier is needed for reading a chain of constant references for comparing
-      // with null, or for reading a constant primitive value, see `ReadBarrierOption`.
-      // /* HeapReference<Class> */ temp = klass->component_type_
-      __ Loadwu(temp, klass, component_offset);
-      codegen_->MaybeUnpoisonHeapReference(temp);
-      __ Beqz(temp, intrinsic_slow_path->GetEntryLabel());
-      // /* uint16_t */ temp = static_cast<uint16>(klass->primitive_type_);
-      __ Loadhu(temp, temp, primitive_offset);
-      static_assert(Primitive::kPrimNot == 0, "Expected 0 for kPrimNot");
-      __ Bnez(temp, intrinsic_slow_path->GetEntryLabel());
-    };
+  auto check_non_primitive_array_class = [&](XRegister klass, XRegister temp) {
+    // No read barrier is needed for reading a chain of constant references for comparing
+    // with null, or for reading a constant primitive value, see `ReadBarrierOption`.
+    // /* HeapReference<Class> */ temp = klass->component_type_
+    __ Loadwu(temp, klass, component_offset);
+    codegen_->MaybeUnpoisonHeapReference(temp);
+    // Check that the component type is not null.
+    __ Beqz(temp, intrinsic_slow_path->GetEntryLabel());
+    // Check that the component type is not a primitive.
+    // /* uint16_t */ temp = static_cast<uint16>(klass->primitive_type_);
+    __ Loadhu(temp, temp, primitive_offset);
+    static_assert(Primitive::kPrimNot == 0, "Expected 0 for kPrimNot");
+    __ Bnez(temp, intrinsic_slow_path->GetEntryLabel());
+  };
 
-    if (!optimizations.GetDoesNotNeedTypeCheck()) {
-      // Check whether all elements of the source array are assignable to the component
-      // type of the destination array. We do two checks: the classes are the same,
-      // or the destination is Object[]. If none of these checks succeed, we go to the
-      // slow path.
+  if (!optimizations.GetDoesNotNeedTypeCheck()) {
+    // Check whether all elements of the source array are assignable to the component
+    // type of the destination array. We do two checks: the classes are the same,
+    // or the destination is Object[]. If none of these checks succeed, we go to the
+    // slow path.
 
-      if (emit_rb) {
-        // /* HeapReference<Class> */ temp1 = dest->klass_
-        codegen_->GenerateFieldLoadWithBakerReadBarrier(invoke,
-                                                        Location::RegisterLocation(temp1),
-                                                        dest,
-                                                        class_offset,
-                                                        Location::RegisterLocation(temp3),
-                                                        /* needs_null_check= */ false);
-        // /* HeapReference<Class> */ temp2 = src->klass_
-        codegen_->GenerateFieldLoadWithBakerReadBarrier(invoke,
-                                                        Location::RegisterLocation(temp2),
-                                                        src,
-                                                        class_offset,
-                                                        Location::RegisterLocation(temp3),
-                                                        /* needs_null_check= */ false);
-      } else {
-        // /* HeapReference<Class> */ temp1 = dest->klass_
-        __ Loadwu(temp1, dest, class_offset);
-        codegen_->MaybeUnpoisonHeapReference(temp1);
-        // /* HeapReference<Class> */ temp2 = src->klass_
-        __ Loadwu(temp2, src, class_offset);
-        codegen_->MaybeUnpoisonHeapReference(temp2);
-      }
-
-      if (optimizations.GetDestinationIsTypedObjectArray()) {
-        DCHECK(optimizations.GetDestinationIsNonPrimitiveArray());
-        Riscv64Label do_copy;
-        // For class match, we can skip the source type check regardless of the optimization flag.
-        __ Beq(temp1, temp2, &do_copy);
-        // /* HeapReference<Class> */ temp1 = temp1->component_type_
-        // No read barrier is needed for reading a chain of constant references
-        // for comparing with null, see `ReadBarrierOption`.
-        __ Loadwu(temp1, temp1, component_offset);
-        codegen_->MaybeUnpoisonHeapReference(temp1);
-        // /* HeapReference<Class> */ temp1 = temp1->super_class_
-        __ Loadwu(temp1, temp1, super_offset);
-        // No need to unpoison the result, we're comparing against null.
-        __ Bnez(temp1, intrinsic_slow_path->GetEntryLabel());
-        // Bail out if the source is not a non primitive array.
-        if (!optimizations.GetSourceIsNonPrimitiveArray()) {
-          check_non_primitive_array_class(temp2, temp3);
-        }
-        __ Bind(&do_copy);
-      } else {
-        DCHECK(!optimizations.GetDestinationIsTypedObjectArray());
-        // For class match, we can skip the array type check completely if at least one of source
-        // and destination is known to be a non primitive array, otherwise one check is enough.
-        __ Bne(temp1, temp2, intrinsic_slow_path->GetEntryLabel());
-        if (!optimizations.GetDestinationIsNonPrimitiveArray() &&
-            !optimizations.GetSourceIsNonPrimitiveArray()) {
-          check_non_primitive_array_class(temp2, temp3);
-        }
-      }
-    } else if (!optimizations.GetSourceIsNonPrimitiveArray()) {
-      DCHECK(optimizations.GetDestinationIsNonPrimitiveArray());
-      // Bail out if the source is not a non primitive array.
-      // No read barrier is needed for reading a chain of constant references for comparing
-      // with null, or for reading a constant primitive value, see `ReadBarrierOption`.
-      // /* HeapReference<Class> */ temp1 = src->klass_
+    if (codegen_->EmitBakerReadBarrier()) {
+      XRegister temp3 = locations->GetTemp(2).AsRegister<XRegister>();
+      // /* HeapReference<Class> */ temp1 = dest->klass_
+      codegen_->GenerateFieldLoadWithBakerReadBarrier(invoke,
+                                                      Location::RegisterLocation(temp1),
+                                                      dest,
+                                                      class_offset,
+                                                      Location::RegisterLocation(temp3),
+                                                      /* needs_null_check= */ false);
+      // /* HeapReference<Class> */ temp2 = src->klass_
+      codegen_->GenerateFieldLoadWithBakerReadBarrier(invoke,
+                                                      Location::RegisterLocation(temp2),
+                                                      src,
+                                                      class_offset,
+                                                      Location::RegisterLocation(temp3),
+                                                      /* needs_null_check= */ false);
+    } else {
+      // /* HeapReference<Class> */ temp1 = dest->klass_
+      __ Loadwu(temp1, dest, class_offset);
+      codegen_->MaybeUnpoisonHeapReference(temp1);
+      // /* HeapReference<Class> */ temp2 = src->klass_
       __ Loadwu(temp2, src, class_offset);
       codegen_->MaybeUnpoisonHeapReference(temp2);
-      check_non_primitive_array_class(temp2, temp3);
     }
 
-    if (length.IsConstant() && length.GetConstant()->AsIntConstant()->GetValue() == 0) {
-      // Null constant length: not need to emit the loop code at all.
+    if (optimizations.GetDestinationIsTypedObjectArray()) {
+      DCHECK(optimizations.GetDestinationIsNonPrimitiveArray());
+      Riscv64Label do_copy;
+      // For class match, we can skip the source type check regardless of the optimization flag.
+      __ Beq(temp1, temp2, &do_copy);
+      // No read barrier is needed for reading a chain of constant references
+      // for comparing with null, see `ReadBarrierOption`.
+      // /* HeapReference<Class> */ temp1 = temp1->component_type_
+      __ Loadwu(temp1, temp1, component_offset);
+      codegen_->MaybeUnpoisonHeapReference(temp1);
+      // /* HeapReference<Class> */ temp1 = temp1->super_class_
+      __ Loadwu(temp1, temp1, super_offset);
+      // No need to unpoison the result, we're comparing against null.
+      __ Bnez(temp1, intrinsic_slow_path->GetEntryLabel());
+      // Bail out if the source is not a non primitive array.
+      if (!optimizations.GetSourceIsNonPrimitiveArray()) {
+        check_non_primitive_array_class(temp2, temp2);
+      }
+      __ Bind(&do_copy);
     } else {
+      DCHECK(!optimizations.GetDestinationIsTypedObjectArray());
+      // For class match, we can skip the array type check completely if at least one of source
+      // and destination is known to be a non primitive array, otherwise one check is enough.
+      __ Bne(temp1, temp2, intrinsic_slow_path->GetEntryLabel());
+      if (!optimizations.GetDestinationIsNonPrimitiveArray() &&
+          !optimizations.GetSourceIsNonPrimitiveArray()) {
+        check_non_primitive_array_class(temp2, temp2);
+      }
+    }
+  } else if (!optimizations.GetSourceIsNonPrimitiveArray()) {
+    DCHECK(optimizations.GetDestinationIsNonPrimitiveArray());
+    // Bail out if the source is not a non primitive array.
+    // No read barrier is needed for reading a chain of constant references for comparing
+    // with null, or for reading a constant primitive value, see `ReadBarrierOption`.
+    // /* HeapReference<Class> */ temp2 = src->klass_
+    __ Loadwu(temp2, src, class_offset);
+    codegen_->MaybeUnpoisonHeapReference(temp2);
+    check_non_primitive_array_class(temp2, temp2);
+  }
+
+  if (length.IsConstant() && length.GetConstant()->AsIntConstant()->GetValue() == 0) {
+    // Null constant length: not need to emit the loop code at all.
+  } else {
+    Riscv64Label skip_copy_and_write_barrier;
+    if (length.IsRegister()) {
+      // Don't enter the copy loop if the length is null.
+      __ Beqz(length.AsRegister<XRegister>(), &skip_copy_and_write_barrier);
+    }
+
+    {
+      // We use a block to end the scratch scope before the write barrier, thus
+      // freeing the scratch registers so they can be used in `MarkGCCard`.
+      ScratchRegisterScope srs(assembler);
+      bool emit_rb = codegen_->EmitBakerReadBarrier();
+      XRegister temp3 =
+          emit_rb ? locations->GetTemp(2).AsRegister<XRegister>() : srs.AllocateXRegister();
+
       XRegister src_curr_addr = temp1;
       XRegister dst_curr_addr = temp2;
       XRegister src_stop_addr = temp3;
-      Riscv64Label done;
       const DataType::Type type = DataType::Type::kReference;
       const int32_t element_size = DataType::Size(type);
-
-      if (length.IsRegister()) {
-        // Don't enter the copy loop if the length is null.
-        __ Beqz(length.AsRegister<XRegister>(), &done);
-      }
 
       XRegister tmp = kNoXRegister;
       SlowPathCodeRISCV64* read_barrier_slow_path = nullptr;
@@ -1688,17 +1882,18 @@ void IntrinsicCodeGeneratorRISCV64::VisitSystemArrayCopy(HInvoke* invoke) {
       __ Addi(dst_curr_addr, dst_curr_addr, element_size);
       // Bare: `TMP` shall not be clobbered.
       __ Bne(src_curr_addr, src_stop_addr, &loop, /*is_bare=*/ true);
-      __ Bind(&done);
 
       if (emit_rb) {
         DCHECK(read_barrier_slow_path != nullptr);
         __ Bind(read_barrier_slow_path->GetExitLabel());
       }
     }
-  }
 
-  // We only need one card marking on the destination array.
-  codegen_->MarkGCCard(dest, XRegister(kNoXRegister), /* emit_null_check= */ false);
+    // We only need one card marking on the destination array.
+    codegen_->MarkGCCard(dest);
+
+    __ Bind(&skip_copy_and_write_barrier);
+  }
 
   __ Bind(intrinsic_slow_path->GetExitLabel());
 }
@@ -1750,8 +1945,11 @@ static void GenerateGetAndUpdate(CodeGeneratorRISCV64* codegen,
         Riscv64Label retry;
         __ Bind(&retry);
         __ LrW(old_value, ptr, load_aqrl);
-        __ And(temp, old_value, mask);
-        __ Or(temp, temp, arg);
+        {
+          ScopedLrScExtensionsRestriction slser(assembler);
+          __ And(temp, old_value, mask);
+          __ Or(temp, temp, arg);
+        }
         __ ScW(temp, temp, ptr, store_aqrl);
         __ Bnez(temp, &retry, /*is_bare=*/ true);  // Bare: `TMP` shall not be clobbered.
       }
@@ -1769,15 +1967,19 @@ static void GenerateGetAndUpdate(CodeGeneratorRISCV64* codegen,
         Riscv64Label retry;
         __ Bind(&retry);
         __ LrW(old_value, ptr, load_aqrl);
-        __ Add(temp, old_value, arg);
-        // We use `(A ^ B) ^ A == B` and with the masking `((A ^ B) & mask) ^ A`, the result
-        // contains bits from `B` for bits specified in `mask` and bits from `A` elsewhere.
-        // Note: These instructions directly depend on each other, so it's not necessarily the
-        // fastest approach but for `(A ^ ~mask) | (B & mask)` we would need an extra register for
-        // `~mask` because ANDN is not in the "I" instruction set as required for a LR/SC sequence.
-        __ Xor(temp, temp, old_value);
-        __ And(temp, temp, mask);
-        __ Xor(temp, temp, old_value);
+        {
+          ScopedLrScExtensionsRestriction slser(assembler);
+          __ Add(temp, old_value, arg);
+          // We use `(A ^ B) ^ A == B` and with the masking `((A ^ B) & mask) ^ A`, the result
+          // contains bits from `B` for bits specified in `mask` and bits from `A` elsewhere.
+          // Note: These instructions directly depend on each other, so it's not necessarily the
+          // fastest approach but for `(A ^ ~mask) | (B & mask)` we would need an extra register
+          // for `~mask` because ANDN is not in the "I" instruction set as required for a LR/SC
+          // sequence.
+          __ Xor(temp, temp, old_value);
+          __ And(temp, temp, mask);
+          __ Xor(temp, temp, old_value);
+        }
         __ ScW(temp, temp, ptr, store_aqrl);
         __ Bnez(temp, &retry, /*is_bare=*/ true);  // Bare: `TMP` shall not be clobbered.
       }
@@ -2022,6 +2224,9 @@ static void CreateUnsafePutLocations(ArenaAllocator* allocator, HInvoke* invoke)
   locations->SetInAt(1, Location::RequiresRegister());
   locations->SetInAt(2, Location::RequiresRegister());
   locations->SetInAt(3, Location::RequiresRegister());
+  if (kPoisonHeapReferences && invoke->InputAt(3)->GetType() == DataType::Type::kReference) {
+    locations->AddTemp(Location::RequiresRegister());
+  }
 }
 
 static void GenUnsafePut(HInvoke* invoke,
@@ -2038,14 +2243,17 @@ static void GenUnsafePut(HInvoke* invoke,
     // We use a block to end the scratch scope before the write barrier, thus
     // freeing the temporary registers so they can be used in `MarkGCCard()`.
     ScratchRegisterScope srs(assembler);
-    XRegister address = srs.AllocateXRegister();
+    // Heap poisoning needs two scratch registers in `Store()`.
+    XRegister address = (kPoisonHeapReferences && type == DataType::Type::kReference)
+        ? locations->GetTemp(0).AsRegister<XRegister>()
+        : srs.AllocateXRegister();
     __ Add(address, base, offset);
     GenerateSet(codegen, order, value, address, /*offset=*/ 0, type);
   }
 
   if (type == DataType::Type::kReference) {
     bool value_can_be_null = true;  // TODO: Worth finding out this information?
-    codegen->MarkGCCard(base, value.AsRegister<XRegister>(), value_can_be_null);
+    codegen->MaybeMarkGCCard(base, value.AsRegister<XRegister>(), value_can_be_null);
   }
 }
 
@@ -2266,7 +2474,7 @@ static void GenUnsafeCas(HInvoke* invoke, CodeGeneratorRISCV64* codegen, DataTyp
   if (type == DataType::Type::kReference) {
     // Mark card for object assuming new value is stored.
     bool new_value_can_be_null = true;  // TODO: Worth finding out this information?
-    codegen->MarkGCCard(object, new_value, new_value_can_be_null);
+    codegen->MaybeMarkGCCard(object, new_value, new_value_can_be_null);
   }
 
   ScratchRegisterScope srs(assembler);
@@ -2411,6 +2619,11 @@ void IntrinsicLocationsBuilderRISCV64::VisitJdkUnsafeCompareAndSetReference(HInv
     return;
   }
 
+  // TODO(riscv64): Fix this intrinsic for heap poisoning configuration.
+  if (kPoisonHeapReferences) {
+    return;
+  }
+
   CreateUnsafeCASLocations(allocator_, invoke, codegen_);
   if (codegen_->EmitReadBarrier()) {
     DCHECK(kUseBakerReadBarrier);
@@ -2460,7 +2673,7 @@ static void GenUnsafeGetAndUpdate(HInvoke* invoke,
     DCHECK(get_and_update_op == GetAndUpdateOp::kSet);
     // Mark card for object as a new value shall be stored.
     bool new_value_can_be_null = true;  // TODO: Worth finding out this information?
-    codegen->MarkGCCard(base, /*value=*/ arg, new_value_can_be_null);
+    codegen->MaybeMarkGCCard(base, /*value=*/arg, new_value_can_be_null);
   }
 
   ScratchRegisterScope srs(assembler);
@@ -2572,11 +2785,220 @@ void IntrinsicCodeGeneratorRISCV64::VisitJdkUnsafeGetAndSetLong(HInvoke* invoke)
 }
 
 void IntrinsicLocationsBuilderRISCV64::VisitJdkUnsafeGetAndSetReference(HInvoke* invoke) {
+  // TODO(riscv64): Fix this intrinsic for heap poisoning configuration.
+  if (kPoisonHeapReferences) {
+    return;
+  }
+
   CreateUnsafeGetAndUpdateLocations(allocator_, invoke, codegen_);
 }
 
 void IntrinsicCodeGeneratorRISCV64::VisitJdkUnsafeGetAndSetReference(HInvoke* invoke) {
   GenUnsafeGetAndUpdate(invoke, DataType::Type::kReference, codegen_, GetAndUpdateOp::kSet);
+}
+
+void IntrinsicLocationsBuilderRISCV64::VisitStringCompareTo(HInvoke* invoke) {
+  LocationSummary* locations =
+      new (allocator_) LocationSummary(invoke,
+                                       invoke->InputAt(1)->CanBeNull()
+                                           ? LocationSummary::kCallOnSlowPath
+                                           : LocationSummary::kNoCall,
+                                       kIntrinsified);
+  locations->SetInAt(0, Location::RequiresRegister());
+  locations->SetInAt(1, Location::RequiresRegister());
+  locations->AddTemp(Location::RequiresRegister());
+  locations->AddTemp(Location::RequiresRegister());
+  locations->AddTemp(Location::RequiresRegister());
+  // Need temporary registers for String compression's feature.
+  if (mirror::kUseStringCompression) {
+    locations->AddTemp(Location::RequiresRegister());
+  }
+  locations->SetOut(Location::RequiresRegister(), Location::kOutputOverlap);
+}
+
+void IntrinsicCodeGeneratorRISCV64::VisitStringCompareTo(HInvoke* invoke) {
+  Riscv64Assembler* assembler = GetAssembler();
+  DCHECK(assembler->IsExtensionEnabled(Riscv64Extension::kZbb));
+  LocationSummary* locations = invoke->GetLocations();
+
+  XRegister str = locations->InAt(0).AsRegister<XRegister>();
+  XRegister arg = locations->InAt(1).AsRegister<XRegister>();
+  XRegister out = locations->Out().AsRegister<XRegister>();
+
+  XRegister temp0 = locations->GetTemp(0).AsRegister<XRegister>();
+  XRegister temp1 = locations->GetTemp(1).AsRegister<XRegister>();
+  XRegister temp2 = locations->GetTemp(2).AsRegister<XRegister>();
+  XRegister temp3 = kNoXRegister;
+  if (mirror::kUseStringCompression) {
+    temp3 = locations->GetTemp(3).AsRegister<XRegister>();
+  }
+
+  Riscv64Label loop;
+  Riscv64Label find_char_diff;
+  Riscv64Label end;
+  Riscv64Label different_compression;
+
+  // Get offsets of count and value fields within a string object.
+  const int32_t count_offset = mirror::String::CountOffset().Int32Value();
+  const int32_t value_offset = mirror::String::ValueOffset().Int32Value();
+
+  // Note that the null check must have been done earlier.
+  DCHECK(!invoke->CanDoImplicitNullCheckOn(invoke->InputAt(0)));
+
+  // Take slow path and throw if input can be and is null.
+  SlowPathCodeRISCV64* slow_path = nullptr;
+  const bool can_slow_path = invoke->InputAt(1)->CanBeNull();
+  if (can_slow_path) {
+    slow_path = new (codegen_->GetScopedAllocator()) IntrinsicSlowPathRISCV64(invoke);
+    codegen_->AddSlowPath(slow_path);
+    __ Beqz(arg, slow_path->GetEntryLabel());
+  }
+
+  // Reference equality check, return 0 if same reference.
+  __ Sub(out, str, arg);
+  __ Beqz(out, &end);
+
+  if (mirror::kUseStringCompression) {
+    // Load `count` fields of this and argument strings.
+    __ Loadwu(temp3, str, count_offset);
+    __ Loadwu(temp2, arg, count_offset);
+    // Clean out compression flag from lengths.
+    __ Srliw(temp0, temp3, 1u);
+    __ Srliw(temp1, temp2, 1u);
+  } else {
+    // Load lengths of this and argument strings.
+    __ Loadwu(temp0, str, count_offset);
+    __ Loadwu(temp1, arg, count_offset);
+  }
+  // out = length diff.
+  __ Subw(out, temp0, temp1);
+
+  // Find the length of the shorter string
+  __ Minu(temp0, temp0, temp1);
+  // Shorter string is empty?
+  __ Beqz(temp0, &end);
+
+  if (mirror::kUseStringCompression) {
+    // Extract both compression flags
+    __ Andi(temp3, temp3, 1);
+    __ Andi(temp2, temp2, 1);
+    __ Bne(temp2, temp3, &different_compression);
+  }
+  // Store offset of string value in preparation for comparison loop.
+  __ Li(temp1, value_offset);
+  if (mirror::kUseStringCompression) {
+    // For string compression, calculate the number of bytes to compare (not chars).
+    __ Sll(temp0, temp0, temp3);
+  }
+
+  // Assertions that must hold in order to compare strings 8 bytes at a time.
+  DCHECK_ALIGNED(value_offset, 8);
+  static_assert(IsAligned<8>(kObjectAlignment), "String of odd length is not zero padded");
+
+  constexpr size_t char_size = DataType::Size(DataType::Type::kUint16);
+  static_assert(char_size == 2u, "Char expected to be 2 bytes wide");
+
+  ScratchRegisterScope scratch_scope(assembler);
+  XRegister temp4 = scratch_scope.AllocateXRegister();
+
+  // Loop to compare 4x16-bit characters at a time (ok because of string data alignment).
+  __ Bind(&loop);
+  __ Add(temp4, str, temp1);
+  __ Ld(temp4, temp4, 0);
+  __ Add(temp2, arg, temp1);
+  __ Ld(temp2, temp2, 0);
+  __ Bne(temp4, temp2, &find_char_diff);
+  __ Addi(temp1, temp1, char_size * 4);
+  // With string compression, we have compared 8 bytes, otherwise 4 chars.
+  __ Addi(temp0, temp0, (mirror::kUseStringCompression) ? -8 : -4);
+  __ Bgtz(temp0, &loop);
+  __ J(&end);
+
+  // Find the single character difference.
+  __ Bind(&find_char_diff);
+  // Get the bit position of the first character that differs.
+  __ Xor(temp1, temp2, temp4);
+  __ Ctz(temp1, temp1);
+
+  // If the number of chars remaining <= the index where the difference occurs (0-3), then
+  // the difference occurs outside the remaining string data, so just return length diff (out).
+  __ Srliw(temp1, temp1, (mirror::kUseStringCompression) ? 3 : 4);
+  __ Ble(temp0, temp1, &end);
+
+  // Extract the characters and calculate the difference.
+  __ Slliw(temp1, temp1, (mirror::kUseStringCompression) ? 3 : 4);
+  if (mirror:: kUseStringCompression) {
+    __ Slliw(temp3, temp3, 3u);
+    __ Andn(temp1, temp1, temp3);
+  }
+  __ Srl(temp2, temp2, temp1);
+  __ Srl(temp4, temp4, temp1);
+  if (mirror::kUseStringCompression) {
+    __ Li(temp0, -256);           // ~0xff
+    __ Sllw(temp0, temp0, temp3);  // temp3 = 0 or 8, temp0 := ~0xff or ~0xffff
+    __ Andn(temp4, temp4, temp0);  // Extract 8 or 16 bits.
+    __ Andn(temp2, temp2, temp0);  // Extract 8 or 16 bits.
+  } else {
+    __ ZextH(temp4, temp4);
+    __ ZextH(temp2, temp2);
+  }
+
+  __ Subw(out, temp4, temp2);
+
+  if (mirror::kUseStringCompression) {
+    __ J(&end);
+    __ Bind(&different_compression);
+
+    // Comparison for different compression style.
+    constexpr size_t c_char_size = DataType::Size(DataType::Type::kInt8);
+    static_assert(c_char_size == 1u, "Compressed char expected to be 1 byte wide");
+
+    // `temp1` will hold the compressed data pointer, `temp2` the uncompressed data pointer.
+    __ Xor(temp4, str, arg);
+    __ Addi(temp3, temp3, -1);    // -1 if str is compressed, 0 otherwise
+    __ And(temp2, temp4, temp3);  // str^arg if str is compressed, 0 otherwise
+    __ Xor(temp1, temp2, arg);    // str if str is compressed, arg otherwise
+    __ Xor(temp2, temp2, str);    // arg if str is compressed, str otherwise
+
+    // We want to free up the temp3, currently holding `str` compression flag, for comparison.
+    // So, we move it to the bottom bit of the iteration count `temp0` which we then need to treat
+    // as unsigned. This will allow `addi temp0, temp0, -2; bgtz different_compression_loop`
+    // to serve as the loop condition.
+    __ Sh1Add(temp0, temp0, temp3);
+
+    // Adjust temp1 and temp2 from string pointers to data pointers.
+    __ Addi(temp1, temp1, value_offset);
+    __ Addi(temp2, temp2, value_offset);
+
+    Riscv64Label different_compression_loop;
+    Riscv64Label different_compression_diff;
+
+    __ Bind(&different_compression_loop);
+    __ Lbu(temp4, temp1, 0);
+    __ Addiw(temp1, temp1, c_char_size);
+    __ Lhu(temp3, temp2, 0);
+    __ Addi(temp2, temp2, char_size);
+    __ Sub(temp4, temp4, temp3);
+    __ Bnez(temp4, &different_compression_diff);
+    __ Addi(temp0, temp0, -2);
+    __ Bgtz(temp0, &different_compression_loop);
+    __ J(&end);
+
+    // Calculate the difference.
+    __ Bind(&different_compression_diff);
+    static_assert(static_cast<uint32_t>(mirror::StringCompressionFlag::kCompressed) == 0u,
+                  "Expecting 0=compressed, 1=uncompressed");
+    __ Andi(temp0, temp0, 1);
+    __ Addi(temp0, temp0, -1);
+    __ Xor(out, temp4, temp0);
+    __ Sub(out, out, temp0);
+  }
+
+  __ Bind(&end);
+
+  if (can_slow_path) {
+    __ Bind(slow_path->GetExitLabel());
+  }
 }
 
 class VarHandleSlowPathRISCV64 : public IntrinsicSlowPathRISCV64 {
@@ -3184,6 +3606,14 @@ static void CreateVarHandleSetLocations(HInvoke* invoke, CodeGeneratorRISCV64* c
   }
 
   CreateVarHandleCommonLocations(invoke, codegen);
+  if (kPoisonHeapReferences && invoke->GetLocations() != nullptr) {
+    LocationSummary* locations = invoke->GetLocations();
+    uint32_t value_index = invoke->GetNumberOfArguments() - 1;
+    DataType::Type value_type = GetDataTypeFromShorty(invoke, value_index);
+    if (value_type == DataType::Type::kReference && !locations->InAt(value_index).IsConstant()) {
+      locations->AddTemp(Location::RequiresRegister());
+    }
+  }
 }
 
 static void GenerateVarHandleSet(HInvoke* invoke,
@@ -3208,7 +3638,11 @@ static void GenerateVarHandleSet(HInvoke* invoke,
 
   {
     ScratchRegisterScope srs(assembler);
-    XRegister address = srs.AllocateXRegister();
+    // Heap poisoning needs two scratch registers in `Store()`, except for null constants.
+    XRegister address =
+        (kPoisonHeapReferences && value_type == DataType::Type::kReference && !value.IsConstant())
+            ? invoke->GetLocations()->GetTemp(0).AsRegister<XRegister>()
+            : srs.AllocateXRegister();
     __ Add(address, target.object, target.offset);
 
     if (byte_swap) {
@@ -3228,7 +3662,8 @@ static void GenerateVarHandleSet(HInvoke* invoke,
   }
 
   if (CodeGenerator::StoreNeedsWriteBarrier(value_type, invoke->InputAt(value_index))) {
-    codegen->MarkGCCard(target.object, value.AsRegister<XRegister>(), /* emit_null_check= */ true);
+    codegen->MaybeMarkGCCard(
+        target.object, value.AsRegister<XRegister>(), /* emit_null_check= */ true);
   }
 
   if (slow_path != nullptr) {
@@ -3299,6 +3734,11 @@ static void CreateVarHandleCompareAndSetOrExchangeLocations(HInvoke* invoke,
     // for CompareAndExchange, marking the old value after comparison failure may actually
     // return the reference to `expected`, erroneously indicating success even though we
     // did not set the new value. (And it also gets the memory visibility wrong.) b/173104084
+    return;
+  }
+
+  // TODO(riscv64): Fix this intrinsic for heap poisoning configuration.
+  if (kPoisonHeapReferences && value_type == DataType::Type::kReference) {
     return;
   }
 
@@ -3445,7 +3885,8 @@ static void GenerateVarHandleCompareAndSetOrExchange(HInvoke* invoke,
   if (CodeGenerator::StoreNeedsWriteBarrier(value_type, invoke->InputAt(new_value_index))) {
     // Mark card for object assuming new value is stored.
     bool new_value_can_be_null = true;  // TODO: Worth finding out this information?
-    codegen->MarkGCCard(target.object, new_value.AsRegister<XRegister>(), new_value_can_be_null);
+    codegen->MaybeMarkGCCard(
+        target.object, new_value.AsRegister<XRegister>(), new_value_can_be_null);
   }
 
   // Scratch registers may be needed for `new_value` and `expected`.
@@ -3716,8 +4157,13 @@ static void CreateVarHandleGetAndUpdateLocations(HInvoke* invoke,
     return;
   }
 
+  // TODO(riscv64): Fix this intrinsic for heap poisoning configuration.
+  if (kPoisonHeapReferences && invoke->GetType() == DataType::Type::kReference) {
+    return;
+  }
+
   LocationSummary* locations = CreateVarHandleCommonLocations(invoke, codegen);
-  uint32_t arg_index = invoke->GetNumberOfArguments() - 1;
+  uint32_t arg_index = invoke->GetNumberOfArguments() - 1u;
   DCHECK_EQ(arg_index, 1u + GetExpectedVarHandleCoordinatesCount(invoke));
   DataType::Type value_type = invoke->GetType();
   DCHECK_EQ(value_type, GetDataTypeFromShorty(invoke, arg_index));
@@ -3727,7 +4173,7 @@ static void CreateVarHandleGetAndUpdateLocations(HInvoke* invoke,
   if (is_fp) {
     if (get_and_update_op == GetAndUpdateOp::kAdd) {
       // For ADD, do not use ZR for zero bit pattern (+0.0f or +0.0).
-      locations->SetInAt(invoke->GetNumberOfArguments() - 1u, Location::RequiresFpuRegister());
+      locations->SetInAt(arg_index, Location::RequiresFpuRegister());
     } else {
       DCHECK(get_and_update_op == GetAndUpdateOp::kSet);
     }
@@ -3805,7 +4251,7 @@ static void GenerateVarHandleGetAndUpdate(HInvoke* invoke,
     DCHECK(get_and_update_op == GetAndUpdateOp::kSet);
     // Mark card for object, the new value shall be stored.
     bool new_value_can_be_null = true;  // TODO: Worth finding out this information?
-    codegen->MarkGCCard(target.object, arg.AsRegister<XRegister>(), new_value_can_be_null);
+    codegen->MaybeMarkGCCard(target.object, arg.AsRegister<XRegister>(), new_value_can_be_null);
   }
 
   size_t data_size = DataType::Size(value_type);
@@ -3942,6 +4388,9 @@ static void GenerateVarHandleGetAndUpdate(HInvoke* invoke,
           ftmp, out.AsFpuRegister<FRegister>(), arg.AsFpuRegister<FRegister>(), value_type);
       codegen->MoveLocation(
           Location::RegisterLocation(new_value), Location::FpuRegisterLocation(ftmp), op_type);
+    } else if (arg.IsConstant()) {
+      DCHECK(arg.GetConstant()->IsZeroBitPattern());
+      __ Mv(new_value, out.AsRegister<XRegister>());
     } else if (value_type == DataType::Type::kInt64) {
       __ Add(new_value, out.AsRegister<XRegister>(), arg.AsRegister<XRegister>());
     } else {
@@ -4249,6 +4698,26 @@ void IntrinsicCodeGeneratorRISCV64::VisitThreadCurrentThread(HInvoke* invoke) {
   Riscv64Assembler* assembler = GetAssembler();
   XRegister out = invoke->GetLocations()->Out().AsRegister<XRegister>();
   __ Loadwu(out, TR, Thread::PeerOffset<kRiscv64PointerSize>().Int32Value());
+}
+
+void IntrinsicLocationsBuilderRISCV64::VisitThreadInterrupted(HInvoke* invoke) {
+  LocationSummary* locations =
+      new (allocator_) LocationSummary(invoke, LocationSummary::kNoCall, kIntrinsified);
+  locations->SetOut(Location::RequiresRegister());
+}
+
+void IntrinsicCodeGeneratorRISCV64::VisitThreadInterrupted(HInvoke* invoke) {
+  LocationSummary* locations = invoke->GetLocations();
+  Riscv64Assembler* assembler = GetAssembler();
+  XRegister out = locations->Out().AsRegister<XRegister>();
+  Riscv64Label done;
+
+  codegen_->GenerateMemoryBarrier(MemBarrierKind::kAnyAny);
+  __ Loadw(out, TR, Thread::InterruptedOffset<kRiscv64PointerSize>().Int32Value());
+  __ Beqz(out, &done);
+  __ Storew(Zero, TR, Thread::InterruptedOffset<kRiscv64PointerSize>().Int32Value());
+  codegen_->GenerateMemoryBarrier(MemBarrierKind::kAnyAny);
+  __ Bind(&done);
 }
 
 void IntrinsicLocationsBuilderRISCV64::VisitReachabilityFence(HInvoke* invoke) {

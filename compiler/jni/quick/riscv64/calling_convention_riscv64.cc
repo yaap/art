@@ -135,7 +135,7 @@ static constexpr uint32_t kNativeCoreCalleeSpillMask =
 static constexpr uint32_t kNativeFpCalleeSpillMask =
     CalculateFpCalleeSpillMask(kNativeCalleeSaveRegisters);
 
-static ManagedRegister ReturnRegisterForShorty(const char* shorty) {
+static ManagedRegister ReturnRegisterForShorty(std::string_view shorty) {
   if (shorty[0] == 'F' || shorty[0] == 'D') {
     return Riscv64ManagedRegister::FromFRegister(FA0);
   } else if (shorty[0] == 'V') {
@@ -198,7 +198,7 @@ Riscv64JniCallingConvention::Riscv64JniCallingConvention(bool is_static,
                                                          bool is_synchronized,
                                                          bool is_fast_native,
                                                          bool is_critical_native,
-                                                         const char* shorty)
+                                                         std::string_view shorty)
     : JniCallingConvention(is_static,
                            is_synchronized,
                            is_fast_native,
@@ -256,7 +256,7 @@ size_t Riscv64JniCallingConvention::OutFrameSize() const {
   }
   size_t out_args_size = RoundUp(size, kNativeStackAlignment);
   if (UNLIKELY(IsCriticalNative())) {
-    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty(), NumArgs() + 1u));
+    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty()));
   }
   return out_args_size;
 }

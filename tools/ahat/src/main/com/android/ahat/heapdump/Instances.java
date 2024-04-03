@@ -87,6 +87,10 @@ class Instances<T extends AhatInstance> implements Iterable<T> {
     return null;
   }
 
+  public void removeIf(Predicate<T> predicate) {
+    mInstances.removeIf(predicate);
+  }
+
   public int size() {
     return mInstances.size();
   }

@@ -30,10 +30,10 @@
 
 #include "art_method-inl.h"
 #include "base/casts.h"
-#include "base/enums.h"
 #include "base/hash_map.h"
 #include "base/macros.h"
 #include "base/os.h"
+#include "base/pointer_size.h"
 #include "base/quasi_atomic.h"
 #include "base/unix_file/fd_file.h"
 #include "base/zip_archive.h"
@@ -66,7 +66,7 @@
 #include "unstarted_runtime_list.h"
 #include "well_known_classes-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace interpreter {
 
 using android::base::StringAppendV;

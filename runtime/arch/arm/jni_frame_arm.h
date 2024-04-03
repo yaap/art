@@ -23,8 +23,9 @@
 #include "base/bit_utils.h"
 #include "base/globals.h"
 #include "base/logging.h"
+#include "base/macros.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace arm {
 
 constexpr size_t kFramePointerSize = static_cast<size_t>(PointerSize::k32);
@@ -39,11 +40,9 @@ static_assert(kAapcsStackAlignment < kStackAlignment);
 constexpr size_t kJniArgumentRegisterCount = 4u;
 
 // Get stack args size for @CriticalNative method calls.
-inline size_t GetCriticalNativeCallArgsSize(const char* shorty, uint32_t shorty_len) {
-  DCHECK_EQ(shorty_len, strlen(shorty));
-
+inline size_t GetCriticalNativeCallArgsSize(std::string_view shorty) {
   size_t reg = 0;  // Register for the current argument; if reg >= 4, we shall use stack.
-  for (size_t i = 1; i != shorty_len; ++i) {
+  for (size_t i = 1; i != shorty.length(); ++i) {
     if (shorty[i] == 'J' || shorty[i] == 'D') {
       // 8-byte args need to start in even-numbered register or at aligned stack position.
       reg += (reg & 1);
@@ -58,9 +57,9 @@ inline size_t GetCriticalNativeCallArgsSize(const char* shorty, uint32_t shorty_
 
 // Get the frame size for @CriticalNative method stub.
 // This must match the size of the frame emitted by the JNI compiler at the native call site.
-inline size_t GetCriticalNativeStubFrameSize(const char* shorty, uint32_t shorty_len) {
+inline size_t GetCriticalNativeStubFrameSize(std::string_view shorty) {
   // The size of outgoing arguments.
-  size_t size = GetCriticalNativeCallArgsSize(shorty, shorty_len);
+  size_t size = GetCriticalNativeCallArgsSize(shorty);
 
   // Check if this is a tail call, i.e. there are no stack args and the return type
   // is not  an FP type (otherwise we need to move the result to FP register).
@@ -73,9 +72,9 @@ inline size_t GetCriticalNativeStubFrameSize(const char* shorty, uint32_t shorty
 
 // Get the frame size for direct call to a @CriticalNative method.
 // This must match the size of the extra frame emitted by the compiler at the native call site.
-inline size_t GetCriticalNativeDirectCallFrameSize(const char* shorty, uint32_t shorty_len) {
+inline size_t GetCriticalNativeDirectCallFrameSize(std::string_view shorty) {
   // The size of outgoing arguments.
-  size_t size = GetCriticalNativeCallArgsSize(shorty, shorty_len);
+  size_t size = GetCriticalNativeCallArgsSize(shorty);
 
   // No return PC to save, zero- and sign-extension and FP value moves are handled by the caller.
   return RoundUp(size, kAapcsStackAlignment);

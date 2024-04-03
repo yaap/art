@@ -24,8 +24,8 @@
 #include "art_method-inl.h"
 #include "base/callee_save_type.h"
 #include "base/casts.h"
-#include "base/enums.h"
 #include "base/memfd.h"
+#include "base/pointer_size.h"
 #include "base/utils.h"
 #include "class_linker.h"
 #include "dex/descriptors_names.h"
@@ -37,7 +37,7 @@
 #include "mirror/class_loader.h"
 #include "mirror/dex_cache.h"
 #include "mirror/object-inl.h"
-#include "oat_quick_method_header.h"
+#include "oat/oat_quick_method_header.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread-current-inl.h"
 #include "utils/atomic_dex_ref_map-inl.h"
@@ -51,15 +51,16 @@ class CommonCompilerTestImpl::CodeAndMetadata {
   CodeAndMetadata(ArrayRef<const uint8_t> code,
                   ArrayRef<const uint8_t> vmap_table,
                   InstructionSet instruction_set) {
+    const size_t page_size = MemMap::GetPageSize();
     const uint32_t code_size = code.size();
     CHECK_NE(code_size, 0u);
     const uint32_t vmap_table_offset = vmap_table.empty() ? 0u
         : sizeof(OatQuickMethodHeader) + vmap_table.size();
     OatQuickMethodHeader method_header(vmap_table_offset);
     const size_t code_alignment = GetInstructionSetCodeAlignment(instruction_set);
-    DCHECK_ALIGNED_PARAM(static_cast<size_t>(gPageSize), code_alignment);
+    DCHECK_ALIGNED_PARAM(page_size, code_alignment);
     const uint32_t code_offset = RoundUp(vmap_table.size() + sizeof(method_header), code_alignment);
-    const uint32_t capacity = RoundUp(code_offset + code_size, gPageSize);
+    const uint32_t capacity = RoundUp(code_offset + code_size, page_size);
 
     // Create a memfd handle with sufficient capacity.
     android::base::unique_fd mem_fd(art::memfd_create_compat("test code", /*flags=*/ 0));
@@ -254,14 +255,6 @@ void CommonCompilerTestImpl::SetUpRuntimeOptionsImpl() {
   ApplyInstructionSet();
 }
 
-Compiler::Kind CommonCompilerTestImpl::GetCompilerKind() const {
-  return compiler_kind_;
-}
-
-void CommonCompilerTestImpl::SetCompilerKind(Compiler::Kind compiler_kind) {
-  compiler_kind_ = compiler_kind;
-}
-
 void CommonCompilerTestImpl::TearDown() {
   code_and_metadata_.clear();
   compiler_options_.reset();
@@ -277,8 +270,7 @@ void CommonCompilerTestImpl::CompileMethod(ArtMethod* method) {
     DCHECK(!Runtime::Current()->IsStarted());
     Thread* self = Thread::Current();
     StackHandleScope<2> hs(self);
-    std::unique_ptr<Compiler> compiler(
-        Compiler::Create(*compiler_options_, &storage, compiler_kind_));
+    std::unique_ptr<Compiler> compiler(Compiler::Create(*compiler_options_, &storage));
     const DexFile& dex_file = *method->GetDexFile();
     Handle<mirror::DexCache> dex_cache =
         hs.NewHandle(GetClassLinker()->FindDexCache(self, dex_file));

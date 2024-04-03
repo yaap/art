@@ -17,7 +17,7 @@
 #include "entrypoints/quick/quick_alloc_entrypoints.h"
 
 #include "art_method-inl.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "base/quasi_atomic.h"
 #include "callee_save_frame.h"
 #include "dex/dex_file_types.h"
@@ -27,7 +27,7 @@
 #include "mirror/object_array-inl.h"
 #include "mirror/string-alloc-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 static constexpr bool kUseTlabFastPath = true;
 

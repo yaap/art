@@ -25,8 +25,8 @@
 #include "android-base/strings.h"
 #include "art_method-inl.h"
 #include "base/compiler_filter.h"
-#include "base/enums.h"
 #include "base/logging.h"  // For VLOG.
+#include "base/pointer_size.h"
 #include "base/scoped_arena_containers.h"
 #include "base/stl_util.h"
 #include "base/systrace.h"
@@ -39,11 +39,11 @@
 #include "gc/gc_cause.h"
 #include "jit/jit.h"
 #include "jit/profiling_info.h"
-#include "oat_file_manager.h"
+#include "oat/oat_file_manager.h"
 #include "profile/profile_compilation_info.h"
 #include "scoped_thread_state_change-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 using Hotness = ProfileCompilationInfo::MethodHotness;
 
@@ -868,7 +868,8 @@ bool ProfileSaver::ProcessProfilingInfo(
     std::vector<ProfileMethodInfo> profile_methods;
     {
       ScopedObjectAccess soa(Thread::Current());
-      jit_code_cache_->GetProfiledMethods(locations, profile_methods);
+      jit_code_cache_->GetProfiledMethods(
+          locations, profile_methods, options_.GetInlineCacheThreshold());
       total_number_of_code_cache_queries_++;
     }
     {

@@ -278,8 +278,14 @@ void InstructionSimplifierArmVisitor::VisitSub(HSub* instruction) {
   if (IsSubRightSubLeftShl(instruction)) {
     HInstruction* shl = instruction->GetRight()->InputAt(0);
     if (shl->InputAt(1)->IsConstant() && TryReplaceSubSubWithSubAdd(instruction)) {
-      TryMergeIntoUsersShifterOperand(shl);
+      if (TryMergeIntoUsersShifterOperand(shl)) {
+        return;
+      }
     }
+  }
+
+  if (TryMergeWithAnd(instruction)) {
+    return;
   }
 }
 

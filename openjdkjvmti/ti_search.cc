@@ -38,10 +38,10 @@
 
 #include "art_field-inl.h"
 #include "art_jvmti.h"
-#include "base/enums.h"
 #include "base/macros.h"
 #include "base/memfd.h"
 #include "base/os.h"
+#include "base/pointer_size.h"
 #include "base/unix_file/fd_file.h"
 #include "class_linker.h"
 #include "dex/art_dex_file_loader.h"

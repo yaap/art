@@ -15,10 +15,10 @@
  */
 
 #include "asm_support_riscv64.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "thread.h"
 
-namespace art {
+namespace art HIDDEN {
 
 void Thread::InitCpu() {
   CHECK_EQ(THREAD_FLAGS_OFFSET, ThreadFlagsOffset<PointerSize::k64>().Int32Value());

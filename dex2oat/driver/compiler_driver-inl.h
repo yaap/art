@@ -21,7 +21,7 @@
 
 #include "art_field-inl.h"
 #include "art_method-inl.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "class_linker-inl.h"
 #include "driver/dex_compilation_unit.h"
 #include "handle_scope-inl.h"

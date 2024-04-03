@@ -19,9 +19,9 @@
 
 #include "arch/instruction_set.h"
 #include "base/arena_allocator.h"
-#include "base/enums.h"
 #include "base/macros.h"
 #include "base/malloc_arena_pool.h"
+#include "base/pointer_size.h"
 #include "cfi_test.h"
 #include "gtest/gtest.h"
 #include "jni/quick/calling_convention.h"

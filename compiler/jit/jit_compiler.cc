@@ -165,8 +165,7 @@ std::vector<uint8_t> JitCompiler::PackElfFileForJIT(ArrayRef<const JITCodeEntry*
 JitCompiler::JitCompiler() {
   compiler_options_.reset(new CompilerOptions());
   ParseCompilerOptions();
-  compiler_.reset(
-      Compiler::Create(*compiler_options_, /*storage=*/ nullptr, Compiler::kOptimizing));
+  compiler_.reset(Compiler::Create(*compiler_options_, /*storage=*/ nullptr));
 }
 
 JitCompiler::~JitCompiler() {
@@ -224,6 +223,10 @@ bool JitCompiler::CompileMethod(
 
 bool JitCompiler::IsBaselineCompiler() const {
   return compiler_options_->IsBaseline();
+}
+
+uint32_t JitCompiler::GetInlineMaxCodeUnits() const {
+  return compiler_options_->GetInlineMaxCodeUnits();
 }
 
 }  // namespace jit

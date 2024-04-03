@@ -49,6 +49,7 @@ public class AhatSnapshot implements Diffable<AhatSnapshot> {
     mRootSite = rootSite;
 
     AhatInstance.computeReachability(mSuperRoot, progress, mInstances.size());
+    AhatClassInstance.findBitmapDumpData(mSuperRoot, mInstances);
 
     for (AhatInstance inst : mInstances) {
       // Add this instance to its site.

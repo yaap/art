@@ -20,10 +20,10 @@
 
 #include "arch/instruction_set.h"
 #include "art_method.h"
-#include "base/enums.h"
 #include "base/hex_dump.h"
 #include "base/logging.h"  // For VLOG.
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "registers_arm64.h"
 #include "runtime_globals.h"
 #include "thread-current-inl.h"
@@ -36,7 +36,7 @@ extern "C" void art_quick_implicit_suspend();
 // ARM64 specific fault handler functions.
 //
 
-namespace art {
+namespace art HIDDEN {
 
 uintptr_t FaultManager::GetFaultPc(siginfo_t* siginfo, void* context) {
   // SEGV_MTEAERR (Async MTE fault) is delivered at an arbitrary point after the actual fault.

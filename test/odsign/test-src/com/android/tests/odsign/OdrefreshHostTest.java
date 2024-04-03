@@ -325,30 +325,40 @@ public class OdrefreshHostTest extends BaseHostJUnit4Test {
 
     @Test
     public void verifyCompilationOsMode() throws Exception {
-        mTestUtils.removeCompilationLogToAvoidBackoff();
-        mDeviceState.simulateApexUpgrade();
-        long timeMs = mTestUtils.getCurrentTimeMs();
-        mTestUtils.runOdrefresh("--compilation-os-mode");
+        try {
+            // In CompOS, dex2oat directly writes to the output dir. This is allowed on Microdroid
+            // but not allowed on Android, so we need to bypass the SELinux restriction.
+            mTestUtils.assertCommandSucceeds("setenforce 0");
 
-        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
-        mTestUtils.assertModifiedAfter(mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
-        mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
+            mTestUtils.removeCompilationLogToAvoidBackoff();
+            mDeviceState.simulateApexUpgrade();
+            long timeMs = mTestUtils.getCurrentTimeMs();
+            mTestUtils.runOdrefresh("--compilation-os-mode");
 
-        String cacheInfo = getDevice().pullFileContents(OdsignTestUtils.CACHE_INFO_FILE);
-        assertThat(cacheInfo).contains("compilationOsMode=\"true\"");
+            mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+            mTestUtils.assertModifiedAfter(
+                    mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+            mTestUtils.assertModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
 
-        // Compilation OS does not write the compilation log to the host.
-        mTestUtils.removeCompilationLogToAvoidBackoff();
+            String cacheInfo = getDevice().pullFileContents(OdsignTestUtils.CACHE_INFO_FILE);
+            assertThat(cacheInfo).contains("compilationOsMode=\"true\"");
 
-        // Simulate the odrefresh invocation on the next boot.
-        timeMs = mTestUtils.getCurrentTimeMs();
-        mTestUtils.runOdrefresh();
+            // Compilation OS does not write the compilation log to the host.
+            mTestUtils.removeCompilationLogToAvoidBackoff();
 
-        // odrefresh should not re-compile anything.
-        mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
-        mTestUtils.assertNotModifiedAfter(
-                mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
-        mTestUtils.assertNotModifiedAfter(mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
+            // Simulate the odrefresh invocation on the next boot.
+            timeMs = mTestUtils.getCurrentTimeMs();
+            mTestUtils.runOdrefresh();
+
+            // odrefresh should not re-compile anything.
+            mTestUtils.assertNotModifiedAfter(mTestUtils.getExpectedPrimaryBootImage(), timeMs);
+            mTestUtils.assertNotModifiedAfter(
+                    mTestUtils.getExpectedBootImageMainlineExtension(), timeMs);
+            mTestUtils.assertNotModifiedAfter(
+                    mTestUtils.getSystemServerExpectedArtifacts(), timeMs);
+        } finally {
+            mTestUtils.assertCommandSucceeds("setenforce 1");
+        }
     }
 
     @Test

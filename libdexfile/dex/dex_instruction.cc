@@ -82,10 +82,11 @@ int32_t Instruction::GetTargetOffset() const {
     case k10t: return VRegA_10t();
     case k20t: return VRegA_20t();
     case k30t: return VRegA_30t();
-    default: LOG(FATAL) << "Tried to access the branch offset of an instruction " << Name() <<
-        " which does not have a target operand.";
+    default:
+      LOG(FATAL) << "Tried to access the branch offset of an instruction " << Name()
+                 << " which does not have a target operand.";
+      UNREACHABLE();
   }
-  UNREACHABLE();
 }
 
 bool Instruction::CanFlowThrough() const {

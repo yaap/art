@@ -26,6 +26,8 @@ namespace art {
 template <typename Key, typename Value, typename HashFn>
 class HashMapHashWrapper {
  public:
+  HashMapHashWrapper() : hash_fn_(HashFn()) {}
+  explicit HashMapHashWrapper(const HashFn& hashfn) : hash_fn_(hashfn) {}
   size_t operator()(const Key& key) const {
     return hash_fn_(key);
   }
@@ -41,6 +43,8 @@ class HashMapHashWrapper {
 template <typename Key, typename Value, typename PredFn>
 class HashMapPredWrapper {
  public:
+  HashMapPredWrapper() : pred_fn_(PredFn()) {}
+  explicit HashMapPredWrapper(const PredFn& predfn) : pred_fn_(predfn) {}
   bool operator()(const std::pair<Key, Value>& a, const std::pair<Key, Value>& b) const {
     return pred_fn_(a.first, b.first);
   }
@@ -86,6 +90,9 @@ class HashMap : public HashSet<std::pair<Key, Value>,
  public:
   // Inherit constructors.
   using Base::Base;
+  HashMap(HashFn hashfn, Pred pred)
+      : Base(HashMapHashWrapper<Key, Value, HashFn>(hashfn),
+             HashMapPredWrapper<Key, Value, Pred>(pred)) {}
 
   // Used to insert a new mapping.
   typename Base::iterator Overwrite(const Key& k, const Value& v) {

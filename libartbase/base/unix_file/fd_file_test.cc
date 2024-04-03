@@ -158,6 +158,73 @@ TEST_F(FdFileTest, ReadWriteFullyWithOffset) {
   ASSERT_EQ(file.Close(), 0);
 }
 
+TEST_F(FdFileTest, Rename) {
+  art::ScratchFile src_tmp;
+  FdFile* src = src_tmp.GetFile();
+  ASSERT_TRUE(src->IsOpened());
+
+  // To test that rename preserves sparsity (on systems that support file sparsity), create a source
+  // file with 3 chunks: 2 data chunks separated by an empty 'hole' chunk.
+  constexpr size_t kChunkSize = 64 * art::KB;
+  std::vector<int8_t> data_buffer(kChunkSize, 1);
+  std::vector<int8_t> zero_buffer(kChunkSize, 0);
+  ASSERT_TRUE(src->WriteFully(data_buffer.data(), kChunkSize));
+  ASSERT_GT(lseek(src->Fd(), kChunkSize, SEEK_CUR), 0);
+  ASSERT_TRUE(src->WriteFully(data_buffer.data(), kChunkSize));
+  ASSERT_EQ(src->Flush(), 0);
+
+  size_t src_offset = lseek(src->Fd(), 0, SEEK_CUR);
+  size_t source_length = 3 * kChunkSize;
+
+  // Confirm the source file's length is as expected, to be used later.
+  EXPECT_EQ(src->GetLength(), source_length);
+
+  struct stat src_stat;
+  ASSERT_EQ(fstat(src->Fd(), &src_stat), 0);
+
+  // Move the file via a rename.
+  art::ScratchFile dest_tmp;
+  std::string new_filename = dest_tmp.GetFilename();
+  std::string old_filename = src->GetPath();
+  ASSERT_TRUE(src->Rename(new_filename));
+
+  // Confirm the FdFile path has correctly updated.
+  EXPECT_EQ(src->GetPath(), new_filename);
+  // Check the offset of the moved file has not been modified.
+  EXPECT_EQ(lseek(src->Fd(), 0, SEEK_CUR), src_offset);
+
+  ASSERT_EQ(src->Close(), 0);
+
+  // Test that the file no longer exists in the old location, and there is a file at the new
+  // location with the expected length.
+  EXPECT_FALSE(art::OS::FileExists(old_filename.c_str()));
+  FdFile dest(new_filename, O_RDONLY, /*check_usage=*/false);
+  ASSERT_TRUE(dest.IsOpened());
+  EXPECT_EQ(dest.GetLength(), source_length);
+
+  // Confirm the file at the new location has the same number of allocated data blocks as the source
+  // file. If the source file was a sparse file, this confirms that the sparsity was preserved
+  // by the move.
+  struct stat dest_stat;
+  ASSERT_EQ(fstat(dest.Fd(), &dest_stat), 0);
+  EXPECT_EQ(dest_stat.st_blocks, src_stat.st_blocks);
+
+  // And it is exactly the same file in the new location, with the same contents.
+  EXPECT_EQ(dest_stat.st_dev, src_stat.st_dev);
+  EXPECT_EQ(dest_stat.st_ino, src_stat.st_ino);
+
+  ASSERT_EQ(lseek(dest.Fd(), 0, SEEK_CUR), 0);
+  std::vector<int8_t> check_buffer(kChunkSize);
+  ASSERT_TRUE(dest.ReadFully(check_buffer.data(), kChunkSize));
+  EXPECT_EQ(0, memcmp(check_buffer.data(), data_buffer.data(), kChunkSize));
+  ASSERT_TRUE(dest.ReadFully(check_buffer.data(), kChunkSize));
+  EXPECT_EQ(0, memcmp(check_buffer.data(), zero_buffer.data(), kChunkSize));
+  ASSERT_TRUE(dest.ReadFully(check_buffer.data(), kChunkSize));
+  EXPECT_EQ(0, memcmp(check_buffer.data(), data_buffer.data(), kChunkSize));
+
+  EXPECT_EQ(dest.Close(), 0);
+}
+
 TEST_F(FdFileTest, Copy) {
   art::ScratchFile src_tmp;
   FdFile src(src_tmp.GetFilename(), O_RDWR, false);
@@ -170,7 +237,7 @@ TEST_F(FdFileTest, Copy) {
   ASSERT_EQ(static_cast<int64_t>(sizeof(src_data)), src.GetLength());
 
   art::ScratchFile dest_tmp;
-  FdFile dest(src_tmp.GetFilename(), O_RDWR, false);
+  FdFile dest(dest_tmp.GetFilename(), O_RDWR, false);
   ASSERT_GE(dest.Fd(), 0);
   ASSERT_TRUE(dest.IsOpened());
 

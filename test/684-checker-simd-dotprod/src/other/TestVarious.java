@@ -36,7 +36,7 @@ public class TestVarious {
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                                         loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
   /// CHECK-DAG: <<Const89:i\d+>> IntConstant 89                                        loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set:d\d+>>     VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none
   ///     CHECK-DAG: <<Repl:d\d+>>    VecReplicateScalar [<<Const89>>,{{j\d+}}]                       loop:none
@@ -89,7 +89,7 @@ public class TestVarious {
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                                         loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
   /// CHECK-DAG: <<Const89:i\d+>> IntConstant 89                                        loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set:d\d+>>     VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none
   ///     CHECK-DAG: <<Repl:d\d+>>    VecReplicateScalar [<<Const89>>,{{j\d+}}]                       loop:none
@@ -149,7 +149,7 @@ public class TestVarious {
   /// CHECK-DAG: <<ConstL:i\d+>>  IntConstant 129                                       loop:none
   /// CHECK-DAG: <<AddP:i\d+>>    Add [<<Param>>,<<ConstL>>]                            loop:none
   /// CHECK-DAG: <<TypeCnv:b\d+>> TypeConversion [<<AddP>>]                             loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set:d\d+>>     VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none
   ///     CHECK-DAG: <<Repl:d\d+>>    VecReplicateScalar [<<TypeCnv>>,{{j\d+}}]                       loop:none
@@ -236,7 +236,7 @@ public class TestVarious {
   /// CHECK-START-{ARM64}: int other.TestVarious.testDotProdInt32(int[], int[]) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                             loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                             loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set:d\d+>>     VecSetScalars [<<Const1>>,{{j\d+}}]                 loop:none
   ///     CHECK-DAG: <<Phi1:i\d+>>    Phi [<<Const0>>,{{i\d+}}]                           loop:<<Loop:B\d+>> outer_loop:none
@@ -294,7 +294,7 @@ public class TestVarious {
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                                         loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
   /// CHECK-DAG: <<Const2:i\d+>>  IntConstant 2                                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set1:d\d+>>    VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none
   ///     CHECK-DAG: <<Set2:d\d+>>    VecSetScalars [<<Const2>>,{{j\d+}}]                             loop:none
@@ -359,7 +359,7 @@ public class TestVarious {
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
   /// CHECK-DAG: <<Const2:i\d+>>  IntConstant 2                                         loop:none
   /// CHECK-DAG: <<Const42:i\d+>> IntConstant 42                                        loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Repl:d\d+>>    VecReplicateScalar [<<Const42>>,{{j\d+}}]                       loop:none
   ///     CHECK-DAG: <<Set1:d\d+>>    VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none
@@ -425,7 +425,7 @@ public class TestVarious {
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                                         loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
   /// CHECK-DAG: <<Const2:i\d+>>  IntConstant 2                                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set1:d\d+>>    VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none
   ///     CHECK-DAG: <<Set2:d\d+>>    VecSetScalars [<<Const2>>,{{j\d+}}]                             loop:none
@@ -491,7 +491,7 @@ public class TestVarious {
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                                         loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
   /// CHECK-DAG: <<Const2:i\d+>>  IntConstant 2                                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      16-bit DotProd is not supported for SVE.
   ///     CHECK-NOT:                  VecDotProd

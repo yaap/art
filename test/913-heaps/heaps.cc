@@ -689,9 +689,6 @@ extern "C" JNIEXPORT jstring JNICALL Java_art_Test913_followReferencesPrimitiveA
           case JVMTI_PRIMITIVE_TYPE_DOUBLE:
             element_size = 8;
             break;
-          default:
-            LOG(FATAL) << "Unknown type " << static_cast<size_t>(element_type);
-            UNREACHABLE();
         }
         const uint8_t* data = reinterpret_cast<const uint8_t*>(elements);
         for (size_t i = 0; i != element_size * element_count; ++i) {

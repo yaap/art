@@ -82,6 +82,10 @@ func globalFlags(ctx android.LoadHookContext) ([]string, []string) {
 		cflags = append(cflags, "-DART_USE_TLAB=1")
 	}
 
+	if ctx.Config().IsEnvTrue("ART_FORCE_TRY_PREDICATED_SIMD") {
+		cflags = append(cflags, "-DART_FORCE_TRY_PREDICATED_SIMD=1")
+	}
+
 	// We need larger stack overflow guards for ASAN, as the compiled code will have
 	// larger frame sizes. For simplicity, just use global not-target-specific cflags.
 	// Note: We increase this for both debug and non-debug, as the overflow gap will

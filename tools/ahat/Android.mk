@@ -91,10 +91,11 @@ AHAT_RI_TEST_DUMP_COMMON := $(call intermediates-dir-for,JAVA_LIBRARIES,ahat-ri-
 AHAT_RI_TEST_DUMP_HPROF := $(AHAT_RI_TEST_DUMP_COMMON)/ri-test-dump.hprof
 
 # Run ahat-ri-test-dump.jar to generate ri-test-dump.hprof
+# b/329817005: Hardcode JDK 17 for running the test dump
 $(AHAT_RI_TEST_DUMP_HPROF): PRIVATE_AHAT_RI_TEST_DUMP_JAR := $(AHAT_RI_TEST_DUMP_JAR)
 $(AHAT_RI_TEST_DUMP_HPROF): $(AHAT_RI_TEST_DUMP_JAR)
 	rm -rf $@
-	java -cp $(PRIVATE_AHAT_RI_TEST_DUMP_JAR) Main $@
+	./prebuilts/jdk/jdk17/linux-x86/bin/java -cp $(PRIVATE_AHAT_RI_TEST_DUMP_JAR) Main $@
 
 # --- ahat-tests.jar --------------
 # To run these tests, use: atest ahat-tests --host

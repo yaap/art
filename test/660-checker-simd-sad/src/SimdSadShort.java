@@ -72,7 +72,7 @@ public class SimdSadShort {
   //
   /// CHECK-START-ARM64: int SimdSadShort.sadShort2Int(short[], short[]) loop_optimization (after)
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate
@@ -112,7 +112,7 @@ public class SimdSadShort {
   //
   /// CHECK-START-ARM64: int SimdSadShort.sadShort2IntAlt(short[], short[]) loop_optimization (after)
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate
@@ -154,7 +154,7 @@ public class SimdSadShort {
   //
   /// CHECK-START-ARM64: int SimdSadShort.sadShort2IntAlt2(short[], short[]) loop_optimization (after)
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate
@@ -200,7 +200,7 @@ public class SimdSadShort {
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
   /// CHECK-DAG: <<Cons1:i\d+>>  IntConstant 1                  loop:none
   /// CHECK-DAG: <<Cons:i\d+>>   IntConstant 7                  loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate
@@ -241,7 +241,7 @@ public class SimdSadShort {
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
   /// CHECK-DAG: <<Cons1:i\d+>>  IntConstant 1                  loop:none
   /// CHECK-DAG: <<Cons:i\d+>>   IntConstant 7                  loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate
@@ -282,7 +282,7 @@ public class SimdSadShort {
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
   /// CHECK-DAG: <<Cons1:i\d+>>  IntConstant 1                  loop:none
   /// CHECK-DAG: <<Cons:i\d+>>   IntConstant -7                 loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate
@@ -325,7 +325,7 @@ public class SimdSadShort {
   /// CHECK-START-ARM64: long SimdSadShort.sadShort2Long(short[], short[]) loop_optimization (after)
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
   /// CHECK-DAG: <<ConsL:j\d+>>  LongConstant 0                 loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate
@@ -371,7 +371,7 @@ public class SimdSadShort {
   /// CHECK-START-ARM64: long SimdSadShort.sadShort2LongAt1(short[], short[]) loop_optimization (after)
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
   /// CHECK-DAG: <<ConsL:j\d+>>  LongConstant 1                 loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate

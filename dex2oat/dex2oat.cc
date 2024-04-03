@@ -45,7 +45,6 @@
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 #include "android-base/unique_fd.h"
-#include "aot_class_linker.h"
 #include "arch/instruction_set_features.h"
 #include "art_method-inl.h"
 #include "base/callee_save_type.h"
@@ -83,7 +82,6 @@
 #include "driver/compiler_driver.h"
 #include "driver/compiler_options.h"
 #include "driver/compiler_options_map-inl.h"
-#include "elf_file.h"
 #include "gc/space/image_space.h"
 #include "gc/space/space-inl.h"
 #include "gc/verification.h"
@@ -98,9 +96,11 @@
 #include "mirror/class_loader.h"
 #include "mirror/object-inl.h"
 #include "mirror/object_array-inl.h"
-#include "oat.h"
-#include "oat_file.h"
-#include "oat_file_assistant.h"
+#include "oat/aot_class_linker.h"
+#include "oat/elf_file.h"
+#include "oat/oat.h"
+#include "oat/oat_file.h"
+#include "oat/oat_file_assistant.h"
 #include "palette/palette.h"
 #include "profile/profile_compilation_info.h"
 #include "runtime.h"
@@ -510,9 +510,7 @@ class OatKeyValueStore : public SafeMap<std::string, std::string> {
 class Dex2Oat final {
  public:
   explicit Dex2Oat(TimingLogger* timings)
-      : compiler_kind_(Compiler::kOptimizing),
-        // Take the default set of instruction features from the build.
-        key_value_store_(nullptr),
+      : key_value_store_(nullptr),
         verification_results_(nullptr),
         runtime_(nullptr),
         thread_count_(sysconf(_SC_NPROCESSORS_CONF)),
@@ -1125,9 +1123,6 @@ class Dex2Oat final {
       LOG(WARNING) << "Obsolete flag --compact-dex-level ignored";
       compact_dex_level_ = CompactDexLevel::kCompactDexLevelNone;
     }
-
-    AssignIfExists(args, M::Backend, &compiler_kind_);
-    parser_options->requested_specific_compiler = args.Exists(M::Backend);
 
     AssignIfExists(args, M::TargetInstructionSet, &compiler_options_->instruction_set_);
     // arm actually means thumb2.
@@ -1917,7 +1912,6 @@ class Dex2Oat final {
 
     driver_.reset(new CompilerDriver(compiler_options_.get(),
                                      verification_results_.get(),
-                                     compiler_kind_,
                                      thread_count_,
                                      swap_fd_));
 
@@ -2915,7 +2909,6 @@ class Dex2Oat final {
   }
 
   std::unique_ptr<CompilerOptions> compiler_options_;
-  Compiler::Kind compiler_kind_;
 
   std::unique_ptr<OatKeyValueStore> key_value_store_;
 

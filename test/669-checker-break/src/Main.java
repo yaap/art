@@ -51,7 +51,7 @@ public class Main {
   /// CHECK-DAG: <<Par:l\d+>>  ParameterValue                          loop:none
   /// CHECK-DAG: <<One:i\d+>>  IntConstant 1                           loop:none
   /// CHECK-DAG: <<Nil:l\d+>>  NullCheck [<<Par>>]                     loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Rep:d\d+>>   VecReplicateScalar [<<One>>,{{j\d+}}]             loop:none
   ///     CHECK-DAG: <<LoopP:j\d+>> VecPredWhile                                      loop:<<Loop:B\d+>> outer_loop:none
@@ -152,7 +152,7 @@ public class Main {
   /// CHECK-DAG: <<Par:l\d+>>   ParameterValue                          loop:none
   /// CHECK-DAG: <<One:i\d+>>   IntConstant 1                           loop:none
   /// CHECK-DAG: <<Three:i\d+>> IntConstant 3                           loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Rep:d\d+>>   VecReplicateScalar [<<Three>>,{{j\d+}}]           loop:none
   ///     CHECK-DAG: <<LoopP:j\d+>> VecPredWhile                                      loop:<<Loop:B\d+>> outer_loop:none
@@ -284,7 +284,7 @@ public class Main {
   /// CHECK-START-ARM64: int Main.breakLoopReduction(int[]) loop_optimization (after)
   /// CHECK-DAG: <<Par:l\d+>>   ParameterValue              loop:none
   /// CHECK-DAG: <<Zero:i\d+>>  IntConstant 0               loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Exp:d\d+>>   VecSetScalars [<<Zero>>,{{j\d+}}]     loop:none
   ///     CHECK-DAG: <<LoopP:j\d+>> VecPredWhile                          loop:<<Loop:B\d+>> outer_loop:none

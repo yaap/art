@@ -31,7 +31,7 @@ public class Main {
   /// CHECK-START-{X86_64,ARM64}: void Main.unroll(float[], float[]) loop_optimization (after)
   /// CHECK-DAG: <<Cons:f\d+>> FloatConstant 2.5                    loop:none
 
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Repl:d\d+>>  VecReplicateScalar [<<Cons>>,{{j\d+}}]         loop:none
   ///     CHECK-NOT:                VecReplicateScalar
@@ -68,7 +68,7 @@ public class Main {
   /// CHECK-START-{X86_64,ARM64}: void Main.stencil(int[], int[], int) loop_optimization (after)
   /// CHECK-DAG: <<CP1:i\d+>>   IntConstant 1                         loop:none
   /// CHECK-DAG: <<CP2:i\d+>>   IntConstant 2                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Phi:i\d+>>   Phi                                             loop:<<Loop:B\d+>> outer_loop:none
   ///     CHECK-DAG: <<LoopP:j\d+>> VecPredWhile [<<Phi>>,{{i\d+}}]                 loop:<<Loop>>      outer_loop:none
@@ -115,7 +115,7 @@ public class Main {
   /// CHECK-DAG: <<TCSel:i\d+>> Select [<<C0>>,{{i\d+}},<<ArrCh>>]   loop:none
   /// CHECK-DAG: <<PhiV:i\d+>>  Phi [<<C0>>,{{i\d+}}]                loop:<<LoopV:B\d+>> outer_loop:none
   //
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<LoopP:j\d+>> VecPredWhile [<<PhiV>>,{{i\d+}}]                loop:<<LoopV>>      outer_loop:none
   ///     CHECK-DAG: <<Add1:i\d+>>  Add [<<PhiV>>,<<CP1>>]                          loop:<<LoopV>>      outer_loop:none
@@ -172,7 +172,7 @@ public class Main {
   /// CHECK-START-{X86_64,ARM64}: void Main.stencilAddInt(int[], int[], int) loop_optimization (after)
   /// CHECK-DAG: <<CP1:i\d+>>   IntConstant 1                         loop:none
   /// CHECK-DAG: <<CP2:i\d+>>   IntConstant 2                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Phi:i\d+>>   Phi                                             loop:<<Loop:B\d+>> outer_loop:none
   ///     CHECK-DAG: <<LoopP:j\d+>> VecPredWhile [<<Phi>>,{{i\d+}}]                 loop:<<Loop>>      outer_loop:none
@@ -226,7 +226,7 @@ public class Main {
   /// CHECK-START-{X86_64,ARM64}: void Main.stencilSubInt(int[], int[], int) loop_optimization (after)
   /// CHECK-DAG: <<CP1:i\d+>>   IntConstant 1                         loop:none
   /// CHECK-DAG: <<CP2:i\d+>>   IntConstant 2                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Phi:i\d+>>   Phi                                             loop:<<Loop:B\d+>> outer_loop:none
   ///     CHECK-DAG: <<LoopP:j\d+>> VecPredWhile [<<Phi>>,{{i\d+}}]                 loop:<<Loop>>      outer_loop:none
@@ -278,7 +278,7 @@ public class Main {
   /// CHECK-DAG: <<L1:j\d+>>    LongConstant 1               loop:none
   /// CHECK-DAG: <<I0:i\d+>>    IntConstant 0                loop:none
   /// CHECK-DAG: <<Get:j\d+>>   ArrayGet [{{l\d+}},<<I0>>]   loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Rep:d\d+>>   VecReplicateScalar [<<Get>>,{{j\d+}}]  loop:none
   ///     CHECK-DAG: <<Set:d\d+>>   VecSetScalars [<<L1>>,{{j\d+}}]        loop:none
@@ -321,7 +321,7 @@ public class Main {
   /// CHECK-DAG: <<I1:i\d+>>    IntConstant 1                       loop:none
   /// CHECK-DAG: <<Get:j\d+>>   ArrayGet [{{l\d+}},<<I0>>]          loop:none
   /// CHECK-DAG: <<Cnv:i\d+>>   TypeConversion [<<Get>>]            loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Rep:d\d+>>   VecReplicateScalar [<<Cnv>>,{{j\d+}}]         loop:none
   ///     CHECK-DAG: <<Phi:i\d+>>   Phi [<<I0>>,{{i\d+}}]                         loop:<<Loop:B\d+>> outer_loop:none
@@ -360,7 +360,7 @@ public class Main {
   /// CHECK-DAG: <<I0:i\d+>>    IntConstant 0                       loop:none
   /// CHECK-DAG: <<L1:j\d+>>    LongConstant 1                      loop:none
   /// CHECK-DAG: <<Cnv:i\d+>>   TypeConversion [<<L1>>]             loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Rep:d\d+>>   VecReplicateScalar [<<Cnv>>,{{j\d+}}]         loop:none
   ///     CHECK-DAG: <<Phi:i\d+>>   Phi [<<I0>>,{{i\d+}}]                         loop:<<Loop:B\d+>> outer_loop:none

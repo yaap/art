@@ -24,17 +24,17 @@
 #include "base/array_ref.h"
 #include "base/bit_field.h"
 #include "base/bit_utils.h"
-#include "base/enums.h"
 #include "base/globals.h"
 #include "base/macros.h"
 #include "base/memory_region.h"
+#include "base/pointer_size.h"
 #include "class_root.h"
 #include "dex/string_reference.h"
 #include "dex/type_reference.h"
 #include "graph_visualizer.h"
 #include "locations.h"
 #include "nodes.h"
-#include "oat_quick_method_header.h"
+#include "oat/oat_quick_method_header.h"
 #include "optimizing_compiler_stats.h"
 #include "read_barrier_option.h"
 #include "stack.h"
@@ -251,6 +251,10 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   uint32_t GetFrameSize() const { return frame_size_; }
   void SetFrameSize(uint32_t size) { frame_size_ = size; }
+  uint32_t GetMaximumFrameSize() const {
+    return GetStackOverflowReservedBytes(GetInstructionSet());
+  }
+
   uint32_t GetCoreSpillMask() const { return core_spill_mask_; }
   uint32_t GetFpuSpillMask() const { return fpu_spill_mask_; }
 
@@ -380,6 +384,11 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   bool EmitNonBakerReadBarrier() const;
   ReadBarrierOption GetCompilerReadBarrierOption() const;
 
+  // Returns true if we should check the GC card for consistency purposes.
+  bool ShouldCheckGCCard(DataType::Type type,
+                         HInstruction* value,
+                         WriteBarrierKind write_barrier_kind) const;
+
   // Get the ScopedArenaAllocator used for codegen memory allocation.
   ScopedArenaAllocator* GetScopedAllocator();
 
@@ -503,6 +512,11 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
     return type == DataType::Type::kReference && !value->IsNullConstant();
   }
 
+  // If we are compiling a graph with the WBE pass enabled, we want to honor the WriteBarrierKind
+  // set during the WBE pass.
+  bool StoreNeedsWriteBarrier(DataType::Type type,
+                              HInstruction* value,
+                              WriteBarrierKind write_barrier_kind) const;
 
   // Performs checks pertaining to an InvokeRuntime call.
   void ValidateInvokeRuntime(QuickEntrypointEnum entrypoint,
@@ -583,7 +597,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   template <typename CriticalNativeCallingConventionVisitor,
             size_t kNativeStackAlignment,
-            size_t GetCriticalNativeDirectCallFrameSize(const char* shorty, uint32_t shorty_len)>
+            size_t GetCriticalNativeDirectCallFrameSize(std::string_view shorty)>
   size_t PrepareCriticalNativeCall(HInvokeStaticOrDirect* invoke) {
       DCHECK(!invoke->GetLocations()->Intrinsified());
       CriticalNativeCallingConventionVisitor calling_convention_visitor(
@@ -593,9 +607,8 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
       size_t out_frame_size =
           RoundUp(calling_convention_visitor.GetStackOffset(), kNativeStackAlignment);
       if (kIsDebugBuild) {
-        uint32_t shorty_len;
-        const char* shorty = GetCriticalNativeShorty(invoke, &shorty_len);
-        CHECK_EQ(GetCriticalNativeDirectCallFrameSize(shorty, shorty_len), out_frame_size);
+        std::string_view shorty = GetCriticalNativeShorty(invoke);
+        CHECK_EQ(GetCriticalNativeDirectCallFrameSize(shorty), out_frame_size);
       }
       if (out_frame_size != 0u) {
         FinishCriticalNativeFrameSetup(out_frame_size, &parallel_move);
@@ -868,7 +881,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   void FinishCriticalNativeFrameSetup(size_t out_frame_size, /*inout*/HParallelMove* parallel_move);
 
-  static const char* GetCriticalNativeShorty(HInvokeStaticOrDirect* invoke, uint32_t* shorty_len);
+  static std::string_view GetCriticalNativeShorty(HInvokeStaticOrDirect* invoke);
 
   OptimizingCompilerStats* stats_;
 

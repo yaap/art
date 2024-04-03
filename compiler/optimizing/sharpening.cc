@@ -18,8 +18,8 @@
 
 #include "art_method-inl.h"
 #include "base/casts.h"
-#include "base/enums.h"
 #include "base/logging.h"
+#include "base/pointer_size.h"
 #include "class_linker.h"
 #include "code_generator.h"
 #include "driver/compiler_options.h"

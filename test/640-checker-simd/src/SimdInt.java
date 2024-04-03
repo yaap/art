@@ -163,7 +163,7 @@ public class SimdInt {
   /// CHECK-DAG:              ArraySet [{{l\d+}},{{i\d+}},<<Get>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-{ARM,ARM64}: void SimdInt.shr32() loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Get:d\d+>> VecLoad                                       loop:<<Loop:B\d+>> outer_loop:none
   ///     CHECK-DAG:              VecStore [{{l\d+}},{{i\d+}},<<Get>>,{{j\d+}}] loop:<<Loop>>      outer_loop:none
@@ -194,7 +194,7 @@ public class SimdInt {
   //
   /// CHECK-START-{ARM,ARM64}: void SimdInt.shr33() loop_optimization (after)
   /// CHECK-DAG: <<Dist:i\d+>> IntConstant 1                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Get:d\d+>>  VecLoad                                        loop:<<Loop:B\d+>> outer_loop:none
   ///     CHECK-DAG: <<UShr:d\d+>> VecUShr [<<Get>>,<<Dist>>,{{j\d+}}]            loop:<<Loop>>      outer_loop:none
@@ -226,7 +226,7 @@ public class SimdInt {
   //
   /// CHECK-START-{ARM,ARM64}: void SimdInt.shrMinus254() loop_optimization (after)
   /// CHECK-DAG: <<Dist:i\d+>> IntConstant 2                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Get:d\d+>>  VecLoad                                        loop:<<Loop:B\d+>> outer_loop:none
   ///     CHECK-DAG: <<UShr:d\d+>> VecUShr [<<Get>>,<<Dist>>,{{j\d+}}]            loop:<<Loop>>      outer_loop:none

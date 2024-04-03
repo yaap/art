@@ -916,6 +916,8 @@ def emit_accessor_test(var_handle_kind, accessor, var_type, output_path):
         if var_type.supports_numeric == True:
             expansions['binop'] = accessor.get_java_numeric_operator()
             test_template = Template("""
+            ${var_type} unchanged = (${var_type}) vh.${accessor_method}(${coordinates}(${var_type}) 0);
+            assertEquals(${initial_value}, unchanged);
             ${var_type} old_value = (${var_type}) vh.${accessor_method}(${coordinates}${updated_value});
             assertEquals(${initial_value}, old_value);
             ${var_type} expected_value = (${var_type}) (${initial_value} ${binop} ${updated_value});

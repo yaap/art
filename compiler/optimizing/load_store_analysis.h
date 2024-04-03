@@ -189,9 +189,7 @@ class HeapLocationCollector : public HGraphVisitor {
         ref_info_array_(allocator->Adapter(kArenaAllocLSA)),
         heap_locations_(allocator->Adapter(kArenaAllocLSA)),
         aliasing_matrix_(allocator, kInitialAliasingMatrixBitVectorSize, true, kArenaAllocLSA),
-        has_heap_stores_(false) {
-    aliasing_matrix_.ClearAllBits();
-  }
+        has_heap_stores_(false) {}
 
   ~HeapLocationCollector() {
     CleanUp();

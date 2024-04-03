@@ -36,7 +36,7 @@
 #include "art_field-inl.h"
 #include "art_field.h"
 #include "art_jvmti.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "base/locks.h"
 #include "dex/dex_file_annotations.h"
 #include "dex/modifiers.h"

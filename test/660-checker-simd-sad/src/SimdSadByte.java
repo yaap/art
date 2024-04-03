@@ -101,7 +101,7 @@ public class SimdSadByte {
   //
   /// CHECK-START-ARM64: int SimdSadByte.sadByte2Int(byte[], byte[]) loop_optimization (after)
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate
@@ -141,7 +141,7 @@ public class SimdSadByte {
   //
   /// CHECK-START-ARM64: int SimdSadByte.sadByte2IntAlt(byte[], byte[]) loop_optimization (after)
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate
@@ -183,7 +183,7 @@ public class SimdSadByte {
   //
   /// CHECK-START-ARM64: int SimdSadByte.sadByte2IntAlt2(byte[], byte[]) loop_optimization (after)
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate
@@ -232,7 +232,7 @@ public class SimdSadByte {
   /// CHECK-START-ARM64: long SimdSadByte.sadByte2Long(byte[], byte[]) loop_optimization (after)
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
   /// CHECK-DAG: <<ConsL:j\d+>>  LongConstant 0                 loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate
@@ -278,7 +278,7 @@ public class SimdSadByte {
   /// CHECK-START-ARM64: long SimdSadByte.sadByte2LongAt1(byte[], byte[]) loop_optimization (after)
   /// CHECK-DAG: <<Cons0:i\d+>>  IntConstant 0                  loop:none
   /// CHECK-DAG: <<ConsL:j\d+>>  LongConstant 1                 loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      SAD idiom is not supported for SVE.
   ///     CHECK-NOT: VecSADAccumulate

@@ -25,7 +25,7 @@
 
 #include "art_method-inl.h"
 #include "base/casts.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "class_linker.h"
 #include "class_root-inl.h"
 #include "entrypoints/quick/quick_entrypoints_enum.h"
@@ -43,7 +43,7 @@
 #include "scoped_thread_state_change.h"
 #include "thread-current-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 jclass WellKnownClasses::dalvik_annotation_optimization_CriticalNative;
 jclass WellKnownClasses::dalvik_annotation_optimization_FastNative;

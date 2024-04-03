@@ -22,8 +22,8 @@
 #include <vector>
 
 #include "arch/instruction_set.h"
-#include "base/enums.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "debug/dwarf/dwarf_test.h"
 #include "disassembler.h"
 #include "dwarf/dwarf_constants.h"

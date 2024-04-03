@@ -25,7 +25,7 @@ public class Main {
   /// CHECK-START-ARM64: void Main.checkIntCase(int[]) instruction_simplifier_arm64 (before)
   /// CHECK-DAG:             <<Array:l\d+>>         ParameterValue
   /// CHECK-DAG:             <<Const5:i\d+>>        IntConstant 5
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG:             <<Repl:d\d+>>          VecReplicateScalar [<<Const5>>,{{j\d+}}]
   //      -------------- Loop
@@ -51,7 +51,7 @@ public class Main {
   /// CHECK-START-ARM64: void Main.checkIntCase(int[]) instruction_simplifier_arm64 (after)
   /// CHECK-DAG:             <<Array:l\d+>>         ParameterValue
   /// CHECK-DAG:             <<Const5:i\d+>>        IntConstant 5
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      IntermediateAddressIndex is not supported for SVE.
   ///     CHECK-DAG:             <<Repl:d\d+>>          VecReplicateScalar [<<Const5>>,{{j\d+}}]
@@ -84,7 +84,7 @@ public class Main {
   /// CHECK-START-ARM64: void Main.checkIntCase(int[]) GVN$after_arch (after)
   /// CHECK-DAG:             <<Array:l\d+>>         ParameterValue
   /// CHECK-DAG:             <<Const5:i\d+>>        IntConstant 5
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      IntermediateAddressIndex is not supported for SVE.
   ///     CHECK-DAG:             <<Repl:d\d+>>          VecReplicateScalar [<<Const5>>,{{j\d+}}]
@@ -114,7 +114,7 @@ public class Main {
   /// CHECK-FI:
 
   /// CHECK-START-ARM64: void Main.checkIntCase(int[]) disassembly (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      IntermediateAddressIndex is not supported for SVE.
   ///     CHECK-NOT:                                    IntermediateAddressIndex
@@ -134,7 +134,7 @@ public class Main {
   /// CHECK-START-ARM64: void Main.checkByteCase(byte[]) instruction_simplifier_arm64 (before)
   /// CHECK-DAG:             <<Array:l\d+>>         ParameterValue
   /// CHECK-DAG:             <<Const5:i\d+>>        IntConstant 5
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG:             <<Repl:d\d+>>          VecReplicateScalar [<<Const5>>,{{j\d+}}]
   //      -------------- Loop
@@ -161,7 +161,7 @@ public class Main {
   /// CHECK-DAG:             <<Array:l\d+>>         ParameterValue
   /// CHECK-DAG:             <<Const0:i\d+>>        IntConstant 0
   /// CHECK-DAG:             <<Const5:i\d+>>        IntConstant 5
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      IntermediateAddressIndex is not supported for SVE.
   ///     CHECK-DAG:             <<Repl:d\d+>>          VecReplicateScalar [<<Const5>>,{{j\d+}}]
@@ -194,7 +194,7 @@ public class Main {
   /// CHECK-DAG:             <<Array:l\d+>>         ParameterValue
   /// CHECK-DAG:             <<Const0:i\d+>>        IntConstant 0
   /// CHECK-DAG:             <<Const5:i\d+>>        IntConstant 5
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      IntermediateAddressIndex is not supported for SVE.
   ///     CHECK-DAG:             <<Repl:d\d+>>          VecReplicateScalar [<<Const5>>,{{j\d+}}]
@@ -223,7 +223,7 @@ public class Main {
   /// CHECK-FI:
 
   /// CHECK-START-ARM64: void Main.checkByteCase(byte[]) disassembly (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      IntermediateAddressIndex is not supported for SVE.
   ///     CHECK-NOT:                                    IntermediateAddressIndex
@@ -247,7 +247,7 @@ public class Main {
   /// CHECK-START-ARM64: void Main.checkSingleAccess(int[]) instruction_simplifier_arm64 (before)
   /// CHECK-DAG:             <<Array:l\d+>>         ParameterValue
   /// CHECK-DAG:             <<Const5:i\d+>>        IntConstant 5
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG:             <<Repl:d\d+>>          VecReplicateScalar [<<Const5>>,{{j\d+}}]
   //      -------------- Loop
@@ -270,7 +270,7 @@ public class Main {
   /// CHECK-DAG:             <<Array:l\d+>>         ParameterValue
   /// CHECK-DAG:             <<Const0:i\d+>>        IntConstant 0
   /// CHECK-DAG:             <<Const5:i\d+>>        IntConstant 5
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG:             <<Repl:d\d+>>          VecReplicateScalar [<<Const5>>,{{j\d+}}]
   //      -------------- Loop
@@ -301,7 +301,7 @@ public class Main {
   /// CHECK-DAG:             <<Array1:l\d+>>        ParameterValue
   /// CHECK-DAG:             <<Array2:l\d+>>        ParameterValue
   //  -------------- Loop
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG:             <<LoopP:j\d+>>         VecPredWhile
   ///     CHECK-DAG:             <<Index:i\d+>>         Phi
@@ -323,7 +323,7 @@ public class Main {
   /// CHECK-START-ARM64: void Main.checkInt2Float(int[], float[]) instruction_simplifier_arm64 (after)
   /// CHECK-DAG:             <<Array1:l\d+>>        ParameterValue
   /// CHECK-DAG:             <<Array2:l\d+>>        ParameterValue
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      IntermediateAddressIndex is not supported for SVE.
   //      -------------- Loop
@@ -354,7 +354,7 @@ public class Main {
   /// CHECK-START-ARM64: void Main.checkInt2Float(int[], float[]) GVN$after_arch (after)
   /// CHECK-DAG:             <<Array1:l\d+>>        ParameterValue
   /// CHECK-DAG:             <<Array2:l\d+>>        ParameterValue
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      IntermediateAddressIndex is not supported for SVE.
   //      -------------- Loop
@@ -383,7 +383,7 @@ public class Main {
   /// CHECK-FI:
 
   /// CHECK-START-ARM64: void Main.checkInt2Float(int[], float[]) disassembly (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      IntermediateAddressIndex is not supported for SVE.
   ///     CHECK-NOT:                                    IntermediateAddressIndex

@@ -21,8 +21,8 @@
 #include <string>
 #include <vector>
 
-#include "base/enums.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 
 namespace art {
 

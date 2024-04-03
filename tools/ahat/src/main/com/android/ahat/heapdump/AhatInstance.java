@@ -584,14 +584,46 @@ public abstract class AhatInstance implements Diffable<AhatInstance> {
   }
 
   /**
-   * Returns the bitmap pixel data associated with this instance.
+   * Represents a bitmap with either
+   *   - its format and content in `buffer`
+   *   - or a BufferedImage with its raw pixels
+   */
+  public static class Bitmap {
+    /**
+     * format of the bitmap content in buffer
+     */
+    public String format;
+    /**
+     * byte buffer of the bitmap content
+     */
+    public byte[] buffer;
+    /**
+     * BufferedImage with the bitmap's raw pixels
+     */
+    public BufferedImage image;
+
+    /**
+     * Initialize a Bitmap instance
+     * @param format - format of the bitmap
+     * @param buffer - buffer of the bitmap content
+     * @param image  - BufferedImage with the bitmap's raw pixel
+     */
+    public Bitmap(String format, byte[] buffer, BufferedImage image) {
+      this.format = format;
+      this.buffer = buffer;
+      this.image = image;
+    }
+  }
+
+  /**
+   * Returns the bitmap associated with this instance.
    * This is relevant for instances of android.graphics.Bitmap and byte[].
    * Returns null if there is no bitmap pixel data associated with the given
    * instance.
    *
    * @return the bitmap pixel data associated with this image
    */
-  public BufferedImage asBitmap() {
+  public Bitmap asBitmap() {
     return null;
   }
 

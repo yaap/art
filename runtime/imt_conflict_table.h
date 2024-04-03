@@ -20,10 +20,10 @@
 #include <cstddef>
 
 #include "base/casts.h"
-#include "base/enums.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class ArtMethod;
 

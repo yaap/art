@@ -333,10 +333,9 @@ void CodeSinking::SinkCodeToUncommonBranch(HBasicBlock* end_block) {
 
   size_t number_of_instructions = graph_->GetCurrentInstructionId();
   ScopedArenaVector<HInstruction*> worklist(allocator.Adapter(kArenaAllocMisc));
-  ArenaBitVector processed_instructions(&allocator, number_of_instructions, /* expandable= */ false);
-  processed_instructions.ClearAllBits();
+  ArenaBitVector processed_instructions(
+      &allocator, number_of_instructions, /* expandable= */ false);
   ArenaBitVector post_dominated(&allocator, graph_->GetBlocks().size(), /* expandable= */ false);
-  post_dominated.ClearAllBits();
 
   // Step (1): Visit post order to get a subset of blocks post dominated by `end_block`.
   // TODO(ngeoffray): Getting the full set of post-dominated should be done by
@@ -411,7 +410,6 @@ void CodeSinking::SinkCodeToUncommonBranch(HBasicBlock* end_block) {
   // Step (2): iterate over the worklist to find sinking candidates.
   ArenaBitVector instructions_that_can_move(
       &allocator, number_of_instructions, /* expandable= */ false);
-  instructions_that_can_move.ClearAllBits();
   ScopedArenaVector<ScopedArenaVector<HInstruction*>> instructions_to_move(
       graph_->GetBlocks().size(),
       ScopedArenaVector<HInstruction*>(allocator.Adapter(kArenaAllocMisc)),

@@ -28,12 +28,12 @@
 #include "entrypoints/entrypoint_utils-inl.h"
 #include "jni/java_vm_ext.h"
 #include "mirror/object-inl.h"
-#include "oat_quick_method_header.h"
+#include "oat/oat_quick_method_header.h"
+#include "oat/stack_map.h"
 #include "scoped_thread_state_change-inl.h"
-#include "stack_map.h"
 #include "thread.h"
 
-namespace art {
+namespace art HIDDEN {
 
 static inline uint32_t GetInvokeStaticMethodIndex(ArtMethod* caller, uint32_t dex_pc)
     REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -138,22 +138,21 @@ extern "C" size_t artCriticalNativeFrameSize(ArtMethod* method, uintptr_t caller
   if (method->IsNative()) {
     // Get the method's shorty.
     DCHECK(method->IsCriticalNative());
-    uint32_t shorty_len;
-    const char* shorty = method->GetShorty(&shorty_len);
+    std::string_view shorty = method->GetShortyView();
 
     // Return the platform-dependent stub frame size.
     switch (kRuntimeISA) {
       case InstructionSet::kArm:
       case InstructionSet::kThumb2:
-        return arm::GetCriticalNativeStubFrameSize(shorty, shorty_len);
+        return arm::GetCriticalNativeStubFrameSize(shorty);
       case InstructionSet::kArm64:
-        return arm64::GetCriticalNativeStubFrameSize(shorty, shorty_len);
+        return arm64::GetCriticalNativeStubFrameSize(shorty);
       case InstructionSet::kRiscv64:
-        return riscv64::GetCriticalNativeStubFrameSize(shorty, shorty_len);
+        return riscv64::GetCriticalNativeStubFrameSize(shorty);
       case InstructionSet::kX86:
-        return x86::GetCriticalNativeStubFrameSize(shorty, shorty_len);
+        return x86::GetCriticalNativeStubFrameSize(shorty);
       case InstructionSet::kX86_64:
-        return x86_64::GetCriticalNativeStubFrameSize(shorty, shorty_len);
+        return x86_64::GetCriticalNativeStubFrameSize(shorty);
       default:
         UNIMPLEMENTED(FATAL) << kRuntimeISA;
         UNREACHABLE();
@@ -176,22 +175,21 @@ extern "C" size_t artCriticalNativeFrameSize(ArtMethod* method, uintptr_t caller
     // Get the callee shorty.
     const DexFile* dex_file = caller->GetDexFile();
     uint32_t method_idx = GetInvokeStaticMethodIndex(caller, dex_pc);
-    uint32_t shorty_len;
-    const char* shorty = dex_file->GetMethodShorty(dex_file->GetMethodId(method_idx), &shorty_len);
+    std::string_view shorty = dex_file->GetMethodShortyView(method_idx);
 
     // Return the platform-dependent direct call frame size.
     switch (kRuntimeISA) {
       case InstructionSet::kArm:
       case InstructionSet::kThumb2:
-        return arm::GetCriticalNativeDirectCallFrameSize(shorty, shorty_len);
+        return arm::GetCriticalNativeDirectCallFrameSize(shorty);
       case InstructionSet::kArm64:
-        return arm64::GetCriticalNativeDirectCallFrameSize(shorty, shorty_len);
+        return arm64::GetCriticalNativeDirectCallFrameSize(shorty);
       case InstructionSet::kRiscv64:
-        return riscv64::GetCriticalNativeDirectCallFrameSize(shorty, shorty_len);
+        return riscv64::GetCriticalNativeDirectCallFrameSize(shorty);
       case InstructionSet::kX86:
-        return x86::GetCriticalNativeDirectCallFrameSize(shorty, shorty_len);
+        return x86::GetCriticalNativeDirectCallFrameSize(shorty);
       case InstructionSet::kX86_64:
-        return x86_64::GetCriticalNativeDirectCallFrameSize(shorty, shorty_len);
+        return x86_64::GetCriticalNativeDirectCallFrameSize(shorty);
       default:
         UNIMPLEMENTED(FATAL) << kRuntimeISA;
         UNREACHABLE();

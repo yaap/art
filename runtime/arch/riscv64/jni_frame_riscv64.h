@@ -23,8 +23,9 @@
 #include "base/bit_utils.h"
 #include "base/globals.h"
 #include "base/logging.h"
+#include "base/macros.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace riscv64 {
 
 constexpr size_t kFramePointerSize = static_cast<size_t>(PointerSize::k64);
@@ -57,21 +58,19 @@ inline size_t GetNativeOutArgsSize(size_t num_fp_args, size_t num_non_fp_args) {
 }
 
 // Get stack args size for @CriticalNative method calls.
-inline size_t GetCriticalNativeCallArgsSize(const char* shorty, uint32_t shorty_len) {
-  DCHECK_EQ(shorty_len, strlen(shorty));
-
+inline size_t GetCriticalNativeCallArgsSize(std::string_view shorty) {
   size_t num_fp_args =
-      std::count_if(shorty + 1, shorty + shorty_len, [](char c) { return c == 'F' || c == 'D'; });
-  size_t num_non_fp_args = shorty_len - 1u - num_fp_args;
+      std::count_if(shorty.begin() + 1, shorty.end(), [](char c) { return c == 'F' || c == 'D'; });
+  size_t num_non_fp_args = shorty.length() - 1u - num_fp_args;
 
   return GetNativeOutArgsSize(num_fp_args, num_non_fp_args);
 }
 
 // Get the frame size for @CriticalNative method stub.
 // This must match the size of the extra frame emitted by the compiler at the native call site.
-inline size_t GetCriticalNativeStubFrameSize(const char* shorty, uint32_t shorty_len) {
+inline size_t GetCriticalNativeStubFrameSize(std::string_view shorty) {
   // The size of outgoing arguments.
-  size_t size = GetCriticalNativeCallArgsSize(shorty, shorty_len);
+  size_t size = GetCriticalNativeCallArgsSize(shorty);
 
   // We can make a tail call if there are no stack args. Otherwise, add space for return PC.
   // Note: Result does not neeed to be zero- or sign-extended.
@@ -83,9 +82,9 @@ inline size_t GetCriticalNativeStubFrameSize(const char* shorty, uint32_t shorty
 
 // Get the frame size for direct call to a @CriticalNative method.
 // This must match the size of the frame emitted by the JNI compiler at the native call site.
-inline size_t GetCriticalNativeDirectCallFrameSize(const char* shorty, uint32_t shorty_len) {
+inline size_t GetCriticalNativeDirectCallFrameSize(std::string_view shorty) {
   // The size of outgoing arguments.
-  size_t size = GetCriticalNativeCallArgsSize(shorty, shorty_len);
+  size_t size = GetCriticalNativeCallArgsSize(shorty);
 
   // No return PC to save.
   return RoundUp(size, kNativeStackAlignment);

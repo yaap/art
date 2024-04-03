@@ -50,6 +50,11 @@ public class MockClock {
         }
     }
 
+    @NonNull
+    public List<ScheduledExecutor> getCreatedExecutors() {
+        return mExecutors;
+    }
+
     public class ScheduledExecutor extends ScheduledThreadPoolExecutor {
         // The second element of the pair is the scheduled time.
         @NonNull
@@ -75,7 +80,7 @@ public class MockClock {
                 Pair<RunnableScheduledFuture<?>, Long> pair = tasks.peek();
                 RunnableScheduledFuture<?> task = pair.first;
                 long scheduledTimeMs = pair.second;
-                if (getCurrentTimeMs() >= scheduledTimeMs) {
+                if (getCurrentTimeMs() >= scheduledTimeMs || task.isCancelled()) {
                     if (!task.isDone() && !task.isCancelled()) {
                         task.run();
                     }

@@ -40,9 +40,29 @@ cc_library {
     export_shared_lib_headers: [
         "libbase",
     ],
+    static_libs: [
+        "libfstab",
+    ],
+    export_static_lib_headers: [
+        "libfstab",
+    ],
     whole_static_libs: [
         // TODO(b/270049598): Investigate the cost of libc++fs compared to its utility.
         "libc++fs",
+    ],
+    apex_available: [
+        "com.android.art",
+        "com.android.art.debug",
+    ],
+}
+
+cc_library_headers {
+    name: "libarttools_binder_utils",
+    defaults: ["art_defaults"],
+    host_supported: true,
+    export_include_dirs: ["include_binder_utils"],
+    shared_libs: [
+        "libbinder_ndk",
     ],
     apex_available: [
         "com.android.art",
@@ -59,7 +79,6 @@ art_cc_defaults {
         "tools_test.cc",
     ],
     shared_libs: [
-        "libarttools",
         "libbase",
     ],
     static_libs: [
@@ -80,6 +99,9 @@ art_cc_test {
         "art_gtest_defaults",
         "art_libarttools_tests_defaults",
     ],
+    shared_libs: [
+        "libarttools",
+    ],
 }
 
 // Standalone version of ART gtest `art_libarttools_tests`, not bundled with the ART APEX on
@@ -89,6 +111,19 @@ art_cc_test {
     defaults: [
         "art_standalone_gtest_defaults",
         "art_libarttools_tests_defaults",
+    ],
+    srcs: [
+        "binder_utils_test.cc",
+    ],
+    header_libs: [
+        "libarttools_binder_utils",
+    ],
+    shared_libs: [
+        "libbinder_ndk",
+    ],
+    static_libs: [
+        "libarttools",
+        "libfstab",
     ],
 }
 

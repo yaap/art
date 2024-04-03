@@ -86,7 +86,6 @@ class CompilerDriver {
   // classes.
   CompilerDriver(const CompilerOptions* compiler_options,
                  const VerificationResults* verification_results,
-                 Compiler::Kind compiler_kind,
                  size_t thread_count,
                  int swap_fd);
 
@@ -214,10 +213,6 @@ class CompilerDriver {
     number_of_soft_verifier_failures_++;
   }
 
-  Compiler::Kind GetCompilerKind() {
-    return compiler_kind_;
-  }
-
   CompiledMethodStorage* GetCompiledMethodStorage() {
     return &compiled_method_storage_;
   }
@@ -239,7 +234,6 @@ class CompilerDriver {
       REQUIRES(!Locks::mutator_lock_);
   void ResolveDexFile(jobject class_loader,
                       const DexFile& dex_file,
-                      const std::vector<const DexFile*>& dex_files,
                       ThreadPool* thread_pool,
                       size_t thread_count,
                       TimingLogger* timings)
@@ -257,7 +251,6 @@ class CompilerDriver {
 
   void VerifyDexFile(jobject class_loader,
                      const DexFile& dex_file,
-                     const std::vector<const DexFile*>& dex_files,
                      ThreadPool* thread_pool,
                      size_t thread_count,
                      TimingLogger* timings)
@@ -268,7 +261,6 @@ class CompilerDriver {
                    TimingLogger* timings);
   void SetVerifiedDexFile(jobject class_loader,
                           const DexFile& dex_file,
-                          const std::vector<const DexFile*>& dex_files,
                           ThreadPool* thread_pool,
                           size_t thread_count,
                           TimingLogger* timings)
@@ -280,7 +272,6 @@ class CompilerDriver {
       REQUIRES(!Locks::mutator_lock_);
   void InitializeClasses(jobject class_loader,
                          const DexFile& dex_file,
-                         const std::vector<const DexFile*>& dex_files,
                          TimingLogger* timings)
       REQUIRES(!Locks::mutator_lock_);
 
@@ -303,7 +294,6 @@ class CompilerDriver {
   const VerificationResults* const verification_results_;
 
   std::unique_ptr<Compiler> compiler_;
-  Compiler::Kind compiler_kind_;
 
   // All class references that this compiler has compiled. Indexed by class defs.
   using ClassStateTable = AtomicDexRefMap<ClassReference, ClassStatus>;

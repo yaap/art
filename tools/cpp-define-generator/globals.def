@@ -17,7 +17,7 @@
 #if ASM_DEFINE_INCLUDE_DEPENDENCIES
 #include "base/bit_utils.h"
 #include "base/callee_save_type.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "base/globals.h"
 #include "dex/modifiers.h"
 #include "gc/accounting/card_table.h"

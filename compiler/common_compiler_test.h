@@ -27,7 +27,7 @@
 #include "base/macros.h"
 #include "common_runtime_test.h"
 #include "compiler.h"
-#include "oat_file.h"
+#include "oat/oat_file.h"
 
 namespace art HIDDEN {
 namespace mirror {
@@ -60,9 +60,6 @@ class EXPORT CommonCompilerTestImpl {
 
   void SetUpRuntimeOptionsImpl();
 
-  Compiler::Kind GetCompilerKind() const;
-  void SetCompilerKind(Compiler::Kind compiler_kind);
-
   virtual CompilerFilter::Filter GetCompilerFilter() const {
     return CompilerFilter::kDefaultCompilerFilter;
   }
@@ -76,8 +73,6 @@ class EXPORT CommonCompilerTestImpl {
 
   void ClearBootImageOption();
 
-  Compiler::Kind compiler_kind_ = Compiler::kOptimizing;
-
   InstructionSet instruction_set_ =
       (kRuntimeISA == InstructionSet::kArm) ? InstructionSet::kThumb2 : kRuntimeISA;
   // Take the default set of instruction features from the build.
@@ -89,10 +84,10 @@ class EXPORT CommonCompilerTestImpl {
  protected:
   virtual ClassLinker* GetClassLinker() = 0;
   virtual Runtime* GetRuntime() = 0;
+  class OneCompiledMethodStorage;
 
  private:
   class CodeAndMetadata;
-  class OneCompiledMethodStorage;
 
   std::vector<CodeAndMetadata> code_and_metadata_;
 };

@@ -19,7 +19,7 @@
 #include "nativehelper/jni_macros.h"
 
 #include "art_method-inl.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "class_linker-inl.h"
 #include "class_linker.h"
 #include "class_root-inl.h"
@@ -32,7 +32,7 @@
 #include "reflection.h"
 #include "scoped_fast_native_object_access-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 static jobject Method_getDefaultValue(JNIEnv* env, jobject javaMethod) {
   ScopedFastNativeObjectAccess soa(env);

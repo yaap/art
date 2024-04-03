@@ -20,9 +20,9 @@
 #include <android-base/stringprintf.h>
 
 #include "art_method-inl.h"
-#include "base/enums.h"
 #include "base/locks.h"
 #include "base/logging.h"
+#include "base/pointer_size.h"
 #include "base/systrace.h"
 #include "base/utils.h"
 #include "class_linker.h"
@@ -42,7 +42,7 @@
 #include "verifier/method_verifier.h"
 #include "verifier/reg_type_cache.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace verifier {
 
 using android::base::StringPrintf;

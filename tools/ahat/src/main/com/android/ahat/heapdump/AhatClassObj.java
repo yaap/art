@@ -109,6 +109,22 @@ public class AhatClassObj extends AhatInstance {
   }
 
   /**
+   * Returns the value of a static field of this class. Returns null if the
+   * field value is null, or the field couldn't be found.
+   *
+   * @param fieldName the name of the static field to get the value of
+   * @return the field value
+   */
+  public Value getStaticField(String fieldName) {
+    for (FieldValue field : mStaticFieldValues) {
+      if (fieldName.equals(field.name)) {
+        return field.value;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Returns the fields of instances of this class.
    * Does not include fields from the super class of this class.
    *

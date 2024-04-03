@@ -28,7 +28,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic error "-Wconversion"
 
-namespace art {
+namespace art HIDDEN {
 namespace metrics {
 
 namespace {
@@ -386,12 +386,11 @@ class StatsdBackend : public MetricsBackend {
         EncodeCompileFilter(session_data_.compiler_filter),
         EncodeCompilationReason(session_data_.compilation_reason),
         current_timestamp_,
-        0,  // TODO: collect and report thread type (0 means UNKNOWN, but that
-            // constant is not present in all branches)
+        0,  // deprecated - was ArtThreadType
         datum_id.value(),
         static_cast<int64_t>(value),
-        statsd::ART_DATUM_REPORTED__DEX_METADATA_TYPE__ART_DEX_METADATA_TYPE_UNKNOWN,
-        statsd::ART_DATUM_REPORTED__APK_TYPE__ART_APK_TYPE_UNKNOWN,
+        0,  // deprecated - was ArtDexMetadataType
+        0,  // deprecated - was ArtApkType
         EncodeInstructionSet(kRuntimeISA),
         EncodeGcCollectorType(Runtime::Current()->GetHeap()->GetForegroundCollectorType()),
         EncodeUffdMinorFaultSupport());
@@ -417,18 +416,30 @@ class StatsdBackend : public MetricsBackend {
 
 std::unique_ptr<MetricsBackend> CreateStatsdBackend() { return std::make_unique<StatsdBackend>(); }
 
-void ReportDeviceMetrics() {
-  Runtime* runtime = Runtime::Current();
-  int32_t boot_image_status;
-  if (runtime->GetHeap()->HasBootImageSpace() && !runtime->HasImageWithProfile()) {
-    boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_FULL;
-  } else if (runtime->GetHeap()->HasBootImageSpace() &&
-             runtime->GetHeap()->GetBootImageSpaces()[0]->GetProfileFiles().empty()) {
-    boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_MINIMAL;
-  } else {
-    boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_NONE;
+AStatsManager_PullAtomCallbackReturn DeviceStatusCallback(int32_t atom_tag,
+                                                          AStatsEventList* data,
+                                                          [[maybe_unused]] void* cookie) {
+  if (atom_tag == statsd::ART_DEVICE_STATUS) {
+    Runtime* runtime = Runtime::Current();
+    int32_t boot_image_status;
+    if (runtime->GetHeap()->HasBootImageSpace() && !runtime->HasImageWithProfile()) {
+      boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_FULL;
+    } else if (runtime->GetHeap()->HasBootImageSpace() &&
+               runtime->GetHeap()->GetBootImageSpaces()[0]->GetProfileFiles().empty()) {
+      boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_MINIMAL;
+    } else {
+      boot_image_status = statsd::ART_DEVICE_DATUM_REPORTED__BOOT_IMAGE_STATUS__STATUS_NONE;
+    }
+    statsd::addAStatsEvent(data, atom_tag, boot_image_status);
+    return AStatsManager_PULL_SUCCESS;
   }
-  statsd::stats_write(statsd::ART_DEVICE_DATUM_REPORTED, boot_image_status);
+
+  return AStatsManager_PULL_SKIP;
+}
+
+void SetupCallbackForDeviceStatus() {
+  AStatsManager_setPullAtomCallback(
+      statsd::ART_DEVICE_STATUS, /*metadata=*/nullptr, DeviceStatusCallback, /*cookie=*/nullptr);
 }
 
 }  // namespace metrics

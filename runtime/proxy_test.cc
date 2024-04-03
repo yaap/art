@@ -18,14 +18,14 @@
 #include <vector>
 
 #include "art_field-inl.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "common_runtime_test.h"
 #include "mirror/field.h"
 #include "proxy_test.h"
 #include "scoped_thread_state_change-inl.h"
 #include "well_known_classes.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace proxy_test {
 
 class ProxyTest : public CommonRuntimeTest {

@@ -19,7 +19,9 @@
 
 #include <iosfwd>
 
-namespace art {
+#include "base/macros.h"
+
+namespace art HIDDEN {
 
 // State stored in our C++ class Thread.
 // When we refer to "a suspended state", or when function names mention "ToSuspended" or
@@ -62,8 +64,9 @@ enum class ThreadState : uint8_t {
   kStarting,                        // NEW            TS_WAIT      native thread started, not yet ready to run managed code
   kNative,                          // RUNNABLE       TS_RUNNING   running in a JNI native method
   kSuspended,                       // RUNNABLE       TS_RUNNING   suspended by GC or debugger
+  kInvalidState,                    // Used as error value; never stored.
 };
-std::ostream& operator<<(std::ostream& os, ThreadState rhs);
+EXPORT std::ostream& operator<<(std::ostream& os, ThreadState rhs);
 
 }  // namespace art
 

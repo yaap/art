@@ -49,7 +49,7 @@ std::unique_ptr<ManagedRuntimeCallingConvention> ManagedRuntimeCallingConvention
     ArenaAllocator* allocator,
     bool is_static,
     bool is_synchronized,
-    const char* shorty,
+    std::string_view shorty,
     InstructionSet instruction_set) {
   switch (instruction_set) {
 #ifdef ART_ENABLE_CODEGEN_arm
@@ -150,7 +150,7 @@ std::unique_ptr<JniCallingConvention> JniCallingConvention::Create(ArenaAllocato
                                                                    bool is_synchronized,
                                                                    bool is_fast_native,
                                                                    bool is_critical_native,
-                                                                   const char* shorty,
+                                                                   std::string_view shorty,
                                                                    InstructionSet instruction_set) {
   switch (instruction_set) {
 #ifdef ART_ENABLE_CODEGEN_arm

@@ -32,6 +32,7 @@
 #include <utility>
 #include <vector>
 
+#include "android-base/macros.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 #include "art_field-inl.h"
@@ -50,6 +51,7 @@
 #include "base/metrics/metrics.h"
 #include "base/mutex-inl.h"
 #include "base/os.h"
+#include "base/pointer_size.h"
 #include "base/quasi_atomic.h"
 #include "base/scoped_arena_containers.h"
 #include "base/scoped_flock.h"
@@ -90,7 +92,6 @@
 #include "gc_root-inl.h"
 #include "handle_scope-inl.h"
 #include "hidden_api.h"
-#include "image-inl.h"
 #include "imt_conflict_table.h"
 #include "imtable-inl.h"
 #include "intern_table-inl.h"
@@ -137,11 +138,12 @@
 #include "nativehelper/scoped_local_ref.h"
 #include "nterp_helpers-inl.h"
 #include "nterp_helpers.h"
-#include "oat.h"
-#include "oat_file-inl.h"
-#include "oat_file.h"
-#include "oat_file_assistant.h"
-#include "oat_file_manager.h"
+#include "oat/image-inl.h"
+#include "oat/oat.h"
+#include "oat/oat_file-inl.h"
+#include "oat/oat_file.h"
+#include "oat/oat_file_assistant.h"
+#include "oat/oat_file_manager.h"
 #include "object_lock.h"
 #include "profile/profile_compilation_info.h"
 #include "runtime.h"
@@ -158,7 +160,7 @@
 #include "verifier/verifier_deps.h"
 #include "well_known_classes.h"
 
-namespace art {
+namespace art HIDDEN {
 
 using android::base::StringPrintf;
 
@@ -408,6 +410,15 @@ void ClassLinker::ForceClassInitialized(Thread* self, Handle<mirror::Class> klas
   MakeInitializedClassesVisiblyInitialized(self, /*wait=*/true);
 }
 
+const void* ClassLinker::FindBootJniStub(JniStubKey key) {
+  auto it = boot_image_jni_stubs_.find(key);
+  if (it == boot_image_jni_stubs_.end()) {
+    return nullptr;
+  } else {
+    return it->second;
+  }
+}
+
 ClassLinker::VisiblyInitializedCallback* ClassLinker::MarkClassInitialized(
     Thread* self, Handle<mirror::Class> klass) {
   if (kRuntimeISA == InstructionSet::kX86 || kRuntimeISA == InstructionSet::kX86_64) {
@@ -616,6 +627,8 @@ ClassLinker::ClassLinker(InternTable* intern_table, bool fast_class_not_found_ex
       visibly_initialize_classes_with_membarier_(RegisterMemBarrierForClassInitialization()),
       critical_native_code_with_clinit_check_lock_("critical native code with clinit check lock"),
       critical_native_code_with_clinit_check_(),
+      boot_image_jni_stubs_(JniStubKeyHash(Runtime::Current()->GetInstructionSet()),
+                            JniStubKeyEquals(Runtime::Current()->GetInstructionSet())),
       cha_(Runtime::Current()->IsAotCompiler() ? nullptr : new ClassHierarchyAnalysis()) {
   // For CHA disabled during Aot, see b/34193647.
 
@@ -852,8 +865,13 @@ bool ClassLinker::InitWithoutImage(std::vector<std::unique_ptr<const DexFile>> b
   }
 
   // Object, String, ClassExt and DexCache need to be rerun through FindSystemClass to finish init
+  // We also need to immediately clear the finalizable flag for Object so that other classes are
+  // not erroneously marked as finalizable. (Object defines an empty finalizer, so that other
+  // classes can override it but it is not itself finalizable.)
   mirror::Class::SetStatus(java_lang_Object, ClassStatus::kNotReady, self);
   CheckSystemClass(self, java_lang_Object, "Ljava/lang/Object;");
+  CHECK(java_lang_Object->IsFinalizable());
+  java_lang_Object->ClearFinalizable();
   CHECK_EQ(java_lang_Object->GetObjectSize(), mirror::Object::InstanceSize());
   mirror::Class::SetStatus(java_lang_String, ClassStatus::kNotReady, self);
   CheckSystemClass(self, java_lang_String, "Ljava/lang/String;");
@@ -900,6 +918,14 @@ bool ClassLinker::InitWithoutImage(std::vector<std::unique_ptr<const DexFile>> b
 
   CHECK_EQ(object_array_string.Get(),
            FindSystemClass(self, GetClassRootDescriptor(ClassRoot::kJavaLangStringArrayClass)));
+
+  // The Enum class declares a "final" finalize() method to prevent subclasses from introducing
+  // a finalizer but it is not itself consedered finalizable. Load the Enum class now and clear
+  // the finalizable flag to prevent subclasses from being marked as finalizable.
+  CHECK_EQ(LookupClass(self, "Ljava/lang/Enum;", /*class_loader=*/ nullptr), nullptr);
+  Handle<mirror::Class> java_lang_Enum = hs.NewHandle(FindSystemClass(self, "Ljava/lang/Enum;"));
+  CHECK(java_lang_Enum->IsFinalizable());
+  java_lang_Enum->ClearFinalizable();
 
   // End of special init trickery, all subsequent classes may be loaded via FindSystemClass.
 
@@ -1301,12 +1327,13 @@ bool ClassLinker::InitFromBootImage(std::string* error_msg) {
   std::vector<gc::space::ImageSpace*> spaces = heap->GetBootImageSpaces();
   CHECK(!spaces.empty());
   const ImageHeader& image_header = spaces[0]->GetImageHeader();
-  uint32_t pointer_size_unchecked = image_header.GetPointerSizeUnchecked();
-  if (!ValidPointerSize(pointer_size_unchecked)) {
-    *error_msg = StringPrintf("Invalid image pointer size: %u", pointer_size_unchecked);
+  image_pointer_size_ = image_header.GetPointerSize();
+  if (UNLIKELY(image_pointer_size_ != PointerSize::k32 &&
+               image_pointer_size_ != PointerSize::k64)) {
+    *error_msg =
+        StringPrintf("Invalid image pointer size: %u", static_cast<uint32_t>(image_pointer_size_));
     return false;
   }
-  image_pointer_size_ = image_header.GetPointerSize();
   if (!runtime->IsAotCompiler()) {
     // Only the Aot compiler supports having an image with a different pointer size than the
     // runtime. This happens on the host for compiling 32 bit tests since we use a 64 bit libart
@@ -1437,6 +1464,19 @@ bool ClassLinker::InitFromBootImage(std::string* error_msg) {
                       error_msg)) {
     return false;
   }
+  // We never use AOT code for debuggable.
+  if (!runtime->IsJavaDebuggable()) {
+    for (gc::space::ImageSpace* space : spaces) {
+      const ImageHeader& header = space->GetImageHeader();
+      header.VisitJniStubMethods([&](ArtMethod* method)
+          REQUIRES_SHARED(Locks::mutator_lock_) {
+        const void* stub = method->GetOatMethodQuickCode(image_pointer_size_);
+        boot_image_jni_stubs_.Put(std::make_pair(JniStubKey(method), stub));
+        return method;
+      }, space->Begin(), image_pointer_size_);
+    }
+  }
+
   InitializeObjectVirtualMethodHashes(GetClassRoot<mirror::Object>(this),
                                       image_pointer_size_,
                                       ArrayRef<uint32_t>(object_virtual_method_hashes_));
@@ -2087,7 +2127,7 @@ bool ClassLinker::AddImageSpace(gc::space::ImageSpace* space,
   if (image_pointer_size_ != space->GetImageHeader().GetPointerSize()) {
     *error_msg = StringPrintf("Application image pointer size does not match runtime: %zu vs %zu",
                               static_cast<size_t>(space->GetImageHeader().GetPointerSize()),
-                              image_pointer_size_);
+                              static_cast<size_t>(image_pointer_size_));
     return false;
   }
   size_t expected_image_roots = ImageHeader::NumberOfImageRoots(app_image);
@@ -2405,10 +2445,6 @@ void ClassLinker::VisitClassRoots(RootVisitor* visitor, VisitRootFlags flags) {
   // enabling tracing requires the mutator lock, there are no race conditions here.
   const bool tracing_enabled = Trace::IsTracingEnabled();
   Thread* const self = Thread::Current();
-  // For simplicity, if there is JIT activity, we'll trace all class loaders.
-  // This prevents class unloading while a method is being compiled or is going
-  // to be compiled.
-  const bool is_jit_active = jit::Jit::IsActive(self);
   WriterMutexLock mu(self, *Locks::classlinker_classes_lock_);
   if (gUseReadBarrier) {
     // We do not track new roots for CC.
@@ -2439,11 +2475,11 @@ void ClassLinker::VisitClassRoots(RootVisitor* visitor, VisitRootFlags flags) {
     // these objects.
     UnbufferedRootVisitor root_visitor(visitor, RootInfo(kRootStickyClass));
     boot_class_table_->VisitRoots(root_visitor);
-    // If tracing is enabled or jit is active, mark all the class loaders to prevent unloading.
-    if ((flags & kVisitRootFlagClassLoader) != 0 || tracing_enabled || is_jit_active) {
+    // If tracing is enabled, then mark all the class loaders to prevent unloading.
+    if ((flags & kVisitRootFlagClassLoader) != 0 || tracing_enabled) {
       for (const ClassLoaderData& data : class_loaders_) {
         GcRoot<mirror::Object> root(GcRoot<mirror::Object>(self->DecodeJObject(data.weak_root)));
-        root.VisitRoot(visitor, RootInfo(kRootVMInternal));
+        root.VisitRootIfNonNull(visitor, RootInfo(kRootVMInternal));
       }
     }
   } else if (!gUseReadBarrier && (flags & kVisitRootFlagNewRoots) != 0) {
@@ -3679,10 +3715,19 @@ void ClassLinker::FixupStaticTrampolines(Thread* self, ObjPtr<mirror::Class> kla
   }
 
   instrumentation::Instrumentation* instrumentation = runtime->GetInstrumentation();
+  bool enable_boot_jni_stub = !runtime->IsJavaDebuggable();
   for (size_t method_index = 0; method_index < num_direct_methods; ++method_index) {
     ArtMethod* method = klass->GetDirectMethod(method_index, pointer_size);
     if (method->NeedsClinitCheckBeforeCall()) {
-      instrumentation->UpdateMethodsCode(method, instrumentation->GetCodeForInvoke(method));
+      const void* quick_code = instrumentation->GetCodeForInvoke(method);
+      if (method->IsNative() && IsQuickGenericJniStub(quick_code) && enable_boot_jni_stub) {
+        const void* boot_jni_stub = FindBootJniStub(method);
+        if (boot_jni_stub != nullptr) {
+          // Use boot JNI stub if found.
+          quick_code = boot_jni_stub;
+        }
+      }
+      instrumentation->UpdateMethodsCode(method, quick_code);
     }
   }
   // Ignore virtual methods on the iterator.
@@ -3725,6 +3770,13 @@ static void LinkCode(ClassLinker* class_linker,
     // non-abstract methods also get their code pointers.
     const OatFile::OatMethod oat_method = oat_class->GetOatMethod(class_def_method_index);
     quick_code = oat_method.GetQuickCode();
+  }
+  if (method->IsNative() && quick_code == nullptr) {
+    const void* boot_jni_stub = class_linker->FindBootJniStub(method);
+    if (boot_jni_stub != nullptr) {
+      // Use boot JNI stub if found.
+      quick_code = boot_jni_stub;
+    }
   }
   runtime->GetInstrumentation()->InitializeMethodsCode(method, quick_code);
 
@@ -3968,24 +4020,11 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
            memcmp(ascii_name, method_name, length) == 0;
   };
   if (UNLIKELY(has_ascii_name("finalize", sizeof("finalize") - 1u))) {
-    // Set finalizable flag on declaring class.
+    // Set finalizable flag on declaring class if the method has the right signature.
+    // When initializing without a boot image, `Object` and `Enum` shall have the finalizable
+    // flag cleared immediately after loading these classes, see  `InitWithoutImage()`.
     if (shorty == "V") {
-      // Void return type.
-      if (klass->GetClassLoader() != nullptr) {  // All non-boot finalizer methods are flagged.
-        klass->SetFinalizable();
-      } else {
-        std::string_view klass_descriptor =
-            dex_file.GetTypeDescriptorView(dex_file.GetTypeId(klass->GetDexTypeIndex()));
-        // The Enum class declares a "final" finalize() method to prevent subclasses from
-        // introducing a finalizer. We don't want to set the finalizable flag for Enum or its
-        // subclasses, so we exclude it here.
-        // We also want to avoid setting the flag on Object, where we know that finalize() is
-        // empty.
-        if (klass_descriptor != "Ljava/lang/Object;" &&
-            klass_descriptor != "Ljava/lang/Enum;") {
-          klass->SetFinalizable();
-        }
-      }
+      klass->SetFinalizable();
     }
   } else if (method_name[0] == '<') {
     // Fix broken access flags for initializers. Bug 11157540.
@@ -10207,6 +10246,7 @@ ObjPtr<mirror::MethodHandle> ClassLinker::ResolveMethodHandleForField(
     case DexFile::MethodHandleType::kInvokeConstructor:
     case DexFile::MethodHandleType::kInvokeDirect:
     case DexFile::MethodHandleType::kInvokeInterface:
+      LOG(FATAL) << "Unreachable";
       UNREACHABLE();
   }
 
@@ -10265,6 +10305,7 @@ ObjPtr<mirror::MethodHandle> ClassLinker::ResolveMethodHandleForField(
     case DexFile::MethodHandleType::kInvokeConstructor:
     case DexFile::MethodHandleType::kInvokeDirect:
     case DexFile::MethodHandleType::kInvokeInterface:
+      LOG(FATAL) << "Unreachable";
       UNREACHABLE();
   }
 
@@ -10305,6 +10346,7 @@ ObjPtr<mirror::MethodHandle> ClassLinker::ResolveMethodHandleForMethod(
     case DexFile::MethodHandleType::kStaticGet:
     case DexFile::MethodHandleType::kInstancePut:
     case DexFile::MethodHandleType::kInstanceGet:
+      LOG(FATAL) << "Unreachable";
       UNREACHABLE();
     case DexFile::MethodHandleType::kInvokeStatic: {
       kind = mirror::MethodHandle::Kind::kInvokeStatic;

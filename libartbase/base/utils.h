@@ -27,9 +27,9 @@
 #include <android-base/parseint.h>
 
 #include "casts.h"
-#include "enums.h"
 #include "globals.h"
 #include "macros.h"
+#include "pointer_size.h"
 
 #if defined(__linux__)
 #include <sys/utsname.h>
@@ -84,14 +84,6 @@ class VoidFunctor {
   inline void operator()([[maybe_unused]] A a, [[maybe_unused]] B b, [[maybe_unused]] C c) const {}
 };
 
-inline bool TestBitmap(size_t idx, const uint8_t* bitmap) {
-  return ((bitmap[idx / kBitsPerByte] >> (idx % kBitsPerByte)) & 0x01) != 0;
-}
-
-static inline constexpr bool ValidPointerSize(size_t pointer_size) {
-  return pointer_size == 4 || pointer_size == 8;
-}
-
 static inline const void* EntryPointToCodePointer(const void* entry_point) {
   uintptr_t code = reinterpret_cast<uintptr_t>(entry_point);
   // TODO: Make this Thumb2 specific. It is benign on other architectures as code is always at
@@ -133,28 +125,6 @@ bool IsKernelVersionAtLeast(int reqd_major, int reqd_minor);
 // On some old kernels, a cache operation may segfault.
 WARN_UNUSED bool CacheOperationsMaySegFault();
 
-template <typename T>
-constexpr PointerSize ConvertToPointerSize(T any) {
-  if (any == 4 || any == 8) {
-    return static_cast<PointerSize>(any);
-  } else {
-    LOG(FATAL);
-    UNREACHABLE();
-  }
-}
-
-// Return -1 if <, 0 if ==, 1 if >.
-template <typename T>
-inline static int32_t Compare(T lhs, T rhs) {
-  return (lhs < rhs) ? -1 : ((lhs == rhs) ? 0 : 1);
-}
-
-// Return -1 if < 0, 0 if == 0, 1 if > 0.
-template <typename T>
-inline static int32_t Signum(T opnd) {
-  return (opnd < 0) ? -1 : ((opnd == 0) ? 0 : 1);
-}
-
 template <typename Func, typename... Args>
 static inline void CheckedCall(const Func& function, const char* what, Args... args) {
   int rc = function(args...);
@@ -174,14 +144,6 @@ inline void ForceRead(const T* pointer) {
 // the status file. Returns value found on success and "<unknown>" if the key is not found or
 // there is an I/O error.
 std::string GetProcessStatus(const char* key);
-
-// Return whether the address is guaranteed to be backed by a file or is shared.
-// This information can be used to know whether MADV_DONTNEED will make
-// following accesses repopulate the memory or return zero.
-bool IsAddressKnownBackedByFileOrShared(const void* addr);
-
-// Returns the number of threads running.
-int GetTaskCount();
 
 }  // namespace art
 

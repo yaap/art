@@ -27,7 +27,8 @@ class ArenaAllocator;
 class ScopedArenaAllocator;
 
 /*
- * A BitVector implementation that uses Arena allocation.
+ * A BitVector implementation that uses Arena allocation. All constructors of ArenaBitVector start
+ * with an empty ArenaBitVector.
  */
 class ArenaBitVector : public BitVector, public ArenaObject<kArenaAllocGrowableBitMap> {
  public:
@@ -52,56 +53,6 @@ class ArenaBitVector : public BitVector, public ArenaObject<kArenaAllocGrowableB
 
   ArenaBitVector(ArenaBitVector&&) = default;
   ArenaBitVector(const ArenaBitVector&) = delete;
-};
-
-// A BitVectorArray implementation that uses Arena allocation. See
-// BitVectorArray for more information.
-// This is a helper for dealing with 2d bit-vector arrays packed into a single
-// bit-vector
-class ArenaBitVectorArray final : public BaseBitVectorArray,
-                                  public ArenaObject<kArenaAllocGrowableBitMap> {
- public:
-  ArenaBitVectorArray(const ArenaBitVectorArray& bv) = delete;
-  ArenaBitVectorArray& operator=(const ArenaBitVectorArray& other) = delete;
-
-  explicit ArenaBitVectorArray(ArenaBitVector&& bv) : BaseBitVectorArray(), data_(std::move(bv)) {}
-  ArenaBitVectorArray(ArenaBitVector&& bv, size_t cols)
-      : BaseBitVectorArray(BaseBitVectorArray::MaxRowsFor(bv, cols), cols), data_(std::move(bv)) {}
-
-  ArenaBitVectorArray(ArenaAllocator* allocator,
-                      size_t start_rows,
-                      size_t start_cols,
-                      bool expandable,
-                      ArenaAllocKind kind = kArenaAllocGrowableBitMap)
-      : BaseBitVectorArray(start_rows, start_cols),
-        data_(ArenaBitVector(allocator,
-                             BaseBitVectorArray::RequiredBitVectorSize(start_rows, start_cols),
-                             expandable,
-                             kind)) {}
-
-  ArenaBitVectorArray(ScopedArenaAllocator* allocator,
-                      size_t start_rows,
-                      size_t start_cols,
-                      bool expandable,
-                      ArenaAllocKind kind = kArenaAllocGrowableBitMap)
-      : BaseBitVectorArray(start_rows, start_cols),
-        data_(ArenaBitVector(allocator,
-                             BaseBitVectorArray::RequiredBitVectorSize(start_rows, start_cols),
-                             expandable,
-                             kind)) {}
-
-  ~ArenaBitVectorArray() override {}
-
-  const BitVector& GetRawData() const override {
-    return data_;
-  }
-
-  BitVector& GetRawData() override {
-    return data_;
-  }
-
- private:
-  ArenaBitVector data_;
 };
 
 }  // namespace art

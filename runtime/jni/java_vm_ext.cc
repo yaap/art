@@ -54,7 +54,7 @@
 #include "ti/agent.h"
 #include "well_known_classes-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 using android::base::StringAppendF;
 using android::base::StringAppendV;
@@ -958,12 +958,12 @@ bool JavaVMExt::LoadNativeLibrary(JNIEnv* env,
     if (class_linker->IsBootClassLoader(loader)) {
       loader = nullptr;
       class_loader = nullptr;
-      if (caller_class != nullptr) {
-        ObjPtr<mirror::Class> caller = soa.Decode<mirror::Class>(caller_class);
-        ObjPtr<mirror::DexCache> dex_cache = caller->GetDexCache();
-        if (dex_cache != nullptr) {
-          caller_location = dex_cache->GetLocation()->ToModifiedUtf8();
-        }
+    }
+    if (caller_class != nullptr) {
+      ObjPtr<mirror::Class> caller = soa.Decode<mirror::Class>(caller_class);
+      ObjPtr<mirror::DexCache> dex_cache = caller->GetDexCache();
+      if (dex_cache != nullptr) {
+        caller_location = dex_cache->GetLocation()->ToModifiedUtf8();
       }
     }
 
@@ -1210,7 +1210,7 @@ jstring JavaVMExt::GetLibrarySearchPath(JNIEnv* env, jobject class_loader) {
 
 // JNI Invocation interface.
 
-extern "C" jint JNI_CreateJavaVM(JavaVM** p_vm, JNIEnv** p_env, void* vm_args) {
+extern "C" EXPORT jint JNI_CreateJavaVM(JavaVM** p_vm, JNIEnv** p_env, void* vm_args) {
   ScopedTrace trace(__FUNCTION__);
   const JavaVMInitArgs* args = static_cast<JavaVMInitArgs*>(vm_args);
   if (JavaVMExt::IsBadJniVersion(args->version)) {
@@ -1252,7 +1252,7 @@ extern "C" jint JNI_CreateJavaVM(JavaVM** p_vm, JNIEnv** p_env, void* vm_args) {
   return JNI_OK;
 }
 
-extern "C" jint JNI_GetCreatedJavaVMs(JavaVM** vms_buf, jsize buf_len, jsize* vm_count) {
+extern "C" EXPORT jint JNI_GetCreatedJavaVMs(JavaVM** vms_buf, jsize buf_len, jsize* vm_count) {
   Runtime* runtime = Runtime::Current();
   if (runtime == nullptr || buf_len == 0) {
     *vm_count = 0;
@@ -1264,7 +1264,7 @@ extern "C" jint JNI_GetCreatedJavaVMs(JavaVM** vms_buf, jsize buf_len, jsize* vm
 }
 
 // Historically unsupported.
-extern "C" jint JNI_GetDefaultJavaVMInitArgs(void* /*vm_args*/) {
+extern "C" EXPORT jint JNI_GetDefaultJavaVMInitArgs(void* /*vm_args*/) {
   return JNI_ERR;
 }
 

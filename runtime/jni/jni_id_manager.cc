@@ -23,10 +23,10 @@
 #include "android-base/macros.h"
 #include "art_field-inl.h"
 #include "art_method-inl.h"
-#include "base/enums.h"
 #include "base/globals.h"
 #include "base/locks.h"
 #include "base/mutex.h"
+#include "base/pointer_size.h"
 #include "class_root-inl.h"
 #include "gc/allocation_listener.h"
 #include "gc/heap.h"
@@ -46,7 +46,7 @@
 #include "thread-inl.h"
 #include "thread.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace jni {
 
 constexpr bool kTraceIds = false;

@@ -24,9 +24,9 @@
 
 #include "bit_utils.h"
 #include "casts.h"
-#include "enums.h"
 #include "globals.h"
 #include "macros.h"
+#include "pointer_size.h"
 #include "value_object.h"
 
 namespace art {

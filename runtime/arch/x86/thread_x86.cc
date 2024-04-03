@@ -20,8 +20,8 @@
 #include <sys/types.h>
 
 #include "asm_support_x86.h"
-#include "base/enums.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "thread-current-inl.h"
 #include "thread_list.h"
 
@@ -39,7 +39,7 @@ struct descriptor_table_entry_t {
 #include <asm/ldt.h>
 #endif
 
-namespace art {
+namespace art HIDDEN {
 
 void Thread::InitCpu() {
   // Take the ldt lock, Thread::Current isn't yet established.

@@ -57,12 +57,5 @@ int main(int, char** argv) {
                  // shouldn't override it to true from the P/H property.
                  [](const std::string& prop) { return prop == "false"; });
 
-  // The following system properties are temporarily used as feature flags to indicate whether the
-  // module has a particular change or not.
-  // Note that they don't actually control the runtime behavior. Instead, they are only used for
-  // guarding tests.
-  // TODO(b/305000383): Clean these up.
-  SetPropertyAndLog("dalvik.vm.features.embedded_profile", "true");
-
   return 0;
 }

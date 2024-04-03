@@ -115,7 +115,7 @@ ArrayRef<const ManagedRegister> X86_64JniCallingConvention::ArgumentScratchRegis
   return scratch_regs;
 }
 
-static ManagedRegister ReturnRegisterForShorty(const char* shorty, [[maybe_unused]] bool jni) {
+static ManagedRegister ReturnRegisterForShorty(std::string_view shorty, [[maybe_unused]] bool jni) {
   if (shorty[0] == 'F' || shorty[0] == 'D') {
     return X86_64ManagedRegister::FromXmmRegister(XMM0);
   } else if (shorty[0] == 'J') {
@@ -186,7 +186,7 @@ X86_64JniCallingConvention::X86_64JniCallingConvention(bool is_static,
                                                        bool is_synchronized,
                                                        bool is_fast_native,
                                                        bool is_critical_native,
-                                                       const char* shorty)
+                                                       std::string_view shorty)
     : JniCallingConvention(is_static,
                            is_synchronized,
                            is_fast_native,
@@ -247,7 +247,7 @@ size_t X86_64JniCallingConvention::OutFrameSize() const {
 
   size_t out_args_size = RoundUp(size, kNativeStackAlignment);
   if (UNLIKELY(IsCriticalNative())) {
-    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty(), NumArgs() + 1u));
+    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty()));
   }
   return out_args_size;
 }

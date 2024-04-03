@@ -26,10 +26,10 @@
 #include "base/allocator.h"
 #include "base/atomic.h"
 #include "base/casts.h"
-#include "base/enums.h"
 #include "base/file_utils.h"
 #include "base/logging.h"  // For VLOG.
 #include "base/mutex.h"
+#include "base/pointer_size.h"
 #include "base/safe_map.h"
 #include "base/stl_util.h"
 #include "class_linker-inl.h"
@@ -66,7 +66,7 @@
 #include "thread.h"
 #include "well_known_classes-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 namespace {
 
@@ -891,7 +891,7 @@ class JNI {
     // it. b/22119403
     ScopedObjectAccess soa(env);
     auto* ext_env = down_cast<JNIEnvExt*>(env);
-    if (!ext_env->locals_.Remove(ext_env->local_ref_cookie_, obj)) {
+    if (!ext_env->locals_.Remove(obj)) {
       // Attempting to delete a local reference that is not in the
       // topmost local reference frame is a no-op.  DeleteLocalRef returns
       // void and doesn't throw any exceptions, but we should probably

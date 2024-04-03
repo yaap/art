@@ -41,7 +41,7 @@
 #include <atomic>
 
 #include "art_jvmti.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 
 namespace openjdkjvmti {
 

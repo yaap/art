@@ -296,7 +296,7 @@ ArmJniCallingConvention::ArmJniCallingConvention(bool is_static,
                                                  bool is_synchronized,
                                                  bool is_fast_native,
                                                  bool is_critical_native,
-                                                 const char* shorty)
+                                                 std::string_view shorty)
     : JniCallingConvention(is_static,
                            is_synchronized,
                            is_fast_native,
@@ -462,7 +462,7 @@ size_t ArmJniCallingConvention::OutFrameSize() const {
   }
   size_t out_args_size = RoundUp(size, kAapcsStackAlignment);
   if (UNLIKELY(IsCriticalNative())) {
-    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty(), NumArgs() + 1u));
+    DCHECK_EQ(out_args_size, GetCriticalNativeStubFrameSize(GetShorty()));
   }
   return out_args_size;
 }

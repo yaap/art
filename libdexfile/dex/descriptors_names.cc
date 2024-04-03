@@ -313,8 +313,6 @@ static bool IsValidPartOfMemberNameUtf8Slow(const char** pUtf8Ptr) {
     default:
       return true;
   }
-
-  UNREACHABLE();
 }
 
 /* Return whether the pointed-at modified-UTF-8 encoded character is

@@ -17,8 +17,8 @@
 #ifndef ART_COMPILER_JNI_QUICK_ARM_CALLING_CONVENTION_ARM_H_
 #define ART_COMPILER_JNI_QUICK_ARM_CALLING_CONVENTION_ARM_H_
 
-#include "base/enums.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "jni/quick/calling_convention.h"
 
 namespace art HIDDEN {
@@ -26,7 +26,7 @@ namespace arm {
 
 class ArmManagedRuntimeCallingConvention final : public ManagedRuntimeCallingConvention {
  public:
-  ArmManagedRuntimeCallingConvention(bool is_static, bool is_synchronized, const char* shorty)
+  ArmManagedRuntimeCallingConvention(bool is_static, bool is_synchronized, std::string_view shorty)
       : ManagedRuntimeCallingConvention(is_static,
                                         is_synchronized,
                                         shorty,
@@ -60,7 +60,7 @@ class ArmJniCallingConvention final : public JniCallingConvention {
                           bool is_synchronized,
                           bool is_fast_native,
                           bool is_critical_native,
-                          const char* shorty);
+                          std::string_view shorty);
   ~ArmJniCallingConvention() override {}
   // Calling convention
   ManagedRegister ReturnRegister() const override;

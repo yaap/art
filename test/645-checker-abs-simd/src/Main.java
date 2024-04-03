@@ -45,7 +45,7 @@ public class Main {
   /// CHECK-DAG: VecLoad   loop:<<Loop1:B\d+>> outer_loop:none
   /// CHECK-DAG: VecAbs    loop:<<Loop1>>      outer_loop:none
   /// CHECK-DAG: VecStore  loop:<<Loop1>>      outer_loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: VecPredWhile loop:<<Loop1>> outer_loop:none
   ///     CHECK-NOT: ArrayGet
@@ -100,7 +100,7 @@ public class Main {
   /// CHECK-DAG: VecLoad   loop:<<Loop1:B\d+>> outer_loop:none
   /// CHECK-DAG: VecAbs    loop:<<Loop1>>      outer_loop:none
   /// CHECK-DAG: VecStore  loop:<<Loop1>>      outer_loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: VecPredWhile loop:<<Loop1>> outer_loop:none
   ///     CHECK-NOT: ArrayGet
@@ -132,7 +132,7 @@ public class Main {
   /// CHECK-DAG: VecLoad   loop:<<Loop1:B\d+>> outer_loop:none
   /// CHECK-DAG: VecAbs    loop:<<Loop1>>      outer_loop:none
   /// CHECK-DAG: VecStore  loop:<<Loop1>>      outer_loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: VecPredWhile loop:<<Loop1>> outer_loop:none
   ///     CHECK-NOT: ArrayGet
@@ -174,7 +174,7 @@ public class Main {
   /// CHECK-DAG: VecLoad   loop:<<Loop1:B\d+>> outer_loop:none
   /// CHECK-DAG: VecAbs    loop:<<Loop1>>      outer_loop:none
   /// CHECK-DAG: VecStore  loop:<<Loop1>>      outer_loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: VecPredWhile loop:<<Loop1>> outer_loop:none
   ///     CHECK-NOT: ArrayGet
@@ -206,7 +206,7 @@ public class Main {
   /// CHECK-DAG: VecLoad   loop:<<Loop1:B\d+>> outer_loop:none
   /// CHECK-DAG: VecAbs    loop:<<Loop1>>      outer_loop:none
   /// CHECK-DAG: VecStore  loop:<<Loop1>>      outer_loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: VecPredWhile loop:<<Loop1>> outer_loop:none
   ///     CHECK-NOT: ArrayGet
@@ -238,7 +238,7 @@ public class Main {
   /// CHECK-DAG: VecLoad   loop:<<Loop1:B\d+>> outer_loop:none
   /// CHECK-DAG: VecAbs    loop:<<Loop1>>      outer_loop:none
   /// CHECK-DAG: VecStore  loop:<<Loop1>>      outer_loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: VecPredWhile loop:<<Loop1>> outer_loop:none
   ///     CHECK-NOT: ArrayGet
@@ -270,7 +270,7 @@ public class Main {
   /// CHECK-DAG: VecLoad    loop:<<Loop1:B\d+>> outer_loop:none
   /// CHECK-DAG: VecAbs     loop:<<Loop1>>      outer_loop:none
   /// CHECK-DAG: VecStore   loop:<<Loop1>>      outer_loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: VecPredWhile loop:<<Loop1>> outer_loop:none
   ///     CHECK-NOT: ArrayGet

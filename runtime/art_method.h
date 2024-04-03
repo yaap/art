@@ -26,9 +26,9 @@
 #include "base/array_ref.h"
 #include "base/bit_utils.h"
 #include "base/casts.h"
-#include "base/enums.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "base/runtime_debug.h"
 #include "dex/dex_file_structs.h"
 #include "dex/modifiers.h"
@@ -39,7 +39,7 @@
 #include "offsets.h"
 #include "read_barrier_option.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class CodeItemDataAccessor;
 class CodeItemDebugInfoAccessor;
@@ -84,7 +84,7 @@ template <char Shorty> struct HandleShortyTraits;
 template <> struct HandleShortyTraits<'L'>;
 }  // namespace detail
 
-class ArtMethod final {
+class EXPORT ArtMethod final {
  public:
   // Should the class state be checked on sensitive operations?
   DECLARE_RUNTIME_DEBUG_FLAG(kCheckDeclaringClassState);

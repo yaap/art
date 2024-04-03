@@ -23,7 +23,6 @@ std::ostream& operator<<(std::ostream& os, const Whence& rhs) {
     case kSeekSet:     os << "SEEK_SET"; break;
     case kSeekCurrent: os << "SEEK_CUR"; break;
     case kSeekEnd:     os << "SEEK_END"; break;
-    default: UNREACHABLE();
   }
   return os;
 }

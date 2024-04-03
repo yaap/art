@@ -410,7 +410,8 @@ jvmtiError MonitorUtil::GetCurrentContendedMonitor([[maybe_unused]] jvmtiEnv* en
           // We aren't currently (explicitly) waiting for a monitor so just return null.
           return;
         case art::ThreadState::kObsoleteRunnable:
-          LOG(FATAL) << "UNREACHABLE";  // Obsolete value.
+        case art::ThreadState::kInvalidState:
+          LOG(FATAL) << "UNREACHABLE";  // Obsolete or invalid value.
           UNREACHABLE();
         }
       }

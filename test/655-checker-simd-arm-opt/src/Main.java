@@ -38,7 +38,7 @@ public class Main {
   /// CHECK-DAG: <<D9:d\d+>>   DoubleConstant 20
   /// CHECK-DAG: <<D10:d\d+>>  DoubleConstant 0
   //
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG:               VecReplicateScalar [<<C1>>,{{j\d+}}]
   ///     CHECK-DAG:               VecReplicateScalar [<<C2>>,{{j\d+}}]
@@ -104,7 +104,7 @@ public class Main {
   /// CHECK-DAG: VecStore loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void Main.SVEIntermediateAddress(int) instruction_simplifier_arm64 (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   ///     CHECK-DAG: <<IntAddr1:i\d+>> IntermediateAddress [{{l\d+}},{{i\d+}}]            loop:<<Loop:B\d+>>  outer_loop:none
   ///     CHECK-DAG:                   VecLoad [<<IntAddr1>>,{{i\d+}},{{j\d+}}]           loop:<<Loop>>       outer_loop:none
   ///     CHECK-DAG:                   VecAdd                                             loop:<<Loop>>       outer_loop:none
@@ -113,7 +113,7 @@ public class Main {
   /// CHECK-FI:
   //
   /// CHECK-START-ARM64: void Main.SVEIntermediateAddress(int) GVN$after_arch (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   ///     CHECK-DAG: <<IntAddr:i\d+>>  IntermediateAddress [{{l\d+}},{{i\d+}}]            loop:<<Loop:B\d+>>  outer_loop:none
   ///     CHECK-DAG:                   VecLoad [<<IntAddr>>,{{i\d+}},{{j\d+}}]            loop:<<Loop>>       outer_loop:none
   ///     CHECK-DAG:                   VecAdd                                             loop:<<Loop>>       outer_loop:none

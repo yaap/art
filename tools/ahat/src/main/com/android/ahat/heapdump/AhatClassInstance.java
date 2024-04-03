@@ -17,6 +17,8 @@
 package com.android.ahat.heapdump;
 
 import java.awt.image.BufferedImage;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 
@@ -227,6 +229,16 @@ public class AhatClassInstance extends AhatInstance {
   }
 
   /**
+   * Returns the value of the field of `fieldName` as an AhatArrayInstance
+   * Returns null if the field is not found, or the field is not an
+   * AhatArrayInstance.
+   */
+  private AhatArrayInstance getArrayField(String fieldName) {
+    AhatInstance field = getRefField(fieldName);
+    return (field == null) ? null : field.asArrayInstance();
+  }
+
+  /**
    * Read the given field from the given instance.
    * The field is assumed to be a byte[] field.
    * Returns null if the field value is null, not a byte[] or could not be read.
@@ -236,14 +248,119 @@ public class AhatClassInstance extends AhatInstance {
     return field == null ? null : field.asByteArray();
   }
 
+  private static class BitmapDumpData {
+    public int count;
+    // See android.graphics.Bitmap.CompressFormat for format values.
+    // -1 means no compression for backward compatibility
+    public int format;
+    public HashMap<Long, byte[]> buffers;
+    public HashSet<Long> referenced;
+
+    public BitmapDumpData(int count, int format) {
+      this.count = count;
+      this.format = format;
+      this.buffers = new HashMap<Long, byte[]>(count);
+      this.referenced = new HashSet<Long>(count);
+    }
+  };
+
+  private static BitmapDumpData bitmapDumpData = null;
+
+  /**
+   * find the BitmapDumpData that is included in the heap dump
+   *
+   * @param root root of the heap dump
+   * @param instances all the instances from where the bitmap dump data will be excluded
+   * @return true if valid bitmap dump data is found, false if not
+   */
+  public static boolean findBitmapDumpData(SuperRoot root, Instances<AhatInstance> instances) {
+    final BitmapDumpData result;
+    AhatClassObj cls = null;
+
+    for (Reference ref : root.getReferences()) {
+      if (ref.ref.isClassObj()) {
+        cls = ref.ref.asClassObj();
+        if (cls.getName().equals("android.graphics.Bitmap")) {
+          break;
+        }
+      }
+    }
+
+    if (cls == null) {
+      return false;
+    }
+
+    Value value = cls.getStaticField("dumpData");
+    if (value == null || !value.isAhatInstance()) {
+      return false;
+    }
+
+    AhatClassInstance inst = value.asAhatInstance().asClassInstance();
+    if (inst == null) {
+        return false;
+    }
+
+    result = inst.asBitmapDumpData();
+    if (result == null) {
+      return false;
+    }
+
+    /* remove all instances referenced from BitmapDumpData,
+     * these instances shall *not* be counted
+     */
+    final HashSet<Long> referenced = result.referenced;
+    instances.removeIf(i -> { return referenced.contains(i.getId()); });
+    bitmapDumpData = result;
+    return true;
+  }
+
+  private BitmapDumpData asBitmapDumpData() {
+    if (!isInstanceOfClass("android.graphics.Bitmap$DumpData")) {
+      return null;
+    }
+
+    int count = getIntField("count", 0);
+    int format = getIntField("format", -1);
+
+    if (count == 0 || format == -1) {
+      return null;
+    }
+
+    BitmapDumpData result = new BitmapDumpData(count, format);
+
+    AhatArrayInstance natives = getArrayField("natives");
+    AhatArrayInstance buffers = getArrayField("buffers");
+    if (natives == null || buffers == null) {
+      return null;
+    }
+
+    result.referenced.add(natives.getId());
+    result.referenced.add(buffers.getId());
+
+    result.buffers = new HashMap<>(result.count);
+    for (int i = 0; i < result.count; i++) {
+      Value nativePtr = natives.getValue(i);
+      Value bufferVal = buffers.getValue(i);
+      if (nativePtr == null || bufferVal == null) {
+        continue;
+      }
+      AhatInstance buffer = bufferVal.asAhatInstance();
+      result.buffers.put(nativePtr.asLong(), buffer.asArrayInstance().asByteArray());
+      result.referenced.add(buffer.getId());
+    }
+    return result;
+  }
+
   private static class BitmapInfo {
     public final int width;
     public final int height;
+    public final int format;
     public final byte[] buffer;
 
-    public BitmapInfo(int width, int height, byte[] buffer) {
+    public BitmapInfo(int width, int height, int format, byte[] buffer) {
       this.width = width;
       this.height = height;
+      this.format = format;
       this.buffer = buffer;
     }
   }
@@ -268,24 +385,35 @@ public class AhatClassInstance extends AhatInstance {
     }
 
     byte[] buffer = getByteArrayField("mBuffer");
+    if (buffer != null) {
+      if (buffer.length < 4 * height * width) {
+        return null;
+      }
+      return new BitmapInfo(width, height, -1, buffer);
+    }
+
+    long nativePtr = getLongField("mNativePtr", -1l);
+    if (nativePtr == -1) {
+      return null;
+    }
+
+    if (bitmapDumpData == null || bitmapDumpData.count == 0) {
+      return null;
+    }
+
+    if (!bitmapDumpData.buffers.containsKey(nativePtr)) {
+      return null;
+    }
+
+    buffer = bitmapDumpData.buffers.get(nativePtr);
     if (buffer == null) {
       return null;
     }
 
-    if (buffer.length < 4 * height * width) {
-      return null;
-    }
-
-    return new BitmapInfo(width, height, buffer);
-
+    return new BitmapInfo(width, height, bitmapDumpData.format, buffer);
   }
 
-  @Override public BufferedImage asBitmap() {
-    BitmapInfo info = getBitmapInfo();
-    if (info == null) {
-      return null;
-    }
-
+  private BufferedImage asBufferedImage(BitmapInfo info) {
     // Convert the raw data to an image
     // Convert BGRA to ABGR
     int[] abgr = new int[info.height * info.width];
@@ -301,6 +429,32 @@ public class AhatClassInstance extends AhatInstance {
         info.width, info.height, BufferedImage.TYPE_4BYTE_ABGR);
     bitmap.setRGB(0, 0, info.width, info.height, abgr, 0, info.width);
     return bitmap;
+  }
+
+  @Override public Bitmap asBitmap() {
+    BitmapInfo info = getBitmapInfo();
+    if (info == null) {
+      return null;
+    }
+
+    /**
+     * See android.graphics.Bitmap.CompressFormat for definitions
+     * -1 for legacy objects with content in `Bitmap.mBuffer`
+     */
+    switch (info.format) {
+    case 0: /* JPEG */
+      return new Bitmap("image/jpg", info.buffer, null);
+    case 1: /* PNG */
+      return new Bitmap("image/png", info.buffer, null);
+    case 2: /* WEBP */
+    case 3: /* WEBP_LOSSY */
+    case 4: /* WEBP_LOSSLESS */
+      return new Bitmap("image/webp", info.buffer, null);
+    case -1:/* Legacy */
+      return new Bitmap(null, null, asBufferedImage(info));
+    default:
+      return null;
+    }
   }
 
   @Override

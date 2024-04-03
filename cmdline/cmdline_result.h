@@ -92,8 +92,6 @@ static inline std::ostream& operator<<(std::ostream& stream, CmdlineResult::Stat
     case CmdlineResult::kUnknown:
       stream << "kUnknown";
       break;
-    default:
-      UNREACHABLE();
   }
   return stream;
 }

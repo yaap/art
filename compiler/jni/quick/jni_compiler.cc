@@ -25,19 +25,19 @@
 #include "art_method.h"
 #include "base/arena_allocator.h"
 #include "base/arena_containers.h"
-#include "base/enums.h"
 #include "base/logging.h"  // For VLOG.
 #include "base/macros.h"
 #include "base/memory_region.h"
+#include "base/pointer_size.h"
 #include "base/utils.h"
 #include "calling_convention.h"
 #include "class_linker.h"
 #include "dwarf/debug_frame_opcode_writer.h"
-#include "dex/dex_file-inl.h"
 #include "driver/compiler_options.h"
 #include "entrypoints/quick/quick_entrypoints.h"
 #include "instrumentation.h"
 #include "jni/jni_env_ext.h"
+#include "jni/local_reference_table.h"
 #include "runtime.h"
 #include "thread.h"
 #include "utils/arm/managed_register_arm.h"
@@ -50,19 +50,6 @@
 #define __ jni_asm->
 
 namespace art HIDDEN {
-
-constexpr size_t kIRTCookieSize = JniCallingConvention::SavedLocalReferenceCookieSize();
-
-template <PointerSize kPointerSize>
-static void PushLocalReferenceFrame(JNIMacroAssembler<kPointerSize>* jni_asm,
-                                    ManagedRegister jni_env_reg,
-                                    ManagedRegister saved_cookie_reg,
-                                    ManagedRegister temp_reg);
-template <PointerSize kPointerSize>
-static void PopLocalReferenceFrame(JNIMacroAssembler<kPointerSize>* jni_asm,
-                                   ManagedRegister jni_env_reg,
-                                   ManagedRegister saved_cookie_reg,
-                                   ManagedRegister temp_reg);
 
 template <PointerSize kPointerSize>
 static void SetNativeParameter(JNIMacroAssembler<kPointerSize>* jni_asm,
@@ -89,26 +76,19 @@ static std::unique_ptr<JNIMacroAssembler<kPointerSize>> GetMacroAssembler(
 //
 template <PointerSize kPointerSize>
 static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& compiler_options,
+                                                     std::string_view shorty,
                                                      uint32_t access_flags,
-                                                     uint32_t method_idx,
-                                                     const DexFile& dex_file,
                                                      ArenaAllocator* allocator) {
   constexpr size_t kRawPointerSize = static_cast<size_t>(kPointerSize);
-  const bool is_native = (access_flags & kAccNative) != 0;
-  CHECK(is_native);
+  CHECK_NE(access_flags & kAccNative, 0u);
   const bool is_static = (access_flags & kAccStatic) != 0;
   const bool is_synchronized = (access_flags & kAccSynchronized) != 0;
-  const char* shorty = dex_file.GetMethodShorty(dex_file.GetMethodId(method_idx));
+  const bool is_fast_native = (access_flags & kAccFastNative) != 0u;
+  const bool is_critical_native = (access_flags & kAccCriticalNative) != 0u;
+
   InstructionSet instruction_set = compiler_options.GetInstructionSet();
   const InstructionSetFeatures* instruction_set_features =
       compiler_options.GetInstructionSetFeatures();
-
-  // i.e. if the method was annotated with @FastNative
-  const bool is_fast_native = (access_flags & kAccFastNative) != 0u;
-
-  // i.e. if the method was annotated with @CriticalNative
-  const bool is_critical_native = (access_flags & kAccCriticalNative) != 0u;
-
   bool emit_read_barrier = compiler_options.EmitReadBarrier();
   bool is_debuggable = compiler_options.GetDebuggable();
   bool needs_entry_exit_hooks = is_debuggable && compiler_options.IsJitCompiler();
@@ -128,25 +108,18 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   // debuggable runtimes.
   bool should_tag_sp = needs_entry_exit_hooks;
 
-  VLOG(jni) << "JniCompile: Method :: "
-              << dex_file.PrettyMethod(method_idx, /* with signature */ true)
-              << " :: access_flags = " << std::hex << access_flags << std::dec;
-
-  if (UNLIKELY(is_fast_native)) {
-    VLOG(jni) << "JniCompile: Fast native method detected :: "
-              << dex_file.PrettyMethod(method_idx, /* with signature */ true);
-  }
-
-  if (UNLIKELY(is_critical_native)) {
-    VLOG(jni) << "JniCompile: Critical native method detected :: "
-              << dex_file.PrettyMethod(method_idx, /* with signature */ true);
-  }
+  VLOG(jni) << "JniCompile: shorty=\"" << shorty
+            << "\", access_flags=0x" << std::hex << access_flags
+            << (is_static ? " static" : "")
+            << (is_synchronized ? " synchronized" : "")
+            << (is_fast_native ? " @FastNative" : "")
+            << (is_critical_native ? " @CriticalNative" : "");
 
   if (kIsDebugBuild) {
     // Don't allow both @FastNative and @CriticalNative. They are mutually exclusive.
     if (UNLIKELY(is_fast_native && is_critical_native)) {
-      LOG(FATAL) << "JniCompile: Method cannot be both @CriticalNative and @FastNative"
-                 << dex_file.PrettyMethod(method_idx, /* with_signature= */ true);
+      LOG(FATAL) << "JniCompile: Method cannot be both @CriticalNative and @FastNative, \""
+                 << shorty << "\", 0x" << std::hex << access_flags;
     }
 
     // @CriticalNative - extra checks:
@@ -156,16 +129,16 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     if (UNLIKELY(is_critical_native)) {
       CHECK(is_static)
           << "@CriticalNative functions cannot be virtual since that would "
-          << "require passing a reference parameter (this), which is illegal "
-          << dex_file.PrettyMethod(method_idx, /* with_signature= */ true);
+          << "require passing a reference parameter (this), which is illegal, \""
+          << shorty << "\", 0x" << std::hex << access_flags;
       CHECK(!is_synchronized)
           << "@CriticalNative functions cannot be synchronized since that would "
-          << "require passing a (class and/or this) reference parameter, which is illegal "
-          << dex_file.PrettyMethod(method_idx, /* with_signature= */ true);
-      for (size_t i = 0; i < strlen(shorty); ++i) {
-        CHECK_NE(Primitive::kPrimNot, Primitive::GetType(shorty[i]))
-            << "@CriticalNative methods' shorty types must not have illegal references "
-            << dex_file.PrettyMethod(method_idx, /* with_signature= */ true);
+          << "require passing a (class and/or this) reference parameter, which is illegal, \""
+          << shorty << "\", 0x" << std::hex << access_flags;
+      for (char c : shorty) {
+        CHECK_NE(Primitive::kPrimNot, Primitive::GetType(c))
+            << "@CriticalNative methods' shorty types must not have illegal references, \""
+            << shorty << "\", 0x" << std::hex << access_flags;
       }
     }
   }
@@ -306,22 +279,30 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   // 3. Push local reference frame.
   // Skip this for @CriticalNative methods, they cannot use any references.
   ManagedRegister jni_env_reg = ManagedRegister::NoRegister();
-  ManagedRegister saved_cookie_reg = ManagedRegister::NoRegister();
+  ManagedRegister previous_state_reg = ManagedRegister::NoRegister();
+  ManagedRegister current_state_reg = ManagedRegister::NoRegister();
   ManagedRegister callee_save_temp = ManagedRegister::NoRegister();
   if (LIKELY(!is_critical_native)) {
     // To pop the local reference frame later, we shall need the JNI environment pointer
     // as well as the cookie, so we preserve them across calls in callee-save registers.
     CHECK_GE(callee_save_scratch_regs.size(), 3u);  // At least 3 for each supported architecture.
     jni_env_reg = callee_save_scratch_regs[0];
-    saved_cookie_reg = __ CoreRegisterWithSize(callee_save_scratch_regs[1], kIRTCookieSize);
-    callee_save_temp = __ CoreRegisterWithSize(callee_save_scratch_regs[2], kIRTCookieSize);
+    constexpr size_t kLRTSegmentStateSize = sizeof(jni::LRTSegmentState);
+    previous_state_reg = __ CoreRegisterWithSize(callee_save_scratch_regs[1], kLRTSegmentStateSize);
+    current_state_reg = __ CoreRegisterWithSize(callee_save_scratch_regs[2], kLRTSegmentStateSize);
+    if (callee_save_scratch_regs.size() >= 4) {
+      callee_save_temp = callee_save_scratch_regs[3];
+    }
+    const MemberOffset previous_state_offset = JNIEnvExt::LrtPreviousStateOffset(kPointerSize);
 
     // Load the JNI environment pointer.
     __ LoadRawPtrFromThread(jni_env_reg, Thread::JniEnvOffset<kPointerSize>());
 
-    // Push the local reference frame.
-    PushLocalReferenceFrame<kPointerSize>(
-        jni_asm.get(), jni_env_reg, saved_cookie_reg, callee_save_temp);
+    // Load the local reference frame states.
+    __ LoadLocalReferenceTableStates(jni_env_reg, previous_state_reg, current_state_reg);
+
+    // Store the current state as the previous state (push the LRT frame).
+    __ Store(jni_env_reg, previous_state_offset, current_state_reg, kLRTSegmentStateSize);
   }
 
   // 4. Make the main native call.
@@ -344,6 +325,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   refs.clear();
   mr_conv->ResetIterator(FrameOffset(current_frame_size));
   main_jni_conv->ResetIterator(FrameOffset(main_out_arg_size));
+  bool check_method_not_clobbered = false;
   if (UNLIKELY(is_critical_native)) {
     // Move the method pointer to the hidden argument register.
     // TODO: Pass this as the last argument, not first. Change ARM assembler
@@ -354,10 +336,16 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
   } else {
     main_jni_conv->Next();    // Skip JNIEnv*.
     FrameOffset method_offset(current_out_arg_size + mr_conv->MethodStackOffset().SizeValue());
-    if (!is_static || main_jni_conv->IsCurrentParamOnStack()) {
+    if (main_jni_conv->IsCurrentParamOnStack()) {
+      // This is for x86 only. The method shall not be clobbered by argument moves
+      // because all arguments are passed on the stack to the native method.
+      check_method_not_clobbered = true;
+      DCHECK(callee_save_temp.IsNoRegister());
+    } else if (!is_static) {
       // The method shall not be available in the `jclass` argument register.
       // Make sure it is available in `callee_save_temp` for the call below.
       // (The old method register can be clobbered by argument moves.)
+      DCHECK(!callee_save_temp.IsNoRegister());
       ManagedRegister new_method_reg = __ CoreRegisterWithSize(callee_save_temp, kRawPointerSize);
       DCHECK(!method_register.IsNoRegister());
       __ Move(new_method_reg, method_register, kRawPointerSize);
@@ -399,6 +387,10 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
     refs.push_back(is_reference ? mr_conv->CurrentParamStackOffset() : kInvalidReferenceOffset);
   }
   DCHECK(!main_jni_conv->HasNext());
+  DCHECK_IMPLIES(check_method_not_clobbered,
+                 std::all_of(dest_args.begin(),
+                             dest_args.end(),
+                             [](const ArgumentLocation& loc) { return !loc.IsRegister(); }));
   __ MoveArguments(ArrayRef<ArgumentLocation>(dest_args),
                    ArrayRef<ArgumentLocation>(src_args),
                    ArrayRef<FrameOffset>(refs));
@@ -525,8 +517,10 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
 
   // 6. Pop local reference frame.
   if (LIKELY(!is_critical_native)) {
-    PopLocalReferenceFrame<kPointerSize>(
-        jni_asm.get(), jni_env_reg, saved_cookie_reg, callee_save_temp);
+    __ StoreLocalReferenceTableStates(jni_env_reg, previous_state_reg, current_state_reg);
+    // For x86, the `callee_save_temp` is not valid, so let's simply change it to one
+    // of the callee save registers that we don't need anymore for all architectures.
+    callee_save_temp = current_state_reg;
   }
 
   // 7. Return from the JNI stub.
@@ -550,10 +544,10 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
       FrameOffset method_offset = mr_conv->MethodStackOffset();
       __ Load(temp, method_offset, kRawPointerSize);
       DCHECK_EQ(ArtMethod::DeclaringClassOffset().SizeValue(), 0u);
-      __ Load(to_lock, temp, MemberOffset(0u), kObjectReferenceSize);
+      __ LoadGcRootWithoutReadBarrier(to_lock, temp, MemberOffset(0u));
     } else {
       // Pass the `this` argument from its spill slot.
-      __ Load(to_lock, mr_conv->CurrentParamStackOffset(), kObjectReferenceSize);
+      __ LoadStackReference(to_lock, mr_conv->CurrentParamStackOffset());
     }
     __ CallFromThread(QUICK_ENTRYPOINT_OFFSET(kPointerSize, pJniUnlockObject));
   }
@@ -658,8 +652,7 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
         jni_asm->cfi().AdjustCFAOffset(main_out_arg_size);
         __ DecreaseFrameSize(main_out_arg_size);
       }
-      PopLocalReferenceFrame<kPointerSize>(
-          jni_asm.get(), jni_env_reg, saved_cookie_reg, callee_save_temp);
+      __ StoreLocalReferenceTableStates(jni_env_reg, previous_state_reg, current_state_reg);
     }
     DCHECK_EQ(jni_asm->cfi().GetCurrentCFAOffset(), static_cast<int>(current_frame_size));
     __ DeliverPendingException();
@@ -736,40 +729,6 @@ static JniCompiledMethod ArtJniCompileMethodInternal(const CompilerOptions& comp
 }
 
 template <PointerSize kPointerSize>
-static void PushLocalReferenceFrame(JNIMacroAssembler<kPointerSize>* jni_asm,
-                                    ManagedRegister jni_env_reg,
-                                    ManagedRegister saved_cookie_reg,
-                                    ManagedRegister temp_reg) {
-  const size_t kRawPointerSize = static_cast<size_t>(kPointerSize);
-  const MemberOffset jni_env_cookie_offset = JNIEnvExt::LocalRefCookieOffset(kRawPointerSize);
-  const MemberOffset jni_env_segment_state_offset = JNIEnvExt::SegmentStateOffset(kRawPointerSize);
-
-  // Load the old cookie that we shall need to restore.
-  __ Load(saved_cookie_reg, jni_env_reg, jni_env_cookie_offset, kIRTCookieSize);
-
-  // Set the cookie in JNI environment to the current segment state.
-  __ Load(temp_reg, jni_env_reg, jni_env_segment_state_offset, kIRTCookieSize);
-  __ Store(jni_env_reg, jni_env_cookie_offset, temp_reg, kIRTCookieSize);
-}
-
-template <PointerSize kPointerSize>
-static void PopLocalReferenceFrame(JNIMacroAssembler<kPointerSize>* jni_asm,
-                                   ManagedRegister jni_env_reg,
-                                   ManagedRegister saved_cookie_reg,
-                                   ManagedRegister temp_reg) {
-  const size_t kRawPointerSize = static_cast<size_t>(kPointerSize);
-  const MemberOffset jni_env_cookie_offset = JNIEnvExt::LocalRefCookieOffset(kRawPointerSize);
-  const MemberOffset jni_env_segment_state_offset = JNIEnvExt::SegmentStateOffset(kRawPointerSize);
-
-  // Set the current segment state to the current cookie in JNI environment.
-  __ Load(temp_reg, jni_env_reg, jni_env_cookie_offset, kIRTCookieSize);
-  __ Store(jni_env_reg, jni_env_segment_state_offset, temp_reg, kIRTCookieSize);
-
-  // Restore the cookie in JNI environment to the saved value.
-  __ Store(jni_env_reg, jni_env_cookie_offset, saved_cookie_reg, kIRTCookieSize);
-}
-
-template <PointerSize kPointerSize>
 static void SetNativeParameter(JNIMacroAssembler<kPointerSize>* jni_asm,
                                JniCallingConvention* jni_conv,
                                ManagedRegister in_reg) {
@@ -809,16 +768,15 @@ static void CallDecodeReferenceResult(JNIMacroAssembler<kPointerSize>* jni_asm,
 }
 
 JniCompiledMethod ArtQuickJniCompileMethod(const CompilerOptions& compiler_options,
+                                           std::string_view shorty,
                                            uint32_t access_flags,
-                                           uint32_t method_idx,
-                                           const DexFile& dex_file,
                                            ArenaAllocator* allocator) {
   if (Is64BitInstructionSet(compiler_options.GetInstructionSet())) {
     return ArtJniCompileMethodInternal<PointerSize::k64>(
-        compiler_options, access_flags, method_idx, dex_file, allocator);
+        compiler_options, shorty, access_flags, allocator);
   } else {
     return ArtJniCompileMethodInternal<PointerSize::k32>(
-        compiler_options, access_flags, method_idx, dex_file, allocator);
+        compiler_options, shorty, access_flags, allocator);
   }
 }
 

@@ -19,7 +19,7 @@
 #include "android-base/stringprintf.h"
 
 #include "art_method-inl.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "base/utils.h"
 #include "class-inl.h"
 #include "class_root-inl.h"
@@ -33,7 +33,7 @@
 #include "string.h"
 #include "well_known_classes-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace mirror {
 
 using android::base::StringPrintf;

@@ -32,23 +32,13 @@ public class Main {
     try {
       bad.foo();
     } catch (NoClassDefFoundError ncdfe) {
-      // On RI, the NCDFE has no cause. On ART, the badClinit is the cause.
-      if (ncdfe.getCause() == badClinit || ncdfe.getCause() == null) {
-        System.out.println("Caught NoClassDefFoundError.");
-      } else {
-        ncdfe.printStackTrace();
-      }
+      checkNcdfe(ncdfe, badClinit);
     }
     // Call bar() on the escaped instance of Bad.
     try {
       bad.bar();
     } catch (NoClassDefFoundError ncdfe) {
-      // On RI, the NCDFE has no cause. On ART, the badClinit is the cause.
-      if (ncdfe.getCause() == badClinit || ncdfe.getCause() == null) {
-        System.out.println("Caught NoClassDefFoundError.");
-      } else {
-        ncdfe.printStackTrace();
-      }
+      checkNcdfe(ncdfe, badClinit);
     }
 
     // Test that we handle bad instance correctly in the resolution trampoline.
@@ -67,36 +57,21 @@ public class Main {
     try {
       badSuper.foo();
     } catch (NoClassDefFoundError ncdfe) {
-      // On RI, the NCDFE has no cause. On ART, the badClinit is the cause.
-      if (ncdfe.getCause() == badClinit || ncdfe.getCause() == null) {
-        System.out.println("Caught NoClassDefFoundError.");
-      } else {
-        ncdfe.printStackTrace();
-      }
+      checkNcdfe(ncdfe, badClinit);
     }
 
     // Call BadSub.bar() on the escaped instance of BadSub.
     try {
       badSub.bar();
     } catch (NoClassDefFoundError ncdfe) {
-      // On RI, the NCDFE has no cause. On ART, the badClinit is the cause.
-      if (ncdfe.getCause() == badClinit || ncdfe.getCause() == null) {
-        System.out.println("Caught NoClassDefFoundError.");
-      } else {
-        ncdfe.printStackTrace();
-      }
+      checkNcdfe(ncdfe, badClinit);
     }
 
     // Test that we can even create instances of BadSub with erroneous superclass BadSuper.
     try {
       new BadSub(-1, -2).bar();
     } catch (NoClassDefFoundError ncdfe) {
-      // On RI, the NCDFE has no cause. On ART, the badClinit is the cause.
-      if (ncdfe.getCause() == badClinit || ncdfe.getCause() == null) {
-        System.out.println("Caught NoClassDefFoundError.");
-      } else {
-        ncdfe.printStackTrace();
-      }
+      checkNcdfe(ncdfe, badClinit);
     }
 
     // Test that we cannot create instances of BadSuper from BadSub.
@@ -104,13 +79,26 @@ public class Main {
       badSub.allocSuper(11111);  // Should throw.
       System.out.println("Allocated BadSuper!");
     } catch (NoClassDefFoundError ncdfe) {
-      // On RI, the NCDFE has no cause. On ART, the badClinit is the cause.
-      if (ncdfe.getCause() == badClinit || ncdfe.getCause() == null) {
+      checkNcdfe(ncdfe, badClinit);
+    }
+  }
+
+  private static void checkNcdfe(NoClassDefFoundError ncdfe, Throwable expectedCause) {
+    // On RI, the NCDFE has no cause. On ART, the badClinit is the cause.
+    if (ncdfe.getCause() == expectedCause || ncdfe.getCause() == null) {
+      System.out.println("Caught NoClassDefFoundError.");
+      return;
+    }
+    // On newer RI, the NCDFE has an ExceptionInInitializerError cause which contains the string of
+    // the original error, but have a null cause and exception.
+    if (ncdfe.getCause() instanceof ExceptionInInitializerError) {
+      ExceptionInInitializerError cause = (ExceptionInInitializerError) ncdfe.getCause();
+      if (cause.getException() == null) {
         System.out.println("Caught NoClassDefFoundError.");
-      } else {
-        ncdfe.printStackTrace();
+        return;
       }
     }
+    ncdfe.printStackTrace();
   }
 
   public static Bad bad;

@@ -20,10 +20,10 @@
 
 #include "arch/instruction_set.h"
 #include "art_method.h"
-#include "base/enums.h"
 #include "base/hex_dump.h"
 #include "base/logging.h"  // For VLOG.
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "runtime_globals.h"
 #include "thread-current-inl.h"
 
@@ -31,7 +31,7 @@
 // ARM specific fault handler functions.
 //
 
-namespace art {
+namespace art HIDDEN {
 
 extern "C" void art_quick_throw_null_pointer_exception_from_signal();
 extern "C" void art_quick_throw_stack_overflow();

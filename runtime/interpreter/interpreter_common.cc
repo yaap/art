@@ -19,7 +19,7 @@
 #include <cmath>
 
 #include "base/casts.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "class_root-inl.h"
 #include "debugger.h"
 #include "dex/dex_file_types.h"
@@ -50,7 +50,7 @@
 #include "var_handles.h"
 #include "well_known_classes.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace interpreter {
 
 void ThrowNullPointerExceptionFromInterpreter() {
@@ -639,6 +639,7 @@ static ObjPtr<mirror::Class> GetClassForBootstrapArgument(EncodedArrayValueItera
     case EncodedArrayValueIterator::ValueType::kNull:
       return nullptr;
     case EncodedArrayValueIterator::ValueType::kEndOfInput:
+      LOG(FATAL) << "Unreachable";
       UNREACHABLE();
   }
 }
@@ -721,8 +722,8 @@ static bool GetArgumentForBootstrapMethod(Thread* self,
       // Unreachable - unsupported types that have been checked when
       // determining the effect call site type based on the bootstrap
       // argument types.
-      UNREACHABLE();
     case EncodedArrayValueIterator::ValueType::kEndOfInput:
+      LOG(FATAL) << "Unreachable";
       UNREACHABLE();
   }
 }
@@ -766,8 +767,8 @@ static bool PackArgumentForBootstrapMethod(Thread* self,
       // Unreachable - unsupported types that have been checked when
       // determining the effect call site type based on the bootstrap
       // argument types.
-      UNREACHABLE();
     case EncodedArrayValueIterator::ValueType::kEndOfInput:
+      LOG(FATAL) << "Unreachable";
       UNREACHABLE();
   }
 }
@@ -853,6 +854,8 @@ static bool PackCollectorArrayForBootstrapMethod(Thread* self,
   } else if (component_type == GetClassRoot<mirror::Class>()) {
     COLLECT_REFERENCE_ARRAY(mirror::Class, Type);
   } else {
+    component_type->DumpClass(LOG_STREAM(FATAL_WITHOUT_ABORT), mirror::Class::kDumpClassFullDetail);
+    LOG(FATAL) << "unexpected class: " << component_type->PrettyTypeOf();
     UNREACHABLE();
   }
   #undef COLLECT_PRIMITIVE_ARRAY

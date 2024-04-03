@@ -16,7 +16,7 @@
 
 #include "index_bss_mapping_encoder.h"
 
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "gtest/gtest.h"
 
 namespace art {

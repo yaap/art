@@ -25,8 +25,8 @@
 
 #include "assembler_arm64.h"
 #include "base/arena_containers.h"
-#include "base/enums.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "offsets.h"
 #include "utils/assembler.h"
 #include "utils/jni_macro_assembler.h"
@@ -92,6 +92,14 @@ class Arm64JNIMacroAssembler final : public JNIMacroAssemblerFwd<Arm64Assembler,
   // Exploit fast access in managed code to Thread::Current().
   void GetCurrentThread(ManagedRegister dest) override;
   void GetCurrentThread(FrameOffset dest_offset) override;
+
+  // Manipulating local reference table states.
+  void LoadLocalReferenceTableStates(ManagedRegister jni_env_reg,
+                                     ManagedRegister previous_state_reg,
+                                     ManagedRegister current_state_reg) override;
+  void StoreLocalReferenceTableStates(ManagedRegister jni_env_reg,
+                                      ManagedRegister previous_state_reg,
+                                      ManagedRegister current_state_reg) override;
 
   // Decode JNI transition or local `jobject`. For (weak) global `jobject`, jump to slow path.
   void DecodeJNITransitionOrLocalJObject(ManagedRegister reg,

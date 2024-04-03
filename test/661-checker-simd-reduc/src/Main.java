@@ -73,7 +73,7 @@ public class Main {
   /// CHECK-DAG: <<Extr:i\d+>>   VecExtractScalar [<<Red>>]    loop:none
 
   /// CHECK-START-ARM64: int Main.reductionInt(int[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<TrueC:i\d+>>     IntConstant 1                            loop:none
   ///     CHECK-DAG: <<Set:d\d+>>       VecSetScalars [{{i\d+}},{{j\d+}}]        loop:none
@@ -102,7 +102,7 @@ public class Main {
   //  Check that full 128-bit Q-Register are saved across SuspendCheck slow path.
   /// CHECK-START-ARM64: int Main.reductionInt(int[]) disassembly (after)
   /// CHECK:                            SuspendCheckSlowPathARM64
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK:                                str z<<RegNo:\d+>>,
   ///     CHECK:                                ldr z<<RegNo>>,
@@ -157,7 +157,7 @@ public class Main {
   /// CHECK-EVAL: "<<Loop1>>" != "<<Loop2>>"
   //
   /// CHECK-START-ARM64: int Main.reductionIntChain() loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set1:d\d+>>   VecSetScalars [{{i\d+}},{{j\d+}}]         loop:none
   ///     CHECK-DAG: <<Phi1:d\d+>>   Phi [<<Set1>>,{{d\d+}}]                   loop:<<Loop1:B\d+>> outer_loop:none
@@ -234,7 +234,7 @@ public class Main {
   /// CHECK-DAG: <<Extr:i\d+>>   VecExtractScalar [<<Red>>]    loop:none
   //
   /// CHECK-START-ARM64: int Main.reductionIntToLoop(int[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set:d\d+>>    VecSetScalars [{{i\d+}},{{j\d+}}]        loop:none
   ///     CHECK-DAG: <<Phi:d\d+>>    Phi [<<Set>>,{{d\d+}}]                   loop:<<Loop1:B\d+>> outer_loop:none
@@ -280,7 +280,7 @@ public class Main {
   /// CHECK-DAG:                 Return [<<Phi2>>]             loop:none
   //
   /// CHECK-START-ARM64: long Main.reductionLong(long[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Cons2:i\d+>>  IntConstant                              loop:none
   ///     CHECK-DAG: <<Set:d\d+>>    VecSetScalars [{{j\d+}},{{j\d+}}]        loop:none
@@ -358,7 +358,7 @@ public class Main {
   /// CHECK-DAG: <<Extr:i\d+>>   VecExtractScalar [<<Red>>]    loop:none
   //
   /// CHECK-START-ARM64: int Main.reductionIntM1(int[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set:d\d+>>    VecSetScalars [{{i\d+}},{{j\d+}}]       loop:none
   ///     CHECK-DAG: <<Phi:d\d+>>    Phi [<<Set>>,{{d\d+}}]                  loop:<<Loop:B\d+>> outer_loop:none
@@ -401,7 +401,7 @@ public class Main {
   /// CHECK-DAG:                 Return [<<Phi2>>]             loop:none
   //
   /// CHECK-START-ARM64: long Main.reductionLongM1(long[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set:d\d+>>    VecSetScalars [{{j\d+}},{{j\d+}}]       loop:none
   ///     CHECK-DAG: <<Phi:d\d+>>    Phi [<<Set>>,{{d\d+}}]                  loop:<<Loop:B\d+>> outer_loop:none
@@ -477,7 +477,7 @@ public class Main {
   /// CHECK-DAG: <<Extr:i\d+>>   VecExtractScalar [<<Red>>]    loop:none
   //
   /// CHECK-START-ARM64: int Main.reductionMinusInt(int[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set:d\d+>>    VecSetScalars [{{i\d+}},{{j\d+}}]       loop:none
   ///     CHECK-DAG: <<Phi:d\d+>>    Phi [<<Set>>,{{d\d+}}]                  loop:<<Loop:B\d+>> outer_loop:none
@@ -520,7 +520,7 @@ public class Main {
   /// CHECK-DAG:                 Return [<<Phi2>>]             loop:none
   //
   /// CHECK-START-ARM64: long Main.reductionMinusLong(long[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set:d\d+>>    VecSetScalars [{{j\d+}},{{j\d+}}]       loop:none
   ///     CHECK-DAG: <<Phi:d\d+>>    Phi [<<Set>>,{{d\d+}}]                  loop:<<Loop:B\d+>> outer_loop:none

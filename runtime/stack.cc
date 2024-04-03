@@ -22,8 +22,9 @@
 #include "arch/context.h"
 #include "art_method-inl.h"
 #include "base/callee_save_type.h"
-#include "base/enums.h"
 #include "base/hex_dump.h"
+#include "base/pointer_size.h"
+#include "base/utils.h"
 #include "dex/dex_file_types.h"
 #include "entrypoints/entrypoint_utils-inl.h"
 #include "entrypoints/quick/callee_save_frame.h"
@@ -40,14 +41,14 @@
 #include "mirror/object-inl.h"
 #include "mirror/object_array-inl.h"
 #include "nterp_helpers.h"
-#include "oat_quick_method_header.h"
+#include "oat/oat_quick_method_header.h"
 #include "obj_ptr-inl.h"
 #include "quick/quick_method_frame_info.h"
 #include "runtime.h"
 #include "thread.h"
 #include "thread_list.h"
 
-namespace art {
+namespace art HIDDEN {
 
 using android::base::StringPrintf;
 
@@ -840,7 +841,7 @@ void StackVisitor::WalkStack(bool include_transitions) {
           cur_oat_quick_method_header_ = OatQuickMethodHeader::FromCodePointer(code);
         } else {
           // We are sure we are not running GenericJni here. Though the entry point could still be
-          // GenericJnistub. The entry point is usually JITed or AOT code. It could be lso a
+          // GenericJnistub. The entry point is usually JITed or AOT code. It could be also a
           // resolution stub if the class isn't visibly initialized yet.
           const void* existing_entry_point = method->GetEntryPointFromQuickCompiledCode();
           CHECK(existing_entry_point != nullptr);
@@ -856,13 +857,24 @@ void StackVisitor::WalkStack(bool include_transitions) {
             if (code != nullptr) {
               cur_oat_quick_method_header_ = OatQuickMethodHeader::FromEntryPoint(code);
             } else {
-              // This must be a JITted JNI stub frame. For non-debuggable runtimes we only generate
-              // JIT stubs if there are no AOT stubs for native methods. Since we checked for AOT
-              // code earlier, we must be running JITed code. For debuggable runtimes we might have
-              // JIT code even when AOT code is present but we tag SP in JITed JNI stubs
-              // in debuggable runtimes. This case is handled earlier.
-              CHECK(runtime->GetJit() != nullptr);
-              code = runtime->GetJit()->GetCodeCache()->GetJniStubCode(method);
+              // For non-debuggable runtimes, the JNI stub can be JIT-compiled or AOT-compiled, and
+              // can also reuse the stub in boot images. Since we checked for AOT code earlier, we
+              // must be running JITed code or boot JNI stub.
+              // For debuggable runtimes, we won't be here as we never use AOT code in debuggable.
+              // And the JIT situation is handled earlier as its SP will be tagged. But there is a
+              // special case where we change runtime state from non-debuggable to debuggable in
+              // the JNI implementation and do deopt inside, which could be treated as
+              // a case of non-debuggable as well.
+              if (runtime->GetJit() != nullptr) {
+                code = runtime->GetJit()->GetCodeCache()->GetJniStubCode(method);
+              }
+              if (code == nullptr) {
+                // Check if current method uses the boot JNI stub.
+                const void* boot_jni_stub = class_linker->FindBootJniStub(method);
+                if (boot_jni_stub != nullptr) {
+                  code = EntryPointToCodePointer(boot_jni_stub);
+                }
+              }
               CHECK(code != nullptr) << method->PrettyMethod();
               cur_oat_quick_method_header_ = OatQuickMethodHeader::FromCodePointer(code);
             }

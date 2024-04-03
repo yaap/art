@@ -42,7 +42,7 @@
 #include "subtype_check.h"
 #include "thread-current-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace mirror {
 
 template<VerifyObjectFlags kVerifyFlags>
@@ -1193,6 +1193,15 @@ inline void Class::SetHasDefaultMethods() {
   DCHECK_EQ(GetLockOwnerThreadId(), Thread::Current()->GetThreadId());
   uint32_t flags = GetField32(OFFSET_OF_OBJECT_MEMBER(Class, access_flags_));
   SetAccessFlagsDuringLinking(flags | kAccHasDefaultMethod);
+}
+
+inline void Class::ClearFinalizable() {
+  // We're clearing the finalizable flag only for `Object` and `Enum`
+  // during early setup without the boot image.
+  DCHECK(IsObjectClass() ||
+         (IsBootStrapClassLoaded() && DescriptorEquals("Ljava/lang/Enum;")));
+  uint32_t flags = GetField32(OFFSET_OF_OBJECT_MEMBER(Class, access_flags_));
+  SetAccessFlagsDuringLinking(flags & ~kAccClassIsFinalizable);
 }
 
 inline ImTable* Class::FindSuperImt(PointerSize pointer_size) {

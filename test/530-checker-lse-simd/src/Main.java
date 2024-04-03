@@ -38,7 +38,7 @@ public class Main {
   /// CHECK-NEXT: Sub
   /// CHECK-NEXT: Mul
   /// CHECK-NEXT: ArraySet
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-NEXT: ArrayGet
   //
@@ -94,7 +94,7 @@ public class Main {
   /// CHECK-NEXT: ArrayGet
   /// CHECK-NEXT: Mul
   /// CHECK-NEXT: ArraySet
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-NEXT: ArrayGet
   //
@@ -134,7 +134,7 @@ public class Main {
   /// CHECK-NEXT: Return
 
   /// CHECK-START: double Main.$noinline$test03(int) load_store_elimination (after)
-  /// CHECK-IF:     not hasIsaFeature("sve")
+  /// CHECK-IF:     not (hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true')
   //
   ///     CHECK-NOT:  ArrayGet loop:none
   //
@@ -172,7 +172,7 @@ public class Main {
   /// CHECK:        Goto loop:{{B\d+}}
 
   /// CHECK-START-ARM64: double[] Main.$noinline$test04(int) load_store_elimination (after)
-  /// CHECK-IF:     not hasIsaFeature("sve")
+  /// CHECK-IF:     not (hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true')
   //
   //      In NEON case there is a post-loop which prevents the store to be removed.
   ///     CHECK:        VecStore
@@ -185,7 +185,7 @@ public class Main {
   /// CHECK:        Goto loop:{{B\d+}}
   //
 
-  /// CHECK-IF:     not hasIsaFeature("sve")
+  /// CHECK-IF:     not (hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true')
   //
   ///     CHECK-NOT:    VecStore
   //
@@ -272,7 +272,7 @@ public class Main {
   /// CHECK:        VecAdd
   /// CHECK:        VecStore
   //
-  /// CHECK-IF:     not hasIsaFeature("sve")
+  /// CHECK-IF:     not (hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true')
   //
   ///     CHECK-NOT:    VecStore
   //

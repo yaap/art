@@ -2852,7 +2852,7 @@ public class Main {
 
   /// CHECK-START: int Main.testLoop15(int) load_store_elimination (before)
   /// CHECK-DAG:                 NewArray
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG:                 VecPredWhile
   ///     CHECK-DAG:                 VecStore
@@ -2867,7 +2867,7 @@ public class Main {
 
   /// CHECK-START: int Main.testLoop15(int) load_store_elimination (after)
   /// CHECK-DAG:                 NewArray
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG:                 VecPredWhile
   ///     CHECK-DAG:                 VecStore

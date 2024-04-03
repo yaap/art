@@ -33,31 +33,55 @@ class BitmapHandler implements HttpHandler {
     mSnapshot = snapshot;
   }
 
+  private void handle_404(HttpExchange exchange) throws IOException {
+    exchange.getResponseHeaders().add("Content-Type", "text/html");
+    exchange.sendResponseHeaders(404, 0);
+    PrintStream ps = new PrintStream(exchange.getResponseBody());
+    HtmlDoc doc = new HtmlDoc(ps, DocString.text("ahat"), DocString.uri("style.css"));
+    doc.big(DocString.text("No bitmap found for the given request."));
+    doc.close();
+  }
+
+  private void handle_BufferedImage(HttpExchange exchange,
+                                    BufferedImage bitmap) throws IOException {
+    if (bitmap == null) {
+      handle_404(exchange);
+      return;
+    }
+    exchange.getResponseHeaders().add("Content-Type", "image/png");
+    exchange.sendResponseHeaders(200, 0);
+    OutputStream os = exchange.getResponseBody();
+    ImageIO.write(bitmap, "png", os);
+    os.close();
+  }
+
   @Override
   public void handle(HttpExchange exchange) throws IOException {
     try {
       Query query = new Query(exchange.getRequestURI());
       long id = query.getLong("id", 0);
-      BufferedImage bitmap = null;
       AhatInstance inst = mSnapshot.findInstance(id);
-      if (inst != null) {
-        bitmap = inst.asBitmap();
+      if (inst == null) {
+        handle_404(exchange);
+        return;
       }
 
-      if (bitmap != null) {
-        exchange.getResponseHeaders().add("Content-Type", "image/png");
-        exchange.sendResponseHeaders(200, 0);
-        OutputStream os = exchange.getResponseBody();
-        ImageIO.write(bitmap, "png", os);
-        os.close();
-      } else {
-        exchange.getResponseHeaders().add("Content-Type", "text/html");
-        exchange.sendResponseHeaders(404, 0);
-        PrintStream ps = new PrintStream(exchange.getResponseBody());
-        HtmlDoc doc = new HtmlDoc(ps, DocString.text("ahat"), DocString.uri("style.css"));
-        doc.big(DocString.text("No bitmap found for the given request."));
-        doc.close();
+      AhatInstance.Bitmap bitmap = inst.asBitmap();
+      if (bitmap == null) {
+        handle_404(exchange);
+        return;
       }
+
+      if (bitmap.image != null) {
+        handle_BufferedImage(exchange, bitmap.image);
+        return;
+      }
+
+      exchange.getResponseHeaders().add("Content-Type", bitmap.format);
+      exchange.sendResponseHeaders(200, 0);
+      OutputStream os = exchange.getResponseBody();
+      os.write(bitmap.buffer);
+      os.close();
     } catch (RuntimeException e) {
       // Print runtime exceptions to standard error for debugging purposes,
       // because otherwise they are swallowed and not reported.

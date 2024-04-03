@@ -21,7 +21,7 @@
 #include "mark_compact.h"
 #include "mirror/object-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace gc {
 namespace collector {
 
@@ -217,6 +217,7 @@ uint32_t MarkCompact::LiveWordsBitmap<kAlignment>::FindNthLiveWordOffset(size_t 
       }
     }
   }
+  LOG(FATAL) << "Unreachable";
   UNREACHABLE();
 }
 

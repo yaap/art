@@ -32,7 +32,7 @@
 #include "mirror/object-inl.h"
 #include "reg_type-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace verifier {
 
 ALWAYS_INLINE static inline bool MatchingPrecisionForClass(const RegType* entry, bool precise)
@@ -328,12 +328,10 @@ const RegType& RegTypeCache::FromUnresolvedMerge(const RegType& left,
     left_resolved = &left_merge.GetResolvedPart();
     left_unresolved_is_array = left.IsArrayTypes();
   } else if (left.IsUnresolvedTypes()) {
-    types.ClearAllBits();
     types.SetBit(left.GetId());
     left_resolved = &Zero();
     left_unresolved_is_array = left.IsArrayTypes();
   } else {
-    types.ClearAllBits();
     left_resolved = &left;
     left_unresolved_is_array = false;
   }

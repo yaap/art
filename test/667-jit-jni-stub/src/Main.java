@@ -24,6 +24,8 @@ public class Main {
       return;
     }
 
+    // Deoptimize callThrough() to ensure it can be JITed afterwards.
+    deoptimizeNativeMethod(Main.class, "callThrough");
     testCompilationUseAndCollection();
     testMixedFramesOnStack();
   }
@@ -136,7 +138,7 @@ public class Main {
       if (++count == 50) {
         throw new Error("TIMEOUT");
       }
-    };
+    }
   }
 
   public static void assertTrue(boolean value) {
@@ -154,9 +156,10 @@ public class Main {
   public static void doNothing() { }
   public static void throwError() { throw new Error(); }
 
-  // Note that the callThrough()'s shorty differs from shorties of the other
-  // native methods used in this test because of the return type `void.`
+  // Note that the callThrough()'s shorty differs from shorties of the other native methods used
+  // in this test (except deoptimizeNativeMethod) because of the return type `void.`
   public native static void callThrough(Class<?> cls, String methodName);
+  public native static void deoptimizeNativeMethod(Class<?> cls, String methodName);
 
   public native static void jitGc();
   public native static boolean isNextJitGcFull();

@@ -23,11 +23,11 @@
 #include <vector>
 
 #include "base/bounded_fifo.h"
-#include "base/enums.h"
 #include "base/file_utils.h"
 #include "base/logging.h"  // For VLOG.
 #include "base/macros.h"
 #include "base/mutex-inl.h"
+#include "base/pointer_size.h"
 #include "base/systrace.h"
 #include "base/time_utils.h"
 #include "base/timing_logger.h"
@@ -46,7 +46,7 @@
 #include "thread-current-inl.h"
 #include "thread_list.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace gc {
 namespace collector {
 
@@ -440,7 +440,8 @@ class MarkSweep::MarkObjectSlowPath {
       ++mark_sweep_->large_object_mark_;
     }
     space::LargeObjectSpace* large_object_space = mark_sweep_->GetHeap()->GetLargeObjectsSpace();
-    if (UNLIKELY(obj == nullptr || !IsAligned<kLargeObjectAlignment>(obj) ||
+    if (UNLIKELY(obj == nullptr ||
+                 !IsAlignedParam(obj, space::LargeObjectSpace::ObjectAlignment()) ||
                  (kIsDebugBuild && large_object_space != nullptr &&
                      !large_object_space->Contains(obj)))) {
       // Lowest priority logging first:
@@ -965,9 +966,6 @@ void MarkSweep::ScanGrayObjects(bool paused, uint8_t minimum_age) {
         case space::kGcRetentionPolicyAlwaysCollect:
           name = paused ? "(Paused)ScanGrayAllocSpaceObjects" : "ScanGrayAllocSpaceObjects";
           break;
-        default:
-          LOG(FATAL) << "Unreachable";
-          UNREACHABLE();
         }
         TimingLogger::ScopedTiming t(name, GetTimings());
         ScanObjectVisitor visitor(this);

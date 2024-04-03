@@ -339,12 +339,6 @@ Parser CreateDex2oatArgumentParser() {
                     "Eg: --android-root=out/host/linux-x86\n"
                     "Default: $ANDROID_ROOT")
           .IntoKey(M::AndroidRoot)
-      .Define("--compiler-backend=_")
-          .WithType<Compiler::Kind>()
-          .WithValueMap({{"Quick", Compiler::Kind::kQuick},
-                         {"Optimizing", Compiler::Kind::kOptimizing}})
-          .WithHelp("Select a compiler backend set. Default: optimizing")
-          .IntoKey(M::Backend)
       .Define("--host")
           .WithHelp("Run in host mode")
           .IntoKey(M::Host)
@@ -463,6 +457,7 @@ Parser CreateDex2oatArgumentParser() {
       .Ignore({
         "--comments=_",
         "--cache-info-fd=_",  // Handled in mark_compact.cc.
+        "--compiler-backend",
       });
   // clang-format on
 

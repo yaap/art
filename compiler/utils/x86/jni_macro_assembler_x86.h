@@ -22,8 +22,8 @@
 #include "assembler_x86.h"
 #include "base/arena_containers.h"
 #include "base/array_ref.h"
-#include "base/enums.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "offsets.h"
 #include "utils/jni_macro_assembler.h"
 

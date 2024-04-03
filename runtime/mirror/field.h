@@ -18,14 +18,15 @@
 #define ART_RUNTIME_MIRROR_FIELD_H_
 
 #include "accessible_object.h"
-#include "base/enums.h"
+#include "base/macros.h"
+#include "base/pointer_size.h"
 #include "dex/modifiers.h"
 #include "dex/primitive.h"
 #include "obj_ptr.h"
 #include "object.h"
 #include "read_barrier_option.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class ArtField;
 struct FieldOffsets;

@@ -21,7 +21,7 @@
 
 #include "array-inl.h"
 #include "art_method-inl.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "base/globals.h"
 #include "class_linker.h"
 #include "handle_scope.h"
@@ -32,7 +32,7 @@
 #include "object-inl.h"
 #include "verify_object.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace mirror {
 
 template <VerifyObjectFlags kVerifyFlags, ReadBarrierOption kReadBarrierOption>

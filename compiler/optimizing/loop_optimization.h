@@ -108,10 +108,11 @@ class HLoopOptimization : public HOptimization {
    * Vectorization mode during synthesis
    * (sequential peeling/cleanup loop or vector loop).
    */
-  enum VectorMode {
+  enum class VectorMode {
     kSequential,
     kVector
   };
+  friend std::ostream& operator<<(std::ostream& os, const VectorMode& fd_logger);
 
   /*
    * Representation of a unit-stride array reference.

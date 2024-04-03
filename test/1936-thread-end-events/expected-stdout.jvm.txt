@@ -5,6 +5,13 @@ Thread: test-thread
   | daemon: false
   | group: java.lang.ThreadGroup[name=main,maxpri=10]
 
+Entered public static void java.lang.ref.Reference.reachabilityFence(java.lang.Object)
+Thread: test-thread
+  | alive: true
+  | interrupted: false
+  | daemon: false
+  | group: java.lang.ThreadGroup[name=main,maxpri=10]
+
 Entered private void java.lang.Thread.exit()
 Thread: test-thread
   | alive: true
@@ -12,21 +19,14 @@ Thread: test-thread
   | daemon: false
   | group: java.lang.ThreadGroup[name=main,maxpri=10]
 
-Entered void java.lang.ThreadGroup.threadTerminated(java.lang.Thread)
+Entered jdk.internal.vm.ThreadContainer java.lang.Thread.threadContainer()
 Thread: test-thread
   | alive: true
   | interrupted: false
   | daemon: false
   | group: java.lang.ThreadGroup[name=main,maxpri=10]
 
-Entered private void java.lang.ThreadGroup.remove(java.lang.Thread)
-Thread: test-thread
-  | alive: true
-  | interrupted: false
-  | daemon: false
-  | group: java.lang.ThreadGroup[name=main,maxpri=10]
-
-Entered public static native void java.lang.System.arraycopy(java.lang.Object,int,java.lang.Object,int,int)
+Entered void java.lang.Thread.clearReferences()
 Thread: test-thread
   | alive: true
   | interrupted: false
@@ -38,12 +38,12 @@ Thread: test-thread
   | alive: true
   | interrupted: false
   | daemon: false
-  | group: null
+  | group: java.lang.ThreadGroup[name=main,maxpri=10]
 
 Entered public static void art.Test1936.foo()
 Thread: test-thread
   | alive: true
   | interrupted: false
   | daemon: false
-  | group: null
+  | group: java.lang.ThreadGroup[name=main,maxpri=10]
 

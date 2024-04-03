@@ -272,8 +272,6 @@ void SuperblockCloner::CopyIncomingEdgesForVersioning() {
 // FindBackEdgesInTheNaturalLoop.
 void SuperblockCloner::FindBackEdgesLocal(HBasicBlock* entry_block, ArenaBitVector* local_set) {
   ArenaBitVector visited(arena_, graph_->GetBlocks().size(), false, kArenaAllocSuperblockCloner);
-  // "visited" must be empty on entry, it's an output argument for all visited (i.e. live) blocks.
-  DCHECK_EQ(visited.GetHighestBitSet(), -1);
 
   // Nodes that we're currently visiting, indexed by block id.
   ArenaBitVector visiting(arena_, graph_->GetBlocks().size(), false, kArenaAllocGraphBuilder);
@@ -1171,9 +1169,6 @@ HBasicBlock* LoopClonerHelper::DoLoopTransformationImpl(TransformationKind trans
       case TransformationKind::kVersioning:
         oss << "versioning";
         break;
-      default:
-        LOG(FATAL) << "Unreachable";
-        UNREACHABLE();
     }
     oss << " was applied to the loop <" << loop_header->GetBlockId() << ">.";
     LOG(INFO) << oss.str();

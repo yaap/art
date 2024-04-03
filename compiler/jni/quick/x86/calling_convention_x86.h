@@ -17,8 +17,8 @@
 #ifndef ART_COMPILER_JNI_QUICK_X86_CALLING_CONVENTION_X86_H_
 #define ART_COMPILER_JNI_QUICK_X86_CALLING_CONVENTION_X86_H_
 
-#include "base/enums.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "jni/quick/calling_convention.h"
 
 namespace art HIDDEN {
@@ -26,7 +26,7 @@ namespace x86 {
 
 class X86ManagedRuntimeCallingConvention final : public ManagedRuntimeCallingConvention {
  public:
-  X86ManagedRuntimeCallingConvention(bool is_static, bool is_synchronized, const char* shorty)
+  X86ManagedRuntimeCallingConvention(bool is_static, bool is_synchronized, std::string_view shorty)
       : ManagedRuntimeCallingConvention(is_static,
                                         is_synchronized,
                                         shorty,
@@ -57,7 +57,7 @@ class X86JniCallingConvention final : public JniCallingConvention {
                           bool is_synchronized,
                           bool is_fast_native,
                           bool is_critical_native,
-                          const char* shorty);
+                          std::string_view shorty);
   ~X86JniCallingConvention() override {}
   // Calling convention
   ManagedRegister ReturnRegister() const override;

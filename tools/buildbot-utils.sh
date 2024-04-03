@@ -78,16 +78,17 @@ if [[ -n "$ART_TEST_ON_VM" ]]; then
     msgfatal "ART_TEST_SSH_PORT not set"
   fi
 
+  SSH_CONFIG=$ANDROID_BUILD_TOP/art/test/testrunner/ssh_config
   export ART_TEST_CHROOT_BASENAME="art-test-chroot"
   export ART_TEST_CHROOT="/home/$ART_TEST_SSH_USER/$ART_TEST_CHROOT_BASENAME"
   export ART_CHROOT_CMD="unshare --user --map-root-user chroot $ART_TEST_CHROOT_BASENAME"
-  export ART_SSH_CMD="ssh -q -i ~/.ssh/ubuntu -p $ART_TEST_SSH_PORT -o StrictHostKeyChecking=no $ART_TEST_SSH_USER@$ART_TEST_SSH_HOST"
-  export ART_SCP_CMD="scp -i ~/.ssh/ubuntu -o StrictHostKeyChecking=no -P $ART_TEST_SSH_PORT -p -r"
+  export ART_SSH_CMD="ssh -q -F $SSH_CONFIG -p $ART_TEST_SSH_PORT $ART_TEST_SSH_USER@$ART_TEST_SSH_HOST"
+  export ART_SCP_CMD="scp -q -F $SSH_CONFIG -P $ART_TEST_SSH_PORT -p -r"
   export ART_RSYNC_CMD="rsync -az"
-  export RSYNC_RSH="ssh -i ~/.ssh/ubuntu -p $ART_TEST_SSH_PORT -o StrictHostKeyChecking=no" # don't prefix with "ART_", rsync expects this name
+  export RSYNC_RSH="ssh -q -F $SSH_CONFIG -p $ART_TEST_SSH_PORT" # don't prefix with "ART_", rsync expects this name
 
   if [[ "$TARGET_ARCH" =~ ^(arm64|riscv64)$ ]]; then
-    export ART_TEST_VM_IMG="ubuntu-22.04-server-cloudimg-$TARGET_ARCH.img"
+    export ART_TEST_VM_IMG="ubuntu-23.10-server-cloudimg-$TARGET_ARCH.img"
     export ART_TEST_VM_DIR="$ANDROID_BUILD_TOP/vm/$TARGET_ARCH"
     export ART_TEST_VM="$ART_TEST_VM_DIR/$ART_TEST_VM_IMG"
   else

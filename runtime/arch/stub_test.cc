@@ -19,7 +19,7 @@
 #include "art_field-inl.h"
 #include "art_method-inl.h"
 #include "base/callee_save_type.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "class_linker-inl.h"
 #include "class_root-inl.h"
 #include "common_runtime_test.h"
@@ -32,7 +32,7 @@
 #include "mirror/object_array-alloc-inl.h"
 #include "scoped_thread_state_change-inl.h"
 
-namespace art {
+namespace art HIDDEN {
 
 
 class StubTest : public CommonRuntimeTest {

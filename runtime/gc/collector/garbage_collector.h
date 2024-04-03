@@ -21,6 +21,7 @@
 #include <list>
 
 #include "base/histogram.h"
+#include "base/macros.h"
 #include "base/metrics/metrics.h"
 #include "base/mutex.h"
 #include "base/timing_logger.h"
@@ -32,7 +33,7 @@
 #include "object_byte_pair.h"
 #include "object_callbacks.h"
 
-namespace art {
+namespace art HIDDEN {
 
 namespace mirror {
 class Class;
@@ -146,7 +147,7 @@ class GarbageCollector : public RootVisitor, public IsMarkedVisitor, public Mark
 
  protected:
   // Run all of the GC phases.
-  virtual void RunPhases() = 0;
+  virtual void RunPhases() REQUIRES(!Locks::mutator_lock_) = 0;
   // Revoke all the thread-local buffers.
   virtual void RevokeAllThreadLocalBuffers() = 0;
 

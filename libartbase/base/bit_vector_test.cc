@@ -28,7 +28,7 @@ namespace art {
 TEST(BitVector, Test) {
   const size_t kBits = 32;
 
-  BitVector bv(kBits, false, Allocator::GetMallocAllocator());
+  BitVector bv(kBits, false, Allocator::GetCallocAllocator());
   EXPECT_EQ(1U, bv.GetStorageSize());
   EXPECT_EQ(sizeof(uint32_t), bv.GetSizeOf());
   EXPECT_FALSE(bv.IsExpandable());
@@ -70,7 +70,7 @@ TEST(BitVector, Test) {
 
 struct MessyAllocator : public Allocator {
  public:
-  MessyAllocator() : malloc_(Allocator::GetMallocAllocator()) {}
+  MessyAllocator() : malloc_(Allocator::GetCallocAllocator()) {}
   ~MessyAllocator() {}
 
   void* Alloc(size_t s) override {
@@ -90,6 +90,7 @@ struct MessyAllocator : public Allocator {
 TEST(BitVector, MessyAllocator) {
   MessyAllocator alloc;
   BitVector bv(32, false, &alloc);
+  bv.ClearAllBits();
   EXPECT_EQ(bv.NumSetBits(), 0u);
   EXPECT_EQ(bv.GetHighestBitSet(), -1);
 }
@@ -172,9 +173,9 @@ TEST(BitVector, SetInitialBits) {
 
 TEST(BitVector, UnionIfNotIn) {
   {
-    BitVector first(2, true, Allocator::GetMallocAllocator());
-    BitVector second(5, true, Allocator::GetMallocAllocator());
-    BitVector third(5, true, Allocator::GetMallocAllocator());
+    BitVector first(2, true, Allocator::GetCallocAllocator());
+    BitVector second(5, true, Allocator::GetCallocAllocator());
+    BitVector third(5, true, Allocator::GetCallocAllocator());
 
     second.SetBit(64);
     third.SetBit(64);
@@ -184,9 +185,9 @@ TEST(BitVector, UnionIfNotIn) {
   }
 
   {
-    BitVector first(2, true, Allocator::GetMallocAllocator());
-    BitVector second(5, true, Allocator::GetMallocAllocator());
-    BitVector third(5, true, Allocator::GetMallocAllocator());
+    BitVector first(2, true, Allocator::GetCallocAllocator());
+    BitVector second(5, true, Allocator::GetCallocAllocator());
+    BitVector third(5, true, Allocator::GetCallocAllocator());
 
     second.SetBit(64);
     bool changed = first.UnionIfNotIn(&second, &third);
@@ -198,8 +199,8 @@ TEST(BitVector, UnionIfNotIn) {
 
 TEST(BitVector, Subset) {
   {
-    BitVector first(2, true, Allocator::GetMallocAllocator());
-    BitVector second(5, true, Allocator::GetMallocAllocator());
+    BitVector first(2, true, Allocator::GetCallocAllocator());
+    BitVector second(5, true, Allocator::GetCallocAllocator());
 
     EXPECT_TRUE(first.IsSubsetOf(&second));
     second.SetBit(4);
@@ -207,8 +208,8 @@ TEST(BitVector, Subset) {
   }
 
   {
-    BitVector first(5, true, Allocator::GetMallocAllocator());
-    BitVector second(5, true, Allocator::GetMallocAllocator());
+    BitVector first(5, true, Allocator::GetCallocAllocator());
+    BitVector second(5, true, Allocator::GetCallocAllocator());
 
     first.SetBit(5);
     EXPECT_FALSE(first.IsSubsetOf(&second));
@@ -217,8 +218,8 @@ TEST(BitVector, Subset) {
   }
 
   {
-    BitVector first(5, true, Allocator::GetMallocAllocator());
-    BitVector second(5, true, Allocator::GetMallocAllocator());
+    BitVector first(5, true, Allocator::GetCallocAllocator());
+    BitVector second(5, true, Allocator::GetCallocAllocator());
 
     first.SetBit(16);
     first.SetBit(32);
@@ -243,7 +244,7 @@ TEST(BitVector, Subset) {
 TEST(BitVector, CopyTo) {
   {
     // Test copying an empty BitVector. Padding should fill `buf` with zeroes.
-    BitVector bv(0, true, Allocator::GetMallocAllocator());
+    BitVector bv(0, true, Allocator::GetCallocAllocator());
     uint32_t buf;
 
     bv.CopyTo(&buf, sizeof(buf));
@@ -253,7 +254,7 @@ TEST(BitVector, CopyTo) {
 
   {
     // Test copying when `bv.storage_` and `buf` are of equal lengths.
-    BitVector bv(0, true, Allocator::GetMallocAllocator());
+    BitVector bv(0, true, Allocator::GetCallocAllocator());
     uint32_t buf;
 
     bv.SetBit(0);
@@ -268,7 +269,7 @@ TEST(BitVector, CopyTo) {
   {
     // Test copying when the `bv.storage_` is longer than `buf`. As long as
     // `buf` is long enough to hold all set bits, copying should succeed.
-    BitVector bv(0, true, Allocator::GetMallocAllocator());
+    BitVector bv(0, true, Allocator::GetCallocAllocator());
     uint8_t buf[5];
 
     bv.SetBit(18);
@@ -285,7 +286,7 @@ TEST(BitVector, CopyTo) {
 
   {
     // Test zero padding when `bv.storage_` is shorter than `buf`.
-    BitVector bv(0, true, Allocator::GetMallocAllocator());
+    BitVector bv(0, true, Allocator::GetCallocAllocator());
     uint32_t buf[2];
 
     bv.SetBit(18);
@@ -299,7 +300,7 @@ TEST(BitVector, CopyTo) {
 }
 
 TEST(BitVector, TransformIterator) {
-  BitVector bv(16, false, Allocator::GetMallocAllocator());
+  BitVector bv(16, false, Allocator::GetCallocAllocator());
   bv.SetBit(4);
   bv.SetBit(8);
 
@@ -364,60 +365,6 @@ TEST(BitVector, MovementFree) {
   }
   EXPECT_EQ(alloc.FreeCount(), 1u);
   EXPECT_EQ(alloc.AllocCount(), 1u);
-}
-
-TEST(BitVector, ArrayCol) {
-  {
-    BitVectorArray bva(100, 200, true, Allocator::GetMallocAllocator());
-    for (uint32_t i : Range(bva.NumColumns())) {
-      bva.SetBit(bva.NumRows() / 2, i);
-    }
-    EXPECT_EQ(bva.GetRawData().NumSetBits(), bva.NumColumns());
-  }
-  {
-    BitVectorArray bva(100, 200, true, Allocator::GetMallocAllocator());
-    for (uint32_t i : Range(bva.NumRows())) {
-      bva.SetBit(i, bva.NumColumns() / 2);
-    }
-    EXPECT_EQ(bva.GetRawData().NumSetBits(), bva.NumRows());
-  }
-}
-
-TEST(BitVector, ArrayUnion) {
-  {
-    BitVectorArray bva(100, 200, true, Allocator::GetMallocAllocator());
-    bva.SetBit(4, 12);
-    bva.SetBit(40, 120);
-    bva.SetBit(40, 121);
-    bva.SetBit(40, 122);
-
-    bva.UnionRows(4, 40);
-
-    EXPECT_TRUE(bva.IsBitSet(4, 12));
-    EXPECT_TRUE(bva.IsBitSet(4, 120));
-    EXPECT_TRUE(bva.IsBitSet(4, 121));
-    EXPECT_TRUE(bva.IsBitSet(4, 122));
-    EXPECT_FALSE(bva.IsBitSet(40, 12));
-    EXPECT_TRUE(bva.IsBitSet(40, 120));
-    EXPECT_TRUE(bva.IsBitSet(40, 121));
-    EXPECT_TRUE(bva.IsBitSet(40, 122));
-    EXPECT_EQ(bva.GetRawData().NumSetBits(), 7u);
-  }
-  {
-    BitVectorArray bva(100, 100, true, Allocator::GetMallocAllocator());
-    for (uint32_t i : Range(bva.NumRows())) {
-      bva.SetBit(i, i);
-    }
-    for (uint32_t i : Range(1, bva.NumRows())) {
-      bva.UnionRows(0, i);
-    }
-    for (uint32_t col : Range(bva.NumColumns())) {
-      for (uint32_t row : Range(bva.NumRows())) {
-        // We set every bit where row== column and every bit on row 0 up to number of rows.
-        EXPECT_EQ(bva.IsBitSet(row, col), row == col || (row == 0 && col < bva.NumRows()));
-      }
-    }
-  }
 }
 
 }  // namespace art

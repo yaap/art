@@ -16,6 +16,7 @@
 
 package art;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Base64;
 
@@ -105,7 +106,10 @@ public class Test984 {
       });
       throw new Error("Running obsolete method did not throw exception");
     } catch (Throwable e) {
-      if (e instanceof InternalError || e.getCause() instanceof InternalError) {
+      // On newer RI InternalError has been replaced by InvocationTargetException.
+      if (e instanceof InternalError || e.getCause() instanceof InternalError ||
+              e instanceof InvocationTargetException ||
+              e.getCause() instanceof InvocationTargetException) {
         System.out.println("Caught expected error from attempting to invoke an obsolete method.");
       } else {
         System.out.println("Unexpected error type for calling obsolete method! Expected either "

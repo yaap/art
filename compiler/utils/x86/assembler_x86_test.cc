@@ -58,6 +58,10 @@ class AssemblerX86Test : public AssemblerTest<x86::X86Assembler,
                              x86::Immediate>;
 
  protected:
+  AssemblerX86Test() : Base() {
+    require_same_encoding_ = false;  // Allow different encoding with the same size and disassembly.
+  }
+
   InstructionSet GetIsa() override {
     return InstructionSet::kX86;
   }

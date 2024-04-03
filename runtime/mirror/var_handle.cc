@@ -31,7 +31,7 @@
 #include "obj_ptr-inl.h"
 #include "well_known_classes.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace mirror {
 
 static constexpr bool kTransactionActive = true;
@@ -1656,7 +1656,6 @@ int32_t VarHandle::GetNumberOfVarTypeParameters(AccessModeTemplate access_mode_t
     case AccessModeTemplate::kCompareAndExchange:
       return 2;
   }
-  UNREACHABLE();
 }
 
 bool FieldVarHandle::Access(AccessMode access_mode,

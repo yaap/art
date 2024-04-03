@@ -17,8 +17,8 @@
 #include "allocation_record.h"
 
 #include "art_method-inl.h"
-#include "base/enums.h"
 #include "base/logging.h"  // For VLOG
+#include "base/pointer_size.h"
 #include "base/stl_util.h"
 #include "obj_ptr-inl.h"
 #include "object_callbacks.h"
@@ -27,7 +27,7 @@
 
 #include <android-base/properties.h>
 
-namespace art {
+namespace art HIDDEN {
 namespace gc {
 
 int32_t AllocRecordStackTraceElement::ComputeLineNumber() const {

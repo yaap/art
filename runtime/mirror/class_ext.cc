@@ -18,7 +18,7 @@
 
 #include "art_method-inl.h"
 #include "base/casts.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "base/utils.h"
 #include "class-alloc-inl.h"
 #include "class-inl.h"
@@ -33,7 +33,7 @@
 #include "stack_trace_element.h"
 #include "well_known_classes.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace mirror {
 
 uint32_t ClassExt::ClassSize(PointerSize pointer_size) {

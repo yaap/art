@@ -17,6 +17,7 @@
 #include "fd_file.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -30,6 +31,7 @@
 #endif
 
 #include <limits>
+#include <vector>
 
 #include <android-base/file.h>
 #include <android-base/logging.h>
@@ -341,11 +343,16 @@ int FdFile::Close() {
   return 0;
 }
 
-int FdFile::Flush() {
-  DCHECK(!read_only_mode_);
+int FdFile::Flush(bool flush_metadata) {
+  DCHECK(flush_metadata || !read_only_mode_);
 
 #ifdef __linux__
-  int rc = TEMP_FAILURE_RETRY(fdatasync(fd_));
+  int rc;
+  if (flush_metadata) {
+    rc = TEMP_FAILURE_RETRY(fsync(fd_));
+  } else {
+    rc = TEMP_FAILURE_RETRY(fdatasync(fd_));
+  }
 #else
   int rc = TEMP_FAILURE_RETRY(fsync(fd_));
 #endif
@@ -470,6 +477,56 @@ bool FdFile::WriteFully(const void* buffer, size_t byte_count) {
   return WriteFullyGeneric<false>(buffer, byte_count, 0u);
 }
 
+bool FdFile::Rename(const std::string& new_path) {
+  if (kCheckSafeUsage) {
+    // Filesystems that use delayed allocation (e.g., ext4) may journal a rename before a data
+    // update is written to disk. Therefore on system crash, the data update may not persist.
+    // Guard against this by ensuring the file has been flushed prior to rename.
+    if (guard_state_ < GuardState::kFlushed) {
+      LOG(ERROR) << "File " << file_path_ << " has not been flushed before renaming.";
+    }
+    DCHECK_GE(guard_state_, GuardState::kFlushed);
+  }
+
+  if (!FilePathMatchesFd()) {
+    LOG(ERROR) << "Failed rename because the file descriptor is not backed by the expected file "
+               << "path: " << file_path_;
+    return false;
+  }
+
+  std::string old_path = file_path_;
+  int rc = std::rename(old_path.c_str(), new_path.c_str());
+  if (rc != 0) {
+    LOG(ERROR) << "Rename from '" << old_path << "' to '" << new_path << "' failed.";
+    return false;
+  }
+  file_path_ = new_path;
+
+  // Rename modifies the directory entries mapped within the parent directory file descriptor(s),
+  // rather than the file, so flushing the file will not persist the change to disk. Therefore, we
+  // flush the parent directory file descriptor(s).
+  std::string old_dir = android::base::Dirname(old_path);
+  std::string new_dir = android::base::Dirname(new_path);
+  std::vector<std::string> sync_dirs = {new_dir};
+  if (new_dir != old_dir) {
+    sync_dirs.emplace_back(old_dir);
+  }
+  for (auto& dirname : sync_dirs) {
+    FdFile dir = FdFile(dirname, O_RDONLY, /*check_usage=*/false);
+    rc = dir.Flush(/*flush_metadata=*/true);
+    if (rc != 0) {
+      LOG(ERROR) << "Flushing directory '" << dirname << "' during rename failed.";
+      return false;
+    }
+    rc = dir.Close();
+    if (rc != 0) {
+      LOG(ERROR) << "Closing directory '" << dirname << "' during rename failed.";
+      return false;
+    }
+  }
+  return true;
+}
+
 bool FdFile::Copy(FdFile* input_file, int64_t offset, int64_t size) {
   DCHECK(!read_only_mode_);
   off_t off = static_cast<off_t>(offset);
@@ -498,8 +555,8 @@ bool FdFile::Copy(FdFile* input_file, int64_t offset, int64_t size) {
   if (lseek(input_file->Fd(), off, SEEK_SET) != off) {
     return false;
   }
-  const size_t max_buffer_size = 4 * ::art::gPageSize;
-  const size_t buffer_size = std::min<uint64_t>(size, max_buffer_size);
+  constexpr size_t kMaxBufferSize = 16 * ::art::KB;
+  const size_t buffer_size = std::min<uint64_t>(size, kMaxBufferSize);
   art::UniqueCPtr<void> buffer(malloc(buffer_size));
   if (buffer == nullptr) {
     errno = ENOMEM;
@@ -517,26 +574,27 @@ bool FdFile::Copy(FdFile* input_file, int64_t offset, int64_t size) {
   return true;
 }
 
-bool FdFile::Unlink() {
+bool FdFile::FilePathMatchesFd() {
   if (file_path_.empty()) {
     return false;
   }
-
-  // Try to figure out whether this file is still referring to the one on disk.
+  // Try to figure out whether file_path_ is still referring to the one on disk.
   bool is_current = false;
-  {
-    struct stat this_stat, current_stat;
-    int cur_fd = TEMP_FAILURE_RETRY(open(file_path_.c_str(), O_RDONLY | O_CLOEXEC));
-    if (cur_fd > 0) {
-      // File still exists.
-      if (fstat(fd_, &this_stat) == 0 && fstat(cur_fd, &current_stat) == 0) {
-        is_current = (this_stat.st_dev == current_stat.st_dev) &&
-                     (this_stat.st_ino == current_stat.st_ino);
-      }
-      close(cur_fd);
+  struct stat this_stat, current_stat;
+  int cur_fd = TEMP_FAILURE_RETRY(open(file_path_.c_str(), O_RDONLY | O_CLOEXEC));
+  if (cur_fd > 0) {
+    // File still exists.
+    if (fstat(fd_, &this_stat) == 0 && fstat(cur_fd, &current_stat) == 0) {
+      is_current = (this_stat.st_dev == current_stat.st_dev) &&
+                   (this_stat.st_ino == current_stat.st_ino);
     }
+    close(cur_fd);
   }
+  return is_current;
+}
 
+bool FdFile::Unlink() {
+  bool is_current = FilePathMatchesFd();
   if (is_current) {
     unlink(file_path_.c_str());
   }

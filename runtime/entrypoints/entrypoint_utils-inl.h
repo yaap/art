@@ -23,7 +23,7 @@
 
 #include "art_field-inl.h"
 #include "art_method-inl.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "base/sdk_version.h"
 #include "class_linker-inl.h"
 #include "common_throws.h"
@@ -40,14 +40,14 @@
 #include "mirror/object-inl.h"
 #include "mirror/throwable.h"
 #include "nth_caller_visitor.h"
-#include "oat_file.h"
+#include "oat/oat_file.h"
+#include "oat/stack_map.h"
 #include "reflective_handle_scope-inl.h"
 #include "runtime.h"
-#include "stack_map.h"
 #include "thread.h"
 #include "well_known_classes.h"
 
-namespace art {
+namespace art HIDDEN {
 
 inline std::string GetResolvedMethodErrorString(ClassLinker* class_linker,
                                                 ArtMethod* inlined_method,

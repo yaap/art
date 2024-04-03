@@ -122,7 +122,7 @@ class Operand : public ValueObject {
         return disp32();
       default:
         // Mod 11b means reg/reg, so there is no address and consequently no displacement.
-        DCHECK(false) << "there is no displacement in x86_64 reg/reg operand";
+        LOG(FATAL) << "there is no displacement in x86_64 reg/reg operand";
         UNREACHABLE();
     }
   }

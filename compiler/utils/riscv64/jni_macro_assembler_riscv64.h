@@ -25,8 +25,8 @@
 
 #include "assembler_riscv64.h"
 #include "base/arena_containers.h"
-#include "base/enums.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "offsets.h"
 #include "utils/assembler.h"
 #include "utils/jni_macro_assembler.h"
@@ -71,6 +71,7 @@ class Riscv64JNIMacroAssembler  : public JNIMacroAssemblerFwd<Riscv64Assembler, 
   void LoadGcRootWithoutReadBarrier(ManagedRegister dest,
                                     ManagedRegister base,
                                     MemberOffset offs) override;
+  void LoadStackReference(ManagedRegister dest, FrameOffset offs) override;
 
   // Copying routines.
   void MoveArguments(ArrayRef<ArgumentLocation> dests,
@@ -148,6 +149,22 @@ class Riscv64JNIMacroAssembler  : public JNIMacroAssemblerFwd<Riscv64Assembler, 
                      bool null_allowed);
 
   ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, CreateJObject);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, StackFrame);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, ChangeFrameSize);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, Store);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, Load);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, MoveArguments);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, Move);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, GetCurrentThread);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, DecodeJNITransitionOrLocalJObject);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, JumpCodePointer);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, Call);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, Transitions);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, SuspendCheck);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, Exception);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, JumpLabel);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, ReadBarrier);
+  ART_FRIEND_TEST(JniMacroAssemblerRiscv64Test, TestByteAndJumpIfNotZero);
 };
 
 class Riscv64JNIMacroLabel final

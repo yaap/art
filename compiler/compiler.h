@@ -48,14 +48,8 @@ class Thread;
 
 class Compiler {
  public:
-  enum Kind {
-    kQuick,
-    kOptimizing
-  };
-
   EXPORT static Compiler* Create(const CompilerOptions& compiler_options,
-                                 CompiledCodeStorage* storage,
-                                 Kind kind);
+                                 CompiledCodeStorage* storage);
 
   virtual bool CanCompileMethod(uint32_t method_idx, const DexFile& dex_file) const = 0;
 

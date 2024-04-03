@@ -46,6 +46,18 @@ class JniMacroAssemblerRiscv64Test : public AssemblerTestBase {
  protected:
   InstructionSet GetIsa() override { return InstructionSet::kRiscv64; }
 
+  std::vector<std::string> GetAssemblerCommand() override {
+    std::vector<std::string> result = AssemblerTestBase::GetAssemblerCommand();
+    if (march_override_.has_value()) {
+      auto it = std::find_if(result.begin(),
+                             result.end(),
+                             [](const std::string& s) { return StartsWith(s, "-march="); });
+      CHECK(it != result.end());
+      *it = march_override_.value();
+    }
+    return result;
+  }
+
   void DriverStr(const std::string& assembly_text, const std::string& test_name) {
     assembler_.FinalizeCode();
     size_t cs = assembler_.CodeSize();
@@ -76,11 +88,15 @@ class JniMacroAssemblerRiscv64Test : public AssemblerTestBase {
   MallocArenaPool pool_;
   ArenaAllocator allocator_;
   Riscv64JNIMacroAssembler assembler_;
+
+  // TODO: Implement auto-compression and remove this override.
+  std::optional<std::string> march_override_ = "-march=rv64imafdv_zba_zbb";
 };
 
 TEST_F(JniMacroAssemblerRiscv64Test, StackFrame) {
   std::string expected;
 
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::unique_ptr<JniCallingConvention> jni_conv = JniCallingConvention::Create(
       &allocator_,
       /*is_static=*/ false,
@@ -153,6 +169,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, StackFrame) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, ChangeFrameSize) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   __ IncreaseFrameSize(128);
@@ -198,6 +215,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, ChangeFrameSize) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, Store) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   __ Store(FrameOffset(0), AsManaged(A0), kWordSize);
@@ -238,6 +256,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, Store) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, Load) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   __ Load(AsManaged(A0), FrameOffset(0), kWordSize);
@@ -272,10 +291,17 @@ TEST_F(JniMacroAssemblerRiscv64Test, Load) {
   expected += "addi t6, s2, 0x7f8\n"
               "lwu t1, 8(t6)\n";
 
+  __ LoadStackReference(AsManaged(T0), FrameOffset(0));
+  expected += "lwu t0, 0(sp)\n";
+  __ LoadStackReference(AsManaged(T1), FrameOffset(0x800));
+  expected += "addi t6, sp, 0x7f8\n"
+              "lwu t1, 8(t6)\n";
+
   DriverStr(expected, "Load");
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, CreateJObject) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   __ CreateJObject(AsManaged(A0), FrameOffset(8), AsManaged(A0), /*null_allowed=*/ true);
@@ -297,6 +323,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, CreateJObject) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, MoveArguments) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   static constexpr FrameOffset kInvalidReferenceOffset =
@@ -651,6 +678,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, MoveArguments) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, Move) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   __ Move(AsManaged(A0), AsManaged(A1), kWordSize);
@@ -665,6 +693,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, Move) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, GetCurrentThread) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   __ GetCurrentThread(AsManaged(A0));
@@ -680,6 +709,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, GetCurrentThread) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, DecodeJNITransitionOrLocalJObject) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   constexpr int64_t kGlobalOrWeakGlobalMask = IndirectReferenceTable::GetGlobalOrWeakGlobalMask();
@@ -693,7 +723,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, DecodeJNITransitionOrLocalJObject) {
               "andi t6, a0, " + std::to_string(kGlobalOrWeakGlobalMask) + "\n"
               "bnez t6, 2f\n"
               "andi a0, a0, ~" + std::to_string(kIndirectRefKindMask) + "\n"
-              "lw a0, (a0)\n";
+              "lwu a0, (a0)\n";
 
   __ Bind(resume.get());
   expected += "1:\n";
@@ -710,6 +740,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, DecodeJNITransitionOrLocalJObject) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, JumpCodePointer) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   __ Jump(AsManaged(A0), Offset(24));
@@ -725,6 +756,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, JumpCodePointer) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, Call) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   __ Call(AsManaged(A0), Offset(32));
@@ -749,6 +781,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, Call) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, Transitions) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   constexpr uint32_t kNativeStateValue = Thread::StoredThreadStateValue(ThreadState::kNative);
@@ -803,6 +836,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, Transitions) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, SuspendCheck) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   ThreadOffset64 thread_flags_offet = Thread::ThreadFlagsOffset<kRiscv64PointerSize>();
@@ -830,6 +864,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, SuspendCheck) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, Exception) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   ThreadOffset64 exception_offset = Thread::ExceptionOffset<kArm64PointerSize>();
@@ -856,6 +891,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, Exception) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, JumpLabel) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   std::unique_ptr<JNIMacroLabel> target = __ CreateLabel();
@@ -880,6 +916,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, JumpLabel) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, ReadBarrier) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   std::string expected;
 
   ThreadOffset64 is_gc_marking_offset = Thread::IsGcMarkingOffset<kRiscv64PointerSize>();
@@ -918,6 +955,7 @@ TEST_F(JniMacroAssemblerRiscv64Test, ReadBarrier) {
 }
 
 TEST_F(JniMacroAssemblerRiscv64Test, TestByteAndJumpIfNotZero) {
+  ScopedNoCInstructions noCompression(&assembler_.asm_);
   // Note: The `TestByteAndJumpIfNotZero()` takes the address as a `uintptr_t`.
   // Use 32-bit addresses, so that we can include this test in 32-bit host tests.
 

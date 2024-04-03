@@ -349,7 +349,6 @@ inline vixl::aarch64::Shift ShiftFromOpKind(HDataProcWithShifterOp::OpKind op_ki
     default:
       LOG(FATAL) << "Unexpected op kind " << op_kind;
       UNREACHABLE();
-      return vixl::aarch64::NO_SHIFT;
   }
 }
 
@@ -364,7 +363,6 @@ inline vixl::aarch64::Extend ExtendFromOpKind(HDataProcWithShifterOp::OpKind op_
     default:
       LOG(FATAL) << "Unexpected op kind " << op_kind;
       UNREACHABLE();
-      return vixl::aarch64::NO_EXTEND;
   }
 }
 

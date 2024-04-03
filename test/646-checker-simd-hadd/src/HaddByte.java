@@ -43,7 +43,7 @@ public class HaddByte {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddByte.halving_add_signed(byte[], byte[], byte[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd
@@ -93,7 +93,7 @@ public class HaddByte {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddByte.halving_add_unsigned(byte[], byte[], byte[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd
@@ -131,7 +131,7 @@ public class HaddByte {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddByte.rounding_halving_add_signed(byte[], byte[], byte[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd
@@ -183,7 +183,7 @@ public class HaddByte {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddByte.rounding_halving_add_unsigned(byte[], byte[], byte[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd
@@ -221,7 +221,7 @@ public class HaddByte {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddByte.halving_add_signed_constant(byte[], byte[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd
@@ -271,7 +271,7 @@ public class HaddByte {
   /// CHECK-DAG:               VecStore [{{l\d+}},{{i\d+}},<<HAdd>>] loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-START-ARM64: void HaddByte.halving_add_unsigned_constant(byte[], byte[]) loop_optimization (after)
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   //      HalvingAdd idiom is not supported for SVE.
   ///     CHECK-NOT: VecHalvingAdd

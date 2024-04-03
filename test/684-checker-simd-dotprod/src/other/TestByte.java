@@ -37,7 +37,7 @@ public class TestByte {
   /// CHECK-START-ARM64: int other.TestByte.testDotProdSimple(byte[], byte[]) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                                         loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set:d\d+>>     VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none
   ///     CHECK-DAG: <<Phi1:i\d+>>    Phi [<<Const0>>,{{i\d+}}]                                       loop:<<Loop:B\d+>> outer_loop:none
@@ -70,7 +70,7 @@ public class TestByte {
 
   /// CHECK-START-ARM64: int other.TestByte.testDotProdSimple(byte[], byte[]) disassembly (after)
   /// CHECK:        VecDotProd
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   ///               CHECK:        sdot z{{\d+}}.s, z{{\d+}}.b, z{{\d+}}.b
   /// CHECK-ELIF:   hasIsaFeature("dotprod")
   ///               CHECK-NEXT:   sdot v{{\d+}}.4s, v{{\d+}}.16b, v{{\d+}}.16b
@@ -105,7 +105,7 @@ public class TestByte {
   /// CHECK-START-ARM64: int other.TestByte.testDotProdComplex(byte[], byte[]) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                                         loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Repl:d\d+>>    VecReplicateScalar [<<Const1>>,{{j\d+}}]                        loop:none
   ///     CHECK-DAG: <<Set:d\d+>>     VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none
@@ -163,7 +163,7 @@ public class TestByte {
   /// CHECK-START-ARM64: int other.TestByte.testDotProdSimpleUnsigned(byte[], byte[]) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                                         loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Set:d\d+>>     VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none
   ///     CHECK-DAG: <<Phi1:i\d+>>    Phi [<<Const0>>,{{i\d+}}]                                       loop:<<Loop:B\d+>> outer_loop:none
@@ -195,7 +195,7 @@ public class TestByte {
 
   /// CHECK-START-ARM64: int other.TestByte.testDotProdSimpleUnsigned(byte[], byte[]) disassembly (after)
   /// CHECK:        VecDotProd
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   ///               CHECK:        udot z{{\d+}}.s, z{{\d+}}.b, z{{\d+}}.b
   /// CHECK-ELIF:   hasIsaFeature("dotprod")
   ///               CHECK-NEXT:   udot v{{\d+}}.4s, v{{\d+}}.16b, v{{\d+}}.16b
@@ -230,7 +230,7 @@ public class TestByte {
   /// CHECK-START-ARM64: int other.TestByte.testDotProdComplexUnsigned(byte[], byte[]) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                                         loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Repl:d\d+>>    VecReplicateScalar [<<Const1>>,{{j\d+}}]                        loop:none
   ///     CHECK-DAG: <<Set:d\d+>>     VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none
@@ -292,7 +292,7 @@ public class TestByte {
   /// CHECK-START-ARM64: int other.TestByte.testDotProdComplexUnsignedCastToSigned(byte[], byte[]) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                                         loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Repl:d\d+>>    VecReplicateScalar [<<Const1>>,{{j\d+}}]                        loop:none
   ///     CHECK-DAG: <<Set:d\d+>>     VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none
@@ -354,7 +354,7 @@ public class TestByte {
   /// CHECK-START-ARM64: int other.TestByte.testDotProdComplexSignedCastToUnsigned(byte[], byte[]) loop_optimization (after)
   /// CHECK-DAG: <<Const0:i\d+>>  IntConstant 0                                         loop:none
   /// CHECK-DAG: <<Const1:i\d+>>  IntConstant 1                                         loop:none
-  /// CHECK-IF:     hasIsaFeature("sve")
+  /// CHECK-IF:     hasIsaFeature("sve") and os.environ.get('ART_FORCE_TRY_PREDICATED_SIMD') == 'true'
   //
   ///     CHECK-DAG: <<Repl:d\d+>>    VecReplicateScalar [<<Const1>>,{{j\d+}}]                        loop:none
   ///     CHECK-DAG: <<Set:d\d+>>     VecSetScalars [<<Const1>>,{{j\d+}}]                             loop:none

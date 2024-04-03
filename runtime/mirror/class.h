@@ -30,7 +30,7 @@
 #include "object_array.h"
 #include "read_barrier_option.h"
 
-namespace art {
+namespace art HIDDEN {
 
 namespace dex {
 struct ClassDef;
@@ -59,7 +59,7 @@ class ImTable;
 enum InvokeType : uint32_t;
 template <typename Iter> class IterationRange;
 template<typename T> class LengthPrefixedArray;
-enum class PointerSize : size_t;
+enum class PointerSize : uint32_t;
 class Signature;
 template<typename T> class StrideIterator;
 template<size_t kNumReferences> class PACKED(4) StackHandleScope;
@@ -76,13 +76,10 @@ class DexCache;
 class Field;
 class IfTable;
 class Method;
-template <typename T> struct PACKED(8) DexCachePair;
-
-using StringDexCachePair = DexCachePair<String>;
-using StringDexCacheType = std::atomic<StringDexCachePair>;
+template <typename T> struct alignas(8) DexCachePair;
 
 // C++ mirror of java.lang.Class
-class MANAGED Class final : public Object {
+class EXPORT MANAGED Class final : public Object {
  public:
   MIRROR_CLASS("Ljava/lang/Class;");
 
@@ -294,6 +291,8 @@ class MANAGED Class final : public Object {
     uint32_t flags = GetField32(OFFSET_OF_OBJECT_MEMBER(Class, access_flags_));
     SetAccessFlagsDuringLinking(flags | kAccClassIsFinalizable);
   }
+
+  ALWAYS_INLINE void ClearFinalizable() REQUIRES_SHARED(Locks::mutator_lock_);
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   ALWAYS_INLINE bool IsStringClass() REQUIRES_SHARED(Locks::mutator_lock_) {

@@ -16,7 +16,7 @@
 
 #include <type_traits>
 
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "class_linker-inl.h"
 #include "common_runtime_test.h"
 #include "gtest/gtest.h"
@@ -28,7 +28,7 @@
 #include "scoped_thread_state_change-inl.h"
 #include "thread.h"
 
-namespace art {
+namespace art HIDDEN {
 
 // Handles are value objects and should be trivially copyable.
 static_assert(std::is_trivially_copyable<Handle<mirror::Object>>::value,

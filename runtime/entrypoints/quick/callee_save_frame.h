@@ -19,8 +19,8 @@
 
 #include "arch/instruction_set.h"
 #include "base/callee_save_type.h"
-#include "base/enums.h"
 #include "base/locks.h"
+#include "base/pointer_size.h"
 #include "quick/quick_method_frame_info.h"
 #include "thread-inl.h"
 
@@ -32,7 +32,7 @@
 #include "arch/x86/callee_save_frame_x86.h"
 #include "arch/x86_64/callee_save_frame_x86_64.h"
 
-namespace art {
+namespace art HIDDEN {
 class ArtMethod;
 
 class ScopedQuickEntrypointChecks {

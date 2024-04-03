@@ -109,9 +109,6 @@ std::ostream& operator<<(std::ostream& os, const StringList& list) {
   switch (list.format_) {
     case StringList::kArrayBrackets: return os << "[" << list.sstream_.str() << "]";
     case StringList::kSetBrackets:   return os << "{" << list.sstream_.str() << "}";
-    default:
-      LOG(FATAL) << "Invalid StringList format";
-      UNREACHABLE();
   }
 }
 
@@ -195,7 +192,7 @@ class HGraphVisualizerDisassembler {
 /**
  * HGraph visitor to generate a file suitable for the c1visualizer tool and IRHydra.
  */
-class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
+class HGraphVisualizerPrinter final : public HGraphDelegateVisitor {
  public:
   HGraphVisualizerPrinter(HGraph* graph,
                           std::ostream& output,
@@ -867,7 +864,8 @@ class HGraphVisualizerPrinter : public HGraphDelegateVisitor {
     std::ostringstream oss;
     oss << pass_name_;
     if (!IsDebugDump()) {
-      oss << " (" << (is_after_pass_ ? "after" : "before")
+      oss << " (" << (GetGraph()->IsCompilingBaseline() ? "baseline " : "")
+          << (is_after_pass_ ? "after" : "before")
           << (graph_in_bad_state_ ? ", bad_state" : "") << ")";
     }
     PrintProperty("name", oss.str().c_str());

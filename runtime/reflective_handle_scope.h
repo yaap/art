@@ -25,16 +25,16 @@
 #include <stack>
 
 #include "android-base/macros.h"
-#include "base/enums.h"
 #include "base/globals.h"
 #include "base/locks.h"
 #include "base/macros.h"
+#include "base/pointer_size.h"
 #include "base/value_object.h"
 #include "reflective_handle.h"
 #include "reflective_reference.h"
 #include "reflective_value_visitor.h"
 
-namespace art {
+namespace art HIDDEN {
 
 class ArtField;
 class ArtMethod;

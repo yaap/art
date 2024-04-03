@@ -19,9 +19,9 @@
 
 #include "interpreter_switch_impl.h"
 
-#include "base/enums.h"
 #include "base/globals.h"
 #include "base/memory_tool.h"
+#include "base/pointer_size.h"
 #include "base/quasi_atomic.h"
 #include "dex/dex_file_types.h"
 #include "dex/dex_instruction_list.h"
@@ -40,7 +40,7 @@
 #include "thread.h"
 #include "verifier/method_verifier.h"
 
-namespace art {
+namespace art HIDDEN {
 namespace interpreter {
 
 // Short-lived helper class which executes single DEX bytecode.  It is inlined by compiler.

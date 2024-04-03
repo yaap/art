@@ -23,7 +23,7 @@
 
 #include "arch/context.h"
 #include "art_method-inl.h"
-#include "base/enums.h"
+#include "base/pointer_size.h"
 #include "base/stl_util.h"
 #include "class_linker-inl.h"
 #include "class_root-inl.h"
@@ -48,12 +48,12 @@
 #include "mirror/object-inl.h"
 #include "mirror/object_array-inl.h"
 #include "mirror/string.h"
-#include "oat_file-inl.h"
+#include "oat/oat_file-inl.h"
 #include "runtime_callbacks.h"
 #include "scoped_thread_state_change-inl.h"
 #include "vdex_file.h"
 
-namespace art {
+namespace art HIDDEN {
 
 using android::base::StringPrintf;
 
