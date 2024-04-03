@@ -246,7 +246,7 @@ class Riscv64Assembler final : public Assembler {
   size_t CodeSize() const override { return Assembler::CodeSize(); }
   DebugFrameOpCodeWriterForAssembler& cfi() { return Assembler::cfi(); }
 
-  bool IsExtensionEnabled(Riscv64Extension ext) const {
+  bool IsExtensionEnabled(Riscv64Extension ext) {
     return (enabled_extensions_ & Riscv64ExtensionBit(ext)) != 0u;
   }
 
