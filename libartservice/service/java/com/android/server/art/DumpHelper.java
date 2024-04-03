@@ -255,7 +255,8 @@ public class DumpHelper {
 
         @NonNull
         public DexUseManagerLocal getDexUseManager() {
-            return GlobalInjector.getInstance().getDexUseManager();
+            return Objects.requireNonNull(
+                    LocalManagerRegistry.getManager(DexUseManagerLocal.class));
         }
     }
 }

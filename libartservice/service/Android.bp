@@ -93,7 +93,6 @@ java_defaults {
     static_libs: [
         "art-statslog-art-java",
         "artd-aidl-java",
-        "dexopt_chroot_setup-aidl-java",
         "modules-utils-build",
         "modules-utils-package-state",
         "modules-utils-shell-command-handler",

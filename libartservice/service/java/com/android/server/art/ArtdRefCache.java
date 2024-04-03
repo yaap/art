@@ -222,12 +222,19 @@ public class ArtdRefCache {
     public static class Injector {
         Injector() {
             // Call the getters for various dependencies, to ensure correct initialization order.
-            GlobalInjector.getInstance().checkArtModuleServiceManager();
+            ArtModuleServiceInitializer.getArtModuleServiceManager();
         }
 
         @NonNull
         public IArtd getArtd() {
-            return GlobalInjector.getInstance().getArtd();
+            IArtd artd =
+                    IArtd.Stub.asInterface(ArtModuleServiceInitializer.getArtModuleServiceManager()
+                                                   .getArtdServiceRegisterer()
+                                                   .waitForService());
+            if (artd == null) {
+                throw new IllegalStateException("Unable to connect to artd");
+            }
+            return artd;
         }
 
         @NonNull
