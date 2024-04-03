@@ -157,5 +157,4 @@ genrule {
         " -C `dirname $(location veridex)` -f $(location veridex)" +
         " -j -f $(genDir)/tmp/system-stubs.zip" +
         " -j -f $(genDir)/tmp/org.apache.http.legacy-stubs.zip",
-    visibility: ["//visibility:public"],
 }
