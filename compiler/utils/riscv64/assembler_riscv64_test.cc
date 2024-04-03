@@ -2616,14 +2616,9 @@ TEST_F(AssemblerRISCV64Test, Ecall) {
 }
 
 TEST_F(AssemblerRISCV64Test, Ebreak) {
-  __ Ebreak();
-  DriverStr("ebreak\n", "Ebreak");
-}
-
-TEST_F(AssemblerRISCV64Test, Ebreak_WithoutC) {
   ScopedCSuppression scs(this);
   __ Ebreak();
-  DriverStr("ebreak\n", "Ebreak_WithoutC");
+  DriverStr("ebreak\n", "Ebreak");
 }
 
 TEST_F(AssemblerRISCV64Test, Fence) {
@@ -8794,14 +8789,9 @@ TEST_F(AssemblerRISCV64Test, FStored) {
 }
 
 TEST_F(AssemblerRISCV64Test, Unimp) {
-  __ Unimp();
-  DriverStr("unimp\n", "Unimp");
-}
-
-TEST_F(AssemblerRISCV64Test, Unimp_WithoutC) {
   ScopedCSuppression scs(this);
   __ Unimp();
-  DriverStr("unimp\n", "Unimp_WithoutC");
+  DriverStr("unimp\n", "Unimp");
 }
 
 TEST_F(AssemblerRISCV64Test, LoadLabelAddress) {
