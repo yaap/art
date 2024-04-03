@@ -378,32 +378,23 @@ void Riscv64Assembler::Srai(XRegister rd, XRegister rs1, int32_t shamt) {
 
 void Riscv64Assembler::Add(XRegister rd, XRegister rs1, XRegister rs2) {
   if (IsExtensionEnabled(Riscv64Extension::kZca)) {
-    if (rd != Zero) {
-      if (rs1 != Zero || rs2 != Zero) {
-        if (rs1 == Zero) {
-          DCHECK_NE(rs2, Zero);
-          CMv(rd, rs2);
-          return;
-        } else if (rs2 == Zero) {
-          DCHECK_NE(rs1, Zero);
-          CMv(rd, rs1);
-          return;
-        } else if (rd == rs1) {
-          DCHECK_NE(rs2, Zero);
-          CAdd(rd, rs2);
-          return;
-        } else if (rd == rs2) {
-          DCHECK_NE(rs1, Zero);
-          CAdd(rd, rs1);
-          return;
-        }
-      } else {
-        // TODO: we use clang for testing assembler and unfortunately it (clang 18.0.1) does not
-        // support conversion from 'add rd, Zero, Zero' into 'c.li. rd, 0' so once clang supports it
-        // the lines below should be uncommented
-
-        // CLi(rd, 0);
-        // return;
+    if (rd != Zero && (rs1 != Zero || rs2 != Zero)) {
+      if (rs1 == Zero) {
+        DCHECK_NE(rs2, Zero);
+        CMv(rd, rs2);
+        return;
+      } else if (rs2 == Zero) {
+        DCHECK_NE(rs1, Zero);
+        CMv(rd, rs1);
+        return;
+      } else if (rd == rs1) {
+        DCHECK_NE(rs2, Zero);
+        CAdd(rd, rs2);
+        return;
+      } else if (rd == rs2) {
+        DCHECK_NE(rs1, Zero);
+        CAdd(rd, rs1);
+        return;
       }
     }
   }
