@@ -19,7 +19,6 @@
 #include <jni.h>
 
 #include <filesystem>
-#include <string_view>
 
 #include "android-base/errors.h"
 #include "android-base/file.h"
@@ -79,27 +78,6 @@ Result<void> ValidateDexPath(const std::string& dex_path) {
   return {};
 }
 
-android::base::Result<void> ValidateClassLoaderContext(std::string_view dex_path,
-                                                       const std::string& class_loader_context) {
-  if (class_loader_context == ClassLoaderContext::kUnsupportedClassLoaderContextEncoding) {
-    return {};
-  }
-
-  std::unique_ptr<ClassLoaderContext> context = ClassLoaderContext::Create(class_loader_context);
-  if (context == nullptr) {
-    return Errorf("Class loader context '{}' is invalid", class_loader_context);
-  }
-
-  std::vector<std::string> flattened_context = context->FlattenDexPaths();
-  std::string dex_dir = Dirname(dex_path);
-  for (const std::string& context_element : flattened_context) {
-    std::string context_path = std::filesystem::path(dex_dir).append(context_element);
-    OR_RETURN(ValidateDexPath(context_path));
-  }
-
-  return {};
-}
-
 std::string GetGarbageCollector() {
   return Runtime::Current()->GetHeap()->GetForegroundCollectorName();
 }
@@ -121,12 +99,27 @@ Java_com_android_server_art_ArtJni_validateClassLoaderContextNative(
   ScopedUtfChars dex_path = GET_UTF_OR_RETURN(env, j_dex_path);
   std::string class_loader_context(GET_UTF_OR_RETURN(env, j_class_loader_context));
 
-  if (Result<void> result = ValidateClassLoaderContext(dex_path, class_loader_context);
-      !result.ok()) {
-    return CREATE_UTF_OR_RETURN(env, result.error().message()).release();
-  } else {
+  if (class_loader_context == ClassLoaderContext::kUnsupportedClassLoaderContextEncoding) {
     return nullptr;
   }
+
+  std::unique_ptr<ClassLoaderContext> context = ClassLoaderContext::Create(class_loader_context);
+  if (context == nullptr) {
+    return CREATE_UTF_OR_RETURN(
+               env, ART_FORMAT("Class loader context '{}' is invalid", class_loader_context))
+        .release();
+  }
+
+  std::vector<std::string> flattened_context = context->FlattenDexPaths();
+  std::string dex_dir = Dirname(dex_path);
+  for (const std::string& context_element : flattened_context) {
+    std::string context_path = std::filesystem::path(dex_dir).append(context_element);
+    if (Result<void> result = ValidateDexPath(context_path); !result.ok()) {
+      return CREATE_UTF_OR_RETURN(env, result.error().message()).release();
+    }
+  }
+
+  return nullptr;
 }
 
 extern "C" JNIEXPORT jstring JNICALL

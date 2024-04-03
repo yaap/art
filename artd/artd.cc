@@ -117,7 +117,6 @@ using ::android::base::Split;
 using ::android::base::StringReplace;
 using ::android::base::WriteStringToFd;
 using ::android::fs_mgr::FstabEntry;
-using ::art::service::ValidateClassLoaderContext;
 using ::art::service::ValidateDexPath;
 using ::art::tools::CmdlineBuilder;
 using ::art::tools::Fatal;
@@ -1536,28 +1535,6 @@ Result<struct stat> Artd::Fstat(const File& file) const {
     return Errorf("Unable to fstat file '{}'", file.GetPath());
   }
   return st;
-}
-
-ScopedAStatus Artd::validateDexPath(const std::string& in_dexFile,
-                                    std::optional<std::string>* _aidl_return) {
-  if (Result<void> result = ValidateDexPath(in_dexFile); !result.ok()) {
-    *_aidl_return = result.error().message();
-  } else {
-    *_aidl_return = std::nullopt;
-  }
-  return ScopedAStatus::ok();
-}
-
-ScopedAStatus Artd::validateClassLoaderContext(const std::string& in_dexFile,
-                                               const std::string& in_classLoaderContext,
-                                               std::optional<std::string>* _aidl_return) {
-  if (Result<void> result = ValidateClassLoaderContext(in_dexFile, in_classLoaderContext);
-      !result.ok()) {
-    *_aidl_return = result.error().message();
-  } else {
-    *_aidl_return = std::nullopt;
-  }
-  return ScopedAStatus::ok();
 }
 
 }  // namespace artd

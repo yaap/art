@@ -18,48 +18,21 @@ package com.android.server.art;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.os.Build;
-import android.os.RemoteException;
-import android.util.Log;
-
-import androidx.annotation.RequiresApi;
 
 import dalvik.system.VMRuntime;
 
 /**
- * JNI methods for ART Service with wrappers.
- *
- * The wrappers are added for two reasons:
- * - They make the methods mockable, since Mockito cannot mock JNI methods.
- * - They delegate calls to artd if the code is running for Pre-reboot Dexopt, to avoid loading
- *   libartservice.so.
+ * JNI methods for ART Service, with wrappers added for testability because Mockito cannot mock JNI
+ * methods.
  *
  * @hide
  */
-@RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 public class ArtJni {
     static {
-        // During Pre-reboot Dexopt, the code is loaded by a separate class loader from the chroot
-        // dir, where the new ART apex is mounted. In this case, loading libartservice.so is tricky.
-        // The library depends on libc++.so, libbase.so, etc. Although the classloader allows
-        // specifying a library search path, it doesn’t allow specifying how to search for
-        // dependencies. Because the classloading takes place in system server, the old linkerconfig
-        // takes effect rather than the new one, and the old linkerconfig doesn’t specify how to
-        // search for dependencies for the new libartservice.so. This leads to an undesired
-        // behavior: the dependencies are resolved to those on the old platform.
-        //
-        // Also, we can't statically link libartservice.so against all dependencies because it not
-        // only bloats libartservice.so by a lot, but also prevents us from accessing the global
-        // runtime instance when the code is running in the normal situation.
-        //
-        // Therefore, for Pre-reboot Dexopt, we just avoid loading libartservice.so, and delegate
-        // calls to artd instead.
-        if (!GlobalInjector.getInstance().isPreReboot()) {
-            if (VMRuntime.getRuntime().vmLibrary().equals("libartd.so")) {
-                System.loadLibrary("artserviced");
-            } else {
-                System.loadLibrary("artservice");
-            }
+        if (VMRuntime.getRuntime().vmLibrary().equals("libartd.so")) {
+            System.loadLibrary("artserviced");
+        } else {
+            System.loadLibrary("artservice");
         }
     }
 
@@ -70,14 +43,6 @@ public class ArtJni {
      */
     @Nullable
     public static String validateDexPath(@NonNull String dexPath) {
-        if (GlobalInjector.getInstance().isPreReboot()) {
-            try {
-                return ArtdRefCache.getInstance().getArtd().validateDexPath(dexPath);
-            } catch (RemoteException e) {
-                Utils.logArtdException(e);
-                return null;
-            }
-        }
         return validateDexPathNative(dexPath);
     }
 
@@ -88,15 +53,6 @@ public class ArtJni {
     @Nullable
     public static String validateClassLoaderContext(
             @NonNull String dexPath, @NonNull String classLoaderContext) {
-        if (GlobalInjector.getInstance().isPreReboot()) {
-            try {
-                return ArtdRefCache.getInstance().getArtd().validateClassLoaderContext(
-                        dexPath, classLoaderContext);
-            } catch (RemoteException e) {
-                Utils.logArtdException(e);
-                return null;
-            }
-        }
         return validateClassLoaderContextNative(dexPath, classLoaderContext);
     }
 
@@ -105,11 +61,6 @@ public class ArtJni {
      */
     @NonNull
     public static String getGarbageCollector() {
-        if (GlobalInjector.getInstance().isPreReboot()) {
-            // We don't need this for Pre-reboot Dexopt and we can't have this in artd because it
-            // needs access to the global runtime instance.
-            throw new UnsupportedOperationException();
-        }
         return getGarbageCollectorNative();
     }
 

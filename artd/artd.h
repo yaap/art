@@ -199,13 +199,6 @@ class Artd : public aidl::com::android::server::art::BnArtd {
   ndk::ScopedAStatus getProfileSize(const aidl::com::android::server::art::ProfilePath& in_profile,
                                     int64_t* _aidl_return) override;
 
-  ndk::ScopedAStatus validateDexPath(const std::string& in_dexFile,
-                                     std::optional<std::string>* _aidl_return) override;
-
-  ndk::ScopedAStatus validateClassLoaderContext(const std::string& in_dexFile,
-                                                const std::string& in_classLoaderContext,
-                                                std::optional<std::string>* _aidl_return) override;
-
   android::base::Result<void> Start();
 
  private:
