@@ -2329,53 +2329,28 @@ TEST_F(AssemblerRISCV64Test, Lb) {
 }
 
 TEST_F(AssemblerRISCV64Test, Lh) {
+  ScopedCSuppression scs(this);
   DriverStr(RepeatRRIb(&Riscv64Assembler::Lh, -12, "lh {reg1}, {imm}({reg2})"), "Lh");
 }
 
-TEST_F(AssemblerRISCV64Test, Lh_WithoutC) {
-  ScopedCSuppression scs(this);
-  DriverStr(RepeatRRIb(&Riscv64Assembler::Lh, /*imm_bits=*/-12, "lh {reg1}, {imm}({reg2})"),
-            "Lh_WithoutC");
-}
-
 TEST_F(AssemblerRISCV64Test, Lw) {
+  ScopedCSuppression scs(this);
   DriverStr(RepeatRRIb(&Riscv64Assembler::Lw, -12, "lw {reg1}, {imm}({reg2})"), "Lw");
 }
 
-TEST_F(AssemblerRISCV64Test, Lw_WithoutC) {
-  ScopedCSuppression scs(this);
-  DriverStr(RepeatRRIb(&Riscv64Assembler::Lw, /*imm_bits=*/-12, "lw {reg1}, {imm}({reg2})"),
-            "Lw_WithoutC");
-}
-
 TEST_F(AssemblerRISCV64Test, Ld) {
+  ScopedCSuppression scs(this);
   DriverStr(RepeatRRIb(&Riscv64Assembler::Ld, -12, "ld {reg1}, {imm}({reg2})"), "Ld");
 }
 
-TEST_F(AssemblerRISCV64Test, Ld_WithoutC) {
-  ScopedCSuppression scs(this);
-  DriverStr(RepeatRRIb(&Riscv64Assembler::Ld, /*imm_bits=*/-12, "ld {reg1}, {imm}({reg2})"),
-            "Ld_WithoutC");
-}
-
 TEST_F(AssemblerRISCV64Test, Lbu) {
+  ScopedCSuppression scs(this);
   DriverStr(RepeatRRIb(&Riscv64Assembler::Lbu, -12, "lbu {reg1}, {imm}({reg2})"), "Lbu");
 }
 
-TEST_F(AssemblerRISCV64Test, Lbu_WithoutC) {
-  ScopedCSuppression scs(this);
-  DriverStr(RepeatRRIb(&Riscv64Assembler::Lbu, /*imm_bits=*/-12, "lbu {reg1}, {imm}({reg2})"),
-            "Lbu_WithoutC");
-}
-
 TEST_F(AssemblerRISCV64Test, Lhu) {
-  DriverStr(RepeatRRIb(&Riscv64Assembler::Lhu, -12, "lhu {reg1}, {imm}({reg2})"), "Lhu");
-}
-
-TEST_F(AssemblerRISCV64Test, Lhu_WithoutC) {
   ScopedCSuppression scs(this);
-  DriverStr(RepeatRRIb(&Riscv64Assembler::Lhu, /*imm_bits=*/-12, "lhu {reg1}, {imm}({reg2})"),
-            "Lhu_WithoutC");
+  DriverStr(RepeatRRIb(&Riscv64Assembler::Lhu, -12, "lhu {reg1}, {imm}({reg2})"), "Lhu");
 }
 
 TEST_F(AssemblerRISCV64Test, Lwu) {
@@ -2384,41 +2359,23 @@ TEST_F(AssemblerRISCV64Test, Lwu) {
 }
 
 TEST_F(AssemblerRISCV64Test, Sb) {
+  ScopedCSuppression scs(this);
   DriverStr(RepeatRRIb(&Riscv64Assembler::Sb, -12, "sb {reg1}, {imm}({reg2})"), "Sb");
 }
 
-TEST_F(AssemblerRISCV64Test, Sb_WithoutC) {
-  ScopedCSuppression scs(this);
-  DriverStr(RepeatRRIb(&Riscv64Assembler::Sb, /*imm_bits=*/-12, "sb {reg1}, {imm}({reg2})"),
-            "Sb_WithoutC");
-}
-
 TEST_F(AssemblerRISCV64Test, Sh) {
+  ScopedCSuppression scs(this);
   DriverStr(RepeatRRIb(&Riscv64Assembler::Sh, -12, "sh {reg1}, {imm}({reg2})"), "Sh");
 }
 
-TEST_F(AssemblerRISCV64Test, Sh_WithoutC) {
-  ScopedCSuppression scs(this);
-  DriverStr(RepeatRRIb(&Riscv64Assembler::Sh, /*imm_bits=*/-12, "sh {reg1}, {imm}({reg2})"),
-            "Sh_WithoutC");
-}
-
 TEST_F(AssemblerRISCV64Test, Sw) {
+  ScopedCSuppression scs(this);
   DriverStr(RepeatRRIb(&Riscv64Assembler::Sw, -12, "sw {reg1}, {imm}({reg2})"), "Sw");
 }
 
-TEST_F(AssemblerRISCV64Test, Sw_WithoutC) {
-  ScopedCSuppression scs(this);
-  DriverStr(RepeatRRIb(&Riscv64Assembler::Sw, -12, "sw {reg1}, {imm}({reg2})"), "Sw_WithoutC");
-}
-
 TEST_F(AssemblerRISCV64Test, Sd) {
-  DriverStr(RepeatRRIb(&Riscv64Assembler::Sd, -12, "sd {reg1}, {imm}({reg2})"), "Sd");
-}
-
-TEST_F(AssemblerRISCV64Test, Sd_WithoutC) {
   ScopedCSuppression scs(this);
-  DriverStr(RepeatRRIb(&Riscv64Assembler::Sd, -12, "sd {reg1}, {imm}({reg2})"), "Sd_WithoutC");
+  DriverStr(RepeatRRIb(&Riscv64Assembler::Sd, -12, "sd {reg1}, {imm}({reg2})"), "Sd");
 }
 
 TEST_F(AssemblerRISCV64Test, Addi) {
@@ -2869,13 +2826,8 @@ TEST_F(AssemblerRISCV64Test, FLw) {
 }
 
 TEST_F(AssemblerRISCV64Test, FLd) {
-  DriverStr(RepeatFRIb(&Riscv64Assembler::FLd, -12, "fld {reg1}, {imm}({reg2})"), "FLd");
-}
-
-TEST_F(AssemblerRISCV64Test, FLd_WithoutC) {
   ScopedCSuppression scs(this);
-  DriverStr(RepeatFRIb(&Riscv64Assembler::FLd, /*imm_bits=*/-12, "fld {reg1}, {imm}({reg2})"),
-            "FLd_WithoutC");
+  DriverStr(RepeatFRIb(&Riscv64Assembler::FLd, -12, "fld {reg1}, {imm}({reg2})"), "FLw");
 }
 
 TEST_F(AssemblerRISCV64Test, FSw) {
@@ -2884,13 +2836,8 @@ TEST_F(AssemblerRISCV64Test, FSw) {
 }
 
 TEST_F(AssemblerRISCV64Test, FSd) {
-  DriverStr(RepeatFRIb(&Riscv64Assembler::FSd, 2, "fsd {reg1}, {imm}({reg2})"), "FSd");
-}
-
-TEST_F(AssemblerRISCV64Test, FSd_WithoutC) {
   ScopedCSuppression scs(this);
-  DriverStr(RepeatFRIb(&Riscv64Assembler::FSd, /*imm_bits=*/-12, "fsd {reg1}, {imm}({reg2})"),
-            "FSd_WithoutC");
+  DriverStr(RepeatFRIb(&Riscv64Assembler::FSd, 2, "fsd {reg1}, {imm}({reg2})"), "FSd");
 }
 
 TEST_F(AssemblerRISCV64Test, FMAddS) {

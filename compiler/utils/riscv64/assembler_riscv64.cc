@@ -128,72 +128,26 @@ void Riscv64Assembler::Lb(XRegister rd, XRegister rs1, int32_t offset) {
 
 void Riscv64Assembler::Lh(XRegister rd, XRegister rs1, int32_t offset) {
   AssertExtensionsEnabled(Riscv64Extension::kLoadStore);
-
-  if (IsExtensionEnabled(Riscv64Extension::kZcb)) {
-    if (IsShortReg(rd) && IsShortReg(rs1) && IsUint<2>(offset) && IsAligned<2>(offset)) {
-      CLh(rd, rs1, offset);
-      return;
-    }
-  }
-
   EmitI(offset, rs1, 0x1, rd, 0x03);
 }
 
 void Riscv64Assembler::Lw(XRegister rd, XRegister rs1, int32_t offset) {
   AssertExtensionsEnabled(Riscv64Extension::kLoadStore);
-
-  if (IsExtensionEnabled(Riscv64Extension::kZca)) {
-    if (rd != Zero && rs1 == SP && IsUint<8>(offset) && IsAligned<4>(offset)) {
-      CLwsp(rd, offset);
-      return;
-    } else if (IsShortReg(rd) && IsShortReg(rs1) && IsUint<7>(offset) && IsAligned<4>(offset)) {
-      CLw(rd, rs1, offset);
-      return;
-    }
-  }
-
   EmitI(offset, rs1, 0x2, rd, 0x03);
 }
 
 void Riscv64Assembler::Ld(XRegister rd, XRegister rs1, int32_t offset) {
   AssertExtensionsEnabled(Riscv64Extension::kLoadStore);
-
-  if (IsExtensionEnabled(Riscv64Extension::kZca)) {
-    if (rd != Zero && rs1 == SP && IsUint<9>(offset) && IsAligned<8>(offset)) {
-      CLdsp(rd, offset);
-      return;
-    } else if (IsShortReg(rd) && IsShortReg(rs1) && IsUint<8>(offset) && IsAligned<8>(offset)) {
-      CLd(rd, rs1, offset);
-      return;
-    }
-  }
-
   EmitI(offset, rs1, 0x3, rd, 0x03);
 }
 
 void Riscv64Assembler::Lbu(XRegister rd, XRegister rs1, int32_t offset) {
   AssertExtensionsEnabled(Riscv64Extension::kLoadStore);
-
-  if (IsExtensionEnabled(Riscv64Extension::kZcb)) {
-    if (IsShortReg(rd) && IsShortReg(rs1) && IsUint<2>(offset)) {
-      CLbu(rd, rs1, offset);
-      return;
-    }
-  }
-
   EmitI(offset, rs1, 0x4, rd, 0x03);
 }
 
 void Riscv64Assembler::Lhu(XRegister rd, XRegister rs1, int32_t offset) {
   AssertExtensionsEnabled(Riscv64Extension::kLoadStore);
-
-  if (IsExtensionEnabled(Riscv64Extension::kZcb)) {
-    if (IsShortReg(rd) && IsShortReg(rs1) && IsUint<2>(offset) && IsAligned<2>(offset)) {
-      CLhu(rd, rs1, offset);
-      return;
-    }
-  }
-
   EmitI(offset, rs1, 0x5, rd, 0x03);
 }
 
@@ -206,59 +160,21 @@ void Riscv64Assembler::Lwu(XRegister rd, XRegister rs1, int32_t offset) {
 
 void Riscv64Assembler::Sb(XRegister rs2, XRegister rs1, int32_t offset) {
   AssertExtensionsEnabled(Riscv64Extension::kLoadStore);
-
-  if (IsExtensionEnabled(Riscv64Extension::kZcb)) {
-    if (IsShortReg(rs2) && IsShortReg(rs1) && IsUint<2>(offset)) {
-      CSb(rs2, rs1, offset);
-      return;
-    }
-  }
-
   EmitS(offset, rs2, rs1, 0x0, 0x23);
 }
 
 void Riscv64Assembler::Sh(XRegister rs2, XRegister rs1, int32_t offset) {
   AssertExtensionsEnabled(Riscv64Extension::kLoadStore);
-
-  if (IsExtensionEnabled(Riscv64Extension::kZcb)) {
-    if (IsShortReg(rs2) && IsShortReg(rs1) && IsUint<2>(offset) && IsAligned<2>(offset)) {
-      CSh(rs2, rs1, offset);
-      return;
-    }
-  }
-
   EmitS(offset, rs2, rs1, 0x1, 0x23);
 }
 
 void Riscv64Assembler::Sw(XRegister rs2, XRegister rs1, int32_t offset) {
   AssertExtensionsEnabled(Riscv64Extension::kLoadStore);
-
-  if (IsExtensionEnabled(Riscv64Extension::kZca)) {
-    if (rs1 == SP && IsUint<8>(offset) && IsAligned<4>(offset)) {
-      CSwsp(rs2, offset);
-      return;
-    } else if (IsShortReg(rs2) && IsShortReg(rs1) && IsUint<7>(offset) && IsAligned<4>(offset)) {
-      CSw(rs2, rs1, offset);
-      return;
-    }
-  }
-
   EmitS(offset, rs2, rs1, 0x2, 0x23);
 }
 
 void Riscv64Assembler::Sd(XRegister rs2, XRegister rs1, int32_t offset) {
   AssertExtensionsEnabled(Riscv64Extension::kLoadStore);
-
-  if (IsExtensionEnabled(Riscv64Extension::kZca)) {
-    if (rs1 == SP && IsUint<9>(offset) && IsAligned<8>(offset)) {
-      CSdsp(rs2, offset);
-      return;
-    } else if (IsShortReg(rs2) && IsShortReg(rs1) && IsUint<8>(offset) && IsAligned<8>(offset)) {
-      CSd(rs2, rs1, offset);
-      return;
-    }
-  }
-
   EmitS(offset, rs2, rs1, 0x3, 0x23);
 }
 
@@ -838,17 +754,6 @@ void Riscv64Assembler::FLw(FRegister rd, XRegister rs1, int32_t offset) {
 
 void Riscv64Assembler::FLd(FRegister rd, XRegister rs1, int32_t offset) {
   AssertExtensionsEnabled(Riscv64Extension::kLoadStore, Riscv64Extension::kD);
-
-  if (IsExtensionEnabled(Riscv64Extension::kZcd)) {
-    if (rs1 == SP && IsUint<9>(offset) && IsAligned<8>(offset)) {
-      CFLdsp(rd, offset);
-      return;
-    } else if (IsShortReg(rd) && IsShortReg(rs1) && IsUint<8>(offset) && IsAligned<8>(offset)) {
-      CFLd(rd, rs1, offset);
-      return;
-    }
-  }
-
   EmitI(offset, rs1, 0x3, rd, 0x07);
 }
 
@@ -859,17 +764,6 @@ void Riscv64Assembler::FSw(FRegister rs2, XRegister rs1, int32_t offset) {
 
 void Riscv64Assembler::FSd(FRegister rs2, XRegister rs1, int32_t offset) {
   AssertExtensionsEnabled(Riscv64Extension::kLoadStore, Riscv64Extension::kD);
-
-  if (IsExtensionEnabled(Riscv64Extension::kZcd)) {
-    if (rs1 == SP && IsUint<9>(offset) && IsAligned<8>(offset)) {
-      CFSdsp(rs2, offset);
-      return;
-    } else if (IsShortReg(rs2) && IsShortReg(rs1) && IsUint<8>(offset) && IsAligned<8>(offset)) {
-      CFSd(rs2, rs1, offset);
-      return;
-    }
-  }
-
   EmitS(offset, rs2, rs1, 0x3, 0x27);
 }
 
@@ -6882,7 +6776,6 @@ void Riscv64Assembler::EmitBranch(Riscv64Assembler::Branch* branch) {
   XRegister rhs = branch->GetRightRegister();
 
   auto emit_auipc_and_next = [&](XRegister reg, auto next) {
-    ScopedNoCInstructions no_compression(this);
     CHECK_EQ(overwrite_location_, branch->GetOffsetLocation());
     auto [imm20, short_offset] = SplitOffset(offset);
     Auipc(reg, imm20);
@@ -6928,9 +6821,11 @@ void Riscv64Assembler::EmitBranch(Riscv64Assembler::Branch* branch) {
       break;
 
     // label.
-    case Branch::kLabel:
+    case Branch::kLabel: {
+      ScopedNoCInstructions no_compression(this);
       emit_auipc_and_next(lhs, [&](int32_t short_offset) { Addi(lhs, lhs, short_offset); });
       break;
+    }
     // literals.
     case Branch::kLiteral:
       emit_auipc_and_next(lhs, [&](int32_t short_offset) { Lw(lhs, lhs, short_offset); });
