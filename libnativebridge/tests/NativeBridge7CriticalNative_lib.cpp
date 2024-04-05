@@ -22,6 +22,9 @@ static bool g_legacy_get_trampoline_called = false;
 static bool g_get_trampoline2_called = false;
 static JNICallType g_jni_call_type = kJNICallTypeRegular;
 
+static bool g_get_trampoline_fn_ptr_called = false;
+static JNICallType g_fn_ptr_jni_call_type = kJNICallTypeRegular;
+
 void ResetTrampolineCalledState() {
   g_legacy_get_trampoline_called = false;
   g_get_trampoline2_called = false;
@@ -40,5 +43,14 @@ void SetGetTrampoline2Called(JNICallType jni_call_type) {
 bool IsGetTrampoline2Called() { return g_get_trampoline2_called; }
 
 JNICallType GetTrampoline2JNICallType() { return g_jni_call_type; }
+
+void SetGetTrampolineFnPtrCalled(JNICallType jni_call_type) {
+  g_get_trampoline_fn_ptr_called = true;
+  g_fn_ptr_jni_call_type = jni_call_type;
+}
+
+bool IsGetTrampolineFnPtrCalled() { return g_get_trampoline_fn_ptr_called; }
+
+JNICallType GetTrampolineFnPtrJNICallType() { return g_fn_ptr_jni_call_type; }
 
 }  // namespace android

@@ -1662,7 +1662,7 @@ TEST_F(Dex2oatTest, CompactDexGenerationFailure) {
   ASSERT_TRUE(GenerateOdexForTest(temp_dex.GetFilename(),
                                   oat_filename,
                                   CompilerFilter::Filter::kVerify,
-                                  {},
+                                  {"--copy-dex-files=always"},
                                   /*expect_success=*/true,
                                   /*use_fd=*/false,
                                   /*use_zip_fd=*/false,
@@ -2089,6 +2089,31 @@ TEST_F(Dex2oatTest, DexFileFd) {
                                   /*expect_success=*/true,
                                   /*use_fd=*/false,
                                   /*use_zip_fd=*/true));
+}
+
+TEST_F(Dex2oatTest, DontCopyPlainDex) {
+  std::unique_ptr<const DexFile> dex(OpenTestDexFile("VerifierDepsMulti"));
+  std::string error_msg;
+  const std::string out_dir = GetScratchDir();
+  const std::string dex_location = dex->GetLocation();
+  const std::string odex_location = out_dir + "/base.oat";
+  const std::string vdex_location = out_dir + "/base.vdex";
+  ASSERT_TRUE(GenerateOdexForTest(dex_location,
+                                  odex_location,
+                                  CompilerFilter::Filter::kVerify,
+                                  {},
+                                  /*expect_success=*/true,
+                                  /*use_fd=*/false,
+                                  /*use_zip_fd=*/false,
+                                  [](const OatFile&) {}));
+
+  // Check that the vdex doesn't have dex code.
+  std::unique_ptr<VdexFile> vdex(VdexFile::Open(vdex_location,
+                                                /*writable=*/false,
+                                                /*low_4gb=*/false,
+                                                &error_msg));
+  ASSERT_TRUE(vdex != nullptr);
+  EXPECT_FALSE(vdex->HasDexSection()) << output_;
 }
 
 TEST_F(Dex2oatTest, AppImageResolveStrings) {

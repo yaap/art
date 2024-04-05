@@ -61,6 +61,7 @@ import org.junit.runners.Parameterized.Parameter;
 import org.junit.runners.Parameterized.Parameters;
 import org.mockito.ArgumentMatcher;
 
+import java.nio.file.NoSuchFileException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -271,7 +272,9 @@ public class PrimaryDexopterParameterizedTest extends PrimaryDexopterTestBase {
                         PKG_NAME, APP_VERSION_NAME, APP_VERSION_CODE, ART_VERSION));
 
         when(mArtd.createCancellationSignal()).thenReturn(mock(IArtdCancellationSignal.class));
-        when(mArtd.getDmFileVisibility(any())).thenReturn(FileVisibility.NOT_FOUND);
+        lenient()
+                .when(mDexMetadataHelperInjector.openZipFile(any()))
+                .thenThrow(NoSuchFileException.class);
 
         // The first one is normal.
         doReturn(dexoptIsNeeded())

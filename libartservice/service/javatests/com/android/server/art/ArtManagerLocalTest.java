@@ -67,6 +67,7 @@ import com.android.server.art.model.DeleteResult;
 import com.android.server.art.model.DexoptParams;
 import com.android.server.art.model.DexoptResult;
 import com.android.server.art.model.DexoptStatus;
+import com.android.server.art.proto.DexMetadataConfig;
 import com.android.server.art.testing.StaticMockitoRule;
 import com.android.server.art.testing.TestingUtils;
 import com.android.server.pm.PackageManagerLocal;
@@ -90,6 +91,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
@@ -99,6 +101,7 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import java.util.zip.ZipFile;
 
 @SmallTest
 @RunWith(Parameterized.class)
@@ -128,11 +131,13 @@ public class ArtManagerLocalTest {
     @Mock private DexUseManagerLocal mDexUseManager;
     @Mock private StorageManager mStorageManager;
     @Mock private ArtdRefCache.Pin mArtdPin;
+    @Mock private DexMetadataHelper.Injector mDexMetadataHelperInjector;
     private PackageState mPkgState1;
     private AndroidPackage mPkg1;
     private CheckedSecondaryDexInfo mPkg1SecondaryDexInfo1;
     private CheckedSecondaryDexInfo mPkg1SecondaryDexInfoNotFound;
     private Config mConfig;
+    private DexMetadataHelper mDexMetadataHelper;
 
     // True if the artifacts should be in dalvik-cache.
     @Parameter(0) public boolean mIsInDalvikCache;
@@ -147,6 +152,7 @@ public class ArtManagerLocalTest {
     @Before
     public void setUp() throws Exception {
         mConfig = new Config();
+        mDexMetadataHelper = new DexMetadataHelper(mDexMetadataHelperInjector);
 
         // Use `lenient()` to suppress `UnnecessaryStubbingException` thrown by the strict stubs.
         // These are the default test setups. They may or may not be used depending on the code path
@@ -166,6 +172,7 @@ public class ArtManagerLocalTest {
         lenient()
                 .when(mInjector.getArtFileManager())
                 .thenReturn(new ArtFileManager(mArtFileManagerInjector));
+        lenient().when(mInjector.getDexMetadataHelper()).thenReturn(mDexMetadataHelper);
 
         lenient().when(mArtFileManagerInjector.getArtd()).thenReturn(mArtd);
         lenient().when(mArtFileManagerInjector.getUserManager()).thenReturn(mUserManager);
@@ -257,6 +264,10 @@ public class ArtManagerLocalTest {
         lenient()
                 .when(mArtd.copyAndRewriteEmbeddedProfile(any(), any()))
                 .thenReturn(TestingUtils.createCopyAndRewriteProfileNoProfile());
+
+        lenient()
+                .when(mDexMetadataHelperInjector.openZipFile(any()))
+                .thenThrow(NoSuchFileException.class);
 
         mArtManagerLocal = new ArtManagerLocal(mInjector);
     }
@@ -905,6 +916,44 @@ public class ArtManagerLocalTest {
                 -> profile.getTmpProfilePath().tmpPath.equals(tempFileForSnapshot.getPath())));
         verify(mArtd).deleteProfile(
                 argThat(profile -> profile.getTmpProfilePath().tmpPath.equals(tempPathForRef)));
+    }
+
+    @Test
+    public void testSnapshotAppProfileFromEmbeddedProfile() throws Exception {
+        ProfilePath refProfile = AidlUtils.buildProfilePathForPrimaryRef(PKG_NAME_1, "primary");
+        String dexPath = "/somewhere/app/foo/base.apk";
+
+        // Simulate that the reference profile doesn't exist.
+        when(mArtd.isProfileUsable(deepEq(refProfile), eq(dexPath))).thenReturn(false);
+
+        // Verify that the embedded profile is used.
+        when(mArtd.copyAndRewriteEmbeddedProfile(any(), eq(dexPath)))
+                .thenReturn(TestingUtils.createCopyAndRewriteProfileSuccess());
+
+        when(mArtd.mergeProfiles(any(), any(), any(), any(), any())).thenReturn(false);
+
+        mArtManagerLocal.snapshotAppProfile(mSnapshot, PKG_NAME_1, null /* splitName */);
+    }
+
+    @Test
+    public void testSnapshotAppProfileDisableEmbeddedProfile() throws Exception {
+        ProfilePath refProfile = AidlUtils.buildProfilePathForPrimaryRef(PKG_NAME_1, "primary");
+        String dexPath = "/somewhere/app/foo/base.apk";
+
+        // Simulate that the reference profile doesn't exist.
+        when(mArtd.isProfileUsable(deepEq(refProfile), eq(dexPath))).thenReturn(false);
+
+        // The embedded profile is disabled.
+        var config = DexMetadataConfig.newBuilder().setEnableEmbeddedProfile(false).build();
+        String dmPath = TestingUtils.createTempZipWithEntry("config.pb", config.toByteArray());
+        doReturn(new ZipFile(dmPath)).when(mDexMetadataHelperInjector).openZipFile(any());
+
+        when(mArtd.mergeProfiles(any(), any(), any(), any(), any())).thenReturn(false);
+
+        mArtManagerLocal.snapshotAppProfile(mSnapshot, PKG_NAME_1, null /* splitName */);
+
+        // Verify that the embedded profile is not used.
+        verify(mArtd, never()).copyAndRewriteEmbeddedProfile(any(), eq(dexPath));
     }
 
     @Test

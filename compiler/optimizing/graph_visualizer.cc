@@ -644,6 +644,12 @@ class HGraphVisualizerPrinter final : public HGraphDelegateVisitor {
   }
 #endif
 
+#if defined(ART_ENABLE_CODEGEN_riscv64)
+  void VisitRiscv64ShiftAdd(HRiscv64ShiftAdd* instruction) override {
+    StartAttributeStream("distance") << instruction->GetDistance();
+  }
+#endif
+
   bool IsPass(const char* name) {
     return strcmp(pass_name_, name) == 0;
   }

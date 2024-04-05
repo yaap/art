@@ -48,6 +48,15 @@ extern "C" void* native_bridge7_getTrampoline2(void* /* handle */,
   return nullptr;
 }
 
+extern "C" void* native_bridge7_getTrampolineForFunctionPointer(
+    const void* /* method */,
+    const char* /* shorty */,
+    uint32_t /* len */,
+    android::JNICallType jni_call_type) {
+  android::SetGetTrampolineFnPtrCalled(jni_call_type);
+  return nullptr;
+}
+
 extern "C" bool native_bridge7_isSupported(const char* /* libpath */) { return false; }
 
 extern "C" const struct android::NativeBridgeRuntimeValues* native_bridge7_getAppEnv(
@@ -134,4 +143,5 @@ android::NativeBridgeCallbacks NativeBridgeItf{
     // v6
     &native_bridge7_preZygoteFork,
     // v7
-    &native_bridge7_getTrampoline2};
+    &native_bridge7_getTrampoline2,
+    &native_bridge7_getTrampolineForFunctionPointer};

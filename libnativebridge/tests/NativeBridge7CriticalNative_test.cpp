@@ -48,6 +48,15 @@ TEST_F(NativeBridgeTest, V7_CriticalNative) {
   ASSERT_FALSE(IsLegacyGetTrampolineCalled());
   ASSERT_TRUE(IsGetTrampoline2Called());
   EXPECT_EQ(GetTrampoline2JNICallType(), kJNICallTypeCriticalNative);
+
+  ASSERT_FALSE(IsGetTrampolineFnPtrCalled());
+
+  EXPECT_EQ(
+      NativeBridgeGetTrampolineForFunctionPointer(nullptr, "shorty", 6, kJNICallTypeCriticalNative),
+      nullptr);
+  ASSERT_FALSE(IsLegacyGetTrampolineCalled());
+  ASSERT_TRUE(IsGetTrampolineFnPtrCalled());
+  EXPECT_EQ(GetTrampolineFnPtrJNICallType(), kJNICallTypeCriticalNative);
 }
 
 }  // namespace android

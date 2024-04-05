@@ -95,6 +95,11 @@ void* NativeBridgeGetTrampoline2(void* handle,
                                  uint32_t len,
                                  enum JNICallType jni_call_type);
 
+void* NativeBridgeGetTrampolineForFunctionPointer(const void* method,
+                                                  const char* shorty,
+                                                  uint32_t len,
+                                                  enum JNICallType jni_call_type);
+
 // True if native library paths are valid and is for an ABI that is supported by native bridge.
 // The *libpath* must point to a library.
 //
@@ -421,6 +426,20 @@ struct NativeBridgeCallbacks {
                                         const char* shorty,
                                         uint32_t len,
                                         enum JNICallType jni_call_type);
+
+  // Get a native bridge trampoline for specified native method implementation pointer.
+  //
+  // Parameters:
+  //   method [IN] pointer to method implementation (ususally registered via call to
+  //   RegisterNatives).
+  //   shorty [IN] short descriptor of native method len [IN] length of shorty
+  //   jni_call_type [IN] the type of JNI call
+  // Returns:
+  //   address of trampoline if successful, otherwise NULL
+  void* (*getTrampolineForFunctionPointer)(const void* method,
+                                           const char* shorty,
+                                           uint32_t len,
+                                           enum JNICallType jni_call_type);
 };
 
 // Runtime interfaces to native bridge.

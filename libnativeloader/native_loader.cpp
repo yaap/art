@@ -527,6 +527,8 @@ void* OpenNativeLibraryInNamespace(NativeLoaderNamespace* ns, const char* path,
   return handle.ok() ? *handle : nullptr;
 }
 
+bool IsNamespaceNativeBridged(const struct NativeLoaderNamespace* ns) { return ns->IsBridged(); }
+
 // native_bridge_namespaces are not supported for callers of this function.
 // This function will return nullptr in the case when application is running
 // on native bridge.

@@ -1295,6 +1295,27 @@ static bool IsMethodBuildAnnotationPresent(const DexFile& dex_file,
   return false;
 }
 
+static uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
+                                                     const dex::AnnotationSetItem& annotation_set) {
+  uint32_t access_flags = 0u;
+  if (IsMethodBuildAnnotationPresent(
+          dex_file,
+          annotation_set,
+          "Ldalvik/annotation/optimization/FastNative;",
+          WellKnownClasses::dalvik_annotation_optimization_FastNative)) {
+    access_flags |= kAccFastNative;
+  }
+  if (IsMethodBuildAnnotationPresent(
+          dex_file,
+          annotation_set,
+          "Ldalvik/annotation/optimization/CriticalNative;",
+          WellKnownClasses::dalvik_annotation_optimization_CriticalNative)) {
+    access_flags |= kAccCriticalNative;
+  }
+  CHECK_NE(access_flags, kAccFastNative | kAccCriticalNative);
+  return access_flags;
+}
+
 uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
                                               const dex::ClassDef& class_def,
                                               uint32_t method_index) {
@@ -1303,23 +1324,22 @@ uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
   if (annotation_set == nullptr) {
     return 0u;
   }
-  uint32_t access_flags = 0u;
-  if (IsMethodBuildAnnotationPresent(
-          dex_file,
-          *annotation_set,
-          "Ldalvik/annotation/optimization/FastNative;",
-          WellKnownClasses::dalvik_annotation_optimization_FastNative)) {
-    access_flags |= kAccFastNative;
-  }
-  if (IsMethodBuildAnnotationPresent(
-          dex_file,
-          *annotation_set,
-          "Ldalvik/annotation/optimization/CriticalNative;",
-          WellKnownClasses::dalvik_annotation_optimization_CriticalNative)) {
-    access_flags |= kAccCriticalNative;
-  }
-  CHECK_NE(access_flags, kAccFastNative | kAccCriticalNative);
-  return access_flags;
+  return GetNativeMethodAnnotationAccessFlags(dex_file, *annotation_set);
+}
+
+uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
+                                              const dex::MethodAnnotationsItem& method_annotations) {
+  return GetNativeMethodAnnotationAccessFlags(
+      dex_file, *dex_file.GetMethodAnnotationSetItem(method_annotations));
+}
+
+static bool MethodIsNeverCompile(const DexFile& dex_file,
+                                 const dex::AnnotationSetItem& annotation_set) {
+  return IsMethodBuildAnnotationPresent(
+      dex_file,
+      annotation_set,
+      "Ldalvik/annotation/optimization/NeverCompile;",
+      WellKnownClasses::dalvik_annotation_optimization_NeverCompile);
 }
 
 bool MethodIsNeverCompile(const DexFile& dex_file,
@@ -1330,11 +1350,12 @@ bool MethodIsNeverCompile(const DexFile& dex_file,
   if (annotation_set == nullptr) {
     return false;
   }
-  return IsMethodBuildAnnotationPresent(
-      dex_file,
-      *annotation_set,
-      "Ldalvik/annotation/optimization/NeverCompile;",
-      WellKnownClasses::dalvik_annotation_optimization_NeverCompile);
+  return MethodIsNeverCompile(dex_file, *annotation_set);
+}
+
+bool MethodIsNeverCompile(const DexFile& dex_file,
+                          const dex::MethodAnnotationsItem& method_annotations) {
+  return MethodIsNeverCompile(dex_file, *dex_file.GetMethodAnnotationSetItem(method_annotations));
 }
 
 bool MethodIsNeverInline(const DexFile& dex_file,

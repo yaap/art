@@ -3201,7 +3201,7 @@ bool OatWriter::WriteDexFiles(File* file,
     extract_dex_files_into_vdex_ = false;
     for (OatDexFile& oat_dex_file : oat_dex_files_) {
       const DexFileContainer* container = oat_dex_file.GetDexFile()->GetContainer().get();
-      if (!(container->IsZip() && container->IsFileMap())) {
+      if (!container->IsFileMap()) {
         extract_dex_files_into_vdex_ = true;
         break;
       }

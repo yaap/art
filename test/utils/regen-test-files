@@ -240,7 +240,6 @@ art_gtest_user_module_names = [
     "art_standalone_dex2oat_tests",
     "art_standalone_dexdump_tests",
     "art_standalone_dexlist_tests",
-    "art_standalone_dexopt_chroot_setup_tests",
     "art_standalone_libartbase_tests",
     "art_standalone_libartpalette_tests",
     "art_standalone_libartservice_tests",
@@ -257,6 +256,7 @@ art_gtest_user_module_names = [
 
 # ART gtests that need root access to the device.
 art_gtest_eng_only_module_names = [
+    "art_standalone_dexopt_chroot_setup_tests",
     "art_standalone_dexoptanalyzer_tests",
     "art_standalone_profman_tests",
     "libnativeloader_e2e_tests",
@@ -270,7 +270,6 @@ art_gtest_module_names = sorted(art_gtest_user_module_names + art_gtest_eng_only
 # removing them from this set (in order to promote them to
 # presubmits).
 art_gtest_postsubmit_only_module_names = [
-  "art_standalone_dexopt_chroot_setup_tests",
 ]
 
 # ART gtests supported in MTS that do not need root access to the device.

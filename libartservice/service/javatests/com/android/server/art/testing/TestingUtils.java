@@ -27,9 +27,13 @@ import com.android.server.art.CopyAndRewriteProfileResult;
 import com.google.common.truth.Correspondence;
 import com.google.common.truth.Truth;
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
 import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 public final class TestingUtils {
     private static final String TAG = "ArtServiceTesting";
@@ -179,6 +183,17 @@ public final class TestingUtils {
         result.status = CopyAndRewriteProfileResult.Status.BAD_PROFILE;
         result.errorMsg = errorMsg;
         return result;
+    }
+
+    public static String createTempZipWithEntry(String entryName, byte[] data) throws Exception {
+        File tempFile = File.createTempFile("temp", ".zip");
+        tempFile.deleteOnExit();
+        try (var out = new ZipOutputStream(new FileOutputStream(tempFile))) {
+            out.putNextEntry(new ZipEntry(entryName));
+            out.write(data);
+            out.closeEntry();
+        }
+        return tempFile.getPath();
     }
 
     private static boolean listDeepEquals(

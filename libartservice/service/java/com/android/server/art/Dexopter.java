@@ -17,6 +17,7 @@
 package com.android.server.art;
 
 import static com.android.server.art.ArtManagerLocal.AdjustCompilerFilterCallback;
+import static com.android.server.art.DexMetadataHelper.DexMetadataInfo;
 import static com.android.server.art.OutputArtifacts.PermissionSettings;
 import static com.android.server.art.ProfilePath.TmpProfilePath;
 import static com.android.server.art.Utils.Abi;
@@ -123,18 +124,29 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                     continue;
                 }
 
+                DexMetadataInfo dmInfo =
+                        mInjector.getDexMetadataHelper().getDexMetadataInfo(buildDmPath(dexInfo));
+
                 boolean needsToBeShared = needsToBeShared(dexInfo);
                 boolean isOtherReadable = true;
                 // If true, implies that the profile has changed since the last compilation.
                 boolean profileMerged = false;
                 if (DexFile.isProfileGuidedCompilerFilter(compilerFilter)) {
+                    if (!dmInfo.config().getEnableEmbeddedProfile()) {
+                        String dmPath = DexMetadataHelper.getDmPath(
+                                Objects.requireNonNull(dmInfo.dmPath()));
+                        Log.i(TAG, "Embedded profile disabled by config in the dm file " + dmPath);
+                    }
+
                     if (needsToBeShared) {
-                        InitProfileResult result = initReferenceProfile(dexInfo);
+                        InitProfileResult result = initReferenceProfile(
+                                dexInfo, dmInfo.config().getEnableEmbeddedProfile());
                         profile = result.profile();
                         isOtherReadable = result.isOtherReadable();
                         externalProfileErrors = result.externalProfileErrors();
                     } else {
-                        InitProfileResult result = getOrInitReferenceProfile(dexInfo);
+                        InitProfileResult result = getOrInitReferenceProfile(
+                                dexInfo, dmInfo.config().getEnableEmbeddedProfile());
                         profile = result.profile();
                         isOtherReadable = result.isOtherReadable();
                         externalProfileErrors = result.externalProfileErrors();
@@ -183,6 +195,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                                              .setIsa(abi.isa())
                                              .setIsInDalvikCache(isInDalvikCache)
                                              .setCompilerFilter(compilerFilter)
+                                             .setDmPath(dmInfo.dmPath())
                                              .build();
                         var options = GetDexoptNeededOptions.builder()
                                               .setProfileMerged(profileMerged)
@@ -377,18 +390,19 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
 
     /** @see Utils#getOrInitReferenceProfile */
     @Nullable
-    private InitProfileResult getOrInitReferenceProfile(@NonNull DexInfoType dexInfo)
-            throws RemoteException {
+    private InitProfileResult getOrInitReferenceProfile(
+            @NonNull DexInfoType dexInfo, boolean enableEmbeddedProfile) throws RemoteException {
         return Utils.getOrInitReferenceProfile(mInjector.getArtd(), dexInfo.dexPath(),
-                buildRefProfilePath(dexInfo), getExternalProfiles(dexInfo),
+                buildRefProfilePath(dexInfo), getExternalProfiles(dexInfo), enableEmbeddedProfile,
                 buildOutputProfile(dexInfo, true /* isPublic */));
     }
 
     @Nullable
-    private InitProfileResult initReferenceProfile(@NonNull DexInfoType dexInfo)
-            throws RemoteException {
+    private InitProfileResult initReferenceProfile(
+            @NonNull DexInfoType dexInfo, boolean enableEmbeddedProfile) throws RemoteException {
         return Utils.initReferenceProfile(mInjector.getArtd(), dexInfo.dexPath(),
-                getExternalProfiles(dexInfo), buildOutputProfile(dexInfo, true /* isPublic */));
+                getExternalProfiles(dexInfo), enableEmbeddedProfile,
+                buildOutputProfile(dexInfo, true /* isPublic */));
     }
 
     @NonNull
@@ -485,8 +499,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
         VdexPath inputVdex =
                 getInputVdex(getDexoptNeededResult, target.dexInfo().dexPath(), target.isa());
 
-        DexMetadataPath dmFile = getDmFile(target.dexInfo());
-        if (dmFile != null
+        if (target.dmPath() != null
                 && ReasonMapping.REASONS_FOR_INSTALL.contains(dexoptOptions.compilationReason)) {
             // If the DM file is passed to dex2oat, then add the "-dm" suffix to the reason (e.g.,
             // "install-dm").
@@ -503,8 +516,8 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
 
         ArtdDexoptResult result = mInjector.getArtd().dexopt(outputArtifacts,
                 target.dexInfo().dexPath(), target.isa(), target.dexInfo().classLoaderContext(),
-                target.compilerFilter(), profile, inputVdex, dmFile, priorityClass, dexoptOptions,
-                artdCancellationSignal);
+                target.compilerFilter(), profile, inputVdex, target.dmPath(), priorityClass,
+                dexoptOptions, artdCancellationSignal);
 
         // Delete the existing runtime images after the dexopt is performed, even if they are still
         // usable (e.g., the compiler filter is "verify"). This is to make sure the dexopt puts the
@@ -543,22 +556,6 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                 throw new IllegalStateException(
                         "Unknown artifacts location " + getDexoptNeededResult.artifactsLocation);
         }
-    }
-
-    @Nullable
-    private DexMetadataPath getDmFile(@NonNull DexInfoType dexInfo) throws RemoteException {
-        DexMetadataPath path = buildDmPath(dexInfo);
-        if (path == null) {
-            return null;
-        }
-        try {
-            if (mInjector.getArtd().getDmFileVisibility(path) != FileVisibility.NOT_FOUND) {
-                return path;
-            }
-        } catch (ServiceSpecificException e) {
-            Log.e(TAG, "Failed to check DM file for " + dexInfo.dexPath(), e);
-        }
-        return null;
     }
 
     private boolean commitProfileChanges(@NonNull TmpProfilePath profile) throws RemoteException {
@@ -662,6 +659,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
         abstract @NonNull String isa();
         abstract boolean isInDalvikCache();
         abstract @NonNull String compilerFilter();
+        abstract @Nullable DexMetadataPath dmPath();
 
         static <DexInfoType extends DetailedDexInfo> Builder<DexInfoType> builder() {
             return new AutoValue_Dexopter_DexoptTarget.Builder<DexInfoType>();
@@ -673,6 +671,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
             abstract Builder setIsa(@NonNull String value);
             abstract Builder setIsInDalvikCache(boolean value);
             abstract Builder setCompilerFilter(@NonNull String value);
+            abstract Builder setDmPath(@Nullable DexMetadataPath value);
             abstract DexoptTarget<DexInfoType> build();
         }
     }
@@ -769,6 +768,11 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
         @NonNull
         public Config getConfig() {
             return mConfig;
+        }
+
+        @NonNull
+        public DexMetadataHelper getDexMetadataHelper() {
+            return new DexMetadataHelper();
         }
     }
 }

@@ -34,8 +34,6 @@
 
 namespace art HIDDEN {
 
-using Strategy = RegisterAllocator::Strategy;
-
 // Note: the register allocator tests rely on the fact that constants have live
 // intervals and registers get allocated to them.
 
@@ -47,24 +45,12 @@ class RegisterAllocatorTest : public CommonCompilerTest, public OptimizingUnitTe
     compiler_options_ = CommonCompilerTest::CreateCompilerOptions(InstructionSet::kX86, "default");
   }
 
-  // These functions need to access private variables of LocationSummary, so we declare it
-  // as a member of RegisterAllocatorTest, which we make a friend class.
-  void SameAsFirstInputHint(Strategy strategy);
-  void ExpectedInRegisterHint(Strategy strategy);
-
   // Helper functions that make use of the OptimizingUnitTest's members.
-  bool Check(const std::vector<uint16_t>& data, Strategy strategy);
-  void CFG1(Strategy strategy);
-  void Loop1(Strategy strategy);
-  void Loop2(Strategy strategy);
-  void Loop3(Strategy strategy);
-  void DeadPhi(Strategy strategy);
+  bool Check(const std::vector<uint16_t>& data);
   HGraph* BuildIfElseWithPhi(HPhi** phi, HInstruction** input1, HInstruction** input2);
-  void PhiHint(Strategy strategy);
   HGraph* BuildFieldReturn(HInstruction** field, HInstruction** ret);
   HGraph* BuildTwoSubs(HInstruction** first_sub, HInstruction** second_sub);
   HGraph* BuildDiv(HInstruction** div);
-  void ExpectedExactInRegisterAndSameOutputHint(Strategy strategy);
 
   bool ValidateIntervals(const ScopedArenaVector<LiveInterval*>& intervals,
                          const CodeGenerator& codegen) {
@@ -80,23 +66,13 @@ class RegisterAllocatorTest : public CommonCompilerTest, public OptimizingUnitTe
   std::unique_ptr<CompilerOptions> compiler_options_;
 };
 
-// This macro should include all register allocation strategies that should be tested.
-#define TEST_ALL_STRATEGIES(test_name)\
-TEST_F(RegisterAllocatorTest, test_name##_LinearScan) {\
-  test_name(Strategy::kRegisterAllocatorLinearScan);\
-}\
-/* Note: Graph coloring register allocator has been removed, so the test is DISABLED. */ \
-TEST_F(RegisterAllocatorTest, DISABLED_##test_name##_GraphColor) {\
-  test_name(Strategy::kRegisterAllocatorGraphColor);\
-}
-
-bool RegisterAllocatorTest::Check(const std::vector<uint16_t>& data, Strategy strategy) {
+bool RegisterAllocatorTest::Check(const std::vector<uint16_t>& data) {
   HGraph* graph = CreateCFG(data);
   x86::CodeGeneratorX86 codegen(graph, *compiler_options_);
   SsaLivenessAnalysis liveness(graph, &codegen, GetScopedAllocator());
   liveness.Analyze();
   std::unique_ptr<RegisterAllocator> register_allocator =
-      RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+      RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
   register_allocator->AllocateRegisters();
   return register_allocator->Validate(false);
 }
@@ -179,7 +155,7 @@ TEST_F(RegisterAllocatorTest, ValidateIntervals) {
   }
 }
 
-void RegisterAllocatorTest::CFG1(Strategy strategy) {
+TEST_F(RegisterAllocatorTest, CFG1) {
   /*
    * Test the following snippet:
    *  return 0;
@@ -196,12 +172,10 @@ void RegisterAllocatorTest::CFG1(Strategy strategy) {
     Instruction::CONST_4 | 0 | 0,
     Instruction::RETURN);
 
-  ASSERT_TRUE(Check(data, strategy));
+  ASSERT_TRUE(Check(data));
 }
 
-TEST_ALL_STRATEGIES(CFG1);
-
-void RegisterAllocatorTest::Loop1(Strategy strategy) {
+TEST_F(RegisterAllocatorTest, Loop1) {
   /*
    * Test the following snippet:
    *  int a = 0;
@@ -237,12 +211,10 @@ void RegisterAllocatorTest::Loop1(Strategy strategy) {
     Instruction::CONST_4 | 5 << 12 | 1 << 8,
     Instruction::RETURN | 1 << 8);
 
-  ASSERT_TRUE(Check(data, strategy));
+  ASSERT_TRUE(Check(data));
 }
 
-TEST_ALL_STRATEGIES(Loop1);
-
-void RegisterAllocatorTest::Loop2(Strategy strategy) {
+TEST_F(RegisterAllocatorTest, Loop2) {
   /*
    * Test the following snippet:
    *  int a = 0;
@@ -288,12 +260,10 @@ void RegisterAllocatorTest::Loop2(Strategy strategy) {
     Instruction::ADD_INT, 1 << 8 | 0,
     Instruction::RETURN | 1 << 8);
 
-  ASSERT_TRUE(Check(data, strategy));
+  ASSERT_TRUE(Check(data));
 }
 
-TEST_ALL_STRATEGIES(Loop2);
-
-void RegisterAllocatorTest::Loop3(Strategy strategy) {
+TEST_F(RegisterAllocatorTest, Loop3) {
   /*
    * Test the following snippet:
    *  int a = 0
@@ -335,7 +305,7 @@ void RegisterAllocatorTest::Loop3(Strategy strategy) {
   SsaLivenessAnalysis liveness(graph, &codegen, GetScopedAllocator());
   liveness.Analyze();
   std::unique_ptr<RegisterAllocator> register_allocator =
-      RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+      RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
   register_allocator->AllocateRegisters();
   ASSERT_TRUE(register_allocator->Validate(false));
 
@@ -352,8 +322,6 @@ void RegisterAllocatorTest::Loop3(Strategy strategy) {
   HReturn* ret = return_block->GetLastInstruction()->AsReturn();
   ASSERT_EQ(phi_interval->GetRegister(), ret->InputAt(0)->GetLiveInterval()->GetRegister());
 }
-
-TEST_ALL_STRATEGIES(Loop3);
 
 TEST_F(RegisterAllocatorTest, FirstRegisterUse) {
   const std::vector<uint16_t> data = THREE_REGISTERS_CODE_ITEM(
@@ -391,7 +359,7 @@ TEST_F(RegisterAllocatorTest, FirstRegisterUse) {
   ASSERT_EQ(new_interval->FirstRegisterUse(), last_xor->GetLifetimePosition());
 }
 
-void RegisterAllocatorTest::DeadPhi(Strategy strategy) {
+TEST_F(RegisterAllocatorTest, DeadPhi) {
   /* Test for a dead loop phi taking as back-edge input a phi that also has
    * this loop phi as input. Walking backwards in SsaDeadPhiElimination
    * does not solve the problem because the loop phi will be visited last.
@@ -419,12 +387,10 @@ void RegisterAllocatorTest::DeadPhi(Strategy strategy) {
   SsaLivenessAnalysis liveness(graph, &codegen, GetScopedAllocator());
   liveness.Analyze();
   std::unique_ptr<RegisterAllocator> register_allocator =
-      RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+      RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
   register_allocator->AllocateRegisters();
   ASSERT_TRUE(register_allocator->Validate(false));
 }
-
-TEST_ALL_STRATEGIES(DeadPhi);
 
 /**
  * Test that the TryAllocateFreeReg method works in the presence of inactive intervals
@@ -559,7 +525,7 @@ HGraph* RegisterAllocatorTest::BuildIfElseWithPhi(HPhi** phi,
   return graph;
 }
 
-void RegisterAllocatorTest::PhiHint(Strategy strategy) {
+TEST_F(RegisterAllocatorTest, PhiHint) {
   HPhi *phi;
   HInstruction *input1, *input2;
 
@@ -571,7 +537,7 @@ void RegisterAllocatorTest::PhiHint(Strategy strategy) {
 
     // Check that the register allocator is deterministic.
     std::unique_ptr<RegisterAllocator> register_allocator =
-        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
     register_allocator->AllocateRegisters();
 
     ASSERT_EQ(input1->GetLiveInterval()->GetRegister(), 0);
@@ -589,7 +555,7 @@ void RegisterAllocatorTest::PhiHint(Strategy strategy) {
     // the same register.
     phi->GetLocations()->UpdateOut(Location::RegisterLocation(2));
     std::unique_ptr<RegisterAllocator> register_allocator =
-        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
     register_allocator->AllocateRegisters();
 
     ASSERT_EQ(input1->GetLiveInterval()->GetRegister(), 2);
@@ -607,7 +573,7 @@ void RegisterAllocatorTest::PhiHint(Strategy strategy) {
     // the same register.
     input1->GetLocations()->UpdateOut(Location::RegisterLocation(2));
     std::unique_ptr<RegisterAllocator> register_allocator =
-        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
     register_allocator->AllocateRegisters();
 
     ASSERT_EQ(input1->GetLiveInterval()->GetRegister(), 2);
@@ -625,19 +591,13 @@ void RegisterAllocatorTest::PhiHint(Strategy strategy) {
     // the same register.
     input2->GetLocations()->UpdateOut(Location::RegisterLocation(2));
     std::unique_ptr<RegisterAllocator> register_allocator =
-        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
     register_allocator->AllocateRegisters();
 
     ASSERT_EQ(input1->GetLiveInterval()->GetRegister(), 2);
     ASSERT_EQ(input2->GetLiveInterval()->GetRegister(), 2);
     ASSERT_EQ(phi->GetLiveInterval()->GetRegister(), 2);
   }
-}
-
-// TODO: Enable this test for graph coloring register allocation when iterative move
-//       coalescing is merged.
-TEST_F(RegisterAllocatorTest, PhiHint_LinearScan) {
-  PhiHint(Strategy::kRegisterAllocatorLinearScan);
 }
 
 HGraph* RegisterAllocatorTest::BuildFieldReturn(HInstruction** field, HInstruction** ret) {
@@ -675,7 +635,7 @@ HGraph* RegisterAllocatorTest::BuildFieldReturn(HInstruction** field, HInstructi
   return graph;
 }
 
-void RegisterAllocatorTest::ExpectedInRegisterHint(Strategy strategy) {
+TEST_F(RegisterAllocatorTest, ExpectedInRegisterHint) {
   HInstruction *field, *ret;
 
   {
@@ -685,7 +645,7 @@ void RegisterAllocatorTest::ExpectedInRegisterHint(Strategy strategy) {
     liveness.Analyze();
 
     std::unique_ptr<RegisterAllocator> register_allocator =
-        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
     register_allocator->AllocateRegisters();
 
     // Check the validity that in normal conditions, the register should be hinted to 0 (EAX).
@@ -703,17 +663,11 @@ void RegisterAllocatorTest::ExpectedInRegisterHint(Strategy strategy) {
     ret->GetLocations()->inputs_[0] = Location::RegisterLocation(2);
 
     std::unique_ptr<RegisterAllocator> register_allocator =
-        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
     register_allocator->AllocateRegisters();
 
     ASSERT_EQ(field->GetLiveInterval()->GetRegister(), 2);
   }
-}
-
-// TODO: Enable this test for graph coloring register allocation when iterative move
-//       coalescing is merged.
-TEST_F(RegisterAllocatorTest, ExpectedInRegisterHint_LinearScan) {
-  ExpectedInRegisterHint(Strategy::kRegisterAllocatorLinearScan);
 }
 
 HGraph* RegisterAllocatorTest::BuildTwoSubs(HInstruction** first_sub, HInstruction** second_sub) {
@@ -743,7 +697,7 @@ HGraph* RegisterAllocatorTest::BuildTwoSubs(HInstruction** first_sub, HInstructi
   return graph;
 }
 
-void RegisterAllocatorTest::SameAsFirstInputHint(Strategy strategy) {
+TEST_F(RegisterAllocatorTest, SameAsFirstInputHint) {
   HInstruction *first_sub, *second_sub;
 
   {
@@ -753,7 +707,7 @@ void RegisterAllocatorTest::SameAsFirstInputHint(Strategy strategy) {
     liveness.Analyze();
 
     std::unique_ptr<RegisterAllocator> register_allocator =
-        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
     register_allocator->AllocateRegisters();
 
     // Check the validity that in normal conditions, the registers are the same.
@@ -774,18 +728,12 @@ void RegisterAllocatorTest::SameAsFirstInputHint(Strategy strategy) {
     ASSERT_EQ(second_sub->GetLocations()->Out().GetPolicy(), Location::kSameAsFirstInput);
 
     std::unique_ptr<RegisterAllocator> register_allocator =
-        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+        RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
     register_allocator->AllocateRegisters();
 
     ASSERT_EQ(first_sub->GetLiveInterval()->GetRegister(), 2);
     ASSERT_EQ(second_sub->GetLiveInterval()->GetRegister(), 2);
   }
-}
-
-// TODO: Enable this test for graph coloring register allocation when iterative move
-//       coalescing is merged.
-TEST_F(RegisterAllocatorTest, SameAsFirstInputHint_LinearScan) {
-  SameAsFirstInputHint(Strategy::kRegisterAllocatorLinearScan);
 }
 
 HGraph* RegisterAllocatorTest::BuildDiv(HInstruction** div) {
@@ -814,7 +762,7 @@ HGraph* RegisterAllocatorTest::BuildDiv(HInstruction** div) {
   return graph;
 }
 
-void RegisterAllocatorTest::ExpectedExactInRegisterAndSameOutputHint(Strategy strategy) {
+TEST_F(RegisterAllocatorTest, ExpectedExactInRegisterAndSameOutputHint) {
   HInstruction *div;
   HGraph* graph = BuildDiv(&div);
   x86::CodeGeneratorX86 codegen(graph, *compiler_options_);
@@ -822,17 +770,11 @@ void RegisterAllocatorTest::ExpectedExactInRegisterAndSameOutputHint(Strategy st
   liveness.Analyze();
 
   std::unique_ptr<RegisterAllocator> register_allocator =
-      RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness, strategy);
+      RegisterAllocator::Create(GetScopedAllocator(), &codegen, liveness);
   register_allocator->AllocateRegisters();
 
   // div on x86 requires its first input in eax and the output be the same as the first input.
   ASSERT_EQ(div->GetLiveInterval()->GetRegister(), 0);
-}
-
-// TODO: Enable this test for graph coloring register allocation when iterative move
-//       coalescing is merged.
-TEST_F(RegisterAllocatorTest, ExpectedExactInRegisterAndSameOutputHint_LinearScan) {
-  ExpectedExactInRegisterAndSameOutputHint(Strategy::kRegisterAllocatorLinearScan);
 }
 
 // Test a bug in the register allocator, where allocating a blocked

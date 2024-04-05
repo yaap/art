@@ -22,11 +22,11 @@ public class Multi {
   }
 
   public static String $inline$NeedsBssEntryStringMultiDex() {
-    return "def";
+    return "this-string-will-never-be-in-RO";
   }
 
   private static String $noinline$InnerInvokeMultiDex() {
-    return "ghi";
+    return "this-string-will-never-be-in-RO-too";
   }
 
   public static String $inline$NeedsBssEntryInvokeMultiDex() {

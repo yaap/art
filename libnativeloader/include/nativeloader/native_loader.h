@@ -65,6 +65,9 @@ FindNativeLoaderNamespaceByClassLoader(JNIEnv* env, jobject class_loader);
 __attribute__((visibility("default"))) void* OpenNativeLibraryInNamespace(
     struct NativeLoaderNamespace* ns, const char* path, bool* needs_native_bridge,
     char** error_msg);
+
+__attribute__((visibility("default"))) bool IsNamespaceNativeBridged(
+    const struct NativeLoaderNamespace* ns);
 #endif
 
 __attribute__((visibility("default")))

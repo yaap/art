@@ -86,11 +86,17 @@ bool IsMethodAnnotationPresent(ArtMethod* method,
 EXPORT uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
                                                      const dex::ClassDef& class_def,
                                                      uint32_t method_index);
+// An overload of `GetNativeMethodAnnotationAccessFlags()` that takes a `MethodAnnotationsItem`.
+uint32_t GetNativeMethodAnnotationAccessFlags(const DexFile& dex_file,
+                                              const dex::MethodAnnotationsItem& method_annotations);
 // Is the method from the `dex_file` with the given `field_index`
 // annotated with @dalvik.annotation.optimization.NeverCompile?
 EXPORT bool MethodIsNeverCompile(const DexFile& dex_file,
                                  const dex::ClassDef& class_def,
                                  uint32_t method_index);
+// An overload of `MethodIsNeverCompile()` that takes a `MethodAnnotationsItem`.
+bool MethodIsNeverCompile(const DexFile& dex_file,
+                          const dex::MethodAnnotationsItem& method_annotations);
 // Is the method from the `dex_file` with the given `field_index`
 // annotated with @dalvik.annotation.optimization.NeverInline?
 bool MethodIsNeverInline(const DexFile& dex_file,

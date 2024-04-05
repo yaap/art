@@ -342,7 +342,7 @@ bool DexFileLoader::MapRootContainer(std::string* error_msg) {
     DCHECK(!error_msg->empty());
     return false;
   }
-  root_container_ = std::make_shared<MemMapContainer>(std::move(map));
+  root_container_ = std::make_shared<MemMapContainer>(std::move(map), /*is_file_map=*/true);
   return true;
 }
 

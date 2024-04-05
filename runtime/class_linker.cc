@@ -3868,6 +3868,29 @@ LinearAlloc* ClassLinker::GetOrCreateAllocatorForClassLoader(ObjPtr<mirror::Clas
   return allocator;
 }
 
+// Helper class for iterating over method annotations, using their ordering in the dex file.
+// Since direct and virtual methods are separated (but each section is ordered), we shall use
+// separate iterators for loading direct and virtual methods.
+class ClassLinker::MethodAnnotationsIterator {
+ public:
+  MethodAnnotationsIterator(const DexFile& dex_file,
+                            const dex::AnnotationsDirectoryItem* annotations_dir)
+      : current_((annotations_dir != nullptr) ? dex_file.GetMethodAnnotations(annotations_dir)
+                                              : nullptr),
+        end_((annotations_dir != nullptr) ? current_ + annotations_dir->methods_size_ : nullptr) {}
+
+  const dex::MethodAnnotationsItem* AdvanceTo(uint32_t method_idx) {
+    while (current_ != end_ && current_->method_idx_ < method_idx) {
+      ++current_;
+    }
+    return (current_ != end_ && current_->method_idx_ == method_idx) ? current_ : nullptr;
+  }
+
+ private:
+  const dex::MethodAnnotationsItem* current_;
+  const dex::MethodAnnotationsItem* const end_;
+};
+
 void ClassLinker::LoadClass(Thread* self,
                             const DexFile& dex_file,
                             const dex::ClassDef& dex_class_def,
@@ -3912,6 +3935,10 @@ void ClassLinker::LoadClass(Thread* self,
     uint32_t last_dex_method_index = dex::kDexNoIndex;
     size_t last_class_def_method_index = 0;
 
+    // Initialize separate `MethodAnnotationsIterator`s for direct and virtual methods.
+    MethodAnnotationsIterator mai_direct(dex_file, dex_file.GetAnnotationsDirectory(dex_class_def));
+    MethodAnnotationsIterator mai_virtual = mai_direct;
+
     uint16_t hotness_threshold = runtime->GetJITOptions()->GetWarmupThreshold();
     // Use the visitor since the ranged based loops are bit slower from seeking. Seeking to the
     // methods needs to decode all of the fields.
@@ -3935,7 +3962,7 @@ void ClassLinker::LoadClass(Thread* self,
         }, [&](const ClassAccessor::Method& method) REQUIRES_SHARED(Locks::mutator_lock_) {
           ArtMethod* art_method = klass->GetDirectMethodUnchecked(class_def_method_index,
               image_pointer_size_);
-          LoadMethod(dex_file, method, klass.Get(), art_method);
+          LoadMethod(dex_file, method, klass.Get(), &mai_direct, art_method);
           LinkCode(this, art_method, oat_class_ptr, class_def_method_index);
           uint32_t it_method_index = method.GetIndex();
           if (last_dex_method_index == it_method_index) {
@@ -3953,7 +3980,7 @@ void ClassLinker::LoadClass(Thread* self,
               class_def_method_index - accessor.NumDirectMethods(),
               image_pointer_size_);
           art_method->ResetCounter(hotness_threshold);
-          LoadMethod(dex_file, method, klass.Get(), art_method);
+          LoadMethod(dex_file, method, klass.Get(), &mai_virtual, art_method);
           LinkCode(this, art_method, oat_class_ptr, class_def_method_index);
           ++class_def_method_index;
         });
@@ -3996,7 +4023,8 @@ void ClassLinker::LoadField(const ClassAccessor::Field& field,
 void ClassLinker::LoadMethod(const DexFile& dex_file,
                              const ClassAccessor::Method& method,
                              ObjPtr<mirror::Class> klass,
-                             ArtMethod* dst) {
+                             /*inout*/ MethodAnnotationsIterator* mai,
+                             /*out*/ ArtMethod* dst) {
   ScopedAssertNoThreadSuspension sants(__FUNCTION__);
 
   const uint32_t dex_method_idx = method.GetIndex();
@@ -4045,9 +4073,11 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
 
   if (UNLIKELY((access_flags & kAccNative) != 0u)) {
     // Check if the native method is annotated with @FastNative or @CriticalNative.
-    const dex::ClassDef& class_def = dex_file.GetClassDef(klass->GetDexClassDefIndex());
-    access_flags |=
-        annotations::GetNativeMethodAnnotationAccessFlags(dex_file, class_def, dex_method_idx);
+    const dex::MethodAnnotationsItem* method_annotations = mai->AdvanceTo(dex_method_idx);
+    if (method_annotations != nullptr) {
+      access_flags |=
+          annotations::GetNativeMethodAnnotationAccessFlags(dex_file, *method_annotations);
+    }
     dst->SetAccessFlags(access_flags);
     DCHECK(!dst->IsAbstract());
     DCHECK(!dst->HasCodeItem());
@@ -4064,8 +4094,9 @@ void ClassLinker::LoadMethod(const DexFile& dex_file,
     DCHECK_EQ(method.GetCodeItemOffset(), 0u);
     dst->SetDataPtrSize(nullptr, image_pointer_size_);  // Single implementation not set yet.
   } else {
-    const dex::ClassDef& class_def = dex_file.GetClassDef(klass->GetDexClassDefIndex());
-    if (annotations::MethodIsNeverCompile(dex_file, class_def, dex_method_idx)) {
+    const dex::MethodAnnotationsItem* method_annotations = mai->AdvanceTo(dex_method_idx);
+    if (method_annotations != nullptr &&
+        annotations::MethodIsNeverCompile(dex_file, *method_annotations)) {
       access_flags |= kAccCompileDontBother;
     }
     dst->SetAccessFlags(access_flags);

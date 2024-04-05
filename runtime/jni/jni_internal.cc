@@ -16,8 +16,9 @@
 
 #include "jni_internal.h"
 
-#include <cstdarg>
 #include <log/log.h>
+
+#include <cstdarg>
 #include <memory>
 #include <utility>
 
@@ -37,10 +38,10 @@
 #include "dex/dex_file-inl.h"
 #include "dex/utf-inl.h"
 #include "fault_handler.h"
-#include "handle_scope.h"
-#include "hidden_api.h"
 #include "gc/accounting/card_table-inl.h"
 #include "gc_root.h"
+#include "handle_scope.h"
+#include "hidden_api.h"
 #include "indirect_reference_table-inl.h"
 #include "interpreter/interpreter.h"
 #include "java_vm_ext.h"
@@ -58,7 +59,9 @@
 #include "mirror/string-alloc-inl.h"
 #include "mirror/string-inl.h"
 #include "mirror/throwable.h"
+#include "nativebridge/native_bridge.h"
 #include "nativehelper/scoped_local_ref.h"
+#include "nativeloader/native_loader.h"
 #include "parsed_options.h"
 #include "reflection.h"
 #include "runtime.h"
@@ -2575,6 +2578,9 @@ class JNI {
           << c->PrettyDescriptor();
       return JNI_OK;
     }
+    bool is_class_loader_namespace_natively_bridged =
+        IsClassLoaderNamespaceNativelyBridged(soa, c->GetClassLoader());
+
     CHECK_NON_NULL_ARGUMENT_FN_NAME("RegisterNatives", methods, JNI_ERR);
     for (jint i = 0; i < method_count; ++i) {
       const char* name = methods[i].name;
@@ -2683,6 +2689,9 @@ class JNI {
         // TODO: make this a hard register error in the future.
       }
 
+      if (is_class_loader_namespace_natively_bridged) {
+        fnPtr = GenerateNativeBridgeTrampoline(fnPtr, m);
+      }
       const void* final_function_ptr = class_linker->RegisterNative(soa.Self(), m, fnPtr);
       UNUSED(final_function_ptr);
     }
@@ -2903,6 +2912,36 @@ class JNI {
     }
     DCHECK_EQ(sizeof(ElementT), array->GetClass()->GetComponentSize());
     return array;
+  }
+
+  static bool IsClassLoaderNamespaceNativelyBridged(ScopedObjectAccess& soa,
+                                                    ObjPtr<mirror::ClassLoader> class_loader)
+      REQUIRES_SHARED(Locks::mutator_lock_) {
+#if defined(__ANDROID__)
+    ScopedLocalRef<jobject> jclass_loader(soa.Env(), soa.AddLocalReference<jobject>(class_loader));
+    android::NativeLoaderNamespace* ns =
+        android::FindNativeLoaderNamespaceByClassLoader(soa.Env(), jclass_loader.get());
+    return ns != nullptr && android::IsNamespaceNativeBridged(ns);
+#else
+    UNUSED(soa, class_loader);
+    return false;
+#endif
+  }
+
+  static const void* GenerateNativeBridgeTrampoline(const void* fn_ptr, ArtMethod* method)
+      REQUIRES_SHARED(Locks::mutator_lock_) {
+#if defined(__ANDROID__)
+    uint32_t shorty_length;
+    const char* shorty = method->GetShorty(&shorty_length);
+    android::JNICallType jni_call_type = method->IsCriticalNative() ?
+                                             android::JNICallType::kJNICallTypeCriticalNative :
+                                             android::JNICallType::kJNICallTypeRegular;
+    return NativeBridgeGetTrampolineForFunctionPointer(
+        fn_ptr, shorty, shorty_length, jni_call_type);
+#else
+    UNUSED(method);
+    return fn_ptr;
+#endif
   }
 
   template <typename ArrayT, typename ElementT, typename ArtArrayT>

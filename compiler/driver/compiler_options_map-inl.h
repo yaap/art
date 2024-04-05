@@ -81,11 +81,6 @@ inline bool ReadCompilerOptions(Base& map, CompilerOptions* options, std::string
   if (map.Exists(Base::DumpCFGAppend)) {
     options->dump_cfg_append_ = true;
   }
-  if (map.Exists(Base::RegisterAllocationStrategy)) {
-    if (!options->ParseRegisterAllocationStrategy(*map.Get(Base::DumpInitFailures), error_msg)) {
-      return false;
-    }
-  }
   map.AssignIfExists(Base::VerboseMethods, &options->verbose_methods_);
   options->deduplicate_code_ = map.GetOrDefault(Base::DeduplicateCode);
   if (map.Exists(Base::CountHotnessInCompiledCode)) {
@@ -221,10 +216,6 @@ NO_INLINE void AddCompilerOptionsArgumentParserOptions(Builder& b) {
                     "behavior). This option is only meaningful when used with --dump-cfg.")
           .IntoKey(Map::DumpCFGAppend)
 
-      .Define("--register-allocation-strategy=_")
-          .template WithType<std::string>()
-          .IntoKey(Map::RegisterAllocationStrategy)
-
       .Define("--resolve-startup-const-strings=_")
           .template WithType<bool>()
           .WithValueMap({{"false", false}, {"true", true}})
@@ -252,6 +243,7 @@ NO_INLINE void AddCompilerOptionsArgumentParserOptions(Builder& b) {
         "--num-dex-methods=_",
         "--top-k-profile-threshold=_",
         "--large-method-max=_",
+        "--register-allocation-strategy=_"
       });
   // clang-format on
 }

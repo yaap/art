@@ -30,6 +30,10 @@ void SetGetTrampoline2Called(JNICallType jni_call_type);
 bool IsGetTrampoline2Called();
 JNICallType GetTrampoline2JNICallType();
 
+void SetGetTrampolineFnPtrCalled(JNICallType jni_call_type);
+bool IsGetTrampolineFnPtrCalled();
+JNICallType GetTrampolineFnPtrJNICallType();
+
 }  // namespace android
 
 #endif  // ART_LIBNATIVEBRIDGE_TESTS_NATIVEBRIDGE7CRITICALNATIVE_LIB_H_

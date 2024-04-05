@@ -80,7 +80,6 @@ CompilerOptions::CompilerOptions()
       initialize_app_image_classes_(false),
       check_profiled_methods_(ProfileMethodsCheck::kNone),
       max_image_block_size_(std::numeric_limits<uint32_t>::max()),
-      register_allocation_strategy_(RegisterAllocator::kRegisterAllocatorDefault),
       passes_to_run_(nullptr) {
 }
 
@@ -110,20 +109,6 @@ bool CompilerOptions::ParseDumpInitFailures(const std::string& option, std::stri
     *error_msg = android::base::StringPrintf(
         "Failed to open %s for writing the initialization failures.", option.c_str());
     init_failure_output_.reset();
-    return false;
-  }
-  return true;
-}
-
-bool CompilerOptions::ParseRegisterAllocationStrategy(const std::string& option,
-                                                      std::string* error_msg) {
-  if (option == "linear-scan") {
-    register_allocation_strategy_ = RegisterAllocator::Strategy::kRegisterAllocatorLinearScan;
-  } else if (option == "graph-color") {
-    LOG(ERROR) << "Graph coloring allocator has been removed, using linear scan instead.";
-    register_allocation_strategy_ = RegisterAllocator::Strategy::kRegisterAllocatorLinearScan;
-  } else {
-    *error_msg = "Unrecognized register allocation strategy. Try linear-scan.";
     return false;
   }
   return true;

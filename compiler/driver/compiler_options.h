@@ -326,10 +326,6 @@ class CompilerOptions final {
     return deduplicate_code_;
   }
 
-  RegisterAllocator::Strategy GetRegisterAllocationStrategy() const {
-    return register_allocation_strategy_;
-  }
-
   const std::vector<std::string>* GetPassesToRun() const {
     return passes_to_run_;
   }
@@ -383,7 +379,6 @@ class CompilerOptions final {
 
  private:
   EXPORT bool ParseDumpInitFailures(const std::string& option, std::string* error_msg);
-  EXPORT bool ParseRegisterAllocationStrategy(const std::string& option, std::string* error_msg);
 
   CompilerFilter::Filter compiler_filter_;
   size_t huge_method_threshold_;
@@ -476,8 +471,6 @@ class CompilerOptions final {
 
   // Maximum solid block size in the generated image.
   uint32_t max_image_block_size_;
-
-  RegisterAllocator::Strategy register_allocation_strategy_;
 
   // If not null, specifies optimization passes which will be run instead of defaults.
   // Note that passes_to_run_ is not checked for correctness and providing an incorrect

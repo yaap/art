@@ -366,13 +366,15 @@ public final class Utils {
      * @param refProfile the path where an existing reference profile would be found, if present
      * @param externalProfiles a list of external profiles to initialize the reference profile from,
      *         in the order of preference
+     * @param enableEmbeddedProfile whether to allow initializing the reference profile from the
+     *         embedded profile
      * @param initOutput the final location to initialize the reference profile to
      */
     @NonNull
     public static InitProfileResult getOrInitReferenceProfile(@NonNull IArtd artd,
             @NonNull String dexPath, @NonNull ProfilePath refProfile,
-            @NonNull List<ProfilePath> externalProfiles, @NonNull OutputProfile initOutput)
-            throws RemoteException {
+            @NonNull List<ProfilePath> externalProfiles, boolean enableEmbeddedProfile,
+            @NonNull OutputProfile initOutput) throws RemoteException {
         try {
             if (artd.isProfileUsable(refProfile, dexPath)) {
                 boolean isOtherReadable =
@@ -387,7 +389,8 @@ public final class Utils {
                     e);
         }
 
-        return initReferenceProfile(artd, dexPath, externalProfiles, initOutput);
+        return initReferenceProfile(
+                artd, dexPath, externalProfiles, enableEmbeddedProfile, initOutput);
     }
 
     /**
@@ -400,7 +403,7 @@ public final class Utils {
     @Nullable
     public static InitProfileResult initReferenceProfile(@NonNull IArtd artd,
             @NonNull String dexPath, @NonNull List<ProfilePath> externalProfiles,
-            @NonNull OutputProfile output) throws RemoteException {
+            boolean enableEmbeddedProfile, @NonNull OutputProfile output) throws RemoteException {
         // Each element is a pair of a profile name (for logging) and the corresponding initializer.
         // The order matters. Non-embedded profiles should take precedence.
         List<Pair<String, ProfileInitializer>> profileInitializers = new ArrayList<>();
@@ -413,8 +416,10 @@ public final class Utils {
             profileInitializers.add(Pair.create(AidlUtils.toString(profile),
                     () -> artd.copyAndRewriteProfile(profile, output, dexPath)));
         }
-        profileInitializers.add(Pair.create(
-                "embedded profile", () -> artd.copyAndRewriteEmbeddedProfile(output, dexPath)));
+        if (enableEmbeddedProfile) {
+            profileInitializers.add(Pair.create(
+                    "embedded profile", () -> artd.copyAndRewriteEmbeddedProfile(output, dexPath)));
+        }
 
         List<String> externalProfileErrors = new ArrayList<>();
         for (var pair : profileInitializers) {

@@ -103,10 +103,12 @@ public class SecondaryDexopterTest {
     @Mock private SecondaryDexopter.Injector mInjector;
     @Mock private IArtd mArtd;
     @Mock private DexUseManagerLocal mDexUseManager;
+    @Mock private DexMetadataHelper.Injector mDexMetadataHelperInjector;
     private PackageState mPkgState;
     private AndroidPackage mPkg;
     private CancellationSignal mCancellationSignal;
-    protected Config mConfig;
+    private Config mConfig;
+    private DexMetadataHelper mDexMetadataHelper;
 
     private SecondaryDexopter mSecondaryDexopter;
 
@@ -116,6 +118,7 @@ public class SecondaryDexopterTest {
         mPkg = mPkgState.getAndroidPackage();
         mCancellationSignal = new CancellationSignal();
         mConfig = new Config();
+        mDexMetadataHelper = new DexMetadataHelper(mDexMetadataHelperInjector);
 
         lenient()
                 .when(SystemProperties.getBoolean(eq("dalvik.vm.always_debuggable"), anyBoolean()))
@@ -137,6 +140,7 @@ public class SecondaryDexopterTest {
         lenient().when(mInjector.isLauncherPackage(any())).thenReturn(false);
         lenient().when(mInjector.getDexUseManager()).thenReturn(mDexUseManager);
         lenient().when(mInjector.getConfig()).thenReturn(mConfig);
+        lenient().when(mInjector.getDexMetadataHelper()).thenReturn(mDexMetadataHelper);
 
         List<CheckedSecondaryDexInfo> secondaryDexInfo = createSecondaryDexInfo();
         lenient()

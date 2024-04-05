@@ -502,7 +502,8 @@ class Heap {
     return continuous_spaces_;
   }
 
-  const std::vector<space::DiscontinuousSpace*>& GetDiscontinuousSpaces() const {
+  const std::vector<space::DiscontinuousSpace*>& GetDiscontinuousSpaces() const
+      REQUIRES_SHARED(Locks::mutator_lock_) {
     return discontinuous_spaces_;
   }
 

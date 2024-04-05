@@ -737,7 +737,8 @@ class LocationSummary : public ArenaObject<kArenaAllocLocationSummary> {
   // Custom slow path caller saves. Valid only if indicated by slow_path_calling_convention_.
   RegisterSet custom_slow_path_caller_saves_;
 
-  friend class RegisterAllocatorTest;
+  ART_FRIEND_TEST(RegisterAllocatorTest, ExpectedInRegisterHint);
+  ART_FRIEND_TEST(RegisterAllocatorTest, SameAsFirstInputHint);
   DISALLOW_COPY_AND_ASSIGN(LocationSummary);
 };
 

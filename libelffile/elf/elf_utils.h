@@ -57,14 +57,15 @@ struct ElfTypes64 {
   using Dyn = Elf64_Dyn;
 };
 
-#define ELF_ST_BIND(x) ((x) >> 4)
-#define ELF_ST_TYPE(x) ((x) & 0xf)
+// Only bionic has ELF class generic macros; glibc/musl require you to specify
+// ELF32 or ELF64, even though they're the same, and that makes call sites look
+// misleadingly class-specific.
+#ifndef __BIONIC__
+#define ELF_ST_BIND(x) ELF64_ST_BIND(x)
+#define ELF_ST_TYPE(x) ELF64_ST_TYPE(x)
+#endif
 
-// Architecture dependent flags for the ELF header.
-#define EF_ARM_EABI_VER5 0x05000000
-
-#define EI_ABIVERSION 8
-
+// Missing from musl (https://www.openwall.com/lists/musl/2024/03/21/10).
 #ifndef EF_RISCV_RVC
 #define EF_RISCV_RVC 0x1
 #define EF_RISCV_FLOAT_ABI_DOUBLE 0x4
@@ -72,76 +73,6 @@ struct ElfTypes64 {
 
 // Patching section type
 #define SHT_OAT_PATCH        SHT_LOUSER
-
-static inline void SetBindingAndType(Elf32_Sym* sym, unsigned char b, unsigned char t) {
-  sym->st_info = (b << 4) + (t & 0x0f);
-}
-
-static inline bool IsDynamicSectionPointer(Elf32_Word d_tag,
-                                           [[maybe_unused]] Elf32_Word e_machine) {
-  // TODO: Remove the `e_machine` parameter from API (not needed after Mips target was removed).
-  switch (d_tag) {
-    // case 1: well known d_tag values that imply Elf32_Dyn.d_un contains an address in d_ptr
-    case DT_PLTGOT:
-    case DT_HASH:
-    case DT_STRTAB:
-    case DT_SYMTAB:
-    case DT_RELA:
-    case DT_INIT:
-    case DT_FINI:
-    case DT_REL:
-    case DT_DEBUG:
-    case DT_JMPREL: {
-      return true;
-    }
-    // d_val or ignored values
-    case DT_NULL:
-    case DT_NEEDED:
-    case DT_PLTRELSZ:
-    case DT_RELASZ:
-    case DT_RELAENT:
-    case DT_STRSZ:
-    case DT_SYMENT:
-    case DT_SONAME:
-    case DT_RPATH:
-    case DT_SYMBOLIC:
-    case DT_RELSZ:
-    case DT_RELENT:
-    case DT_PLTREL:
-    case DT_TEXTREL:
-    case DT_BIND_NOW:
-    case DT_INIT_ARRAYSZ:
-    case DT_FINI_ARRAYSZ:
-    case DT_RUNPATH:
-    case DT_FLAGS: {
-      return false;
-    }
-    // boundary values that should not be used
-    case DT_ENCODING:
-    case DT_LOOS:
-    case DT_HIOS:
-    case DT_LOPROC:
-    case DT_HIPROC: {
-      LOG(FATAL) << "Illegal d_tag value 0x" << std::hex << d_tag;
-      return false;
-    }
-    default: {
-      // case 2: "regular" DT_* ranges where even d_tag values imply an address in d_ptr
-      if ((DT_ENCODING  < d_tag && d_tag < DT_LOOS)
-          || (DT_LOOS   < d_tag && d_tag < DT_HIOS)
-          || (DT_LOPROC < d_tag && d_tag < DT_HIPROC)) {
-        if ((d_tag % 2) == 0) {
-          return true;
-        } else {
-          return false;
-        }
-      } else {
-        LOG(FATAL) << "Unknown d_tag value 0x" << std::hex << d_tag;
-        return false;
-      }
-    }
-  }
-}
 
 }  // namespace art
 

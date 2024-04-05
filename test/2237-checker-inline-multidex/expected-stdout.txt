@@ -1,5 +1,5 @@
 abc
-def
-ghi
+this-string-will-never-be-in-RO
+this-string-will-never-be-in-RO-too
 class Multi$Multi2
 122
