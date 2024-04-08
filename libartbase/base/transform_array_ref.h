@@ -33,15 +33,14 @@ class TransformArrayRef {
   using Iter = TransformIterator<typename ArrayRef<BaseType>::iterator, Function>;
 
   // The Function may take a non-const reference, so const_iterator may not exist.
-  using FallbackConstIter = std::iterator<std::random_access_iterator_tag, void, void, void, void>;
+  struct FallbackConstIter {
+    using pointer = void;
+    using reference = void;
+  };
   using PreferredConstIter =
       TransformIterator<typename ArrayRef<BaseType>::const_iterator, Function>;
-  template <typename F, typename = std::result_of_t<F(const BaseType&)>>
-  static PreferredConstIter ConstIterHelper(int&);
-  template <typename F>
-  static FallbackConstIter ConstIterHelper(const int&);
-
-  using ConstIter = decltype(ConstIterHelper<Function>(*reinterpret_cast<int*>(0)));
+  static constexpr bool kHasConstIter = std::is_invocable_v<Function, const BaseType&>;
+  using ConstIter = std::conditional_t<kHasConstIter, PreferredConstIter, FallbackConstIter>;
 
  public:
   using value_type = typename Iter::value_type;
@@ -50,12 +49,10 @@ class TransformArrayRef {
   using pointer = typename Iter::pointer;
   using const_pointer = typename ConstIter::pointer;
   using iterator = Iter;
-  using const_iterator =
-      std::conditional_t<std::is_same_v<ConstIter, FallbackConstIter>, void, ConstIter>;
+  using const_iterator = std::conditional_t<kHasConstIter, ConstIter, void>;
   using reverse_iterator = std::reverse_iterator<Iter>;
-  using const_reverse_iterator = std::conditional_t<std::is_same_v<ConstIter, FallbackConstIter>,
-                                                    void,
-                                                    std::reverse_iterator<ConstIter>>;
+  using const_reverse_iterator =
+      std::conditional_t<kHasConstIter, std::reverse_iterator<ConstIter>, void>;
   using difference_type = typename ArrayRef<BaseType>::difference_type;
   using size_type = typename ArrayRef<BaseType>::size_type;
 

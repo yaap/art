@@ -3744,10 +3744,67 @@ inline void EnsureThrowsInvocationError(ClassLinker* class_linker, ArtMethod* me
       class_linker->GetImagePointerSize());
 }
 
-static void LinkCode(ClassLinker* class_linker,
-                     ArtMethod* method,
-                     const OatFile::OatClass* oat_class,
-                     uint32_t class_def_method_index) REQUIRES_SHARED(Locks::mutator_lock_) {
+class ClassLinker::OatClassCodeIterator {
+ public:
+  explicit OatClassCodeIterator(const OatFile::OatClass& oat_class)
+      : begin_(oat_class.methods_pointer_ != nullptr && oat_class.oat_file_->IsExecutable()
+                   ? oat_class.oat_file_->Begin()
+                   : nullptr),
+        bitmap_(oat_class.bitmap_),
+        current_(oat_class.methods_pointer_ != nullptr && oat_class.oat_file_->IsExecutable()
+                     ? oat_class.methods_pointer_
+                     : nullptr),
+        method_index_(0u),
+        num_methods_(oat_class.num_methods_) {
+    DCHECK_EQ(bitmap_ != nullptr, oat_class.GetType() == OatClassType::kSomeCompiled);
+  }
+
+  const void* GetAndAdvance(uint32_t method_index) {
+    if (kIsDebugBuild) {
+      CHECK_EQ(method_index, method_index_);
+      ++method_index_;
+    }
+    if (current_ == nullptr) {
+      // We may not have a valid `num_methods_` to perform the next `DCHECK()`.
+      return nullptr;
+    }
+    DCHECK_LT(method_index, num_methods_);
+    DCHECK(begin_ != nullptr);
+    if (bitmap_ == nullptr || BitVector::IsBitSet(bitmap_, method_index)) {
+      DCHECK_NE(current_->code_offset_, 0u);
+      const void* result = begin_ + current_->code_offset_;
+      ++current_;
+      return result;
+    } else {
+      return nullptr;
+    }
+  }
+
+  void SkipAbstract(uint32_t method_index) {
+    if (kIsDebugBuild) {
+      CHECK_EQ(method_index, method_index_);
+      ++method_index_;
+      if (current_ != nullptr) {
+        CHECK_LT(method_index, num_methods_);
+        CHECK(bitmap_ != nullptr);
+        CHECK(!BitVector::IsBitSet(bitmap_, method_index));
+      }
+    }
+  }
+
+ private:
+  const uint8_t* const begin_;
+  const uint32_t* const bitmap_;
+  const OatMethodOffsets* current_;
+
+  // Debug mode members.
+  uint32_t method_index_;
+  const uint32_t num_methods_;
+};
+
+inline void ClassLinker::LinkCode(ArtMethod* method,
+                                  uint32_t class_def_method_index,
+                                  /*inout*/ OatClassCodeIterator* occi) {
   ScopedAssertNoThreadSuspension sants(__FUNCTION__);
   Runtime* const runtime = Runtime::Current();
   if (runtime->IsAotCompiler()) {
@@ -3760,19 +3817,14 @@ static void LinkCode(ClassLinker* class_linker,
   DCHECK(!method->GetDeclaringClass()->IsVisiblyInitialized());  // Actually ClassStatus::Idx.
 
   if (!method->IsInvokable()) {
-    EnsureThrowsInvocationError(class_linker, method);
+    EnsureThrowsInvocationError(this, method);
+    occi->SkipAbstract(class_def_method_index);
     return;
   }
 
-  const void* quick_code = nullptr;
-  if (oat_class != nullptr) {
-    // Every kind of method should at least get an invoke stub from the oat_method.
-    // non-abstract methods also get their code pointers.
-    const OatFile::OatMethod oat_method = oat_class->GetOatMethod(class_def_method_index);
-    quick_code = oat_method.GetQuickCode();
-  }
+  const void* quick_code = occi->GetAndAdvance(class_def_method_index);
   if (method->IsNative() && quick_code == nullptr) {
-    const void* boot_jni_stub = class_linker->FindBootJniStub(method);
+    const void* boot_jni_stub = FindBootJniStub(method);
     if (boot_jni_stub != nullptr) {
       // Use boot JNI stub if found.
       quick_code = boot_jni_stub;
@@ -3926,7 +3978,7 @@ void ClassLinker::LoadClass(Thread* self,
     const OatFile::OatClass oat_class = (runtime->IsStarted() && !runtime->IsAotCompiler())
         ? OatFile::FindOatClass(dex_file, klass->GetDexClassDefIndex(), &has_oat_class)
         : OatFile::OatClass::Invalid();
-    const OatFile::OatClass* oat_class_ptr = has_oat_class ? &oat_class : nullptr;
+    OatClassCodeIterator occi(oat_class);
     klass->SetMethodsPtr(
         AllocArtMethodArray(self, allocator, accessor.NumMethods()),
         accessor.NumDirectMethods(),
@@ -3963,7 +4015,7 @@ void ClassLinker::LoadClass(Thread* self,
           ArtMethod* art_method = klass->GetDirectMethodUnchecked(class_def_method_index,
               image_pointer_size_);
           LoadMethod(dex_file, method, klass.Get(), &mai_direct, art_method);
-          LinkCode(this, art_method, oat_class_ptr, class_def_method_index);
+          LinkCode(art_method, class_def_method_index, &occi);
           uint32_t it_method_index = method.GetIndex();
           if (last_dex_method_index == it_method_index) {
             // duplicate case
@@ -3981,7 +4033,7 @@ void ClassLinker::LoadClass(Thread* self,
               image_pointer_size_);
           art_method->ResetCounter(hotness_threshold);
           LoadMethod(dex_file, method, klass.Get(), &mai_virtual, art_method);
-          LinkCode(this, art_method, oat_class_ptr, class_def_method_index);
+          LinkCode(art_method, class_def_method_index, &occi);
           ++class_def_method_index;
         });
 

@@ -50,10 +50,8 @@ static inline bool DecodeLeb128Helper(const uint8_t** data,
         // For signed values we need to sign extend the result. If we are using all the bits then
         // the result is already sign extended and we don't need to do anything.
         if (index < max_bytes - 1) {
-          // This is basically doing (result << shift) >> shift where shift is
-          // num_bits - (index + 1) * 7. Since right shift has undefined behaviour on signed values
-          // we use the following implementation.
-          result = result - ((curr & 0x40u) << (index * 7 + 1));
+          int shift = num_bits - (index + 1) * 7;
+          result = (result << shift) >> shift;
         }
       }
       // End of encoding.

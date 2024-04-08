@@ -36,10 +36,8 @@ namespace art HIDDEN {
 
 template <typename T,
           typename ResultT =
-              typename std::result_of<T(Thread*, const ScopedFastNativeObjectAccess&)>::type>
-static ResultT GetThreadStack(const ScopedFastNativeObjectAccess& soa,
-                              jobject peer,
-                              T fn)
+              typename std::invoke_result_t<T, Thread*, const ScopedFastNativeObjectAccess&>>
+static ResultT GetThreadStack(const ScopedFastNativeObjectAccess& soa, jobject peer, T fn)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   ResultT trace = nullptr;
   ObjPtr<mirror::Object> decoded_peer = soa.Decode<mirror::Object>(peer);

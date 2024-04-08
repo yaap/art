@@ -18,9 +18,12 @@
 
 #include "art_method-inl.h"
 #include "dex/method_reference.h"
+#include "jit/jit.h"
+#include "jit/jit_code_cache.h"
 #include "jni.h"
 #include "mirror/class-inl.h"
 #include "mirror/executable.h"
+#include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread.h"
 
@@ -34,7 +37,20 @@ extern "C" JNIEXPORT jboolean JNICALL Java_Main_testCompiled(JNIEnv* env,
   ScopedObjectAccess soa(env);
   ObjPtr<mirror::Executable> exec = soa.Decode<mirror::Executable>(method);
   ArtMethod* art_method = exec->GetArtMethod();
-  return art_method->HasAnyCompiledCode();
+
+  if (art_method->IsNative() || !art_method->IsInvokable() || art_method->IsProxyMethod()) {
+    return JNI_FALSE;
+  }
+
+  // Check whether the JIT has compiled it.
+  Runtime* runtime = Runtime::Current();
+  jit::Jit* jit = runtime->GetJit();
+  if (jit != nullptr && jit->GetCodeCache()->ContainsMethod(art_method)) {
+    return JNI_TRUE;
+  }
+
+  // Check whether we have AOT code.
+  return art_method->GetOatMethodQuickCode(kRuntimePointerSize) != nullptr ? JNI_TRUE : JNI_FALSE;
 }
 
 }  // namespace

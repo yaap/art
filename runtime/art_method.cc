@@ -717,22 +717,6 @@ const void* ArtMethod::GetOatMethodQuickCode(PointerSize pointer_size) {
   return nullptr;
 }
 
-bool ArtMethod::HasAnyCompiledCode() {
-  if (IsNative() || !IsInvokable() || IsProxyMethod()) {
-    return false;
-  }
-
-  // Check whether the JIT has compiled it.
-  Runtime* runtime = Runtime::Current();
-  jit::Jit* jit = runtime->GetJit();
-  if (jit != nullptr && jit->GetCodeCache()->ContainsMethod(this)) {
-    return true;
-  }
-
-  // Check whether we have AOT code.
-  return GetOatMethodQuickCode(runtime->GetClassLinker()->GetImagePointerSize()) != nullptr;
-}
-
 void ArtMethod::SetIntrinsic(uint32_t intrinsic) {
   // Currently we only do intrinsics for static/final methods or methods of final
   // classes. We don't set kHasSingleImplementation for those methods.

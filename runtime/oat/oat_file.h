@@ -41,6 +41,7 @@
 namespace art HIDDEN {
 
 class BitVector;
+class ClassLinker;
 class ClassLoaderContext;
 class ElfFile;
 class DexLayoutSections;
@@ -299,7 +300,8 @@ class OatFile {
     const uint32_t* const bitmap_;
     const OatMethodOffsets* const methods_pointer_;
 
-    friend class art::OatDexFile;
+    friend class ClassLinker;
+    friend class OatDexFile;
   };
 
   // Get the OatDexFile for the given dex_location within this oat file.

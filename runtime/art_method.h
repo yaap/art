@@ -1018,9 +1018,6 @@ class EXPORT ArtMethod final {
   const void* GetOatMethodQuickCode(PointerSize pointer_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  // Returns whether the method has any compiled code, JIT or AOT.
-  bool HasAnyCompiledCode() REQUIRES_SHARED(Locks::mutator_lock_);
-
   // Returns a human-readable signature for 'm'. Something like "a.b.C.m" or
   // "a.b.C.m(II)V" (depending on the value of 'with_signature').
   static std::string PrettyMethod(ArtMethod* m, bool with_signature = true)
