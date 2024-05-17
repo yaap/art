@@ -66,6 +66,7 @@ art_cc_library {
             ],
             static_libs: [
                 "libPlatformProperties",
+                "libmodules-utils-build",
             ],
         },
     },
