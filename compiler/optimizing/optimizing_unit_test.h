@@ -27,7 +27,7 @@
 
 #include "base/macros.h"
 #include "base/indenter.h"
-#include "base/malloc_arena_pool.h"
+#include "base/calloc_arena_pool.h"
 #include "base/scoped_arena_allocator.h"
 #include "builder.h"
 #include "common_compiler_test.h"
@@ -118,7 +118,8 @@ inline void RemoveSuspendChecks(HGraph* graph) {
       if (block->GetLoopInformation() != nullptr) {
         block->GetLoopInformation()->SetSuspendCheck(nullptr);
       }
-      for (HInstructionIterator it(block->GetInstructions()); !it.Done(); it.Advance()) {
+      for (HInstructionIteratorPrefetchNext it(block->GetInstructions()); !it.Done();
+           it.Advance()) {
         HInstruction* current = it.Current();
         if (current->IsSuspendCheck()) {
           current->GetBlock()->RemoveInstruction(current);
@@ -138,7 +139,7 @@ class ArenaPoolAndAllocator {
   ScopedArenaAllocator* GetScopedAllocator() { return &scoped_allocator_; }
 
  private:
-  MallocArenaPool pool_;
+  CallocArenaPool pool_;
   ArenaAllocator allocator_;
   ArenaStack arena_stack_;
   ScopedArenaAllocator scoped_allocator_;
@@ -154,7 +155,7 @@ class AdjacencyListGraph {
       const std::string_view exit_name,
       const std::vector<Edge>& adj) : graph_(graph) {
     auto create_block = [&]() {
-      HBasicBlock* blk = new (alloc) HBasicBlock(graph_);
+      HBasicBlock* blk = HBasicBlock::Create(alloc, graph_);
       graph_->AddBlock(blk);
       return blk;
     };
@@ -425,8 +426,15 @@ class OptimizingUnitTestHelper {
   }
 
   HBasicBlock* AddNewBlock() {
-    HBasicBlock* block = new (GetAllocator()) HBasicBlock(graph_);
+    HBasicBlock* block = HBasicBlock::Create(GetAllocator(), graph_);
     graph_->AddBlock(block);
+    return block;
+  }
+
+  HBasicBlock* AddExitBlock() {
+    HBasicBlock* block = AddNewBlock();
+    MakeExit(block);
+    graph_->SetExitBlock(block);
     return block;
   }
 
@@ -773,6 +781,19 @@ class OptimizingUnitTestHelper {
     AddOrInsertInstruction(block, invoke);
     ManuallyBuildEnvFor(invoke, env);
     return invoke;
+  }
+
+  template <typename Type>
+  Type* MakeUnOp(HBasicBlock* block,
+                 DataType::Type result_type,
+                 HInstruction* input,
+                 uint32_t dex_pc = kNoDexPc) {
+    static_assert(std::is_base_of_v<HUnaryOperation, Type> ||
+                  // TODO: Make `HTypeConversion` inherit `HUnaryOperation`.
+                  std::is_same_v<HTypeConversion, Type>);
+    Type* insn = new (GetAllocator()) Type(result_type, input, dex_pc);
+    AddOrInsertInstruction(block, insn);
+    return insn;
   }
 
   template <typename Type>

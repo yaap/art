@@ -86,7 +86,7 @@ class EXPORT MANAGED Class final : public Object {
   // 'reference_instance_offsets_' may contain up to 31 reference offsets. If
   // more bits are required, then we set the most-significant bit and store the
   // number of 32-bit bitmap entries required in the remaining bits. All the
-  // required bitmap entries after stored after static fields (at the end of the class).
+  // required bitmap entries are stored after static fields (at the end of the class).
   static constexpr uint32_t kVisitReferencesSlowpathShift = 31;
   static constexpr uint32_t kVisitReferencesSlowpathMask = 1u << kVisitReferencesSlowpathShift;
 
@@ -229,11 +229,18 @@ class EXPORT MANAGED Class final : public Object {
     return OFFSET_OF_OBJECT_MEMBER(Class, access_flags_);
   }
 
+  static constexpr MemberOffset ClassFlagsOffset() {
+    return OFFSET_OF_OBJECT_MEMBER(Class, class_flags_);
+  }
+
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   ALWAYS_INLINE uint32_t GetClassFlags() REQUIRES_SHARED(Locks::mutator_lock_) {
-    return GetField32<kVerifyFlags>(OFFSET_OF_OBJECT_MEMBER(Class, class_flags_));
+    return GetField32<kVerifyFlags>(ClassFlagsOffset());
   }
-  void SetClassFlags(uint32_t new_flags) REQUIRES_SHARED(Locks::mutator_lock_);
+
+  // Adds new_flags and clears clear_flags from the existing set of class_flags
+  void AddRemoveClassFlags(uint32_t new_flags, uint32_t clear_flags = 0)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Set access flags during linking, these cannot be rolled back by a Transaction.
   void SetAccessFlagsDuringLinking(uint32_t new_access_flags) REQUIRES_SHARED(Locks::mutator_lock_);
@@ -304,16 +311,16 @@ class EXPORT MANAGED Class final : public Object {
   }
 
   ALWAYS_INLINE void SetStringClass() REQUIRES_SHARED(Locks::mutator_lock_) {
-    SetClassFlags(kClassFlagString | kClassFlagNoReferenceFields);
+    AddRemoveClassFlags(kClassFlagString | kClassFlagNoReferenceFields);
   }
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   ALWAYS_INLINE bool IsClassLoaderClass() REQUIRES_SHARED(Locks::mutator_lock_) {
-    return GetClassFlags<kVerifyFlags>() == kClassFlagClassLoader;
+    return (GetClassFlags<kVerifyFlags>() & kClassFlagClassLoader) != 0;
   }
 
   ALWAYS_INLINE void SetClassLoaderClass() REQUIRES_SHARED(Locks::mutator_lock_) {
-    SetClassFlags(kClassFlagClassLoader);
+    AddRemoveClassFlags(kClassFlagClassLoader, kClassFlagNormal);
   }
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
@@ -322,7 +329,7 @@ class EXPORT MANAGED Class final : public Object {
   }
 
   ALWAYS_INLINE void SetDexCacheClass() REQUIRES_SHARED(Locks::mutator_lock_) {
-    SetClassFlags(GetClassFlags() | kClassFlagDexCache);
+    AddRemoveClassFlags(kClassFlagDexCache, kClassFlagNormal);
   }
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
@@ -331,7 +338,7 @@ class EXPORT MANAGED Class final : public Object {
   }
 
   ALWAYS_INLINE void SetRecordClass() REQUIRES_SHARED(Locks::mutator_lock_) {
-    SetClassFlags(GetClassFlags() | kClassFlagRecord);
+    AddRemoveClassFlags(kClassFlagRecord, kClassFlagNormal);
   }
 
   // Returns true if the class is abstract.
@@ -368,22 +375,22 @@ class EXPORT MANAGED Class final : public Object {
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   bool IsWeakReferenceClass() REQUIRES_SHARED(Locks::mutator_lock_) {
-    return GetClassFlags<kVerifyFlags>() == kClassFlagWeakReference;
+    return (GetClassFlags<kVerifyFlags>() & kClassFlagWeakReference) != 0;
   }
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   bool IsSoftReferenceClass() REQUIRES_SHARED(Locks::mutator_lock_) {
-    return GetClassFlags<kVerifyFlags>() == kClassFlagSoftReference;
+    return (GetClassFlags<kVerifyFlags>() & kClassFlagSoftReference) != 0;
   }
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   bool IsFinalizerReferenceClass() REQUIRES_SHARED(Locks::mutator_lock_) {
-    return GetClassFlags<kVerifyFlags>() == kClassFlagFinalizerReference;
+    return (GetClassFlags<kVerifyFlags>() & kClassFlagFinalizerReference) != 0;
   }
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   bool IsPhantomReferenceClass() REQUIRES_SHARED(Locks::mutator_lock_) {
-    return GetClassFlags<kVerifyFlags>() == kClassFlagPhantomReference;
+    return (GetClassFlags<kVerifyFlags>() & kClassFlagPhantomReference) != 0;
   }
 
   // Can references of this type be assigned to by things of another type? For non-array types
@@ -557,14 +564,18 @@ class EXPORT MANAGED Class final : public Object {
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   ALWAYS_INLINE bool IsVariableSize() REQUIRES_SHARED(Locks::mutator_lock_);
 
+  static constexpr MemberOffset ClassSizeOffset() {
+    return OFFSET_OF_OBJECT_MEMBER(Class, class_size_);
+  }
+
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   uint32_t SizeOf() REQUIRES_SHARED(Locks::mutator_lock_) {
-    return GetField32<kVerifyFlags>(OFFSET_OF_OBJECT_MEMBER(Class, class_size_));
+    return GetClassSize<kVerifyFlags>();
   }
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   uint32_t GetClassSize() REQUIRES_SHARED(Locks::mutator_lock_) {
-    return GetField32<kVerifyFlags>(OFFSET_OF_OBJECT_MEMBER(Class, class_size_));
+    return GetField32<kVerifyFlags>(ClassSizeOffset());
   }
 
   void SetClassSize(uint32_t new_class_size)
@@ -597,6 +608,11 @@ class EXPORT MANAGED Class final : public Object {
   // The size of a java.lang.Class representing a primitive such as int.class.
   static uint32_t PrimitiveClassSize(PointerSize pointer_size) {
     return ComputeClassSize(false, 0, 0, 0, 0, 0, 0, 0, pointer_size);
+  }
+
+  template <VerifyObjectFlags kVerifyFlags>
+  uint32_t GetObjectSizeUnchecked() REQUIRES_SHARED(Locks::mutator_lock_) {
+    return GetField32<kVerifyFlags>(ObjectSizeOffset());
   }
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
@@ -725,9 +741,6 @@ class EXPORT MANAGED Class final : public Object {
   // Also updates the dex_cache_strings_ variable from new_dex_cache.
   void SetDexCache(ObjPtr<DexCache> new_dex_cache) REQUIRES_SHARED(Locks::mutator_lock_);
 
-  ALWAYS_INLINE ArraySlice<ArtMethod> GetDirectMethods(PointerSize pointer_size)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
   ALWAYS_INLINE LengthPrefixedArray<ArtMethod>* GetMethodsPtr()
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -747,19 +760,6 @@ class EXPORT MANAGED Class final : public Object {
                               uint32_t num_direct,
                               uint32_t num_virtual)
       REQUIRES_SHARED(Locks::mutator_lock_);
-
-  template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
-  ALWAYS_INLINE ArraySlice<ArtMethod> GetDirectMethodsSlice(PointerSize pointer_size)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  ALWAYS_INLINE ArtMethod* GetDirectMethod(size_t i, PointerSize pointer_size)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  // Use only when we are allocating populating the method arrays.
-  ALWAYS_INLINE ArtMethod* GetDirectMethodUnchecked(size_t i, PointerSize pointer_size)
-        REQUIRES_SHARED(Locks::mutator_lock_);
-  ALWAYS_INLINE ArtMethod* GetVirtualMethodUnchecked(size_t i, PointerSize pointer_size)
-        REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Returns the number of static, private, and constructor methods.
   ALWAYS_INLINE uint32_t NumDirectMethods() REQUIRES_SHARED(Locks::mutator_lock_);
@@ -792,29 +792,10 @@ class EXPORT MANAGED Class final : public Object {
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
-  ALWAYS_INLINE ArraySlice<ArtMethod> GetDeclaredVirtualMethodsSlice(PointerSize pointer_size)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  ALWAYS_INLINE ArraySlice<ArtMethod> GetDeclaredVirtualMethods(
-        PointerSize pointer_size)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  // The index in the methods_ array where the first copied method is.
-  ALWAYS_INLINE uint32_t GetCopiedMethodsStartOffset() REQUIRES_SHARED(Locks::mutator_lock_);
-
-  template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   ALWAYS_INLINE ArraySlice<ArtMethod> GetCopiedMethodsSlice(PointerSize pointer_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   ALWAYS_INLINE ArraySlice<ArtMethod> GetCopiedMethods(PointerSize pointer_size)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
-  ALWAYS_INLINE ArraySlice<ArtMethod> GetVirtualMethodsSlice(PointerSize pointer_size)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  ALWAYS_INLINE ArraySlice<ArtMethod> GetVirtualMethods(
-      PointerSize pointer_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Returns the number of non-inherited virtual methods (sum of declared and copied methods).
@@ -826,15 +807,11 @@ class EXPORT MANAGED Class final : public Object {
   // Returns the number of declared virtual methods.
   ALWAYS_INLINE uint32_t NumDeclaredVirtualMethods() REQUIRES_SHARED(Locks::mutator_lock_);
 
+  // Returns the number of declared methods.
+  ALWAYS_INLINE uint32_t NumDeclaredMethods() REQUIRES_SHARED(Locks::mutator_lock_);
+
   ALWAYS_INLINE uint32_t NumMethods() REQUIRES_SHARED(Locks::mutator_lock_);
   static ALWAYS_INLINE uint32_t NumMethods(LengthPrefixedArray<ArtMethod>* methods)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
-  ArtMethod* GetVirtualMethod(size_t i, PointerSize pointer_size)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  ArtMethod* GetVirtualMethodDuringLinking(size_t i, PointerSize pointer_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags,
@@ -1006,6 +983,10 @@ class EXPORT MANAGED Class final : public Object {
                              PointerSize pointer_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  template <bool kOnlyLookAtIndex, PointerSize kPointerSize>
+  ArtMethod* FindDeclaredClassMethod(uint32_t dex_method_idx)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
   ArtMethod* FindConstructor(std::string_view signature, PointerSize pointer_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -1037,6 +1018,7 @@ class EXPORT MANAGED Class final : public Object {
 
   // Get fields of the class.
   LengthPrefixedArray<ArtField>* GetFieldsPtr() REQUIRES_SHARED(Locks::mutator_lock_);
+  LengthPrefixedArray<ArtField>* GetFieldsPtrUnchecked() REQUIRES_SHARED(Locks::mutator_lock_);
 
   ALWAYS_INLINE IterationRange<StrideIterator<ArtField>> GetFields()
       REQUIRES_SHARED(Locks::mutator_lock_);
@@ -1072,6 +1054,15 @@ class EXPORT MANAGED Class final : public Object {
     SetField32<false>(OFFSET_OF_OBJECT_MEMBER(Class, num_reference_instance_fields_), new_num);
   }
 
+  static constexpr MemberOffset ReferenceInstanceOffsetsOffset() {
+    return OFFSET_OF_OBJECT_MEMBER(Class, reference_instance_offsets_);
+  }
+
+  template <VerifyObjectFlags kVerifyFlags>
+  uint32_t GetReferenceInstanceOffsetsUnchecked() REQUIRES_SHARED(Locks::mutator_lock_) {
+    return GetField32<kVerifyFlags>(OFFSET_OF_OBJECT_MEMBER(Class, reference_instance_offsets_));
+  }
+
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   uint32_t GetReferenceInstanceOffsets() ALWAYS_INLINE REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -1084,21 +1075,33 @@ class EXPORT MANAGED Class final : public Object {
   MemberOffset GetFirstReferenceInstanceFieldOffset()
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  static constexpr MemberOffset NumReferenceStaticFieldsOffset() {
+    return OFFSET_OF_OBJECT_MEMBER(Class, num_reference_static_fields_);
+  }
+
+  template <VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
+  uint32_t NumReferenceStaticFieldsUnchecked() REQUIRES_SHARED(Locks::mutator_lock_) {
+    return GetField32<kVerifyFlags>(NumReferenceStaticFieldsOffset());
+  }
+
   // Returns the number of static fields containing reference types.
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   uint32_t NumReferenceStaticFields() REQUIRES_SHARED(Locks::mutator_lock_) {
     DCHECK(IsResolved<kVerifyFlags>());
-    return GetField32<kVerifyFlags>(OFFSET_OF_OBJECT_MEMBER(Class, num_reference_static_fields_));
+    return NumReferenceStaticFieldsUnchecked<kVerifyFlags>();
   }
 
   uint32_t NumReferenceStaticFieldsDuringLinking() REQUIRES_SHARED(Locks::mutator_lock_) {
     DCHECK(IsLoaded() || IsErroneous() || IsRetired());
-    return GetField32(OFFSET_OF_OBJECT_MEMBER(Class, num_reference_static_fields_));
+    return GetField32(NumReferenceStaticFieldsOffset());
   }
 
   void SetNumReferenceStaticFields(uint32_t new_num) REQUIRES_SHARED(Locks::mutator_lock_) {
+    if (new_num > 0) {
+      AddRemoveClassFlags(kClassFlagHasStaticRefs);
+    }
     // Not called within a transaction.
-    SetField32<false>(OFFSET_OF_OBJECT_MEMBER(Class, num_reference_static_fields_), new_num);
+    SetField32<false>(NumReferenceStaticFieldsOffset(), new_num);
   }
 
   // Get the offset of the first reference static field. Other reference static fields follow.
@@ -1126,6 +1129,7 @@ class EXPORT MANAGED Class final : public Object {
   ArtField* FindDeclaredField(ObjPtr<DexCache> dex_cache, uint32_t dex_field_idx)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  template <bool kOnlyLookAtIndex = false>
   ArtField* FindDeclaredField(uint32_t dex_field_idx)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
@@ -1331,17 +1335,10 @@ class EXPORT MANAGED Class final : public Object {
     return static_cast<size_t>(pointer_size);
   }
 
-  ALWAYS_INLINE ArraySlice<ArtMethod> GetDirectMethodsSliceUnchecked(PointerSize pointer_size)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  ALWAYS_INLINE ArraySlice<ArtMethod> GetVirtualMethodsSliceUnchecked(PointerSize pointer_size)
+  ALWAYS_INLINE ArraySlice<ArtMethod> GetMethodsSliceUnchecked(PointerSize pointer_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   ALWAYS_INLINE ArraySlice<ArtMethod> GetDeclaredMethodsSliceUnchecked(PointerSize pointer_size)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  ALWAYS_INLINE ArraySlice<ArtMethod> GetDeclaredVirtualMethodsSliceUnchecked(
-      PointerSize pointer_size)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   ALWAYS_INLINE ArraySlice<ArtMethod> GetCopiedMethodsSliceUnchecked(PointerSize pointer_size)
@@ -1398,7 +1395,16 @@ class EXPORT MANAGED Class final : public Object {
   // See b/259501764.
   bool CheckIsVisibleWithTargetSdk(Thread* self) REQUIRES_SHARED(Locks::mutator_lock_);
 
+  size_t GetProxyThrowsIndex(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_);
+
  private:
+  template <typename SignatureType>
+  static ArtMethod* FindInterfaceMethodWithSignature(ObjPtr<Class> klass,
+                                                     std::string_view name,
+                                                     const SignatureType& signature,
+                                                     PointerSize pointer_size)
+    REQUIRES_SHARED(Locks::mutator_lock_);
+
   template <typename T, VerifyObjectFlags kVerifyFlags, typename Visitor>
   void FixupNativePointer(
       Class* dest, PointerSize pointer_size, const Visitor& visitor, MemberOffset member_offset)
@@ -1423,16 +1429,8 @@ class EXPORT MANAGED Class final : public Object {
 
   void CheckObjectAlloc() REQUIRES_SHARED(Locks::mutator_lock_);
 
-  // Unchecked editions is for root visiting.
-  LengthPrefixedArray<ArtField>* GetFieldsPtrUnchecked() REQUIRES_SHARED(Locks::mutator_lock_);
   IterationRange<StrideIterator<ArtField>> GetFieldsUnchecked()
       REQUIRES_SHARED(Locks::mutator_lock_);
-
-  // The index in the methods_ array where the first declared virtual method is.
-  ALWAYS_INLINE uint32_t GetVirtualMethodsStartOffset() REQUIRES_SHARED(Locks::mutator_lock_);
-
-  // The index in the methods_ array where the first direct method is.
-  ALWAYS_INLINE uint32_t GetDirectMethodsStartOffset() REQUIRES_SHARED(Locks::mutator_lock_);
 
   bool ProxyDescriptorEquals(ObjPtr<mirror::Class> match) REQUIRES_SHARED(Locks::mutator_lock_);
   bool ProxyDescriptorEquals(std::string_view match) REQUIRES_SHARED(Locks::mutator_lock_);
@@ -1540,7 +1538,8 @@ class EXPORT MANAGED Class final : public Object {
   // Access flags; low 16 bits are defined by VM spec.
   uint32_t access_flags_;
 
-  // Class flags to help speed up visiting object references.
+  // Class flags to help speed up visiting object references. See class_flags.h
+  // for various possible flags.
   uint32_t class_flags_;
 
   // Total size of the Class instance; used when allocating storage on gc heap.
@@ -1585,14 +1584,6 @@ class EXPORT MANAGED Class final : public Object {
   // See the real definition in subtype_check_bits_and_status.h
   // typeof(status_) is actually SubtypeCheckBitsAndStatus.
   uint32_t status_;
-
-  // The offset of the first virtual method that is copied from an interface. This includes miranda,
-  // default, and default-conflict methods. Having a hard limit of ((2 << 16) - 1) for methods
-  // defined on a single class is well established in Java so we will use only uint16_t's here.
-  uint16_t copied_methods_offset_;
-
-  // The offset of the first declared virtual methods in the methods_ array.
-  uint16_t virtual_methods_offset_;
 
   // The following data exist in real class objects.
   // Embedded Vtable length, for class object that's instantiable, fixed size.

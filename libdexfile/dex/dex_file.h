@@ -40,7 +40,6 @@ namespace art {
 
 class ClassDataItemIterator;
 class ClassIterator;
-class CompactDexFile;
 class DexInstructionIterator;
 enum InvokeType : uint32_t;
 template <typename Iter> class IterationRange;
@@ -105,11 +104,9 @@ class MemoryDexFileContainer : public DexFileContainer {
   DISALLOW_COPY_AND_ASSIGN(MemoryDexFileContainer);
 };
 
-// Dex file is the API that exposes native dex files (ordinary dex files) and CompactDex.
-// Originally, the dex file format used by ART was mostly the same as APKs. The only change was
-// quickened opcodes and layout optimizations.
-// Since ART needs to support both native dex files and CompactDex files, the DexFile interface
-// provides an abstraction to facilitate this.
+// Dex file is the API that exposes native dex files (ordinary dex files).
+// The dex file format used by ART is mostly the same as APKs, but this
+// abstraction is present to allow ART internal dex files.
 class DexFile {
  public:
   // Number of bytes in the dex file magic.
@@ -231,11 +228,13 @@ class DexFile {
   };
 
   // Annotation constants.
-  enum {
-    kDexVisibilityBuild         = 0x00,     /* annotation visibility */
-    kDexVisibilityRuntime       = 0x01,
-    kDexVisibilitySystem        = 0x02,
+  enum class DexVisibility : uint8_t {
+    kBuild         = 0x00,
+    kRuntime       = 0x01,
+    kSystem        = 0x02,
+  };
 
+  enum {
     kDexAnnotationByte          = 0x00,
     kDexAnnotationShort         = 0x02,
     kDexAnnotationChar          = 0x03,
@@ -876,15 +875,7 @@ class DexFile {
     return result;
   }
 
-  // Not virtual for performance reasons.
-  ALWAYS_INLINE bool IsCompactDexFile() const {
-    return is_compact_dex_;
-  }
-  ALWAYS_INLINE bool IsStandardDexFile() const {
-    return !is_compact_dex_;
-  }
   ALWAYS_INLINE const StandardDexFile* AsStandardDexFile() const;
-  ALWAYS_INLINE const CompactDexFile* AsCompactDexFile() const;
 
   hiddenapi::Domain GetHiddenapiDomain() const { return hiddenapi_domain_; }
   void SetHiddenapiDomain(hiddenapi::Domain value) const { hiddenapi_domain_ = value; }
@@ -923,8 +914,7 @@ class DexFile {
           uint32_t location_checksum,
           const OatDexFile* oat_dex_file,
           // Shared since several dex files may be stored in the same logical container.
-          std::shared_ptr<DexFileContainer> container,
-          bool is_compact_dex);
+          std::shared_ptr<DexFileContainer> container);
 
   template <typename T>
   const T* GetSection(const uint32_t* offset, DexFileContainer* container);
@@ -1013,9 +1003,6 @@ class DexFile {
 
   // Manages the underlying memory allocation.
   std::shared_ptr<DexFileContainer> container_;
-
-  // If the dex file is a compact dex file. If false then the dex file is a standard dex file.
-  const bool is_compact_dex_;
 
   // The domain this dex file belongs to for hidden API access checks.
   // It is decleared `mutable` because the domain is assigned after the DexFile

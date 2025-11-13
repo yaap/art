@@ -1,4 +1,4 @@
-  /*
+/*
  * Copyright (C) 2014 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,41 +26,47 @@ namespace art HIDDEN {
 // Verify that Location is trivially copyable.
 static_assert(std::is_trivially_copyable<Location>::value, "Location should be trivially copyable");
 
-static inline ArrayRef<Location> AllocateInputLocations(HInstruction* instruction,
-                                                        ArenaAllocator* allocator) {
-  size_t input_count = instruction->InputCount();
-  Location* array = allocator->AllocArray<Location>(input_count, kArenaAllocLocationSummary);
-  return {array, input_count};
-}
+ALWAYS_INLINE inline LocationSummary::CallData::CallData(ArenaAllocator* allocator)
+    : stack_mask(allocator, /*start_bits=*/ 0, /*expandable=*/ true, kArenaAllocLocationSummary),
+      has_custom_slow_path_calling_convention(false),
+      register_mask(0),
+      live_registers(RegisterSet::Empty()),
+      custom_slow_path_caller_saves(RegisterSet::Empty()) {}
 
-LocationSummary::LocationSummary(HInstruction* instruction,
-                                 CallKind call_kind,
-                                 bool intrinsified,
-                                 ArenaAllocator* allocator)
-    : inputs_(AllocateInputLocations(instruction, allocator)),
-      temps_(allocator->Adapter(kArenaAllocLocationSummary)),
-      stack_mask_(nullptr),
+ALWAYS_INLINE inline LocationSummary::LocationSummary(HInstruction* instruction,
+                                                      CallKind call_kind,
+                                                      bool intrinsified,
+                                                      ArenaAllocator* allocator,
+                                                      size_t input_count)
+    : temps_(allocator->Adapter(kArenaAllocLocationSummary)),
+      call_data_(nullptr),
       call_kind_(call_kind),
       intrinsified_(intrinsified),
-      has_custom_slow_path_calling_convention_(false),
       output_overlaps_(Location::kOutputOverlap),
-      register_mask_(0),
-      live_registers_(RegisterSet::Empty()),
-      custom_slow_path_caller_saves_(RegisterSet::Empty()) {
+      input_count_(dchecked_integral_cast<uint32_t>(input_count)) {
   instruction->SetLocations(this);
 
-  if (NeedsSafepoint()) {
-    stack_mask_ = ArenaBitVector::Create(allocator, 0, true, kArenaAllocLocationSummary);
+  if (CanCall()) {
+    call_data_ = new (allocator) CallData(allocator);
   }
 }
 
-LocationSummary::LocationSummary(HInstruction* instruction,
-                                 CallKind call_kind,
-                                 bool intrinsified)
-    : LocationSummary(instruction,
-                      call_kind,
-                      intrinsified,
-                      instruction->GetBlock()->GetGraph()->GetAllocator()) {}
+LocationSummary* LocationSummary::CreateImpl(ArenaAllocator* allocator,
+                                             HInstruction* instruction,
+                                             CallKind call_kind,
+                                             bool intrinsified,
+                                             size_t input_count) {
+  size_t size = offsetof(LocationSummary, inputs_) + input_count * sizeof(inputs_[0]);
+  void* storage = allocator->Alloc(size, kArenaAllocLocationSummary);
+  LocationSummary* locations =
+      new (storage) LocationSummary(instruction, call_kind, intrinsified, allocator, input_count);
+  // Inputs array is zero-initialized, all entries are invalid.
+  static_assert(Location::kInvalid == 0);
+  DCHECK(std::all_of(locations->Inputs().begin(),
+                     locations->Inputs().end(),
+                     [](Location loc) { return loc.IsInvalid(); }));
+  return locations;
+}
 
 Location Location::RegisterOrConstant(HInstruction* instruction) {
   return instruction->IsConstant()

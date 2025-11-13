@@ -18,9 +18,11 @@
 
 #include <limits>
 
+#include "base/arena_allocator.h"
 #include "base/scoped_arena_allocator.h"
 #include "base/scoped_arena_containers.h"
 #include "induction_var_range.h"
+#include "loop_information-inl.h"
 #include "nodes.h"
 #include "side_effects_analysis.h"
 
@@ -539,13 +541,13 @@ class BCEVisitor final : public HGraphVisitor {
     for (HInstruction* instruction = block->GetFirstPhi(); instruction != nullptr;) {
       DCHECK(instruction->IsInBlock());
       next_ = instruction->GetNext();
-      instruction->Accept(this);
+      VisitPhi(instruction->AsPhi());
       instruction = next_;
     }
     for (HInstruction* instruction = block->GetFirstInstruction(); instruction != nullptr;) {
       DCHECK(instruction->IsInBlock());
       next_ = instruction->GetNext();
-      instruction->Accept(this);
+      Dispatch(instruction);
       instruction = next_;
     }
     // We should never deoptimize from an osr method, otherwise we might wrongly optimize
@@ -569,7 +571,8 @@ class BCEVisitor final : public HGraphVisitor {
     // TODO(solanes): Do this without a linear pass of the graph?
     GetGraph()->SetHasBoundsChecks(false);
     for (HBasicBlock* block : GetGraph()->GetReversePostOrder()) {
-      for (HInstructionIterator it(block->GetInstructions()); !it.Done(); it.Advance()) {
+      for (HInstructionIteratorPrefetchNext it(block->GetInstructions()); !it.Done();
+           it.Advance()) {
         HInstruction* instruction = it.Current();
         if (instruction->IsBoundsCheck()) {
           GetGraph()->SetHasBoundsChecks(true);
@@ -1715,9 +1718,9 @@ class BCEVisitor final : public HGraphVisitor {
     }
     // First time early-exit analysis for this loop. Since analysis requires scanning
     // the full loop-body, results of the analysis is stored for subsequent queries.
-    HBlocksInLoopReversePostOrderIterator it_loop(*loop);
-    for (it_loop.Advance(); !it_loop.Done(); it_loop.Advance()) {
-      for (HBasicBlock* successor : it_loop.Current()->GetSuccessors()) {
+    auto loop_blocks = loop->GetBlocksReversePostOrder();
+    for (auto loop_it = ++loop_blocks.begin(), end = loop_blocks.end(); loop_it != end; ++loop_it) {
+      for (HBasicBlock* successor : (*loop_it)->GetSuccessors()) {
         if (!loop->Contains(*successor)) {
           early_exit_loop_.Put(loop_id, true);
           return true;
@@ -1951,7 +1954,8 @@ class BCEVisitor final : public HGraphVisitor {
       HBasicBlock* true_block = entry.second;
       HBasicBlock* new_preheader = true_block->GetSingleSuccessor();
       // Scan all instructions in a new deoptimization block.
-      for (HInstructionIterator it(true_block->GetInstructions()); !it.Done(); it.Advance()) {
+      for (HInstructionIteratorPrefetchNext it(true_block->GetInstructions()); !it.Done();
+           it.Advance()) {
         HInstruction* instruction = it.Current();
         DataType::Type type = instruction->GetType();
         HPhi* phi = nullptr;
@@ -2069,12 +2073,15 @@ bool BoundsCheckElimination::Run() {
     return false;
   }
 
+  SideEffectsAnalysis side_effects(graph_);
+  side_effects.Run();
+
   // Reverse post order guarantees a node's dominators are visited first.
   // We want to visit in the dominator-based order since if a value is known to
   // be bounded by a range at one instruction, it must be true that all uses of
   // that value dominated by that instruction fits in that range. Range of that
   // value can be narrowed further down in the dominator tree.
-  BCEVisitor visitor(graph_, side_effects_, induction_analysis_);
+  BCEVisitor visitor(graph_, side_effects, induction_analysis_);
   for (size_t i = 0, size = graph_->GetReversePostOrder().size(); i != size; ++i) {
     HBasicBlock* current = graph_->GetReversePostOrder()[i];
     if (visitor.IsAddedBlock(current)) {

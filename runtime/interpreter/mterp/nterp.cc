@@ -318,10 +318,72 @@ static constexpr std::array<uint8_t, 256u> GenerateOpcodeInvokeTypes() {
   return opcode_invoke_types;
 }
 
+ALWAYS_INLINE FLATTEN
+inline bool IsInvokeClassMismatch(ObjPtr<mirror::Class> klass, InvokeType type, ArtMethod* caller)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  if (type == kInterface && UNLIKELY(!klass->IsInterface())) {
+    return true;
+  }
+
+  if (type == kVirtual && UNLIKELY(klass->IsInterface())) {
+    return true;
+  }
+
+  if (type == kDirect &&
+      UNLIKELY(klass->IsInterface()) &&
+      !caller->GetDexFile()->SupportsDefaultMethods()) {
+    return true;
+  }
+  return false;
+}
+
+ALWAYS_INLINE FLATTEN
+static ArtMethod* FindMethodFast(ArtMethod* caller,
+                                 uint16_t method_index,
+                                 InvokeType type)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  if (caller->IsObsolete()) {
+    return nullptr;
+  }
+
+  ObjPtr<mirror::Class> cls = caller->GetDeclaringClass();
+  const dex::MethodId& method_id = cls->GetDexFile().GetMethodId(method_index);
+
+  // Check within the caller's declaring class.
+  if (cls->GetDexTypeIndex() == method_id.class_idx_) {
+    PointerSize pointer_size = Runtime::Current()->GetClassLinker()->GetImagePointerSize();
+    ArtMethod* method = nullptr;
+    if (pointer_size == PointerSize::k64) {
+      method = cls->FindDeclaredClassMethod</* kOnlyLookAtIndex= */ false, PointerSize::k64>(
+            method_index);
+    } else {
+      method = cls->FindDeclaredClassMethod</* kOnlyLookAtIndex= */ false, PointerSize::k32>(
+            method_index);
+    }
+    if (caller->SkipAccessChecks()) {
+      return method;
+    }
+    if (method != nullptr &&
+        !IsInvokeClassMismatch(method->GetDeclaringClass<kWithoutReadBarrier>(), type, caller) &&
+        !method->CheckIncompatibleClassChange(type)) {
+      return method;
+    }
+    return nullptr;
+  }
+
+  if (caller->SkipAccessChecks()) {
+    return caller->GetDexCache()->GetResolvedMethod(method_index);
+  }
+
+  return nullptr;
+}
+
 static constexpr std::array<uint8_t, 256u> kOpcodeInvokeTypes = GenerateOpcodeInvokeTypes();
 
 LIBART_PROTECTED FLATTEN
-extern "C" size_t NterpGetMethod(Thread* self, ArtMethod* caller, const uint16_t* dex_pc_ptr)
+extern "C" size_t NterpGetMethod(Thread* self,
+                                 ArtMethod* caller,
+                                 const uint16_t* dex_pc_ptr)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   UpdateHotness(caller);
   const Instruction* inst = Instruction::At(dex_pc_ptr);
@@ -336,13 +398,16 @@ extern "C" size_t NterpGetMethod(Thread* self, ArtMethod* caller, const uint16_t
   uint16_t method_index =
       (opcode >= Instruction::INVOKE_VIRTUAL_RANGE) ? inst->VRegB_3rc() : inst->VRegB_35c();
 
-  ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
-  ArtMethod* resolved_method = caller->SkipAccessChecks()
-      ? class_linker->ResolveMethodId(method_index, caller)
-      : class_linker->ResolveMethodWithChecks(method_index, caller, invoke_type);
+  ArtMethod* resolved_method = FindMethodFast(caller, method_index, invoke_type);
   if (resolved_method == nullptr) {
-    DCHECK(self->IsExceptionPending());
-    return 0;
+    ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
+    resolved_method = caller->SkipAccessChecks()
+        ? class_linker->ResolveMethodId(method_index, caller)
+        : class_linker->ResolveMethodWithChecks(method_index, caller, invoke_type);
+    if (resolved_method == nullptr) {
+      DCHECK(self->IsExceptionPending());
+      return 0;
+    }
   }
 
   if (invoke_type == kSuper) {
@@ -391,8 +456,33 @@ extern "C" size_t NterpGetMethod(Thread* self, ArtMethod* caller, const uint16_t
   }
 }
 
+template <bool kIsPut>
 ALWAYS_INLINE FLATTEN
-static ArtField* FindFieldFast(ArtMethod* caller, uint16_t field_index)
+static bool CanAccessFastInternal(ArtField* field, ArtMethod* caller)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  if (caller->SkipAccessChecks() || field == nullptr) {
+    return true;
+  }
+  return field->IsPublic() &&
+      field->GetDeclaringClass<kWithoutReadBarrier>()->IsPublic() &&
+      !(kIsPut && field->IsFinal());
+}
+
+template <bool kIsStatic>
+ALWAYS_INLINE FLATTEN
+static bool CanAccessFast(ArtField* field, ArtMethod* caller, const Instruction* inst)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  bool is_put = kIsStatic ? IsInstructionSPut(inst->Opcode()) : IsInstructionIPut(inst->Opcode());
+  return is_put ? CanAccessFastInternal</*kIsPut=*/true>(field, caller)
+                : CanAccessFastInternal</*kIsPut=*/false>(field, caller);
+}
+
+template <bool kStatic>
+ALWAYS_INLINE FLATTEN
+static ArtField* FindFieldFast(ArtMethod* caller,
+                               uint16_t field_index,
+                               uint32_t* registers,
+                               const Instruction* inst)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   if (caller->IsObsolete()) {
     return nullptr;
@@ -403,6 +493,25 @@ static ArtField* FindFieldFast(ArtMethod* caller, uint16_t field_index)
   if (cls->GetDexTypeIndex() == field_id.class_idx_) {
     // Field is in the same class as the caller, no need to do access checks.
     return cls->FindDeclaredField(field_index);
+  }
+
+  if (!kStatic) {
+    mirror::Object* obj = reinterpret_cast32<mirror::Object*>(registers[inst->VRegB_22c()]);
+    if (obj != nullptr) {
+      mirror::Class* obj_cls = obj->GetClass();
+      if (obj_cls->GetDexTypeIndex() == field_id.class_idx_ &&
+          obj_cls->GetDexCache() == cls->GetDexCache()) {
+        ArtField* resolved_field = obj_cls->FindDeclaredField(field_index);
+        if (CanAccessFast<kStatic>(resolved_field, caller, inst)) {
+          return resolved_field;
+        }
+      }
+    }
+  }
+
+  ArtField* field = caller->GetDexCache()->GetResolvedField(field_index);
+  if (CanAccessFast<kStatic>(field, caller, inst)) {
+    return field;
   }
 
   return nullptr;
@@ -435,7 +544,7 @@ extern "C" size_t NterpGetStaticField(Thread* self,
   uint16_t field_index = inst->VRegB_21c();
   Instruction::Code opcode = inst->Opcode();
 
-  ArtField* resolved_field = FindFieldFast(caller, field_index);
+  ArtField* resolved_field = FindFieldFast</*kStatic=*/true>(caller, field_index, nullptr, inst);
   if (resolved_field == nullptr || !resolved_field->IsStatic()) {
     resolved_field = FindFieldSlow(
         self, caller, field_index, /*is_static=*/ true, IsInstructionSPut(opcode));
@@ -488,17 +597,92 @@ extern "C" size_t NterpGetStaticField(Thread* self,
   return reinterpret_cast<size_t>(resolved_field);
 }
 
+// For faster execution, `cls` can be a from-space reference which is OK, as
+// we're only using native fields from that object, and checking for state
+// invariants that don't roll back (ie that the class is initialized).
+ALWAYS_INLINE FLATTEN
+static size_t NterpGetLocalStaticFieldInternal(mirror::Class* cls, const uint16_t* dex_pc_ptr)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  // We're checking if we're accessing a field of the currently executing class.
+  // We only need to check that the class is initialized, and don't need
+  // a synchrnonization barrier for this.
+  if (cls->GetStatus<kVerifyNone, /*kWithSynchronizationBarrier=*/ false>()
+          < ClassStatus::kInitialized) {
+    return 0u;
+  }
+  ArtField* resolved_field = cls->FindDeclaredField</*kOnlyLookAtIndex=*/true>(
+      Instruction::At(dex_pc_ptr)->VRegB_21c());
+  if (resolved_field != nullptr && resolved_field->IsStatic() && !resolved_field->IsVolatile()) {
+    return reinterpret_cast<size_t>(resolved_field);
+  }
+  return 0u;
+}
+
+// `cls` can be a from-space, see comment in `NterpGetLocalStaticFieldInternal`.
+FLATTEN
+extern "C" size_t NterpGetLocalStaticField(mirror::Class* cls, const uint16_t* dex_pc_ptr)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  ScopedAssertNoThreadSuspension sants("In nterp");
+  return NterpGetLocalStaticFieldInternal(cls, dex_pc_ptr);
+}
+
+// `cls` can be a from-space, see comment in `NterpGetLocalStaticFieldInternal`.
+FLATTEN
+extern "C" size_t NterpGetLocalStaticFieldForSPutObject(mirror::Class* cls,
+                                                        const uint16_t* dex_pc_ptr)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  ScopedAssertNoThreadSuspension sants("In nterp");
+  // For object store in methods that may have type check failures, we need to
+  // resolve the type of the field. In such a case, go to slow path.
+  if (cls->HasTypeChecksFailure()) {
+    return 0u;
+  }
+  return NterpGetLocalStaticFieldInternal(cls, dex_pc_ptr);
+}
+
+// For faster execution, `cls` can be a from-space reference which is OK, as
+// we're only using native fields from that object.
+ALWAYS_INLINE FLATTEN
+static size_t NterpGetLocalInstanceFieldInternal(mirror::Class* cls, const uint16_t* dex_pc_ptr)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  ScopedAssertNoThreadSuspension sants("In nterp");
+  const Instruction* inst = Instruction::At(dex_pc_ptr);
+  uint16_t field_index = inst->VRegC_22c();
+  ArtField* resolved_field = cls->FindDeclaredField</*kOnlyLookAtIndex=*/true>(field_index);
+  if (resolved_field != nullptr && !resolved_field->IsStatic() && !resolved_field->IsVolatile()) {
+    return resolved_field->GetOffset().Uint32Value();
+  }
+
+  return -1;
+}
+
+FLATTEN
+extern "C" size_t NterpGetLocalInstanceField(mirror::Class* cls, const uint16_t* dex_pc_ptr)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  return NterpGetLocalInstanceFieldInternal(cls, dex_pc_ptr);
+}
+
+FLATTEN
+extern "C" size_t NterpGetLocalInstanceFieldForIPutObject(mirror::Class* cls,
+                                                          const uint16_t* dex_pc_ptr)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  if (cls->HasTypeChecksFailure()) {
+    return -1;
+  }
+  return NterpGetLocalInstanceFieldInternal(cls, dex_pc_ptr);
+}
+
 LIBART_PROTECTED
 extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
                                                 ArtMethod* caller,
                                                 const uint16_t* dex_pc_ptr,
-                                                size_t resolve_field_type)  // Resolve if not zero
+                                                uint32_t* registers)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   uint16_t field_index = inst->VRegC_22c();
   Instruction::Code opcode = inst->Opcode();
 
-  ArtField* resolved_field = FindFieldFast(caller, field_index);
+  ArtField* resolved_field = FindFieldFast</*kStatic=*/false>(caller, field_index, registers, inst);
   if (resolved_field == nullptr || resolved_field->IsStatic()) {
     resolved_field = FindFieldSlow(
         self, caller, field_index, /*is_static=*/ false, IsInstructionIPut(opcode));
@@ -519,7 +703,7 @@ extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
       caller->GetDeclaringClass()->HasTypeChecksFailure() &&
       resolved_field->ResolveType() == nullptr) {
     DCHECK(self->IsExceptionPending());
-    if (resolve_field_type != 0u) {
+    if (registers[inst->VRegA_22c()] != 0u) {
       return 0;
     }
     self->ClearException();

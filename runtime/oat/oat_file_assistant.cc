@@ -82,6 +82,9 @@ std::ostream& operator<<(std::ostream& stream, const OatFileAssistant::OatStatus
     case OatFileAssistant::kOatContextOutOfDate:
       stream << "kOatContextOutOfDate";
       break;
+    case OatFileAssistant::kOatAssumedValuesOutOfDate:
+      stream << "kOatAssumedValuesOutOfDate";
+      break;
   }
 
   return stream;
@@ -522,6 +525,14 @@ OatFileAssistant::OatStatus OatFileAssistant::GivenOatFileStatus(const OatFile& 
     return kOatContextOutOfDate;
   }
 
+  if (file.GetOatHeader().HasAssumeValueSdkInt() &&
+      file.GetOatHeader().GetAssumeValueSdkInt() != GetRuntimeOptions().sdk_version) {
+    *error_msg = ART_FORMAT("Assumed value mismatch for SDK_INT (compiled='{}', runtime='{}')",
+                            file.GetOatHeader().GetAssumeValueSdkInt(),
+                            GetRuntimeOptions().sdk_version);
+    return kOatAssumedValuesOutOfDate;
+  }
+
   return kOatUpToDate;
 }
 
@@ -903,6 +914,7 @@ bool OatFileAssistant::OatFileInfo::IsUseable() {
     case kOatDexOutOfDate:
     case kOatContextOutOfDate:
     case kOatBootImageOutOfDate:
+    case kOatAssumedValuesOutOfDate:
       return false;
 
     case kOatUpToDate:
@@ -1294,6 +1306,7 @@ void OatFileAssistant::GetOptimizationStatus(std::string* out_odex_location,
     case kOatCannotOpen:
     case kOatBootImageOutOfDate:
     case kOatContextOutOfDate:
+    case kOatAssumedValuesOutOfDate:
       // These should never happen, but be robust.
       *out_compilation_filter = "unexpected";
       *out_compilation_reason = "unexpected";

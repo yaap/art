@@ -33,11 +33,9 @@
 #include <sstream>
 
 #include "android-base/file.h"
+#include "android-base/macros.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
-
-#include "unwindstack/AndroidUnwinder.h"
-
 #include "arch/context-inl.h"
 #include "arch/context.h"
 #include "art_field-inl.h"
@@ -72,6 +70,7 @@
 #include "gc/space/space-inl.h"
 #include "gc_root.h"
 #include "handle_scope-inl.h"
+#include "handle_scope.h"
 #include "indirect_reference_table-inl.h"
 #include "instrumentation.h"
 #include "intern_table.h"
@@ -82,6 +81,7 @@
 #include "jni/jni_internal.h"
 #include "mirror/class-alloc-inl.h"
 #include "mirror/class_loader.h"
+#include "mirror/object.h"
 #include "mirror/object_array-alloc-inl.h"
 #include "mirror/object_array-inl.h"
 #include "mirror/stack_frame_info.h"
@@ -96,6 +96,7 @@
 #include "oat/oat_quick_method_header.h"
 #include "oat/stack_map.h"
 #include "obj_ptr-inl.h"
+#include "obj_ptr.h"
 #include "object_lock.h"
 #include "palette/palette.h"
 #include "quick/quick_method_frame_info.h"
@@ -106,13 +107,14 @@
 #include "runtime-inl.h"
 #include "runtime.h"
 #include "runtime_callbacks.h"
-#include "scoped_thread_state_change-inl.h"
 #include "scoped_disable_public_sdk_checker.h"
+#include "scoped_thread_state_change-inl.h"
 #include "stack.h"
 #include "thread-inl.h"
 #include "thread_list.h"
 #include "trace.h"
 #include "trace_profile.h"
+#include "unwindstack/AndroidUnwinder.h"
 #include "verify_object.h"
 #include "well_known_classes-inl.h"
 
@@ -651,6 +653,7 @@ void* Thread::CreateCallback(void* arg) {
     self->DeleteJPeer(self->GetJniEnv());
     self->SetThreadName(self->GetThreadName()->ToModifiedUtf8().c_str());
 
+    // Use priority rather than niceness field to enable Android S workaround.
     ArtField* priorityField = WellKnownClasses::java_lang_Thread_priority;
     self->SetNativePriority(priorityField->GetInt(self->tlsPtr_.opeer));
 
@@ -671,10 +674,40 @@ void* Thread::CreateCallback(void* arg) {
     if (should_unpark) {
       self->Unpark();
     }
-    // Invoke the 'run' method of our java.lang.Thread.
+
     ObjPtr<mirror::Object> receiver = self->tlsPtr_.opeer;
-    WellKnownClasses::java_lang_Thread_run->InvokeVirtual<'V'>(self, receiver);
+    ObjPtr<mirror::Object> runnable =
+        WellKnownClasses::java_lang_Thread_target->GetObject(receiver);
+    // When the runnable is a VirtualThreadContext, don't run thread.run() and treat it as a virtual
+    // thread.
+    if (kIsVirtualThreadEnabled &&
+        UNLIKELY(
+            !runnable.IsNull() &&
+            runnable->InstanceOf(WellKnownClasses::dalvik_system_VirtualThreadContext.Get()))) {
+      self->SetVirtualThreadFlags(VirtualThreadFlag::kIsVirtual, true);
+      ObjPtr<mirror::Object> parked_states =
+          WellKnownClasses::dalvik_system_VirtualThreadContext_parkedStates->GetObject(runnable);
+      if (parked_states != nullptr) {
+        self->SetVirtualThreadFlags(VirtualThreadFlag::kUnparking, true);
+      }
+
+      // Invoke the Runnable.run() method to avoid holding a reference of opeer in the managed
+      // stack.
+      WellKnownClasses::java_lang_Runnable_run->InvokeInterface<'V'>(self, runnable);
+
+      // When a virtual thread is parked, we expect and clear the VirtualThreadParkingError used to
+      // unwind the native stack.
+      if (self->IsExceptionPending() && self->IsVirtualThreadParking()) {
+        DCHECK(self->GetException()->GetClass()->DescriptorEquals(
+            "Ldalvik/system/VirtualThreadParkingError;"));
+        self->ClearException();
+      }
+    } else {
+      // Invoke the 'run' method of our java.lang.Thread.
+      WellKnownClasses::java_lang_Thread_run->InvokeVirtual<'V'>(self, receiver);
+    }
   }
+
   // Detach and delete self.
   Runtime::Current()->GetThreadList()->Unregister(self, /* should_run_callbacks= */ true);
 
@@ -1211,7 +1244,7 @@ void Thread::CreatePeer(const char* name, bool as_daemon, jobject thread_group) 
     CHECK(self->IsExceptionPending());
     return;
   }
-  jint thread_priority = GetNativePriority();
+  jint thread_niceness = GetNativeNiceness();
 
   DCHECK(WellKnownClasses::java_lang_Thread->IsInitialized());
   Handle<mirror::Object> peer =
@@ -1222,7 +1255,7 @@ void Thread::CreatePeer(const char* name, bool as_daemon, jobject thread_group) 
   }
   tlsPtr_.opeer = peer.Get();
   WellKnownClasses::java_lang_Thread_init->InvokeInstance<'V', 'L', 'L', 'I', 'Z'>(
-      self, peer.Get(), thr_group.Get(), thread_name.Get(), thread_priority, as_daemon);
+      self, peer.Get(), thr_group.Get(), thread_name.Get(), thread_niceness, as_daemon);
   if (self->IsExceptionPending()) {
     return;
   }
@@ -1236,17 +1269,10 @@ void Thread::CreatePeer(const char* name, bool as_daemon, jobject thread_group) 
     // available (in the compiler, in tests), we manually assign the
     // fields the constructor should have set.
     if (runtime->IsActiveTransaction()) {
-      InitPeer<true>(tlsPtr_.opeer,
-                     as_daemon,
-                     thr_group.Get(),
-                     thread_name.Get(),
-                     thread_priority);
+      InitPeer<true>(tlsPtr_.opeer, as_daemon, thr_group.Get(), thread_name.Get(), thread_niceness);
     } else {
-      InitPeer<false>(tlsPtr_.opeer,
-                      as_daemon,
-                      thr_group.Get(),
-                      thread_name.Get(),
-                      thread_priority);
+      InitPeer<false>(
+          tlsPtr_.opeer, as_daemon, thr_group.Get(), thread_name.Get(), thread_niceness);
     }
     peer_thread_name.Assign(GetThreadName());
   }
@@ -1276,7 +1302,8 @@ ObjPtr<mirror::Object> Thread::CreateCompileTimePeer(const char* name,
     CHECK(self->IsExceptionPending());
     return nullptr;
   }
-  jint thread_priority = kNormThreadPriority;  // Always normalize to NORM priority.
+  // Always normalize to NORM priority.
+  jint thread_niceness = PriorityToNiceness(kNormThreadPriority);
 
   DCHECK(WellKnownClasses::java_lang_Thread->IsInitialized());
   Handle<mirror::Object> peer = hs.NewHandle(
@@ -1293,33 +1320,27 @@ ObjPtr<mirror::Object> Thread::CreateCompileTimePeer(const char* name,
   // available (in the compiler, in tests), we manually assign the
   // fields the constructor should have set.
   if (runtime->IsActiveTransaction()) {
-    InitPeer<true>(peer.Get(),
-                   as_daemon,
-                   thr_group.Get(),
-                   thread_name.Get(),
-                   thread_priority);
+    InitPeer<true>(peer.Get(), as_daemon, thr_group.Get(), thread_name.Get(), thread_niceness);
   } else {
-    InitPeer<false>(peer.Get(),
-                    as_daemon,
-                    thr_group.Get(),
-                    thread_name.Get(),
-                    thread_priority);
+    InitPeer<false>(peer.Get(), as_daemon, thr_group.Get(), thread_name.Get(), thread_niceness);
   }
 
   return peer.Get();
 }
 
-template<bool kTransactionActive>
+template <bool kTransactionActive>
 void Thread::InitPeer(ObjPtr<mirror::Object> peer,
                       bool as_daemon,
                       ObjPtr<mirror::Object> thread_group,
                       ObjPtr<mirror::String> thread_name,
-                      jint thread_priority) {
+                      jint thread_niceness) {
   WellKnownClasses::java_lang_Thread_daemon->SetBoolean<kTransactionActive>(peer,
       static_cast<uint8_t>(as_daemon ? 1u : 0u));
   WellKnownClasses::java_lang_Thread_group->SetObject<kTransactionActive>(peer, thread_group);
   WellKnownClasses::java_lang_Thread_name->SetObject<kTransactionActive>(peer, thread_name);
-  WellKnownClasses::java_lang_Thread_priority->SetInt<kTransactionActive>(peer, thread_priority);
+  WellKnownClasses::java_lang_Thread_niceness->SetInt<kTransactionActive>(peer, thread_niceness);
+  WellKnownClasses::java_lang_Thread_priority->SetInt<kTransactionActive>(
+      peer, NicenessToPriority(thread_niceness));
 }
 
 void Thread::SetCachedThreadName(const char* name) {
@@ -2046,7 +2067,8 @@ void Thread::DumpState(std::ostream& os, const Thread* thread, pid_t tid) {
   // cause ScopedObjectAccessUnchecked to deadlock.
   if (gAborting == 0 && self != nullptr && thread != nullptr && thread->tlsPtr_.opeer != nullptr) {
     ScopedObjectAccessUnchecked soa(self);
-    priority = WellKnownClasses::java_lang_Thread_priority->GetInt(thread->tlsPtr_.opeer);
+    priority = NicenessToPriority(
+        WellKnownClasses::java_lang_Thread_niceness->GetInt(thread->tlsPtr_.opeer));
     is_daemon = WellKnownClasses::java_lang_Thread_daemon->GetBoolean(thread->tlsPtr_.opeer);
 
     ObjPtr<mirror::Object> thread_group =
@@ -2060,10 +2082,19 @@ void Thread::DumpState(std::ostream& os, const Thread* thread, pid_t tid) {
           : "<null>";
     }
   } else if (thread != nullptr) {
+    // This produces niceness translated to a Java priority, which may not match the cached Java
+    // priority, and may have no relation to real scheduling priority if this was bumped to
+    // real-time priority. Except in the palette-fake case, this is always what it did, so change
+    // seems risky.
     priority = thread->GetNativePriority();
   } else {
-    palette_status_t status = PaletteSchedGetPriority(tid, &priority);
-    CHECK(status == PALETTE_STATUS_OK || status == PALETTE_STATUS_CHECK_ERRNO);
+    errno = 0;
+    int niceness = getpriority(PRIO_PROCESS, static_cast<id_t>(tid));
+    if (niceness == -1 && errno != 0) {
+      priority = -1;  // A recognizably bogus value.
+    } else {
+      priority = NicenessToPriority(niceness);
+    }
   }
 
   std::string scheduler_group_name(GetSchedulerGroupName(tid));
@@ -3775,10 +3806,10 @@ void Thread::DumpFromGdb() const {
   std::string str(ss.str());
   // log to stderr for debugging command line processes
   std::cerr << str;
-#ifdef ART_TARGET_ANDROID
-  // log to logcat for debugging frameworks processes
-  LOG(INFO) << str;
-#endif
+  if (kIsTargetAndroid) {
+    // log to logcat for debugging frameworks processes
+    LOG(INFO) << str;
+  }
 }
 
 // Explicitly instantiate 32 and 64bit thread offset dumping support.
@@ -4026,7 +4057,11 @@ std::unique_ptr<Context> Thread::QuickDeliverException(bool skip_method_exit_cal
   // listeners are installed and frame pop feature is supported.
   bool needs_deopt =
       instrumentation->HasMethodExitListeners() && Runtime::Current()->AreNonStandardExitsEnabled();
-  if (Dbg::IsForcedInterpreterNeededForException(this) || IsForceInterpreter() || needs_deopt) {
+  // parkVirtualInternal throws an exception when parking a virtual thread. It's not a
+  // deoptimization request.
+  bool is_parking_vthread = this->IsVirtualThreadParking();
+  if (!is_parking_vthread &&
+      (Dbg::IsForcedInterpreterNeededForException(this) || IsForceInterpreter() || needs_deopt)) {
     NthCallerVisitor visitor(this, 0, false);
     visitor.WalkStack();
     if (visitor.GetCurrentQuickFrame() != nullptr) {
@@ -4690,14 +4725,6 @@ void Thread::SetTlab(uint8_t* start, uint8_t* end, uint8_t* limit) {
 
 void Thread::ResetTlab() {
   gc::Heap* const heap = Runtime::Current()->GetHeap();
-  if (heap->GetHeapSampler().IsEnabled()) {
-    // Note: We always ResetTlab before SetTlab, therefore we can do the sample
-    // offset adjustment here.
-    heap->AdjustSampleOffset(GetTlabPosOffset());
-    VLOG(heap) << "JHP: ResetTlab, Tid: " << GetTid()
-               << " adjustment = "
-               << (tlsPtr_.thread_local_pos - tlsPtr_.thread_local_start);
-  }
   SetTlab(nullptr, nullptr, nullptr);
 }
 
@@ -4885,16 +4912,214 @@ void Thread::ClearAllInterpreterCaches() {
   Runtime::Current()->GetThreadList()->RunCheckpoint(&closure);
 }
 
-void Thread::SetNativePriority(int new_priority) {
-  palette_status_t status = PaletteSchedSetPriority(GetTid(), new_priority);
-  CHECK(status == PALETTE_STATUS_OK || status == PALETTE_STATUS_CHECK_ERRNO);
+static_assert(kMinThreadPriority >= 0);
+
+// Use PaletteSchedSetPriority on host for testing. This should set canSetPriority to false,
+// but not crash.
+static constexpr bool kUseFakeOnHost = false;
+
+static bool canSetPriority = true;  // If false, we skip attempting to set OS priority.
+
+// Android S, does more than setting niceness in PaletteSchedSetPriority, making it unsafe to use
+// that in Zygote, and making it desirable (for risk minimization, at least) to actually call it
+// when expected.
+inline bool NeedSWorkaround() {
+  static bool needSWorkaround = false;
+  static std::once_flag sWorkaroundInitialized;
+  std::call_once(sWorkaroundInitialized, []() {
+    if (kIsTargetAndroid) {
+      if (android::base::GetIntProperty("ro.build.version.sdk", 0) <= 32) {
+        needSWorkaround = true;
+      }
+    } else if (!kUseFakeOnHost) {
+      // Priority setting is often restricted on host. Just fake it, as for S.
+      // TODO: Fuchsia may require attention here.
+      needSWorkaround = true;
+      canSetPriority = false;
+    }
+  });
+  return needSWorkaround;
 }
 
-int Thread::GetNativePriority() const {
-  int priority = 0;
-  palette_status_t status = PaletteSchedGetPriority(GetTid(), &priority);
-  CHECK(status == PALETTE_STATUS_OK || status == PALETTE_STATUS_CHECK_ERRNO);
-  return priority;
+// Return an int array result, so that result[i] is the native priority, really
+// "niceness" corresponding to Java priority i. result[0] is unused.
+int* Thread::GetPriorityMap() {
+  static int priorityMap[kMaxThreadPriority + 1];
+  static std::once_flag priorityMapInitialized;
+  // For Android S, PaletteSchedSetPriority is unsafe in the zygote, since it leaves a file
+  // descriptor open, which must crash zygote. We could possibly postpone discovering the map, but
+  // that adds a few dozen system calls in each child. We instead simply assume the historical map
+  // that shipped with Android S.
+  // Deviating from this is questionable anyway, since a lot of Android code at all levels sets
+  // niceness directly without going through the Palette API.  On Android S, we continue to use
+  // PaletteSchedSetPriority to set Java priorities, but we cache the niceness values given here,
+  // and return those. Thus actual thread niceness values will not reflect those here, but pure
+  // Java behavior should be consistent. This is similar to what happens when framework code
+  // alters thread priorities externally, so we should be OK.
+  static int traditional_priority_map[] = {0 /*unused*/, 19, 16, 13, 10, 0, -2, -4, -5, -6, -8};
+  const char* failure_msg = nullptr;
+
+  if (NeedSWorkaround()) {
+    static bool warned = false;
+    if (!warned) {
+      LOG(WARNING) << "Using default priority map due to SDK version";
+      warned = true;
+    }
+    return traditional_priority_map;
+  }
+  std::call_once(priorityMapInitialized, [&pm = priorityMap, &failure_msg]() {
+  // CHECKs in this function should be avoided. Dump calls will invoke this recursively.
+#define CHECK_DEFERRED_ABORT(pred, msg) \
+  if (!(pred)) {                        \
+    failure_msg = (msg);                \
+    return;                             \
+  }
+    bool need_fake = false;  // Saw an anomaly requiring us to fake the map?
+    bool success = true;
+    bool saw_difference = true;  // Do we map to different niceness values?
+                                 // PaletteMapPriority always yields nontrivial mapping.
+    for (int p = kMinThreadPriority; p <= kMaxThreadPriority; ++p) {
+      palette_status_t result = PaletteMapPriority(p, &pm[p]);
+      if (result == PALETTE_STATUS_NOT_SUPPORTED) {
+        success = false;
+        break;
+      }
+      CHECK_DEFERRED_ABORT(result == PALETTE_STATUS_OK, "Bad PALLETTE_STATUS");
+    }
+    if (!success) {
+      // Discover the map the hard way.
+      int32_t me = static_cast<int32_t>(::art::GetTid());
+      bool map_consistent;
+      errno = 0;
+      int orig_niceness = getpriority(PRIO_PROCESS, 0 /* self */);
+      CHECK_DEFERRED_ABORT(orig_niceness != -1 || errno == 0, "getpriority() failed");
+      constexpr int kMaxIters = 10;
+      int iters = 0;
+      do {
+        map_consistent = true;
+        ++iters;
+        saw_difference = false;
+        CHECK_DEFERRED_ABORT(iters <= kMaxIters, "iters > kMaxIters");
+        // Start checking from higher priorities, since that is most likely to fail, and we may
+        // have trouble undoing the damage if we don't detect the problem immediately.
+        for (int p = kMaxThreadPriority; p >= kMinThreadPriority; --p) {
+          int ret = PaletteSchedSetPriority(me, p);
+          if (ret == PALETTE_STATUS_OK) {
+            errno = 0;
+            pm[p] = getpriority(PRIO_PROCESS, 0 /* self */);
+            // If we always get the same value, we're dealing with a fake, and need to fake a
+            // consistent result here.
+            if (!saw_difference && pm[p] != pm[kMaxThreadPriority]) {
+              if (p == kMaxThreadPriority - 1) {
+                saw_difference = true;
+              } else {
+                // We saw several identical values, which is wrong.
+                // Force a complete pass with checking.
+                map_consistent = false;
+                break;
+              }
+            }
+            CHECK_DEFERRED_ABORT(pm[p] != -1 || errno == 0, "2nd getpriority() failed");
+            VLOG(threads) << "Niceness[" << p << "] = " << pm[p];
+            if (saw_difference) {
+              // With a non-fake PaletteSchedSetPriority the map should be strictly monotonically
+              // decreasing.
+              if (p < kMaxThreadPriority && pm[p] <= pm[p + 1]) {
+                // Maybe somebody else mucked with our priority? Start over.
+                map_consistent = false;
+                break;
+              }
+            }
+          } else {
+            need_fake = true;
+            break;
+          }
+        }
+      } while (!map_consistent && !need_fake);
+      int ret = setpriority(PRIO_PROCESS, static_cast<id_t>(me), orig_niceness);
+      CHECK_DEFERRED_ABORT(ret == 0, "setpriority() failed");
+    }
+    if (!saw_difference || need_fake) {
+      // Palette calls don't impact getpriority(), as with the traditional
+      // PaletteSetSchedPriority fake on host.
+      canSetPriority = false;
+      LOG(WARNING) << "Failed to retrieve monotonic priority map : faking it";
+      // Make the map monotonic, so we can map priority to niceness and back without losing
+      // information.
+      for (int p = kMinThreadPriority; p <= kMaxThreadPriority; ++p) {
+        pm[p] = 5 - p;
+      }
+    }
+    std::ostringstream priority_map_string;
+    for (int p = kMinThreadPriority; p <= kMaxThreadPriority; ++p) {
+      if (p != kMinThreadPriority) {
+        priority_map_string << ", ";
+      }
+      priority_map_string << priorityMap[p];
+    }
+    LOG(INFO) << "Priority-to-niceness mapping: " << priority_map_string.str();
+#undef CHECK_DEFERRED_ABORT
+  });
+  if (failure_msg != nullptr) {
+    // Calls to GetPriorityMap() during dumping must return plausible values.
+    for (int p = kMinThreadPriority; p <= kMaxThreadPriority; ++p) {
+      priorityMap[p] = 5 - p;
+    }
+    LOG(FATAL) << failure_msg;
+  }
+  return priorityMap;
+}
+
+// Many niceness values don't correspond to a priority. Find and return a close one.
+int Thread::NicenessToPriority(int niceness) {
+  int* pm = GetPriorityMap();
+  int* bound = std::lower_bound(pm + kMinThreadPriority,
+                                pm + kMaxThreadPriority + 1,
+                                niceness,
+                                std::greater() /* niceness decreases */);
+  if (bound > pm + kMaxThreadPriority) {
+    return kMaxThreadPriority;
+  }
+  if (bound == pm + kMinThreadPriority) {
+    return kMinThreadPriority;
+  }
+  // The closest is either bound[0] or bound[-1].
+  DCHECK_LE(bound[0], niceness);
+  DCHECK_GT(bound[-1], niceness);
+  // Resolve ties towards the higher priority. This usually maps system daemon priority to Java
+  // normal priority, which is the traditional behavior we test for.
+  return static_cast<int>((niceness - bound[0] > bound[-1] - niceness) ? bound - pm - 1
+                                                                       : bound - pm);
+}
+
+int Thread::SetNativeNiceness(int niceness) {
+  int ret = setpriority(PRIO_PROCESS, static_cast<id_t>(GetTid()), niceness);
+  if (ret == 0) {
+    return 0;
+  }
+  LOG(WARNING) << "Cannot set niceness to " << niceness;
+  // TODO: With PaletteMapPriority we may want to do more here.
+  return errno;
+}
+
+int Thread::GetNativeNiceness() const {
+  errno = 0;
+  int niceness = getpriority(PRIO_PROCESS, static_cast<id_t>(GetTid()));
+  CHECK(niceness != -1 || errno == 0);
+  return niceness;
+}
+
+int Thread::SetNativePriority(int new_priority) {
+  int n = PriorityToNiceness(new_priority);
+  if (canSetPriority) {
+    if (UNLIKELY(NeedSWorkaround())) {
+      palette_status_t status = PaletteSchedSetPriority(GetTid(), new_priority);
+      CHECK(status == PALETTE_STATUS_OK || status == PALETTE_STATUS_CHECK_ERRNO);
+    } else {
+      SetNativeNiceness(n);
+    }
+  }
+  return n;
 }
 
 void Thread::AbortInThis(const std::string& message) {

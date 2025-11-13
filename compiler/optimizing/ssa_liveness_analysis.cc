@@ -16,12 +16,24 @@
 
 #include "ssa_liveness_analysis.h"
 
+#include "base/arena_bit_vector.h"
 #include "base/bit_vector-inl.h"
 #include "code_generator.h"
+#include "com_android_art_flags.h"
 #include "linear_order.h"
+#include "loop_information-inl.h"
 #include "nodes.h"
 
 namespace art HIDDEN {
+
+inline BlockInfo::BlockInfo(ScopedArenaAllocator* allocator, size_t number_of_ssa_values)
+    : live_in_(ArenaBitVector::CreateFixedSize(
+          allocator, number_of_ssa_values, kArenaAllocSsaLiveness)),
+      live_out_(ArenaBitVector::CreateFixedSize(
+          allocator, number_of_ssa_values, kArenaAllocSsaLiveness)),
+      kill_(ArenaBitVector::CreateFixedSize(
+          allocator, number_of_ssa_values, kArenaAllocSsaLiveness)) {
+}
 
 void SsaLivenessAnalysis::Analyze() {
   // Compute the linear order directly in the graph's data structure
@@ -34,7 +46,7 @@ void SsaLivenessAnalysis::Analyze() {
 }
 
 void SsaLivenessAnalysis::NumberInstructions() {
-  int ssa_index = 0;
+  size_t ssa_index = 0;
   size_t lifetime_position = 0;
   // Each instruction gets a lifetime position, and a block gets a lifetime
   // start and end position. Non-phi instructions have a distinct lifetime position than
@@ -48,7 +60,8 @@ void SsaLivenessAnalysis::NumberInstructions() {
   for (HBasicBlock* block : graph_->GetLinearOrder()) {
     block->SetLifetimeStart(lifetime_position);
 
-    for (HInstructionIterator inst_it(block->GetPhis()); !inst_it.Done(); inst_it.Advance()) {
+    for (HInstructionIteratorPrefetchNext inst_it(block->GetPhis()); !inst_it.Done();
+         inst_it.Advance()) {
       HInstruction* current = inst_it.Current();
       codegen_->AllocateLocations(current);
       LocationSummary* locations = current->GetLocations();
@@ -60,12 +73,12 @@ void SsaLivenessAnalysis::NumberInstructions() {
       }
       current->SetLifetimePosition(lifetime_position);
     }
-    lifetime_position += 2;
+    lifetime_position += kLivenessPositionsPerInstruction;
 
     // Add a null marker to notify we are starting a block.
     instructions_from_lifetime_position_.push_back(nullptr);
 
-    for (HInstructionIterator inst_it(block->GetInstructions()); !inst_it.Done();
+    for (HInstructionIteratorPrefetchNext inst_it(block->GetInstructions()); !inst_it.Done();
          inst_it.Advance()) {
       HInstruction* current = inst_it.Current();
       codegen_->AllocateLocations(current);
@@ -78,18 +91,19 @@ void SsaLivenessAnalysis::NumberInstructions() {
       }
       instructions_from_lifetime_position_.push_back(current);
       current->SetLifetimePosition(lifetime_position);
-      lifetime_position += 2;
+      lifetime_position += kLivenessPositionsPerInstruction;
     }
 
     block->SetLifetimeEnd(lifetime_position);
   }
-  number_of_ssa_values_ = ssa_index;
+  DCHECK_EQ(GetNumberOfSsaValues(), ssa_index);
 }
 
 void SsaLivenessAnalysis::ComputeLiveness() {
+  size_t number_of_ssa_values = GetNumberOfSsaValues();
   for (HBasicBlock* block : graph_->GetLinearOrder()) {
     block_infos_[block->GetBlockId()] =
-        new (allocator_) BlockInfo(allocator_, *block, number_of_ssa_values_);
+        new (allocator_) BlockInfo(allocator_, number_of_ssa_values);
   }
 
   // Compute the live ranges, as well as the initial live_in, live_out, and kill sets.
@@ -187,9 +201,18 @@ void SsaLivenessAnalysis::ComputeLiveRanges() {
         // therefore be the same and we only need to keep alive one.
       } else {
         size_t phi_input_index = successor->GetPredecessorIndexOf(block);
-        for (HInstructionIterator phi_it(successor->GetPhis()); !phi_it.Done(); phi_it.Advance()) {
+        for (HInstructionIteratorPrefetchNext phi_it(successor->GetPhis()); !phi_it.Done();
+             phi_it.Advance()) {
           HInstruction* phi = phi_it.Current();
           HInstruction* input = phi->InputAt(phi_input_index);
+          if (com::android::art::flags::reg_alloc_spill_slot_reuse() &&
+              input->GetLiveInterval()->GetUses().empty()) {
+            // If the `input` has no recorded uses yet, the `phi` use shall be its last use
+            // (we visit blocks in reverse linear order) and the `input` dies at the end of
+            // the `block`. Record the `phi` interval as a hint to try using the same spill
+            // slot in order to avoid excessive moves if both `input` and `phi` get spilled.
+            input->GetLiveInterval()->SetHintPhiInterval(phi->GetLiveInterval());
+          }
           input->GetLiveInterval()->AddPhiUse(phi, phi_input_index, block);
           // A phi input whose last user is the phi dies at the end of the predecessor block,
           // and not at the phi's lifetime position.
@@ -205,7 +228,8 @@ void SsaLivenessAnalysis::ComputeLiveRanges() {
       current->GetLiveInterval()->AddRange(block->GetLifetimeStart(), block->GetLifetimeEnd());
     }
 
-    for (HBackwardInstructionIterator back_it(block->GetInstructions()); !back_it.Done();
+    for (HBackwardInstructionIteratorPrefetchNext back_it(block->GetInstructions());
+         !back_it.Done();
          back_it.Advance()) {
       HInstruction* current = back_it.Current();
       if (current->HasSsaIndex()) {
@@ -218,13 +242,31 @@ void SsaLivenessAnalysis::ComputeLiveRanges() {
       // Process inputs of instructions.
       if (current->IsEmittedAtUseSite()) {
         if (kIsDebugBuild) {
-          DCHECK(!current->GetLocations()->Out().IsValid());
-          for (const HUseListNode<HInstruction*>& use : current->GetUses()) {
-            HInstruction* user = use.GetUser();
-            size_t index = use.GetIndex();
-            DCHECK(!user->GetLocations()->InAt(index).IsValid());
+          CHECK(!current->GetLocations()->Out().IsValid());
+          CHECK(!current->HasEnvironmentUses());
+          if (current->IsNullCheck()) {
+            // Implicit null check is replaced by its input in all users before register
+            // allocation, so it does not have any uses at this point.
+            CHECK(current->GetUses().empty());
+          } else {
+            // TODO: Should we allow dead instructions marked as "emitted at use site"?
+            CHECK(!current->GetUses().empty());
+            for (const HUseListNode<HInstruction*>& use : current->GetUses()) {
+              HInstruction* user = use.GetUser();
+              size_t index = use.GetIndex();
+              CHECK(!user->GetLocations()->InAt(index).IsValid());
+            }
+            if (!current->GetUses().HasExactlyOneElement()) {
+              // If there is more than one user, there can be no unallocated locations.
+              // We do not have a way to record different locations for different use sites.
+              for (size_t i : Range(current->GetLocations()->GetInputCount())) {
+                CHECK(!current->GetLocations()->InAt(i).IsUnallocated());
+              }
+              for (size_t i : Range(current->GetLocations()->GetTempCount())) {
+                CHECK(!current->GetLocations()->GetTemp(i).IsUnallocated());
+              }
+            }
           }
-          DCHECK(!current->HasEnvironmentUses());
         }
       } else {
         // Process the environment first, because we know their uses come after
@@ -242,7 +284,8 @@ void SsaLivenessAnalysis::ComputeLiveRanges() {
     }
 
     // Kill phis defined in this block.
-    for (HInstructionIterator inst_it(block->GetPhis()); !inst_it.Done(); inst_it.Advance()) {
+    for (HInstructionIteratorPrefetchNext inst_it(block->GetPhis()); !inst_it.Done();
+         inst_it.Advance()) {
       HInstruction* current = inst_it.Current();
       if (current->HasSsaIndex()) {
         kill.SetBit(current->GetSsaIndex());
@@ -326,6 +369,195 @@ void SsaLivenessAnalysis::DoCheckNoLiveInIrreducibleLoop(const HBasicBlock& bloc
   }
 }
 
+void LiveInterval::AddUse(HInstruction* instruction,
+                          HEnvironment* environment,
+                          size_t input_index,
+                          HInstruction* actual_user) {
+  bool is_environment = (environment != nullptr);
+  LocationSummary* locations = instruction->GetLocations();
+  if (actual_user == nullptr) {
+    actual_user = instruction;
+  }
+
+  // Set the use within the instruction.
+  size_t position = actual_user->GetLifetimePosition() + kLivenessPositionOfNormalUse;
+  if (!is_environment) {
+    if (locations->IsFixedInput(input_index) || locations->OutputUsesSameAs(input_index)) {
+      // For fixed inputs and output same as input, the register allocator
+      // requires to have inputs die at the instruction, so that input moves use the
+      // location of the input just before that instruction (and not potential moves due
+      // to splitting).
+      DCHECK_EQ(instruction, actual_user);
+      position = actual_user->GetLifetimePosition();
+    } else if (!locations->InAt(input_index).IsValid()) {
+      return;
+    }
+  }
+
+  if (!is_environment && instruction->IsInLoop()) {
+    AddBackEdgeUses(*instruction->GetBlock());
+  }
+
+  if ((!uses_.empty()) &&
+      (uses_.front().GetUser() == actual_user) &&
+      (uses_.front().GetPosition() < position)) {
+    // The user uses the instruction multiple times, and one use dies before the other.
+    // We update the use list so that the latter is first.
+    DCHECK(!is_environment);
+    DCHECK(uses_.front().GetPosition() + kLivenessPositionOfNormalUse == position);
+    UsePositionList::iterator next_pos = uses_.begin();
+    UsePositionList::iterator insert_pos;
+    do {
+      insert_pos = next_pos;
+      ++next_pos;
+    } while (next_pos != uses_.end() && next_pos->GetPosition() < position);
+    UsePosition* new_use = new (allocator_) UsePosition(instruction, input_index, position);
+    uses_.insert_after(insert_pos, *new_use);
+    if (first_range_->GetEnd() == uses_.front().GetPosition()) {
+      first_range_->end_ = position;
+    }
+    return;
+  }
+
+  if (is_environment) {
+    DCHECK(env_uses_.empty() || position <= env_uses_.front().GetPosition());
+    EnvUsePosition* new_env_use =
+        new (allocator_) EnvUsePosition(environment, input_index, position);
+    env_uses_.push_front(*new_env_use);
+  } else {
+    DCHECK(uses_.empty() || position <= uses_.front().GetPosition());
+    UsePosition* new_use = new (allocator_) UsePosition(instruction, input_index, position);
+    uses_.push_front(*new_use);
+  }
+
+  size_t start_block_position = instruction->GetBlock()->GetLifetimeStart();
+  if (first_range_ == nullptr) {
+    // First time we see a use of that interval.
+    first_range_ = last_range_ = range_search_start_ =
+        new (allocator_) LiveRange(start_block_position, position, nullptr);
+  } else if (first_range_->GetStart() == start_block_position) {
+    // There is a use later in the same block or in a following block.
+    // Note that in such a case, `AddRange` for the whole blocks has been called
+    // before arriving in this method, and this is the reason the start of
+    // `first_range_` is before the given `position`.
+    DCHECK_LE(position, first_range_->GetEnd());
+  } else {
+    DCHECK(first_range_->GetStart() > position);
+    // There is a hole in the interval. Create a new range.
+    // Note that the start of `first_range_` can be equal to `end`: two blocks
+    // having adjacent lifetime positions are not necessarily
+    // predecessor/successor. When two blocks are predecessor/successor, the
+    // liveness algorithm has called `AddRange` before arriving in this method,
+    // and the check line 205 would succeed.
+    first_range_ = range_search_start_ =
+        new (allocator_) LiveRange(start_block_position, position, first_range_);
+  }
+}
+
+LiveInterval* LiveInterval::SplitAt(size_t position) {
+  DCHECK(!IsTemp());
+  DCHECK(!IsFixed());
+  DCHECK_GT(position, GetStart());
+
+  if (GetEnd() <= position) {
+    // This range dies before `position`, no need to split.
+    return nullptr;
+  }
+
+  LiveInterval* new_interval = new (allocator_) LiveInterval(allocator_, type_);
+
+  SafepointPositionList::const_iterator before = safepoints_.before_begin();
+  for (auto it = safepoints_.begin(), end = safepoints_.end(); it != end; ++it) {
+    if (it->GetPosition() >= position) {
+      break;
+    }
+    before = it;
+  }
+  new_interval->safepoints_.splice_after(
+      new_interval->safepoints_.before_begin(), safepoints_, before, safepoints_.end());
+
+  new_interval->next_sibling_ = next_sibling_;
+  next_sibling_ = new_interval;
+  new_interval->parent_ = parent_;
+
+  LiveRange* current = first_range_;
+  LiveRange* previous = nullptr;
+  // Iterate over the ranges, and either find a range that covers this position, or
+  // two ranges in between this position (that is, the position is in a lifetime hole).
+  do {
+    if (position >= current->GetEnd()) {
+      // Move to next range.
+      previous = current;
+      current = current->next_;
+    } else if (position <= current->GetStart()) {
+      // If the previous range did not cover this position, we know position is in
+      // a lifetime hole. We can just break the first_range_ and last_range_ links
+      // and return the new interval.
+      DCHECK(previous != nullptr);
+      DCHECK(current != first_range_);
+      new_interval->last_range_ = last_range_;
+      last_range_ = previous;
+      previous->next_ = nullptr;
+      new_interval->first_range_ = current;
+      if (range_search_start_ != nullptr && range_search_start_->GetEnd() >= current->GetEnd()) {
+        // Search start point is inside `new_interval`. Change it to null
+        // (i.e. the end of the interval) in the original interval.
+        range_search_start_ = nullptr;
+      }
+      new_interval->range_search_start_ = new_interval->first_range_;
+      return new_interval;
+    } else {
+      // This range covers position. We create a new last_range_ for this interval
+      // that covers last_range_->Start() and position. We also shorten the current
+      // range and make it the first range of the new interval.
+      DCHECK(position < current->GetEnd() && position > current->GetStart());
+      new_interval->last_range_ = last_range_;
+      last_range_ = new (allocator_) LiveRange(current->start_, position, nullptr);
+      if (previous != nullptr) {
+        previous->next_ = last_range_;
+      } else {
+        first_range_ = last_range_;
+      }
+      new_interval->first_range_ = current;
+      current->start_ = position;
+      if (range_search_start_ != nullptr && range_search_start_->GetEnd() >= current->GetEnd()) {
+        // Search start point is inside `new_interval`. Change it to `last_range`
+        // in the original interval. This is conservative but always correct.
+        range_search_start_ = last_range_;
+      }
+      new_interval->range_search_start_ = new_interval->first_range_;
+      return new_interval;
+    }
+  } while (current != nullptr);
+
+  LOG(FATAL) << "Unreachable";
+  return nullptr;
+}
+
+void LiveInterval::Dump(std::ostream& stream) const {
+  stream << "ranges: { ";
+  LiveRange* current = first_range_;
+  while (current != nullptr) {
+    current->Dump(stream);
+    stream << " ";
+    current = current->GetNext();
+  }
+  stream << "}, uses: { ";
+  for (const UsePosition& use : GetUses()) {
+    use.Dump(stream);
+    stream << " ";
+  }
+  stream << "}, { ";
+  for (const EnvUsePosition& env_use : GetEnvironmentUses()) {
+    env_use.Dump(stream);
+    stream << " ";
+  }
+  stream << "}";
+  stream << " is_fixed: " << is_fixed_ << ", is_split: " << IsSplit();
+  stream << " is_low: " << IsLowInterval();
+  stream << " is_high: " << IsHighInterval();
+}
+
 void LiveInterval::DumpWithContext(std::ostream& stream,
                                    const CodeGenerator& codegen) const {
   Dump(stream);
@@ -351,8 +583,8 @@ static int RegisterOrLowRegister(Location location) {
   return location.IsPair() ? location.low() : location.reg();
 }
 
-int LiveInterval::FindFirstRegisterHint(size_t* free_until,
-                                        const SsaLivenessAnalysis& liveness) const {
+int LiveInterval::FindFirstRegisterHint(
+    ArrayRef<size_t> free_until, ArrayRef<HInstruction* const> instructions_from_positions) const {
   DCHECK(!IsHighInterval());
   if (IsTemp()) return kNoRegister;
 
@@ -366,12 +598,15 @@ int LiveInterval::FindFirstRegisterHint(size_t* free_until,
     }
   }
 
-  if (IsSplit() && liveness.IsAtBlockBoundary(GetStart() / 2)) {
+  if (IsSplit() &&
+      SsaLivenessAnalysis::IsAtBlockBoundary(
+          GetStart() / kLivenessPositionsPerInstruction, instructions_from_positions)) {
     // If the start of this interval is at a block boundary, we look at the
     // location of the interval in blocks preceding the block this interval
     // starts at. If one location is a register we return it as a hint. This
     // will avoid a move between the two blocks.
-    HBasicBlock* block = liveness.GetBlockFromPosition(GetStart() / 2);
+    HBasicBlock* block = SsaLivenessAnalysis::GetBlockFromPosition(
+        GetStart() / kLivenessPositionsPerInstruction, instructions_from_positions);
     size_t next_register_use = FirstRegisterUse();
     for (HBasicBlock* predecessor : block->GetPredecessors()) {
       size_t position = predecessor->GetLifetimeEnd() - 1;
@@ -558,6 +793,51 @@ LiveInterval* LiveInterval::GetSiblingAt(size_t position) {
     current = current->GetNextSibling();
   }
   return current;
+}
+
+void LiveInterval::AddBackEdgeUses(const HBasicBlock& block_at_use) {
+  DCHECK(block_at_use.IsInLoop());
+  if (block_at_use.GetGraph()->HasIrreducibleLoops()) {
+    // Linear order may not be well formed when irreducible loops are present,
+    // i.e. loop blocks may not be adjacent and a back edge may not be last,
+    // which violates assumptions made in this method.
+    return;
+  }
+
+  // Add synthesized uses at the back edge of loops to help the register allocator.
+  // Note that this method is called in decreasing liveness order, to facilitate adding
+  // uses at the head of the `uses_` list. Because below
+  // we iterate from inner-most to outer-most, which is in increasing liveness order,
+  // we need to add subsequent entries after the last inserted entry.
+  const UsePositionList::iterator old_begin = uses_.begin();
+  UsePositionList::iterator insert_pos = uses_.before_begin();
+  for (HLoopInformationOutwardIterator it(block_at_use); !it.Done(); it.Advance()) {
+    HLoopInformation* current = it.Current();
+    if (GetDefinedBy()->GetLifetimePosition() >= current->GetHeader()->GetLifetimeStart()) {
+      // This interval is defined in the loop. We can stop going outward.
+      break;
+    }
+
+    // We're only adding a synthesized use at the last back edge. Adding synthesized uses on
+    // all back edges is not necessary: anything used in the loop will have its use at the
+    // last back edge. If we want branches in a loop to have better register allocation than
+    // another branch, then it is the linear order we should change.
+    size_t back_edge_use_position = current->GetLifetimeEnd();
+    if ((old_begin != uses_.end()) && (old_begin->GetPosition() <= back_edge_use_position)) {
+      // There was a use already seen in this loop. Therefore the previous call to `AddUse`
+      // already inserted the backedge use. We can stop going outward.
+      DCHECK(HasSynthesizeUseAt(back_edge_use_position));
+      break;
+    }
+
+    DCHECK(insert_pos != uses_.before_begin()
+           ? back_edge_use_position > insert_pos->GetPosition()
+           : current == block_at_use.GetLoopInformation())
+        << std::distance(uses_.before_begin(), insert_pos);
+
+    UsePosition* new_use = new (allocator_) UsePosition(back_edge_use_position);
+    insert_pos = uses_.insert_after(insert_pos, *new_use);
+  }
 }
 
 }  // namespace art

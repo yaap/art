@@ -21,7 +21,6 @@
 #include "base/arena_allocator.h"
 #include "base/common_art_test.h"
 #include "base/unix_file/fd_file.h"
-#include "dex/compact_dex_file.h"
 #include "dex/dex_file.h"
 #include "dex/dex_file_loader.h"
 #include "dex/method_reference.h"
@@ -233,7 +232,7 @@ class ProfileCompilationInfoTest : public CommonArtTest, public ProfileTestHelpe
   static constexpr int kProfileMagicSize = 4;
   static constexpr int kProfileVersionSize = 4;
 
-  MallocArenaPool pool_;
+  CallocArenaPool pool_;
   std::unique_ptr<ArenaAllocator> allocator_;
 
   const DexFile* dex1;

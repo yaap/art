@@ -72,10 +72,8 @@ class SchedulerTest : public CommonCompilerTest, public OptimizingUnitTestHelper
 
   // Build scheduling graph, and run target specific scheduling on it.
   void TestBuildDependencyGraphAndSchedule(HScheduler* scheduler) {
-    HBasicBlock* entry = new (GetAllocator()) HBasicBlock(graph_);
-    HBasicBlock* block1 = new (GetAllocator()) HBasicBlock(graph_);
-    graph_->AddBlock(entry);
-    graph_->AddBlock(block1);
+    HBasicBlock* entry = AddNewBlock();
+    HBasicBlock* block1 = AddNewBlock();
     graph_->SetEntryBlock(entry);
 
     // entry:
@@ -124,7 +122,8 @@ class SchedulerTest : public CommonCompilerTest, public OptimizingUnitTestHelper
 
     TestSchedulingGraph scheduling_graph(GetScopedAllocator());
     // Instructions must be inserted in reverse order into the scheduling graph.
-    for (HBackwardInstructionIterator it(block1->GetInstructions()); !it.Done(); it.Advance()) {
+    for (HBackwardInstructionIteratorPrefetchNext it(block1->GetInstructions()); !it.Done();
+         it.Advance()) {
       scheduling_graph.AddNode(it.Current());
     }
 
@@ -181,10 +180,8 @@ class SchedulerTest : public CommonCompilerTest, public OptimizingUnitTestHelper
   }
 
   void TestDependencyGraphOnAliasingArrayAccesses(HScheduler* scheduler) {
-    HBasicBlock* entry = new (GetAllocator()) HBasicBlock(graph_);
-    HBasicBlock* block1 = new (GetAllocator()) HBasicBlock(graph_);
-    graph_->AddBlock(entry);
-    graph_->AddBlock(block1);
+    HBasicBlock* entry = AddNewBlock();
+    HBasicBlock* block1 = AddNewBlock();
     graph_->SetEntryBlock(entry);
 
     HInstruction* arr = MakeParam(DataType::Type::kReference);
@@ -213,7 +210,8 @@ class SchedulerTest : public CommonCompilerTest, public OptimizingUnitTestHelper
     heap_location_collector.BuildAliasingMatrix();
     TestSchedulingGraph scheduling_graph(GetScopedAllocator(), &heap_location_collector);
 
-    for (HBackwardInstructionIterator it(block1->GetInstructions()); !it.Done(); it.Advance()) {
+    for (HBackwardInstructionIteratorPrefetchNext it(block1->GetInstructions()); !it.Done();
+         it.Advance()) {
       // Build scheduling graph with memory access aliasing information
       // from LSA/heap_location_collector.
       scheduling_graph.AddNode(it.Current());

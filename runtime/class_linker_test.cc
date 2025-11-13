@@ -279,11 +279,8 @@ class ClassLinkerTest : public CommonRuntimeTest {
                                                klass->GetDescriptor(&temp2)));
     if (klass->IsInterface()) {
       EXPECT_TRUE(klass->IsAbstract());
-      // Check that all methods are direct and either static (<clinit> or a regular static method),
-      // or private.
-      for (ArtMethod& m : klass->GetDirectMethods(kRuntimePointerSize)) {
-        EXPECT_TRUE(m.IsStatic() || m.IsPrivate());
-        EXPECT_TRUE(m.IsDirect());
+      for (ArtMethod& m : klass->GetMethods(kRuntimePointerSize)) {
+        EXPECT_TRUE(m.IsStatic() || m.IsPrivate() || m.IsVirtual());
       }
     } else {
       if (!klass->IsSynthetic()) {
@@ -318,15 +315,9 @@ class ClassLinkerTest : public CommonRuntimeTest {
     EXPECT_FALSE(klass->IsPrimitive());
     EXPECT_TRUE(klass->CanAccess(klass.Get()));
 
-    for (ArtMethod& method : klass->GetDirectMethods(kRuntimePointerSize)) {
+    for (ArtMethod& method : klass->GetDeclaredMethods(kRuntimePointerSize)) {
       AssertMethod(&method);
-      EXPECT_TRUE(method.IsDirect());
-      EXPECT_OBJ_PTR_EQ(klass.Get(), method.GetDeclaringClass());
-    }
-
-    for (ArtMethod& method : klass->GetDeclaredVirtualMethods(kRuntimePointerSize)) {
-      AssertMethod(&method);
-      EXPECT_FALSE(method.IsDirect());
+      EXPECT_NE(method.IsVirtual(), method.IsDirect());
       EXPECT_OBJ_PTR_EQ(klass.Get(), method.GetDeclaringClass());
     }
 
@@ -403,7 +394,7 @@ class ClassLinkerTest : public CommonRuntimeTest {
     StackHandleScope<1> hs(self);
     Handle<mirror::Class> klass(
         hs.NewHandle(class_linker_->FindSystemClass(self, descriptor.c_str())));
-    ASSERT_TRUE(klass != nullptr);
+    ASSERT_TRUE(klass != nullptr) << " Class: " << descriptor.c_str();
     std::string temp;
     EXPECT_STREQ(descriptor.c_str(), klass->GetDescriptor(&temp));
     EXPECT_OBJ_PTR_EQ(class_loader, klass->GetClassLoader());
@@ -588,7 +579,6 @@ struct ClassOffsets : public CheckOffsets<mirror::Class> {
     addOffset(OFFSETOF_MEMBER(mirror::Class, class_size_), "classSize");
     addOffset(OFFSETOF_MEMBER(mirror::Class, clinit_thread_id_), "clinitThreadId");
     addOffset(OFFSETOF_MEMBER(mirror::Class, component_type_), "componentType");
-    addOffset(OFFSETOF_MEMBER(mirror::Class, copied_methods_offset_), "copiedMethodsOffset");
     addOffset(OFFSETOF_MEMBER(mirror::Class, dex_cache_), "dexCache");
     addOffset(OFFSETOF_MEMBER(mirror::Class, dex_class_def_idx_), "dexClassDefIndex");
     addOffset(OFFSETOF_MEMBER(mirror::Class, dex_type_idx_), "dexTypeIndex");
@@ -609,7 +599,6 @@ struct ClassOffsets : public CheckOffsets<mirror::Class> {
               "referenceInstanceOffsets");
     addOffset(OFFSETOF_MEMBER(mirror::Class, status_), "status");
     addOffset(OFFSETOF_MEMBER(mirror::Class, super_class_), "superClass");
-    addOffset(OFFSETOF_MEMBER(mirror::Class, virtual_methods_offset_), "virtualMethodsOffset");
     addOffset(OFFSETOF_MEMBER(mirror::Class, vtable_), "vtable");
   }
 };
@@ -786,10 +775,12 @@ struct MethodHandleOffsets : public CheckOffsets<mirror::MethodHandle> {
 struct MethodHandleImplOffsets : public CheckOffsets<mirror::MethodHandleImpl> {
   MethodHandleImplOffsets() : CheckOffsets<mirror::MethodHandleImpl>(
       false, "Ljava/lang/invoke/MethodHandleImpl;") {
+    // Beware: changing offsets of field and targetClassOrMethodHandleInfo might lead to compat
+    // issues.
     addOffset(OFFSETOF_MEMBER(mirror::MethodHandleImpl, field_), "field");
-    addOffset(OFFSETOF_MEMBER(mirror::MethodHandleImpl, target_), "target");
     addOffset(OFFSETOF_MEMBER(mirror::MethodHandleImpl, target_class_or_info_),
               "targetClassOrMethodHandleInfo");
+    addOffset(OFFSETOF_MEMBER(mirror::MethodHandleImpl, target_method_entry_), "targetMethodEntry");
   }
 };
 

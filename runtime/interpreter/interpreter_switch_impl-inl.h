@@ -17,19 +17,19 @@
 #ifndef ART_RUNTIME_INTERPRETER_INTERPRETER_SWITCH_IMPL_INL_H_
 #define ART_RUNTIME_INTERPRETER_INTERPRETER_SWITCH_IMPL_INL_H_
 
-#include "interpreter_switch_impl.h"
-
 #include "base/globals.h"
 #include "base/memory_tool.h"
 #include "base/pointer_size.h"
 #include "base/quasi_atomic.h"
+#include "com_android_art_flags.h"
 #include "common_throws.h"
 #include "dex/dex_file_types.h"
 #include "dex/dex_instruction_list.h"
 #include "experimental_flags.h"
 #include "handle_scope.h"
-#include "interpreter_common.h"
 #include "interpreter/shadow_frame.h"
+#include "interpreter_common.h"
+#include "interpreter_switch_impl.h"
 #include "jit/jit-inl.h"
 #include "jvalue-inl.h"
 #include "mirror/string-alloc-inl.h"
@@ -73,7 +73,7 @@ ALWAYS_INLINE bool DoFieldGet(Thread* self,
   MemberOffset offset(0u);
   bool is_volatile;
   GetFieldInfo(self,
-               shadow_frame.GetMethod(),
+               shadow_frame,
                reinterpret_cast<const uint16_t*>(inst),
                is_static,
                /*resolve_field_type=*/ false,
@@ -157,7 +157,7 @@ ALWAYS_INLINE bool DoFieldGet(Thread* self,
 // Returns true on success, otherwise throws an exception and returns false.
 template<FindFieldType find_type, Primitive::Type field_type, bool transaction_active>
 ALWAYS_INLINE bool DoFieldPut(Thread* self,
-                              const ShadowFrame& shadow_frame,
+                              ShadowFrame& shadow_frame,
                               const Instruction* inst,
                               uint16_t inst_data,
                               const instrumentation::Instrumentation* instrumentation)
@@ -172,7 +172,7 @@ ALWAYS_INLINE bool DoFieldPut(Thread* self,
   MemberOffset offset(0u);
   bool is_volatile;
   GetFieldInfo(self,
-               shadow_frame.GetMethod(),
+               shadow_frame,
                reinterpret_cast<const uint16_t*>(inst),
                is_static,
                resolve_field_type,
@@ -2087,6 +2087,14 @@ void ExecuteSwitchImplCpp(SwitchImplContext* ctx) {
       return;  // Return statement or debugger forced exit.
     }
     if (self->IsExceptionPending()) {
+      // VirtualThreadParkingError is a special exception thrown to unwind the stack
+      // when parking a virtual thread. It shouldn't be caught or handled by the java code.
+      if (kIsVirtualThreadEnabled && self->IsVirtualThreadParking()) {
+        DCHECK(self->GetException()->GetClass()->DescriptorEquals(
+            "Ldalvik/system/VirtualThreadParkingError;"));
+        return;
+      }
+
       if (!InstructionHandler<transaction_active, Instruction::kInvalidFormat>(
               ctx, instrumentation, self, shadow_frame, dex_pc, inst, inst_data, next, exit).
               HandlePendingException()) {

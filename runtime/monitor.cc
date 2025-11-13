@@ -1112,11 +1112,18 @@ ObjPtr<mirror::Object> Monitor::MonitorEnter(Thread* self,
   obj = FakeLock(obj);
   uint32_t thread_id = self->GetThreadId();
   size_t contention_count = 0;
+  // Initial pure spin iterations before the GetMaxSpinsBeforeThinLockInflation() calls to
+  // sched_yield().
   constexpr size_t kExtraSpinIters = 100;
   int inflation_attempt = 1;
   StackHandleScope<1> hs(self);
   Handle<mirror::Object> h_obj(hs.NewHandle(obj));
   while (true) {
+    static constexpr int kMaxInflationAttempts = 100;  // Really > 5 should essentially never
+                                                       // happen.
+    if (UNLIKELY(inflation_attempt >= kMaxInflationAttempts)) {
+      LOG(FATAL) << "Too many inflation attempts";
+    }
     // We initially read the lockword with ordinary Java/relaxed semantics. When stronger
     // semantics are needed, we address it below. Since GetLockWord bottoms out to a relaxed load,
     // we can fix it later, in an infrequently executed case, with a fence.
@@ -1160,7 +1167,7 @@ ObjPtr<mirror::Object> Monitor::MonitorEnter(Thread* self,
             continue;  // Go again.
           } else {
             // We'd overflow the recursion count, so inflate the monitor.
-            InflateThinLocked(self, h_obj, lock_word, 0, inflation_attempt++);
+            InflateThinLocked(self, h_obj, lock_word, 0, std::min(inflation_attempt++, 4));
           }
         } else {
           if (trylock) {
@@ -1171,17 +1178,19 @@ ObjPtr<mirror::Object> Monitor::MonitorEnter(Thread* self,
           Runtime* runtime = Runtime::Current();
           if (contention_count
               <= kExtraSpinIters + runtime->GetMaxSpinsBeforeThinLockInflation()) {
-            // TODO: Consider switching the thread state to kWaitingForLockInflation when we are
-            // yielding.  Use sched_yield instead of NanoSleep since NanoSleep can wait much longer
+            // Use sched_yield instead of NanoSleep since NanoSleep can wait much longer
             // than the parameter you pass in. This can cause thread suspension to take excessively
             // long and make long pauses. See b/16307460.
             if (contention_count > kExtraSpinIters) {
+              self->CheckSuspend();
               sched_yield();
             }
           } else {
             contention_count = 0;
             // No ordering required for initial lockword read. Install rereads it anyway.
-            InflateThinLocked(self, h_obj, lock_word, 0, inflation_attempt++);
+            InflateThinLocked(self, h_obj, lock_word, 0, std::min(inflation_attempt++, 4));
+            // The above can fail without timing out of the owner exits. If that happens on the
+            // last attempt, we retry with attempt = 4.
           }
         }
         continue;  // Start from the beginning.

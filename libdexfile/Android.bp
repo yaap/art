@@ -33,8 +33,6 @@ cc_defaults {
     ],
     srcs: [
         "dex/art_dex_file_loader.cc",
-        "dex/compact_dex_file.cc",
-        "dex/compact_offset_table.cc",
         "dex/descriptors_names.cc",
         "dex/dex_file.cc",
         "dex/dex_file_exception_helpers.cc",
@@ -124,10 +122,12 @@ cc_defaults {
 
 cc_defaults {
     name: "libdexfile_static_base_defaults",
+    defaults: [
+        "art_liblog_static_defaults",
+        "art_libz_static_defaults",
+    ],
     whole_static_libs: [
         "libbase",
-        "liblog",
-        "libz",
         "libziparchive",
     ],
 }
@@ -173,6 +173,7 @@ art_cc_library {
         // Allow libdexfile_support users to list this as a runtime_libs
         // dependency - see comment for libdexfile_support. It shouldn't be used
         // for any other purpose.
+        "//cts/tests/tests/simpleperf",
         "//external/perfetto",
         "//frameworks/base/services/core/jni",
         "//system/core/debuggerd",
@@ -291,8 +292,6 @@ art_cc_defaults {
         "dex/art_dex_file_loader_test.cc",
         "dex/class_accessor_test.cc",
         "dex/code_item_accessors_test.cc",
-        "dex/compact_dex_file_test.cc",
-        "dex/compact_offset_table_test.cc",
         "dex/descriptors_names_test.cc",
         "dex/dex_file_loader_test.cc",
         "dex/dex_file_verifier_test.cc",
@@ -542,28 +541,19 @@ art_cc_test {
     ],
 }
 
-// For use by external packages allowed to link in static libdexfile_support.
-// This is not allowed in any module that may end up in an APEX or platform
-// image, so visibility is restrictive.
-//
-// TODO(b/169885605): This library brings with it all the exported headers from
-// libdexfile_support_static_defaults into the prebuilt SDK created by
-// art-module-sdk, many of which are transitive dependencies outside ART. Those
-// may conflict with other versions that the caller is using in their build. One
-// way to deal with that is to provide minimal headers without any transitive
-// dependencies on other headers.
+// For use by external packages allowed to link libdexfile statically. Use with
+// libdexfile_static_transitive_defaults. This is not allowed in any module that
+// may end up in an APEX or platform image, so visibility is restrictive.
 cc_library_static {
     name: "libdexfile_static",
     host_supported: true,
     visibility: [
-        // Required for simpleperf, libsimpleperf_record, and libsimpleperf_report
-        // in the NDK.
+        // Required for simpleperf host binaries and tests.
         "//system/extras/simpleperf",
-        "//cts/tests/tests/simpleperf",
     ],
     // Using libdexfile_support_static_defaults will link in external libs like
-    // libbase and libz statically as well, which are likely to cause duplicate
-    // copies in the depending module.
+    // libbase statically as well, which are likely to cause duplicate copies in
+    // the depending module.
     // TODO(b/169885605): Avoid exposing symbols from those libs.
     defaults: [
         "art_defaults",
@@ -571,9 +561,34 @@ cc_library_static {
     ],
 }
 
+cc_defaults {
+    name: "libdexfile_static_transitive_defaults",
+    defaults_visibility: [
+        "//system/extras/simpleperf",
+    ],
+    // Take the relevant bits from art_liblog_static_defaults and
+    // art_libz_static_defaults.
+    target: {
+        android: {
+            shared_libs: [
+                "liblog",
+                "libz",
+            ],
+        },
+        not_windows: {
+            shared_libs: [
+                "libz",
+            ],
+        },
+    },
+}
+
 art_cc_test {
     name: "art_libdexfile_static_tests",
-    defaults: ["art_test_defaults"],
+    defaults: [
+        "art_test_defaults",
+        "libdexfile_static_transitive_defaults",
+    ],
     test_suites: ["general-tests"],
     srcs: [
         "external/dex_file_supp_test.cc",
@@ -583,14 +598,6 @@ art_cc_test {
     ],
     enabled: false,
     target: {
-        android: {
-            // Build static test binary on device, to make sure libdexfile_static can be used in
-            // static simpleperf binary in ndk.
-            static_executable: true,
-            static_libs: [
-                "libc",
-            ],
-        },
         linux: {
             enabled: true,
         },

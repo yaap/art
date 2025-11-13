@@ -248,6 +248,14 @@ class FastCompilerARM64 : public FastCompiler {
   void DoReadBarrierOn(Register reg, vixl::aarch64::Label* exit = nullptr, bool do_mr_check = true);
   bool CanGenerateCodeFor(ArtField* field, bool can_receiver_be_null)
       REQUIRES_SHARED(Locks::mutator_lock_);
+  bool DoGet(const MemOperand& mem,
+             uint16_t field_index,
+             Instruction::Code code,
+             uint32_t dest_reg,
+             bool can_receiver_be_null,
+             bool is_object,
+             uint32_t dex_pc,
+             const Instruction* next);
 
   // Mark whether dex register `vreg_index` is an object.
   void UpdateRegisterMask(uint32_t vreg_index, bool is_object) {
@@ -431,6 +439,11 @@ void FastCompilerARM64::MoveConstantsToRegisters() {
           CreateNewRegisterLocation(i, DataType::Type::kInt32, /* next= */ nullptr);
       MoveLocation(vreg_locations_[i], location, DataType::Type::kInt32);
       DCHECK(!HitUnimplemented());
+      if (location.GetConstant()->IsArithmeticZero()) {
+        // In case we branch, we need to make sure a null value can be merged
+        // with an object value, so treat the 0 value as an object.
+        UpdateRegisterMask(i, /* is_object= */ true);
+      }
     }
   }
 }
@@ -637,42 +650,14 @@ bool FastCompilerARM64::EnsureHasFrame() {
     RecordPcInfo(0);
   }
 
-  // Stack layout:
-  //      sp[frame_size - 8]        : lr.
-  //      ...                       : other preserved core registers.
-  //      ...                       : other preserved fp registers.
-  //      ...                       : reserved frame space.
-  //      sp[0]                     : current method.
-  int32_t frame_size = GetFrameSize();
-  uint32_t core_spills_offset = frame_size - GetCoreSpillSize();
-  CPURegList preserved_core_registers = GetFramePreservedCoreRegisters();
-  DCHECK(!preserved_core_registers.IsEmpty());
-  uint32_t fp_spills_offset = frame_size - FrameEntrySpillSize();
-  CPURegList preserved_fp_registers = GetFramePreservedFPRegisters();
+  CodeGeneratorARM64::GenerateFrame(GetAssembler(),
+                                    GetFrameSize(),
+                                    GetFramePreservedCoreRegisters(),
+                                    GetFramePreservedFPRegisters(),
+                                    /* requires_current_method= */ true);
 
-  // Save the current method if we need it, or if using STP reduces code
-  // size. Note that we do not do this in HCurrentMethod, as the
-  // instruction might have been removed in the SSA graph.
-  CPURegister lowest_spill;
-  if (core_spills_offset == kXRegSizeInBytes) {
-    // If there is no gap between the method and the lowest core spill, use
-    // aligned STP pre-index to store both. Max difference is 512. We do
-    // that to reduce code size even if we do not have to save the method.
-    DCHECK_LE(frame_size, 512);  // 32 core registers are only 256 bytes.
-    lowest_spill = preserved_core_registers.PopLowestIndex();
-    __ Stp(kArtMethodRegister, lowest_spill, MemOperand(sp, -frame_size, PreIndex));
-  } else {
-    __ Str(kArtMethodRegister, MemOperand(sp, -frame_size, PreIndex));
-  }
-  GetAssembler()->cfi().AdjustCFAOffset(frame_size);
-  if (lowest_spill.IsValid()) {
-    GetAssembler()->cfi().RelOffset(DWARFReg(lowest_spill), core_spills_offset);
-    core_spills_offset += kXRegSizeInBytes;
-  }
-  GetAssembler()->SpillRegisters(preserved_core_registers, core_spills_offset);
-  GetAssembler()->SpillRegisters(preserved_fp_registers, fp_spills_offset);
-
-  // Move registers which are currently allocated from caller-saves to callee-saves.
+  // Move registers which are currently allocated from caller-saves to callee-saves,
+  // and adjust the offsets of stack locations.
   for (int i = 0; i < number_of_vregs; ++i) {
     if (vreg_locations_[i].IsRegister()) {
       Location new_location =
@@ -688,6 +673,16 @@ bool FastCompilerARM64::EnsureHasFrame() {
         return false;
       }
       vreg_locations_[i] = new_location;
+    } else if (vreg_locations_[i].IsStackSlot()) {
+      vreg_locations_[i] = Location::StackSlot(vreg_locations_[i].GetStackIndex() + GetFrameSize());
+    } else if (vreg_locations_[i].IsDoubleStackSlot()) {
+      vreg_locations_[i] =
+          Location::DoubleStackSlot(vreg_locations_[i].GetStackIndex() + GetFrameSize());
+    } else if (vreg_locations_[i].IsConstant() || vreg_locations_[i].IsInvalid()) {
+      // Nothing to do.
+    } else {
+      unimplemented_reason_ = "Unhandled location";
+      return false;
     }
   }
 
@@ -864,7 +859,14 @@ bool FastCompilerARM64::HandleInvoke(const Instruction& instruction,
     } else if (invoke_type == kVirtual) {
       offset = resolved_method->GetVtableIndex();
     } else if (invoke_type == kInterface) {
-      offset = resolved_method->GetImtIndex();
+      if (resolved_method->GetDeclaringClass()->IsObjectClass()) {
+        // If the resolved method is from j.l.Object, emit a virtual call instead.
+        // The IMT conflict stub only handles interface methods.
+        offset = resolved_method->GetVtableIndex();
+        invoke_type = kVirtual;
+      } else {
+        offset = resolved_method->GetImtIndex();
+      }
     }
 
     if (resolved_method->IsStringConstructor()) {
@@ -1240,6 +1242,94 @@ bool FastCompilerARM64::If_21_22t(const Instruction& instruction, uint32_t dex_p
   return false;
 }
 #undef DO_CASE
+
+bool FastCompilerARM64::DoGet(const MemOperand& mem,
+                              uint16_t field_index,
+                              Instruction::Code opcode,
+                              uint32_t dest_reg,
+                              bool can_receiver_be_null,
+                              bool is_object,
+                              uint32_t dex_pc,
+                              const Instruction* next) {
+  if (is_object) {
+    Register dst = WRegisterFrom(
+        CreateNewRegisterLocation(dest_reg, DataType::Type::kReference, next));
+    if (HitUnimplemented()) {
+      return false;
+    }
+    {
+      // Ensure the pc position is recorded immediately after the load instruction.
+      EmissionCheckScope guard(GetVIXLAssembler(), kMaxMacroInstructionSizeInBytes);
+      __ Ldr(dst, mem);
+      if (can_receiver_be_null) {
+        RecordPcInfo(dex_pc);
+      }
+    }
+    UpdateLocal(dest_reg, /* is_object= */ true);
+    DoReadBarrierOn(dst);
+    return true;
+  }
+
+  // Ensure the pc position is recorded immediately after the load instruction.
+  EmissionCheckScope guard(GetVIXLAssembler(), kMaxMacroInstructionSizeInBytes);
+  switch (opcode) {
+    case Instruction::SGET_BOOLEAN:
+    case Instruction::IGET_BOOLEAN: {
+      Register dst = WRegisterFrom(
+          CreateNewRegisterLocation(dest_reg, DataType::Type::kInt32, next));
+      __ Ldrb(Register(dst), mem);
+      break;
+    }
+    case Instruction::SGET_BYTE:
+    case Instruction::IGET_BYTE: {
+      Register dst = WRegisterFrom(
+          CreateNewRegisterLocation(dest_reg, DataType::Type::kInt32, next));
+      __ Ldrsb(Register(dst), mem);
+      break;
+    }
+    case Instruction::SGET_CHAR:
+    case Instruction::IGET_CHAR: {
+      Register dst = WRegisterFrom(
+          CreateNewRegisterLocation(dest_reg, DataType::Type::kInt32, next));
+      __ Ldrh(Register(dst), mem);
+      break;
+    }
+    case Instruction::SGET_SHORT:
+    case Instruction::IGET_SHORT: {
+      Register dst = WRegisterFrom(
+          CreateNewRegisterLocation(dest_reg, DataType::Type::kInt32, next));
+      __ Ldrsh(Register(dst), mem);
+      break;
+    }
+    case Instruction::SGET:
+    case Instruction::IGET: {
+      const dex::FieldId& field_id = GetDexFile().GetFieldId(field_index);
+      const char* type = GetDexFile().GetFieldTypeDescriptor(field_id);
+      DataType::Type field_type = DataType::FromShorty(type[0]);
+      if (DataType::IsFloatingPointType(field_type)) {
+        VRegister dst = SRegisterFrom(
+            CreateNewRegisterLocation(dest_reg, field_type, next));
+        __ Ldr(dst, mem);
+      } else {
+        Register dst = WRegisterFrom(
+            CreateNewRegisterLocation(dest_reg, DataType::Type::kInt32, next));
+        __ Ldr(dst, mem);
+      }
+      if (HitUnimplemented()) {
+        return false;
+      }
+      break;
+    }
+    default:
+      unimplemented_reason_ = "UnimplementedGet";
+      return false;
+  }
+  UpdateLocal(dest_reg, is_object);
+  if (can_receiver_be_null) {
+    RecordPcInfo(dex_pc);
+  }
+  return true;
+}
 
 bool FastCompilerARM64::ProcessDexInstruction(const Instruction& instruction,
                                               uint32_t dex_pc,
@@ -1906,7 +1996,6 @@ bool FastCompilerARM64::ProcessDexInstruction(const Instruction& instruction,
           return false;
         }
       }
-
       MemOperand mem = HeapOperand(
           RegisterFrom(GetExistingRegisterLocation(obj_reg, DataType::Type::kReference),
                        DataType::Type::kReference),
@@ -1914,76 +2003,15 @@ bool FastCompilerARM64::ProcessDexInstruction(const Instruction& instruction,
       if (HitUnimplemented()) {
         return false;
       }
-      if (is_object) {
-        Register dst = WRegisterFrom(
-            CreateNewRegisterLocation(source_or_dest_reg, DataType::Type::kReference, next));
-        if (HitUnimplemented()) {
-          return false;
-        }
-        {
-          // Ensure the pc position is recorded immediately after the load instruction.
-          EmissionCheckScope guard(GetVIXLAssembler(), kMaxMacroInstructionSizeInBytes);
-          __ Ldr(dst, mem);
-          if (can_receiver_be_null) {
-            RecordPcInfo(dex_pc);
-          }
-        }
-        UpdateLocal(source_or_dest_reg, /* is_object= */ true);
-        DoReadBarrierOn(dst);
-        return true;
-      }
-      // Ensure the pc position is recorded immediately after the load instruction.
-      EmissionCheckScope guard(GetVIXLAssembler(), kMaxMacroInstructionSizeInBytes);
-      switch (instruction.Opcode()) {
-        case Instruction::IGET_BOOLEAN: {
-          Register dst = WRegisterFrom(
-              CreateNewRegisterLocation(source_or_dest_reg, DataType::Type::kInt32, next));
-          __ Ldrb(Register(dst), mem);
-          break;
-        }
-        case Instruction::IGET_BYTE: {
-          Register dst = WRegisterFrom(
-              CreateNewRegisterLocation(source_or_dest_reg, DataType::Type::kInt32, next));
-          __ Ldrsb(Register(dst), mem);
-          break;
-        }
-        case Instruction::IGET_CHAR: {
-          Register dst = WRegisterFrom(
-              CreateNewRegisterLocation(source_or_dest_reg, DataType::Type::kInt32, next));
-          __ Ldrh(Register(dst), mem);
-          break;
-        }
-        case Instruction::IGET_SHORT: {
-          Register dst = WRegisterFrom(
-              CreateNewRegisterLocation(source_or_dest_reg, DataType::Type::kInt32, next));
-          __ Ldrsh(Register(dst), mem);
-          break;
-        }
-        case Instruction::IGET: {
-          const dex::FieldId& field_id = GetDexFile().GetFieldId(field_index);
-          const char* type = GetDexFile().GetFieldTypeDescriptor(field_id);
-          DataType::Type field_type = DataType::FromShorty(type[0]);
-          if (DataType::IsFloatingPointType(field_type)) {
-            VRegister dst = SRegisterFrom(
-                CreateNewRegisterLocation(source_or_dest_reg, field_type, next));
-            __ Ldr(dst, mem);
-          } else {
-            Register dst = WRegisterFrom(
-                CreateNewRegisterLocation(source_or_dest_reg, DataType::Type::kInt32, next));
-            __ Ldr(dst, mem);
-          }
-          if (HitUnimplemented()) {
-            return false;
-          }
-          break;
-        }
-        default:
-          unimplemented_reason_ = "UnimplementedIGet";
-          return false;
-      }
-      UpdateLocal(source_or_dest_reg, /* is_object= */ false);
-      if (can_receiver_be_null) {
-        RecordPcInfo(dex_pc);
+      if (!DoGet(mem,
+                 field_index,
+                 instruction.Opcode(),
+                 source_or_dest_reg,
+                 can_receiver_be_null,
+                 is_object,
+                 dex_pc,
+                 next)) {
+        return false;
       }
       return true;
     }
@@ -2105,14 +2133,64 @@ bool FastCompilerARM64::ProcessDexInstruction(const Instruction& instruction,
       return true;
     }
 
+    case Instruction::SGET_OBJECT:
+      is_object = true;
+      FALLTHROUGH_INTENDED;
     case Instruction::SGET:
     case Instruction::SGET_WIDE:
-    case Instruction::SGET_OBJECT:
     case Instruction::SGET_BOOLEAN:
     case Instruction::SGET_BYTE:
     case Instruction::SGET_CHAR:
     case Instruction::SGET_SHORT: {
-      break;
+      if (Runtime::Current()->IsAotCompiler()) {
+        unimplemented_reason_ = "AOTSGet";
+        return false;
+      }
+      // We need a frame for the read barrier.
+      if (!EnsureHasFrame()) {
+        return false;
+      }
+      ArtField* field = nullptr;
+      uint16_t field_index = instruction.VRegB_21c();
+      uint32_t source_or_dest_reg = instruction.VRegA_21c();
+      UseScratchRegisterScope temps(GetVIXLAssembler());
+      Register temp = temps.AcquireX();
+      {
+        ScopedObjectAccess soa(Thread::Current());
+        field = ResolveFieldWithAccessChecks(soa.Self(),
+                                             dex_compilation_unit_.GetClassLinker(),
+                                             field_index,
+                                             method_,
+                                             /* is_static= */ true,
+                                             /* is_put= */ false,
+                                             /* resolve_field_type= */ 0u);
+        if (!CanGenerateCodeFor(field, /* can_receiver_be_null= */ false)) {
+          return false;
+        }
+        Handle<mirror::Class> h_klass = handles_->NewHandle(field->GetDeclaringClass());
+        if (!h_klass->IsVisiblyInitialized()) {
+          unimplemented_reason_ = "UninitializedSget";
+          return false;
+        }
+        __ Ldr(temp.W(), jit_patches_.DeduplicateJitClassLiteral(h_klass->GetDexFile(),
+                                                                 h_klass->GetDexTypeIndex(),
+                                                                 h_klass,
+                                                                 code_generation_data_.get()));
+      }
+      __ Ldr(temp.W(), MemOperand(temp.X()));
+      DoReadBarrierOn(temp);
+      MemOperand mem = HeapOperand(temp.W(), field->GetOffset());
+      if (!DoGet(mem,
+                 field_index,
+                 instruction.Opcode(),
+                 source_or_dest_reg,
+                 /* can_receiver_be_null= */ false,
+                 is_object,
+                 dex_pc,
+                 next)) {
+        return false;
+      }
+      return true;
     }
 
     case Instruction::SPUT:

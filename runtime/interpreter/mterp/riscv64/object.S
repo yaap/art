@@ -289,7 +289,7 @@
    mv a0, xSELF
    ld a1, (sp)  // a1 := caller ArtMethod*
    mv a2, xPC
-   mv a3, zero
+   mv a3, xFP
    EXPORT_PC
    call nterp_get_instance_field_offset  // result a0 := field_offset
 
@@ -366,7 +366,7 @@
    mv a0, xSELF
    ld a1, (sp)  // a1 := caller ArtMethod*
    mv a2, xPC
-   mv a3, zero
+   mv a3, xFP
    EXPORT_PC
    call nterp_get_instance_field_offset  // result a0 := field_offset
 
@@ -451,7 +451,7 @@
    mv a0, xSELF
    ld a1, (sp)  // a1 := caller ArtMethod*
    mv a2, xPC
-   mv a3, zero
+   mv a3, xFP
    EXPORT_PC
    call nterp_get_instance_field_offset  // result a0 := field_offset
 
@@ -534,7 +534,7 @@
    mv a0, xSELF
    ld a1, (sp)  // a1 := caller ArtMethod*
    mv a2, xPC
-   mv a3, $value
+   mv a3, xFP
    EXPORT_PC
    call nterp_get_instance_field_offset  // result a0 := field_offset
 

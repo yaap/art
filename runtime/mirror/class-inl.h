@@ -50,7 +50,7 @@ template<VerifyObjectFlags kVerifyFlags>
 inline uint32_t Class::GetObjectSize() {
   // Note: Extra parentheses to avoid the comma being interpreted as macro parameter separator.
   DCHECK((!IsVariableSize<kVerifyFlags>())) << "class=" << PrettyTypeOf();
-  return GetField32(ObjectSizeOffset());
+  return GetObjectSizeUnchecked<kVerifyFlags>();
 }
 
 template<VerifyObjectFlags kVerifyFlags>
@@ -106,43 +106,6 @@ inline ObjPtr<DexCache> Class::GetDexCache() {
       OFFSET_OF_OBJECT_MEMBER(Class, dex_cache_));
 }
 
-inline uint32_t Class::GetCopiedMethodsStartOffset() {
-  // Object::GetFieldShort returns an int16_t value, but
-  // Class::copied_methods_offset_ is an uint16_t value; cast the
-  // latter to uint16_t before returning it as an uint32_t value, so
-  // that uint16_t values between 2^15 and 2^16-1 are correctly
-  // handled.
-  return static_cast<uint16_t>(
-      GetFieldShort(OFFSET_OF_OBJECT_MEMBER(Class, copied_methods_offset_)));
-}
-
-inline uint32_t Class::GetDirectMethodsStartOffset() {
-  return 0;
-}
-
-inline uint32_t Class::GetVirtualMethodsStartOffset() {
-  // Object::GetFieldShort returns an int16_t value, but
-  // Class::virtual_method_offset_ is an uint16_t value; cast the
-  // latter to uint16_t before returning it as an uint32_t value, so
-  // that uint16_t values between 2^15 and 2^16-1 are correctly
-  // handled.
-  return static_cast<uint16_t>(
-      GetFieldShort(OFFSET_OF_OBJECT_MEMBER(Class, virtual_methods_offset_)));
-}
-
-template<VerifyObjectFlags kVerifyFlags>
-inline ArraySlice<ArtMethod> Class::GetDirectMethodsSlice(PointerSize pointer_size) {
-  DCHECK(IsLoaded() || IsErroneous()) << GetStatus();
-  return GetDirectMethodsSliceUnchecked(pointer_size);
-}
-
-inline ArraySlice<ArtMethod> Class::GetDirectMethodsSliceUnchecked(PointerSize pointer_size) {
-  return GetMethodsSliceRangeUnchecked(GetMethodsPtr(),
-                                       pointer_size,
-                                       GetDirectMethodsStartOffset(),
-                                       GetVirtualMethodsStartOffset());
-}
-
 template<VerifyObjectFlags kVerifyFlags>
 inline ArraySlice<ArtMethod> Class::GetDeclaredMethodsSlice(PointerSize pointer_size) {
   DCHECK(IsLoaded() || IsErroneous()) << GetStatus();
@@ -152,36 +115,8 @@ inline ArraySlice<ArtMethod> Class::GetDeclaredMethodsSlice(PointerSize pointer_
 inline ArraySlice<ArtMethod> Class::GetDeclaredMethodsSliceUnchecked(PointerSize pointer_size) {
   return GetMethodsSliceRangeUnchecked(GetMethodsPtr(),
                                        pointer_size,
-                                       GetDirectMethodsStartOffset(),
-                                       GetCopiedMethodsStartOffset());
-}
-
-template<VerifyObjectFlags kVerifyFlags>
-inline ArraySlice<ArtMethod> Class::GetDeclaredVirtualMethodsSlice(PointerSize pointer_size) {
-  DCHECK(IsLoaded() || IsErroneous()) << GetStatus();
-  return GetDeclaredVirtualMethodsSliceUnchecked(pointer_size);
-}
-
-inline ArraySlice<ArtMethod> Class::GetDeclaredVirtualMethodsSliceUnchecked(
-    PointerSize pointer_size) {
-  return GetMethodsSliceRangeUnchecked(GetMethodsPtr(),
-                                       pointer_size,
-                                       GetVirtualMethodsStartOffset(),
-                                       GetCopiedMethodsStartOffset());
-}
-
-template<VerifyObjectFlags kVerifyFlags>
-inline ArraySlice<ArtMethod> Class::GetVirtualMethodsSlice(PointerSize pointer_size) {
-  DCHECK(IsLoaded() || IsErroneous());
-  return GetVirtualMethodsSliceUnchecked(pointer_size);
-}
-
-inline ArraySlice<ArtMethod> Class::GetVirtualMethodsSliceUnchecked(PointerSize pointer_size) {
-  LengthPrefixedArray<ArtMethod>* methods = GetMethodsPtr();
-  return GetMethodsSliceRangeUnchecked(methods,
-                                       pointer_size,
-                                       GetVirtualMethodsStartOffset(),
-                                       NumMethods(methods));
+                                       /* start_offset= */ 0u,
+                                       NumDeclaredMethods());
 }
 
 template<VerifyObjectFlags kVerifyFlags>
@@ -192,9 +127,10 @@ inline ArraySlice<ArtMethod> Class::GetCopiedMethodsSlice(PointerSize pointer_si
 
 inline ArraySlice<ArtMethod> Class::GetCopiedMethodsSliceUnchecked(PointerSize pointer_size) {
   LengthPrefixedArray<ArtMethod>* methods = GetMethodsPtr();
+  DCHECK_LE(NumDeclaredMethods(), NumMethods(methods)) << PrettyClass();
   return GetMethodsSliceRangeUnchecked(methods,
                                        pointer_size,
-                                       GetCopiedMethodsStartOffset(),
+                                       NumDeclaredMethods(),
                                        NumMethods(methods));
 }
 
@@ -206,6 +142,10 @@ inline LengthPrefixedArray<ArtMethod>* Class::GetMethodsPtr() {
 template<VerifyObjectFlags kVerifyFlags>
 inline ArraySlice<ArtMethod> Class::GetMethodsSlice(PointerSize pointer_size) {
   DCHECK(IsLoaded() || IsErroneous());
+  return GetMethodsSliceUnchecked(pointer_size);
+}
+
+inline ArraySlice<ArtMethod> Class::GetMethodsSliceUnchecked(PointerSize pointer_size) {
   LengthPrefixedArray<ArtMethod>* methods = GetMethodsPtr();
   return GetMethodsSliceRangeUnchecked(methods, pointer_size, 0, NumMethods(methods));
 }
@@ -232,21 +172,12 @@ inline ArraySlice<ArtMethod> Class::GetMethodsSliceRangeUnchecked(
 }
 
 inline uint32_t Class::NumMethods() {
+  DCHECK_NE(GetMethodsPtr(), nullptr);
   return NumMethods(GetMethodsPtr());
 }
 
 inline uint32_t Class::NumMethods(LengthPrefixedArray<ArtMethod>* methods) {
-  return (methods == nullptr) ? 0 : methods->size();
-}
-
-inline ArtMethod* Class::GetDirectMethodUnchecked(size_t i, PointerSize pointer_size) {
-  CheckPointerSize(pointer_size);
-  return &GetDirectMethodsSliceUnchecked(pointer_size)[i];
-}
-
-inline ArtMethod* Class::GetDirectMethod(size_t i, PointerSize pointer_size) {
-  CheckPointerSize(pointer_size);
-  return &GetDirectMethodsSlice(pointer_size)[i];
+  return methods->size();
 }
 
 inline void Class::SetMethodsPtr(LengthPrefixedArray<ArtMethod>* new_methods,
@@ -256,36 +187,12 @@ inline void Class::SetMethodsPtr(LengthPrefixedArray<ArtMethod>* new_methods,
   SetMethodsPtrUnchecked(new_methods, num_direct, num_virtual);
 }
 
-
 inline void Class::SetMethodsPtrUnchecked(LengthPrefixedArray<ArtMethod>* new_methods,
-                                          uint32_t num_direct,
-                                          uint32_t num_virtual) {
+                                          [[maybe_unused]] uint32_t num_direct,
+                                          [[maybe_unused]] uint32_t num_virtual) {
   DCHECK_LE(num_direct + num_virtual, (new_methods == nullptr) ? 0 : new_methods->size());
-  SetField64<false>(OFFSET_OF_OBJECT_MEMBER(Class, methods_),
-                    static_cast<uint64_t>(reinterpret_cast<uintptr_t>(new_methods)));
-  SetFieldShort<false>(OFFSET_OF_OBJECT_MEMBER(Class, copied_methods_offset_),
-                    dchecked_integral_cast<uint16_t>(num_direct + num_virtual));
-  SetFieldShort<false>(OFFSET_OF_OBJECT_MEMBER(Class, virtual_methods_offset_),
-                       dchecked_integral_cast<uint16_t>(num_direct));
-}
-
-template<VerifyObjectFlags kVerifyFlags>
-inline ArtMethod* Class::GetVirtualMethod(size_t i, PointerSize pointer_size) {
-  CheckPointerSize(pointer_size);
-  DCHECK(IsResolved<kVerifyFlags>() || IsErroneous<kVerifyFlags>())
-      << Class::PrettyClass() << " status=" << GetStatus();
-  return GetVirtualMethodUnchecked(i, pointer_size);
-}
-
-inline ArtMethod* Class::GetVirtualMethodDuringLinking(size_t i, PointerSize pointer_size) {
-  CheckPointerSize(pointer_size);
-  DCHECK(IsLoaded() || IsErroneous());
-  return GetVirtualMethodUnchecked(i, pointer_size);
-}
-
-inline ArtMethod* Class::GetVirtualMethodUnchecked(size_t i, PointerSize pointer_size) {
-  CheckPointerSize(pointer_size);
-  return &GetVirtualMethodsSliceUnchecked(pointer_size)[i];
+  SetField64<false, false>(OFFSET_OF_OBJECT_MEMBER(Class, methods_),
+                           static_cast<uint64_t>(reinterpret_cast<uintptr_t>(new_methods)));
 }
 
 template<VerifyObjectFlags kVerifyFlags, ReadBarrierOption kReadBarrierOption>
@@ -687,7 +594,7 @@ inline void Class::SetFieldsPtr(LengthPrefixedArray<ArtField>* new_fields) {
 }
 
 inline void Class::SetFieldsPtrUnchecked(LengthPrefixedArray<ArtField>* new_fields) {
-  SetFieldPtr<false, true, kVerifyNone>(OFFSET_OF_OBJECT_MEMBER(Class, fields_), new_fields);
+  SetFieldPtr<false, false, kVerifyNone>(OFFSET_OF_OBJECT_MEMBER(Class, fields_), new_fields);
 }
 
 inline LengthPrefixedArray<ArtField>* Class::GetFieldsPtrUnchecked() {
@@ -701,7 +608,7 @@ inline ArtField* Class::GetField(uint32_t i) {
 template<VerifyObjectFlags kVerifyFlags>
 inline uint32_t Class::GetReferenceInstanceOffsets() {
   DCHECK(IsResolved<kVerifyFlags>() || IsErroneous<kVerifyFlags>());
-  return GetField32<kVerifyFlags>(OFFSET_OF_OBJECT_MEMBER(Class, reference_instance_offsets_));
+  return GetReferenceInstanceOffsetsUnchecked<kVerifyFlags>();
 }
 
 inline void Class::SetClinitThreadId(pid_t new_clinit_thread_id) {
@@ -1049,9 +956,12 @@ inline void Class::SetAccessFlags(uint32_t new_access_flags) {
   }
 }
 
-inline void Class::SetClassFlags(uint32_t new_flags) {
-  SetField32</*kTransactionActive=*/ false, /*kCheckTransaction=*/ false>(
-      OFFSET_OF_OBJECT_MEMBER(Class, class_flags_), new_flags);
+inline void Class::AddRemoveClassFlags(uint32_t new_flags, uint32_t clear_flags) {
+  DCHECK_EQ(new_flags & clear_flags, 0u);
+  uint32_t flags = GetClassFlags();
+  flags &= ~clear_flags;
+  flags |= new_flags;
+  SetField32</*kTransactionActive=*/false, /*kCheckTransaction=*/false>(ClassFlagsOffset(), flags);
 }
 
 inline uint32_t Class::NumDirectInterfaces() {
@@ -1072,29 +982,14 @@ inline uint32_t Class::NumDirectInterfaces() {
   }
 }
 
-inline ArraySlice<ArtMethod> Class::GetDirectMethods(PointerSize pointer_size) {
-  CheckPointerSize(pointer_size);
-  return GetDirectMethodsSliceUnchecked(pointer_size);
-}
-
 inline ArraySlice<ArtMethod> Class::GetDeclaredMethods(PointerSize pointer_size) {
   return GetDeclaredMethodsSliceUnchecked(pointer_size);
-}
-
-inline ArraySlice<ArtMethod> Class::GetDeclaredVirtualMethods(PointerSize pointer_size) {
-  return GetDeclaredVirtualMethodsSliceUnchecked(pointer_size);
-}
-
-inline ArraySlice<ArtMethod> Class::GetVirtualMethods(PointerSize pointer_size) {
-  CheckPointerSize(pointer_size);
-  return GetVirtualMethodsSliceUnchecked(pointer_size);
 }
 
 inline ArraySlice<ArtMethod> Class::GetCopiedMethods(PointerSize pointer_size) {
   CheckPointerSize(pointer_size);
   return GetCopiedMethodsSliceUnchecked(pointer_size);
 }
-
 
 inline ArraySlice<ArtMethod> Class::GetMethods(PointerSize pointer_size) {
   CheckPointerSize(pointer_size);
@@ -1193,20 +1088,47 @@ inline bool Class::IsAssignableFrom(ObjPtr<Class> src) {
 }
 
 inline uint32_t Class::NumDirectMethods() {
-  return GetVirtualMethodsStartOffset();
+  if (IsProxyClass()) {
+    // Proxy classes have one constructor, and then only virtual methods.
+    return 1;
+  }
+  if (IsArrayClass() || IsPrimitive()) {
+    return 0u;
+  }
+  ClassAccessor accessor(GetDexFile(), GetDexClassDefIndex());
+  return accessor.NumDirectMethods();
 }
 
 inline uint32_t Class::NumDeclaredVirtualMethods() {
-  return GetCopiedMethodsStartOffset() - GetVirtualMethodsStartOffset();
+  if (IsProxyClass()) {
+    // Proxy classes have one constructor, and then only virtual methods.
+    return NumMethods() - 1;
+  }
+  if (IsArrayClass() || IsPrimitive()) {
+    return 0u;
+  }
+  ClassAccessor accessor(GetDexFile(), GetDexClassDefIndex());
+  return accessor.NumVirtualMethods();
 }
 
 inline uint32_t Class::NumVirtualMethods() {
-  return NumMethods() - GetVirtualMethodsStartOffset();
+  return NumMethods() - NumDirectMethods();
+}
+
+inline uint32_t Class::NumDeclaredMethods() {
+  if (IsProxyClass()) {
+    return NumMethods();
+  }
+  if (IsArrayClass() || IsPrimitive()) {
+    return 0u;
+  }
+  ClassAccessor accessor(GetDexFile(), GetDexClassDefIndex());
+  return accessor.NumDirectMethods() + accessor.NumVirtualMethods();
 }
 
 inline uint32_t Class::NumFields() {
-  LengthPrefixedArray<ArtField>* arr = GetFieldsPtrUnchecked();
-  return arr != nullptr ? arr->size() : 0u;
+  DCHECK_NE(GetFieldsPtrUnchecked(), nullptr) << PrettyClass();
+  return GetFieldsPtrUnchecked()->size();
 }
 
 inline bool Class::HasStaticFields() {
@@ -1366,33 +1288,82 @@ inline ImTable* Class::FindSuperImt(PointerSize pointer_size) {
   return nullptr;
 }
 
+template <bool kOnlyLookAtIndex>
 ALWAYS_INLINE FLATTEN inline ArtField* Class::FindDeclaredField(uint32_t dex_field_idx) {
-  size_t num_fields = NumFields();
-  if (num_fields > 0) {
-    // The field array is an ordered list of fields where there may be missing
-    // indices. For example, it could be [40, 42], but in 90% of cases cases we have
-    // [40, 41, 42]. The latter is the case we are optimizing for, where for
-    // example `dex_field_idx` is 41, and we can just substract it with the
-    // first field index (40) and directly access the array with that index (1).
-    uint32_t index = dex_field_idx - GetField(0)->GetDexFieldIndex();
-    if (index < num_fields) {
-      ArtField* field = GetField(index);
-      if (field->GetDexFieldIndex() == dex_field_idx) {
-        return field;
-      }
-    } else {
-      index = num_fields;
+  LengthPrefixedArray<ArtField>* array = GetFieldsPtrUnchecked();
+  size_t size = array->size();
+  if (size == 0) {
+    return nullptr;
+  }
+  // The field array is an ordered list of fields where there may be missing
+  // indices. For example, it could be [40, 42], but in 90% of cases cases we have
+  // [40, 41, 42]. The latter is the case we are optimizing for, where for
+  // example `dex_field_idx` is 41, and we can just substract it with the
+  // first field index (40) and directly access the array with that index (1).
+  uint32_t index = dex_field_idx - array->At(0).GetDexFieldIndex();
+  if (index < size) {
+    ArtField& field = array->At(index);
+    if (field.GetDexFieldIndex() == dex_field_idx) {
+      return &field;
     }
-    // If there is a field, it's down the array. The array is ordered by field
-    // index, so we know we can stop the search if `dex_field_idx` is greater
-    // than the current field's index.
-    for (; index > 0; --index) {
-      ArtField* field = GetField(index - 1);
-      if (field->GetDexFieldIndex() == dex_field_idx) {
-        return field;
-      } else if (field->GetDexFieldIndex() < dex_field_idx) {
-        break;
-      }
+  } else {
+    index = size;
+  }
+  if (kOnlyLookAtIndex) {
+    return nullptr;
+  }
+  // If there is a field, it's down the array. The array is ordered by field
+  // index, so we know we can stop the search if `dex_field_idx` is greater
+  // than the current field's index.
+  for (; index > 0; --index) {
+    ArtField& field = array->At(index - 1);
+    if (field.GetDexFieldIndex() == dex_field_idx) {
+      return &field;
+    } else if (field.GetDexFieldIndex() < dex_field_idx) {
+      break;
+    }
+  }
+  return nullptr;
+}
+
+template <bool kOnlyLookAtIndex, PointerSize kPointerSize>
+ALWAYS_INLINE FLATTEN inline ArtMethod* Class::FindDeclaredClassMethod(uint32_t dex_method_idx) {
+  LengthPrefixedArray<ArtMethod>* array = GetMethodsPtr();
+  static constexpr size_t kMethodAlignment = ArtMethod::Alignment(kPointerSize);
+  static constexpr size_t kMethodSize = ArtMethod::Size(kPointerSize);
+
+  size_t size = array->size();
+  if (size == 0) {
+    return nullptr;
+  }
+  // The method array is an ordered list of methods where there may be missing
+  // indices. For example, it could be [40, 42], but in 90% of cases cases we have
+  // [40, 41, 42]. The latter is the case we are optimizing for, where for
+  // example `dex_method_idx` is 41, and we can just substract it with the
+  // first method index (40) and directly access the array with that index (1).
+  uint32_t index = dex_method_idx - array->At(0, kMethodSize, kMethodAlignment).GetDexMethodIndex();
+  if (index < size) {
+    ArtMethod& method = array->At(index, kMethodSize, kMethodAlignment);
+    if (!method.IsCopied() && method.GetDexMethodIndex() == dex_method_idx) {
+      return &method;
+    }
+  } else {
+    index = size;
+  }
+  if (kOnlyLookAtIndex) {
+    return nullptr;
+  }
+  // If there is a method, it's down the array. The array is ordered by method
+  // index, so we know we can stop the search if `dex_method_idx` is greater
+  // than the current method's index.
+  for (; index > 0; --index) {
+    ArtMethod& method = array->At(index - 1, kMethodSize, kMethodAlignment);
+    if (method.IsCopied()) {
+      continue;
+    } else if (method.GetDexMethodIndex() == dex_method_idx) {
+      return &method;
+    } else if (method.GetDexMethodIndex() < dex_method_idx) {
+      break;
     }
   }
   return nullptr;
@@ -1402,3 +1373,5 @@ ALWAYS_INLINE FLATTEN inline ArtField* Class::FindDeclaredField(uint32_t dex_fie
 }  // namespace art
 
 #endif  // ART_RUNTIME_MIRROR_CLASS_INL_H_
+
+

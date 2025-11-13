@@ -47,9 +47,11 @@
 #include "dex/dex_file_loader.h"
 #include "dex/dex_file_types.h"
 #include "dex/dex_file_verifier.h"
+#include "dex/method_reference.h"
 #include "dex/proto_reference.h"
 #include "dex/standard_dex_file.h"
 #include "dex/type_lookup_table.h"
+#include "dex/type_reference.h"
 #include "dex/verification_results.h"
 #include "driver/compiled_method-inl.h"
 #include "driver/compiler_driver-inl.h"
@@ -290,6 +292,62 @@ class OatWriter::OatClass {
   DISALLOW_COPY_AND_ASSIGN(OatClass);
 };
 
+// CompiledMethod + metadata required to do ordered method layout.
+//
+// See also OrderedMethodVisitor.
+struct OatWriter::OrderedMethodData {
+  uint32_t hotness_bits;
+  OatClass* oat_class;
+  CompiledMethod* compiled_method;
+  MethodReference method_reference;
+  size_t method_offsets_index;
+
+  size_t class_def_index;
+  uint32_t access_flags;
+  const dex::CodeItem* code_item;
+
+  // A value of -1 denotes missing debug info
+  static constexpr size_t kDebugInfoIdxInvalid = static_cast<size_t>(-1);
+  // Index into writer_->method_info_
+  size_t debug_info_idx;
+
+  bool HasDebugInfo() const {
+    return debug_info_idx != kDebugInfoIdxInvalid;
+  }
+
+  // Bin each method according to the profile flags.
+  //
+  // Groups by e.g.
+  //  -- startup and hot and poststartup
+  //  -- startup and hot
+  //  -- startup and post-startup
+  //  -- startup
+  //  -- hot and post-startup
+  //  -- hot
+  //  -- post-startup
+  //  -- not hot at all
+  //
+  // (See MethodHotness enum definition for up-to-date binning order.)
+  bool operator<(const OrderedMethodData& other) const {
+    if (kOatWriterForceOatCodeLayout) {
+      // Development flag: Override default behavior by sorting by name.
+
+      std::string name = method_reference.PrettyMethod();
+      std::string other_name = other.method_reference.PrettyMethod();
+      return name < other_name;
+    }
+
+    // Use the profile's method hotness to determine sort order, with startup
+    // methods appearing first.
+    if (hotness_bits > other.hotness_bits) {
+      return true;
+    }
+
+    // Default: retain the original order.
+    return false;
+  }
+};
+
 class OatWriter::OatDexFile {
  public:
   explicit OatDexFile(std::unique_ptr<const DexFile> dex_file);
@@ -405,8 +463,10 @@ OatWriter::OatWriter(const CompilerOptions& compiler_options,
       bss_string_entry_references_(),
       bss_method_type_entry_references_(),
       app_image_rel_ro_method_entries_(),
+      app_image_rel_ro_method_entries_sorted_(),
       bss_method_entries_(),
       app_image_rel_ro_type_entries_(),
+      app_image_rel_ro_type_entries_sorted_(),
       bss_type_entries_(),
       bss_public_type_entries_(),
       bss_package_type_entries_(),
@@ -778,49 +838,64 @@ void OatWriter::InitBssAndRelRoData() {
       }
       DCHECK_IMPLIES(!compiled_method->GetPatches().empty(), HasCompiledCode(compiled_method));
       for (const LinkerPatch& patch : compiled_method->GetPatches()) {
+        BssMap<TypeReference>* bss_type_entries = nullptr;
+        bool add_type_entry = false;
+        SafeMap<const DexFile*, BitVector>* bss_references = nullptr;
+        DexFileReference bss_ref(nullptr, dex::kDexNoIndex);
+        size_t number_of_indexes = 0;
+        bool add_bss_reference = false;
         if (patch.GetType() == LinkerPatch::Type::kBootImageRelRo) {
           boot_image_rel_ro_entries_.Overwrite(patch.BootImageOffset(), /* placeholder */ 0u);
         } else if (patch.GetType() == LinkerPatch::Type::kMethodAppImageRelRo) {
           MethodReference target_method = patch.TargetMethod();
-          app_image_rel_ro_method_entries_.Overwrite(target_method, /* placeholder */ 0u);
+          app_image_rel_ro_method_entries_.insert(
+              std::make_pair(target_method, /* placeholder */ 0u));
         } else if (patch.GetType() == LinkerPatch::Type::kMethodBssEntry) {
           MethodReference target_method = patch.TargetMethod();
-          AddBssReference(target_method,
-                          target_method.dex_file->NumMethodIds(),
-                          &bss_method_entry_references_);
-          bss_method_entries_.Overwrite(target_method, /* placeholder */ 0u);
+          bss_method_entries_.insert(std::make_pair(target_method, /* placeholder */ 0u));
+          bss_ref = target_method;
+          number_of_indexes = target_method.dex_file->NumMethodIds();
+          bss_references = &bss_method_entry_references_;
+          add_bss_reference = true;
         } else if (patch.GetType() == LinkerPatch::Type::kTypeAppImageRelRo) {
-          app_image_rel_ro_type_entries_.Overwrite(patch.TargetType(), /* placeholder */ 0u);
+          app_image_rel_ro_type_entries_.insert(
+              std::make_pair(patch.TargetType(), /* placeholder */ 0u));
         } else if (patch.GetType() == LinkerPatch::Type::kTypeBssEntry) {
-          TypeReference target_type = patch.TargetType();
-          AddBssReference(target_type,
-                          target_type.dex_file->NumTypeIds(),
-                          &bss_type_entry_references_);
-          bss_type_entries_.Overwrite(target_type, /* placeholder */ 0u);
+          bss_type_entries = &bss_type_entries_;
+          bss_references = &bss_type_entry_references_;
+          add_type_entry = true;
         } else if (patch.GetType() == LinkerPatch::Type::kPublicTypeBssEntry) {
-          TypeReference target_type = patch.TargetType();
-          AddBssReference(target_type,
-                          target_type.dex_file->NumTypeIds(),
-                          &bss_public_type_entry_references_);
-          bss_public_type_entries_.Overwrite(target_type, /* placeholder */ 0u);
+          bss_type_entries = &bss_public_type_entries_;
+          bss_references = &bss_public_type_entry_references_;
+          add_type_entry = true;
         } else if (patch.GetType() == LinkerPatch::Type::kPackageTypeBssEntry) {
-          TypeReference target_type = patch.TargetType();
-          AddBssReference(target_type,
-                          target_type.dex_file->NumTypeIds(),
-                          &bss_package_type_entry_references_);
-          bss_package_type_entries_.Overwrite(target_type, /* placeholder */ 0u);
+          bss_type_entries = &bss_package_type_entries_;
+          bss_references = &bss_package_type_entry_references_;
+          add_type_entry = true;
         } else if (patch.GetType() == LinkerPatch::Type::kStringBssEntry) {
           StringReference target_string = patch.TargetString();
-          AddBssReference(target_string,
-                          target_string.dex_file->NumStringIds(),
-                          &bss_string_entry_references_);
-          bss_string_entries_.Overwrite(target_string, /* placeholder */ 0u);
+          bss_string_entries_.insert(std::make_pair(target_string, /* placeholder */ 0u));
+          bss_ref = target_string;
+          number_of_indexes = target_string.dex_file->NumStringIds();
+          bss_references = &bss_string_entry_references_;
+          add_bss_reference = true;
         } else if (patch.GetType() == LinkerPatch::Type::kMethodTypeBssEntry) {
           ProtoReference target_proto = patch.TargetProto();
-          AddBssReference(target_proto,
-                          target_proto.dex_file->NumProtoIds(),
-                          &bss_method_type_entry_references_);
-          bss_method_type_entries_.Overwrite(target_proto, /* placeholder */ 0u);
+          bss_method_type_entries_.insert(std::make_pair(target_proto, /* placeholder */ 0u));
+          bss_ref = target_proto;
+          number_of_indexes = target_proto.dex_file->NumProtoIds();
+          bss_references = &bss_method_type_entry_references_;
+          add_bss_reference = true;
+        }
+        if (add_type_entry) {
+          TypeReference target_type = patch.TargetType();
+          bss_type_entries->insert(std::make_pair(target_type, /* placeholder */ 0u));
+          bss_ref = target_type;
+          number_of_indexes = target_type.dex_file->NumTypeIds();
+          add_bss_reference = true;
+        }
+        if (add_bss_reference) {
+          AddBssReference(bss_ref, number_of_indexes, bss_references);
         }
       }
     }
@@ -927,68 +1002,12 @@ class OatWriter::InitOatClassesMethodVisitor : public DexMethodVisitor {
   size_t compiled_methods_with_code_;
 };
 
-// CompiledMethod + metadata required to do ordered method layout.
-//
-// See also OrderedMethodVisitor.
-struct OatWriter::OrderedMethodData {
-  uint32_t hotness_bits;
-  OatClass* oat_class;
-  CompiledMethod* compiled_method;
-  MethodReference method_reference;
-  size_t method_offsets_index;
-
-  size_t class_def_index;
-  uint32_t access_flags;
-  const dex::CodeItem* code_item;
-
-  // A value of -1 denotes missing debug info
-  static constexpr size_t kDebugInfoIdxInvalid = static_cast<size_t>(-1);
-  // Index into writer_->method_info_
-  size_t debug_info_idx;
-
-  bool HasDebugInfo() const {
-    return debug_info_idx != kDebugInfoIdxInvalid;
-  }
-
-  // Bin each method according to the profile flags.
-  //
-  // Groups by e.g.
-  //  -- startup and hot and poststartup
-  //  -- startup and hot
-  //  -- startup and post-startup
-  //  -- startup
-  //  -- hot and post-startup
-  //  -- hot
-  //  -- post-startup
-  //  -- not hot at all
-  //
-  // (See MethodHotness enum definition for up-to-date binning order.)
-  bool operator<(const OrderedMethodData& other) const {
-    if (kOatWriterForceOatCodeLayout) {
-      // Development flag: Override default behavior by sorting by name.
-
-      std::string name = method_reference.PrettyMethod();
-      std::string other_name = other.method_reference.PrettyMethod();
-      return name < other_name;
-    }
-
-    // Use the profile's method hotness to determine sort order, with startup
-    // methods appearing first.
-    if (hotness_bits > other.hotness_bits) {
-      return true;
-    }
-
-    // Default: retain the original order.
-    return false;
-  }
-};
-
 // Given a queue of CompiledMethod in some total order,
 // visit each one in that order.
 class OatWriter::OrderedMethodVisitor {
  public:
-  explicit OrderedMethodVisitor(OrderedMethodList ordered_methods)
-      : ordered_methods_(std::move(ordered_methods)) {
+  explicit OrderedMethodVisitor(ArrayRef<const OrderedMethodData> ordered_methods)
+      : ordered_methods_(ordered_methods) {
   }
 
   virtual ~OrderedMethodVisitor() {}
@@ -1024,14 +1043,10 @@ class OatWriter::OrderedMethodVisitor {
   // Return false to indicate the overall `Visit` has failed.
   virtual bool VisitComplete() = 0;
 
-  OrderedMethodList ReleaseOrderedMethods() {
-    return std::move(ordered_methods_);
-  }
-
  private:
   // List of compiled methods, sorted by the order defined in OrderedMethodData.
   // Methods can be inserted more than once in case of duplicated methods.
-  OrderedMethodList ordered_methods_;
+  ArrayRef<const OrderedMethodData> ordered_methods_;
 };
 
 // Visit every compiled method in order to determine its order within the OAT file.
@@ -1137,7 +1152,7 @@ class OatWriter::LayoutCodeMethodVisitor final : public OatDexMethodVisitor {
     return true;
   }
 
-  OrderedMethodList ReleaseOrderedMethods() {
+  std::vector<OrderedMethodData> ReleaseOrderedMethods() {
     if (kOatWriterForceOatCodeLayout || writer_->profile_compilation_info_ != nullptr) {
       // Sort by the method ordering criteria (in OrderedMethodData).
       // Since most methods will have the same ordering criteria,
@@ -1162,7 +1177,7 @@ class OatWriter::LayoutCodeMethodVisitor final : public OatDexMethodVisitor {
 
   // List of compiled methods, later to be sorted by order defined in OrderedMethodData.
   // Methods can be inserted more than once in case of duplicated methods.
-  OrderedMethodList ordered_methods_;
+  std::vector<OrderedMethodData> ordered_methods_;
 };
 
 // Given a method order, reserve the offsets for each CompiledMethod in the OAT file.
@@ -1170,11 +1185,11 @@ class OatWriter::LayoutReserveOffsetCodeMethodVisitor : public OrderedMethodVisi
  public:
   LayoutReserveOffsetCodeMethodVisitor(OatWriter* writer,
                                        size_t offset,
-                                       OrderedMethodList ordered_methods)
+                                       ArrayRef<const OrderedMethodData> ordered_methods)
       : LayoutReserveOffsetCodeMethodVisitor(writer,
                                              offset,
                                              writer->GetCompilerOptions(),
-                                             std::move(ordered_methods)) {
+                                             ordered_methods) {
   }
 
   bool VisitComplete() override {
@@ -1306,8 +1321,8 @@ class OatWriter::LayoutReserveOffsetCodeMethodVisitor : public OrderedMethodVisi
   LayoutReserveOffsetCodeMethodVisitor(OatWriter* writer,
                                        size_t offset,
                                        const CompilerOptions& compiler_options,
-                                       OrderedMethodList ordered_methods)
-      : OrderedMethodVisitor(std::move(ordered_methods)),
+                                       ArrayRef<const OrderedMethodData> ordered_methods)
+      : OrderedMethodVisitor(ordered_methods),
         writer_(writer),
         offset_(offset),
         relative_patcher_(writer->relative_patcher_),
@@ -1569,8 +1584,8 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
                          OutputStream* out,
                          const size_t file_offset,
                          size_t relative_offset,
-                         OrderedMethodList ordered_methods)
-      : OrderedMethodVisitor(std::move(ordered_methods)),
+                         ArrayRef<const OrderedMethodData> ordered_methods)
+      : OrderedMethodVisitor(ordered_methods),
         writer_(writer),
         offset_(relative_offset),
         dex_file_(nullptr),
@@ -1599,13 +1614,9 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
 
     // Ordered method visiting is only for compiled methods.
     DCHECK(writer_->MayHaveCompiledMethods());
-
-    if (writer_->GetCompilerOptions().IsAotCompilationEnabled()) {
-      // Only need to set the dex cache if we have compilation. Other modes might have unloaded it.
-      if (dex_cache_ == nullptr || dex_cache_->GetDexFile() != dex_file) {
-        dex_cache_ = class_linker_->FindDexCache(Thread::Current(), *dex_file);
-        DCHECK(dex_cache_ != nullptr);
-      }
+    if (dex_cache_ == nullptr || dex_cache_->GetDexFile() != dex_file) {
+      dex_cache_ = class_linker_->FindDexCache(Thread::Current(), *dex_file);
+      DCHECK(dex_cache_ != nullptr);
     }
   }
 
@@ -1701,7 +1712,8 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
             }
             case LinkerPatch::Type::kMethodBssEntry: {
               uint32_t target_offset =
-                  writer_->bss_start_ + writer_->bss_method_entries_.Get(patch.TargetMethod());
+                  writer_->bss_start_ +
+                  writer_->bss_method_entries_.find(patch.TargetMethod())->second;
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1727,7 +1739,8 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
             }
             case LinkerPatch::Type::kStringBssEntry: {
               uint32_t target_offset =
-                  writer_->bss_start_ + writer_->bss_string_entries_.Get(patch.TargetString());
+                  writer_->bss_start_ +
+                  writer_->bss_string_entries_.find(patch.TargetString())->second;
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1737,7 +1750,7 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
             case LinkerPatch::Type::kMethodAppImageRelRo: {
               uint32_t target_offset =
                   writer_->data_img_rel_ro_start_ +
-                  writer_->app_image_rel_ro_method_entries_.Get(patch.TargetMethod());
+                  writer_->app_image_rel_ro_method_entries_.find(patch.TargetMethod())->second;
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1746,7 +1759,8 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
             }
             case LinkerPatch::Type::kMethodTypeBssEntry: {
               uint32_t target_offset =
-                  writer_->bss_start_ + writer_->bss_method_type_entries_.Get(patch.TargetProto());
+                  writer_->bss_start_ +
+                  writer_->bss_method_type_entries_.find(patch.TargetProto())->second;
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1764,7 +1778,7 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
             case LinkerPatch::Type::kTypeAppImageRelRo: {
               uint32_t target_offset =
                   writer_->data_img_rel_ro_start_ +
-                  writer_->app_image_rel_ro_type_entries_.Get(patch.TargetType());
+                  writer_->app_image_rel_ro_type_entries_.find(patch.TargetType())->second;
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1773,7 +1787,7 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
             }
             case LinkerPatch::Type::kTypeBssEntry: {
               uint32_t target_offset =
-                  writer_->bss_start_ + writer_->bss_type_entries_.Get(patch.TargetType());
+                  writer_->bss_start_ + writer_->bss_type_entries_.find(patch.TargetType())->second;
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1782,7 +1796,8 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
             }
             case LinkerPatch::Type::kPublicTypeBssEntry: {
               uint32_t target_offset =
-                  writer_->bss_start_ + writer_->bss_public_type_entries_.Get(patch.TargetType());
+                  writer_->bss_start_ +
+                  writer_->bss_public_type_entries_.find(patch.TargetType())->second;
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -1791,7 +1806,8 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
             }
             case LinkerPatch::Type::kPackageTypeBssEntry: {
               uint32_t target_offset =
-                  writer_->bss_start_ + writer_->bss_package_type_entries_.Get(patch.TargetType());
+                  writer_->bss_start_ +
+                  writer_->bss_package_type_entries_.find(patch.TargetType())->second;
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -2111,15 +2127,16 @@ static size_t CalculateIndexBssMappingSize(size_t number_of_indexes,
   return IndexBssMapping::ComputeSize(number_of_entries);
 }
 
-static size_t CalculateIndexBssMappingSize(
-    const DexFile* dex_file,
-    const BitVector& type_indexes,
-    const SafeMap<TypeReference, size_t, TypeReferenceValueComparator>& bss_entries) {
+static size_t CalculateIndexBssMappingSize(const DexFile* dex_file,
+                                           const BitVector& type_indexes,
+                                           const OatWriter::BssMap<TypeReference>& bss_entries) {
   return CalculateIndexBssMappingSize(
       dex_file->NumTypeIds(),
       sizeof(GcRoot<mirror::Class>),
       type_indexes,
-      [=](uint32_t index) { return bss_entries.Get({dex_file, dex::TypeIndex(index)}); });
+      [dex_file, &bss_entries](uint32_t index) {
+        return bss_entries.find(TypeReference(dex_file, dex::TypeIndex(index)))->second;
+      });
 }
 
 size_t OatWriter::InitIndexBssMappings(size_t offset) {
@@ -2232,12 +2249,13 @@ size_t OatWriter::InitIndexBssMappingsHelper(size_t offset,
     const BitVector& method_indexes = method_it->second;
     ++number_of_method_dex_files;
     method_bss_mapping_offset = offset;
-    offset += CalculateIndexBssMappingSize(dex_file->NumMethodIds(),
-                                           static_cast<size_t>(pointer_size),
-                                           method_indexes,
-                                           [this, dex_file](uint32_t index) {
-                                             return bss_method_entries_.Get({dex_file, index});
-                                           });
+    offset += CalculateIndexBssMappingSize(
+        dex_file->NumMethodIds(),
+        static_cast<size_t>(pointer_size),
+        method_indexes,
+        [this, dex_file](uint32_t index) {
+          return bss_method_entries_.find(MethodReference(dex_file, index))->second;
+        });
   }
 
   auto type_it = bss_type_entry_references_.find(dex_file);
@@ -2274,7 +2292,8 @@ size_t OatWriter::InitIndexBssMappingsHelper(size_t offset,
         sizeof(GcRoot<mirror::String>),
         string_indexes,
         [this, dex_file](uint32_t index) {
-          return bss_string_entries_.Get({dex_file, dex::StringIndex(index)});
+          return bss_string_entries_.find(StringReference(dex_file, dex::StringIndex(index)))
+              ->second;
         });
   }
 
@@ -2288,7 +2307,8 @@ size_t OatWriter::InitIndexBssMappingsHelper(size_t offset,
         sizeof(GcRoot<mirror::MethodType>),
         proto_indexes,
         [this, dex_file](uint32_t index) {
-          return bss_method_type_entries_.Get({dex_file, dex::ProtoIndex(index)});
+          return bss_method_type_entries_.find(ProtoReference(dex_file, dex::ProtoIndex(index)))
+              ->second;
         });
   }
 
@@ -2392,24 +2412,22 @@ size_t OatWriter::InitOatCodeDexFiles(size_t offset) {
     success = VisitDexMethods(&layout_code_visitor);
     DCHECK(success);
 
+    // Save the method order because the WriteCodeMethodVisitor will need this
+    // order again.
+    DCHECK(ordered_methods_.empty());
+    ordered_methods_ = layout_code_visitor.ReleaseOrderedMethods();
+
     LayoutReserveOffsetCodeMethodVisitor layout_reserve_code_visitor(
         this,
         offset,
-        layout_code_visitor.ReleaseOrderedMethods());
+        ArrayRef<const OrderedMethodData>(ordered_methods_));
     success = layout_reserve_code_visitor.Visit();
     DCHECK(success);
     offset = layout_reserve_code_visitor.GetOffset();
 
-    // Save the method order because the WriteCodeMethodVisitor will need this
-    // order again.
-    DCHECK(ordered_methods_ == nullptr);
-    ordered_methods_.reset(
-        new OrderedMethodList(
-            layout_reserve_code_visitor.ReleaseOrderedMethods()));
-
     if (kOatWriterDebugOatCodeLayout) {
       LOG(INFO) << "IniatOatCodeDexFiles: method order: ";
-      for (const OrderedMethodData& ordered_method : *ordered_methods_) {
+      for (const OrderedMethodData& ordered_method : ordered_methods_) {
         std::string pretty_name = ordered_method.method_reference.PrettyMethod();
         LOG(INFO) << pretty_name
                   << "@ offset "
@@ -2433,6 +2451,54 @@ size_t OatWriter::InitOatCodeDexFiles(size_t offset) {
   return offset;
 }
 
+// Returns a vector of iterators of `map` using `Comp` to sort.
+template <typename T, typename Compare>
+std::vector<typename OatWriter::BssMap<T>::iterator> VectorizeAndSort(OatWriter::BssMap<T>& map,
+                                                                      Compare comp) {
+  using iterator = OatWriter::BssMap<T>::iterator;
+  std::vector<iterator> vec;
+  vec.reserve(map.size());
+  for (auto it = map.begin(); it != map.end(); ++it) {
+    vec.push_back(it);
+  }
+  std::sort(vec.begin(), vec.end(), [&comp](iterator lhs, iterator rhs) {
+    return comp(lhs->first, rhs->first);
+  });
+  return vec;
+}
+
+// Helper to initialize layout offsets, considering duplicate values. Note that `offset` is passed
+// by reference as we want to update the value as we iterate.
+template <typename T, typename Compare>
+std::vector<typename OatWriter::BssMap<T>::iterator> InitLayoutOffset(OatWriter::BssMap<T>& map,
+                                                                      size_t entry_size,
+                                                                      Compare comp,
+                                                                      size_t& offset) {
+  std::vector<typename OatWriter::BssMap<T>::iterator> vec = VectorizeAndSort(map, comp);
+  for (size_t i = 0; i < vec.size(); ++i) {
+    DCHECK_EQ(vec[i]->second, 0u);
+    if (i != 0 && !comp(vec[i - 1]->first, vec[i]->first)) {
+      // Copy the offset from the duplicate entry.
+      vec[i]->second = vec[i - 1]->second;
+    } else {
+      vec[i]->second = offset;
+      offset += entry_size;
+    }
+  }
+  return vec;
+}
+
+template <typename T, typename Compare>
+void OatWriter::InitBssLayoutOffset(BssMap<T>& map, size_t entry_size, Compare comp) {
+  InitLayoutOffset(map, entry_size, comp, bss_size_);
+}
+
+template <typename T, typename Compare>
+std::vector<typename OatWriter::BssMap<T>::iterator> OatWriter::InitDataImgRelRoLayoutOffset(
+    BssMap<T>& map, size_t entry_size, Compare comp) {
+  return InitLayoutOffset(map, entry_size, comp, data_img_rel_ro_size_);
+}
+
 size_t OatWriter::InitDataImgRelRoLayout(size_t offset) {
   DCHECK_EQ(data_img_rel_ro_size_, 0u);
   if (boot_image_rel_ro_entries_.empty() &&
@@ -2452,17 +2518,13 @@ size_t OatWriter::InitDataImgRelRoLayout(size_t offset) {
 
   data_img_rel_ro_app_image_offset_ = data_img_rel_ro_size_;
 
-  for (auto& entry : app_image_rel_ro_method_entries_) {
-    size_t& entry_offset = entry.second;
-    entry_offset = data_img_rel_ro_size_;
-    data_img_rel_ro_size_ += sizeof(uint32_t);
-  }
+  DCHECK(app_image_rel_ro_method_entries_sorted_.empty());
+  app_image_rel_ro_method_entries_sorted_ = InitDataImgRelRoLayoutOffset(
+      app_image_rel_ro_method_entries_, sizeof(uint32_t), MethodReferenceValueComparator());
 
-  for (auto& entry : app_image_rel_ro_type_entries_) {
-    size_t& entry_offset = entry.second;
-    entry_offset = data_img_rel_ro_size_;
-    data_img_rel_ro_size_ += sizeof(uint32_t);
-  }
+  DCHECK(app_image_rel_ro_type_entries_sorted_.empty());
+  app_image_rel_ro_type_entries_sorted_ = InitDataImgRelRoLayoutOffset(
+      app_image_rel_ro_type_entries_, sizeof(uint32_t), TypeReferenceValueComparator());
 
   offset = data_img_rel_ro_start_ + data_img_rel_ro_size_;
   return offset;
@@ -2480,48 +2542,26 @@ void OatWriter::InitBssLayout(InstructionSet instruction_set) {
     return;
   }
 
-  PointerSize pointer_size = GetInstructionSetPointerSize(instruction_set);
+  // Prepare offsets.
   bss_methods_offset_ = bss_size_;
 
-  // Prepare offsets for .bss ArtMethod entries.
-  for (auto& entry : bss_method_entries_) {
-    DCHECK_EQ(entry.second, 0u);
-    entry.second = bss_size_;
-    bss_size_ += static_cast<size_t>(pointer_size);
-  }
+  PointerSize pointer_size = GetInstructionSetPointerSize(instruction_set);
+  InitBssLayoutOffset(
+      bss_method_entries_, static_cast<size_t>(pointer_size), MethodReferenceValueComparator());
 
   bss_roots_offset_ = bss_size_;
 
-  // Prepare offsets for .bss Class entries.
-  for (auto& entry : bss_type_entries_) {
-    DCHECK_EQ(entry.second, 0u);
-    entry.second = bss_size_;
-    bss_size_ += sizeof(GcRoot<mirror::Class>);
-  }
-  // Prepare offsets for .bss public Class entries.
-  for (auto& entry : bss_public_type_entries_) {
-    DCHECK_EQ(entry.second, 0u);
-    entry.second = bss_size_;
-    bss_size_ += sizeof(GcRoot<mirror::Class>);
-  }
-  // Prepare offsets for .bss package Class entries.
-  for (auto& entry : bss_package_type_entries_) {
-    DCHECK_EQ(entry.second, 0u);
-    entry.second = bss_size_;
-    bss_size_ += sizeof(GcRoot<mirror::Class>);
-  }
-  // Prepare offsets for .bss String entries.
-  for (auto& entry : bss_string_entries_) {
-    DCHECK_EQ(entry.second, 0u);
-    entry.second = bss_size_;
-    bss_size_ += sizeof(GcRoot<mirror::String>);
-  }
-  // Prepare offsets for .bss MethodType entries.
-  for (auto& entry : bss_method_type_entries_) {
-    DCHECK_EQ(entry.second, 0u);
-    entry.second = bss_size_;
-    bss_size_ += sizeof(GcRoot<mirror::MethodType>);
-  }
+  InitBssLayoutOffset(
+      bss_type_entries_, sizeof(GcRoot<mirror::Class>), TypeReferenceValueComparator());
+  InitBssLayoutOffset(
+      bss_public_type_entries_, sizeof(GcRoot<mirror::Class>), TypeReferenceValueComparator());
+  InitBssLayoutOffset(
+      bss_package_type_entries_, sizeof(GcRoot<mirror::Class>), TypeReferenceValueComparator());
+  InitBssLayoutOffset(
+      bss_string_entries_, sizeof(GcRoot<mirror::String>), StringReferenceValueComparator());
+  InitBssLayoutOffset(bss_method_type_entries_,
+                      sizeof(GcRoot<mirror::MethodType>),
+                      ProtoReferenceValueComparator());
 }
 
 bool OatWriter::WriteRodata(OutputStream* out) {
@@ -2928,17 +2968,18 @@ size_t WriteIndexBssMapping(OutputStream* out,
   return mappings_size;
 }
 
-size_t WriteIndexBssMapping(
-    OutputStream* out,
-    const DexFile* dex_file,
-    const BitVector& type_indexes,
-    const SafeMap<TypeReference, size_t, TypeReferenceValueComparator>& bss_entries) {
+static size_t WriteIndexBssMapping(OutputStream* out,
+                                   const DexFile* dex_file,
+                                   const BitVector& type_indexes,
+                                   const OatWriter::BssMap<TypeReference>& bss_entries) {
   return WriteIndexBssMapping(
       out,
       dex_file->NumTypeIds(),
       sizeof(GcRoot<mirror::Class>),
       type_indexes,
-      [=](uint32_t index) { return bss_entries.Get({dex_file, dex::TypeIndex(index)}); });
+      [dex_file, &bss_entries](uint32_t index) {
+        return bss_entries.find(TypeReference(dex_file, dex::TypeIndex(index)))->second;
+      });
 }
 
 size_t OatWriter::WriteIndexBssMappingsHelper(OutputStream* out,
@@ -2957,14 +2998,14 @@ size_t OatWriter::WriteIndexBssMappingsHelper(OutputStream* out,
     const BitVector& method_indexes = method_it->second;
     DCHECK_EQ(relative_offset, method_bss_mapping_offset);
     DCHECK_OFFSET();
-    size_t method_mappings_size =
-        WriteIndexBssMapping(out,
-                             dex_file->NumMethodIds(),
-                             static_cast<size_t>(pointer_size),
-                             method_indexes,
-                             [this, dex_file](uint32_t index) {
-                               return bss_method_entries_.Get({dex_file, index});
-                             });
+    size_t method_mappings_size = WriteIndexBssMapping(
+        out,
+        dex_file->NumMethodIds(),
+        static_cast<size_t>(pointer_size),
+        method_indexes,
+        [this, dex_file](uint32_t index) {
+          return bss_method_entries_.find(MethodReference(dex_file, index))->second;
+        });
     if (method_mappings_size == 0u) {
       return 0u;
     }
@@ -3027,14 +3068,15 @@ size_t OatWriter::WriteIndexBssMappingsHelper(OutputStream* out,
     const BitVector& string_indexes = string_it->second;
     DCHECK_EQ(relative_offset, string_bss_mapping_offset);
     DCHECK_OFFSET();
-    size_t string_mappings_size =
-        WriteIndexBssMapping(out,
-                             dex_file->NumStringIds(),
-                             sizeof(GcRoot<mirror::String>),
-                             string_indexes,
-                             [this, dex_file](uint32_t index) {
-                               return bss_string_entries_.Get({dex_file, dex::StringIndex(index)});
-                             });
+    size_t string_mappings_size = WriteIndexBssMapping(
+        out,
+        dex_file->NumStringIds(),
+        sizeof(GcRoot<mirror::String>),
+        string_indexes,
+        [this, dex_file](uint32_t index) {
+          return bss_string_entries_.find(StringReference(dex_file, dex::StringIndex(index)))
+              ->second;
+        });
     if (string_mappings_size == 0u) {
       return 0u;
     }
@@ -3049,15 +3091,15 @@ size_t OatWriter::WriteIndexBssMappingsHelper(OutputStream* out,
     const BitVector& method_type_indexes = method_type_it->second;
     DCHECK_EQ(relative_offset, method_type_bss_mapping_offset);
     DCHECK_OFFSET();
-    size_t method_type_mappings_size =
-        WriteIndexBssMapping(out,
-                             dex_file->NumProtoIds(),
-                             sizeof(GcRoot<mirror::MethodType>),
-                             method_type_indexes,
-                             [this, dex_file](uint32_t index) {
-                               return bss_method_type_entries_
-                                   .Get({dex_file, dex::ProtoIndex(index)});
-                             });
+    size_t method_type_mappings_size = WriteIndexBssMapping(
+        out,
+        dex_file->NumProtoIds(),
+        sizeof(GcRoot<mirror::MethodType>),
+        method_type_indexes,
+        [this, dex_file](uint32_t index) {
+          return bss_method_type_entries_.find(ProtoReference(dex_file, dex::ProtoIndex(index)))
+              ->second;
+        });
     if (method_type_mappings_size == 0u) {
       return 0u;
     }
@@ -3233,14 +3275,11 @@ size_t OatWriter::WriteCodeDexFiles(OutputStream* out,
     return relative_offset;
   }
   ScopedObjectAccess soa(Thread::Current());
-  DCHECK(ordered_methods_ != nullptr);
-  std::unique_ptr<OrderedMethodList> ordered_methods_ptr =
-      std::move(ordered_methods_);
   WriteCodeMethodVisitor visitor(this,
                                  out,
                                  file_offset,
                                  relative_offset,
-                                 std::move(*ordered_methods_ptr));
+                                 ArrayRef<const OrderedMethodData>(ordered_methods_));
   if (UNLIKELY(!visitor.Visit())) {
     return 0;
   }
@@ -3270,6 +3309,12 @@ size_t OatWriter::WriteDataImgRelRo(OutputStream* out,
     uint32_t boot_image_offset = entry.first;
     data.push_back(boot_image_offset);
   }
+
+  // Both the sorted and unsorted variants contain duplicates. We skip the duplicates in the loops
+  // below, and we update `size` in the process.
+  DCHECK_EQ(app_image_rel_ro_method_entries_.size(),
+            app_image_rel_ro_method_entries_sorted_.size());
+  DCHECK_EQ(app_image_rel_ro_type_entries_.size(), app_image_rel_ro_type_entries_sorted_.size());
   if (!app_image_rel_ro_method_entries_.empty() || !app_image_rel_ro_type_entries_.empty()) {
     DCHECK(GetCompilerOptions().IsAppImage());
     ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
@@ -3284,8 +3329,16 @@ size_t OatWriter::WriteDataImgRelRo(OutputStream* out,
         last_dex_file = dex_file;
       }
     };
-    for (const auto& entry : app_image_rel_ro_method_entries_) {
-      MethodReference target_method = entry.first;
+
+    for (size_t i : Range(app_image_rel_ro_method_entries_sorted_.size())) {
+      if (i != 0 && app_image_rel_ro_method_entries_sorted_[i]->second ==
+                        app_image_rel_ro_method_entries_sorted_[i - 1]->second) {
+        // Skip duplicates. We can do it cheaply by comparing the offsets, without the need to
+        // compare the MethodReferences themselves.
+        --size;
+        continue;
+      }
+      MethodReference target_method = app_image_rel_ro_method_entries_sorted_[i]->first;
       update_for_dex_file(target_method.dex_file);
       ArtMethod* method =
           class_linker->LookupResolvedMethod(target_method.index, dex_cache, class_loader);
@@ -3293,8 +3346,15 @@ size_t OatWriter::WriteDataImgRelRo(OutputStream* out,
       uint32_t app_image_offset = image_writer_->GetGlobalImageOffset(method);
       data.push_back(app_image_offset);
     }
-    for (const auto& entry : app_image_rel_ro_type_entries_) {
-      TypeReference target_type = entry.first;
+    for (size_t i : Range(app_image_rel_ro_type_entries_sorted_.size())) {
+      if (i != 0 && app_image_rel_ro_type_entries_sorted_[i]->second ==
+                        app_image_rel_ro_type_entries_sorted_[i - 1]->second) {
+        // Skip duplicates. We can do it cheaply by comparing the offsets, without the need to
+        // compare the TypeReferences themselves.
+        --size;
+        continue;
+      }
+      TypeReference target_type = app_image_rel_ro_type_entries_sorted_[i]->first;
       update_for_dex_file(target_type.dex_file);
       ObjPtr<mirror::Class> type =
           class_linker->LookupResolvedType(target_type.TypeIndex(), dex_cache, class_loader);

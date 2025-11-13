@@ -13,6 +13,7 @@ bootstrap_go_package {
     pkgPath: "android/soong/art",
     deps: [
         "blueprint",
+        "blueprint-gobtools",
         "blueprint-pathtools",
         "blueprint-proptools",
         "soong",
@@ -22,6 +23,7 @@ bootstrap_go_package {
     ],
     srcs: [
         "art.go",
+        "art_gob_enc.go",
         "codegen.go",
         "makevars.go",
     ],
@@ -299,6 +301,48 @@ cc_defaults {
         },
         host: {
             cflags: ["-Wno-frame-larger-than="],
+        },
+    },
+}
+
+// Add a dependency on liblog suitable for use in *_static_defaults.
+cc_defaults {
+    name: "art_liblog_static_defaults",
+    target: {
+        android: {
+            shared_libs: ["liblog"],
+        },
+        not_windows: {
+            whole_static_libs: ["liblog"],
+        },
+        windows: {
+            whole_static_libs: ["liblog"],
+        },
+    },
+}
+
+// Add a dependency on libz suitable for use in *_static_defaults.
+cc_defaults {
+    name: "art_libz_static_defaults",
+    target: {
+        android: {
+            shared_libs: ["libz"],
+        },
+        // Link libz dynamically on host to avoid odr-violation errors in ASAN
+        // builds, because the LLVM runtime may load libz-host.so dynamically.
+        not_windows: {
+            shared_libs: ["libz"],
+        },
+        windows: {
+            whole_static_libs: ["libz"],
+        },
+        // art/tools/build-linux-x86-host-tools.sh uses BUILD_HOST_static=true
+        // to build static binaries, which means we need to use static libz
+        // there. We cannot target static binaries here, so let's target musl
+        // instead, because that script uses musl and we don't use it anywhere
+        // else.
+        linux_musl: {
+            whole_static_libs: ["libz"],
         },
     },
 }

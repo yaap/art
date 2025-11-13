@@ -17,6 +17,7 @@
 #include "instruction_simplifier_riscv64.h"
 
 #include "instruction_simplifier.h"
+#include "nodes.h"
 
 namespace art HIDDEN {
 
@@ -33,10 +34,10 @@ class InstructionSimplifierRiscv64Visitor final : public HGraphVisitor {
   }
 
   void VisitBasicBlock(HBasicBlock* block) override {
-    for (HInstructionIterator it(block->GetInstructions()); !it.Done(); it.Advance()) {
+    for (HInstructionIteratorPrefetchNext it(block->GetInstructions()); !it.Done(); it.Advance()) {
       HInstruction* instruction = it.Current();
       if (instruction->IsInBlock()) {
-        instruction->Accept(this);
+        Dispatch(instruction);
       }
     }
   }

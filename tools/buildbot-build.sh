@@ -63,7 +63,17 @@ if [[ $TARGET_ARCH = "riscv64" && ! ( -d frameworks/base ) ]]; then
 fi
 
 java_libraries_dir=${out_dir}/target/common/obj/JAVA_LIBRARIES
-common_targets="vogar core-tests core-ojtests apache-harmony-jdwp-tests-hostdex jsr166-tests mockito-target"
+libcore_tests_classpath="core-tests core-ojtests jsr166-tests mockito-target"
+libjdwp_tests_classpath="apache-harmony-jdwp-tests-hostdex"
+common_targets="vogar ${libjdwp_tests_classpath} ${libcore_tests_classpath}"
+# Add classpath for libjdwp tests.
+for jar in ${libjdwp_tests_classpath} ; do
+  common_targets="$common_targets out/host/common/obj/JAVA_LIBRARIES/${jar}_intermediates/classes.jar"
+done
+# Add classpath for libcore tests.
+for jar in ${libcore_tests_classpath} ; do
+  common_targets="$common_targets out/target/common/obj/JAVA_LIBRARIES/${jar}_intermediates/classes.jar"
+done
 # These build targets have different names on device and host.
 specific_targets="libjavacoretests libwrapagentproperties libwrapagentpropertiesd"
 build_host="no"
@@ -360,7 +370,7 @@ EOF
   for apex in ${apexes[@]}; do
     apex=$(override_apex_name $apex)
     cat <<EOF >> $apex_xml_file
-    <apex-info moduleName="${apex}" modulePath="/system/apex/${apex}.apex" preinstalledModulePath="/system/apex/${apex}.apex" versionCode="1" versionName="" isFactory="true" isActive="true">
+    <apex-info moduleName="${apex}" modulePath="/system/apex/${apex}.apex" preinstalledModulePath="/system/apex/${apex}.apex" versionCode="1" versionName="" isFactory="true" isActive="true" partition="SYSTEM">
     </apex-info>
 EOF
   done

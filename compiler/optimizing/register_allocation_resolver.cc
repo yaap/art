@@ -55,8 +55,7 @@ void RegisterAllocationResolver::Resolve(ArrayRef<HInstruction* const> safepoint
 
   // Resolve outputs, including stack locations.
   // TODO: Use pointers of Location inside LiveInterval to avoid doing another iteration.
-  for (size_t i = 0, e = liveness_.GetNumberOfSsaValues(); i < e; ++i) {
-    HInstruction* instruction = liveness_.GetInstructionFromSsaIndex(i);
+  for (HInstruction* instruction : liveness_.GetInstructionsFromSsaIndexes()) {
     LiveInterval* current = instruction->GetLiveInterval();
     LocationSummary* locations = instruction->GetLocations();
     Location location = locations->Out();
@@ -143,8 +142,7 @@ void RegisterAllocationResolver::Resolve(ArrayRef<HInstruction* const> safepoint
   }
 
   // Connect siblings and resolve inputs.
-  for (size_t i = 0, e = liveness_.GetNumberOfSsaValues(); i < e; ++i) {
-    HInstruction* instruction = liveness_.GetInstructionFromSsaIndex(i);
+  for (HInstruction* instruction : liveness_.GetInstructionsFromSsaIndexes()) {
     ConnectSiblings(instruction->GetLiveInterval());
   }
 
@@ -184,14 +182,13 @@ void RegisterAllocationResolver::Resolve(ArrayRef<HInstruction* const> safepoint
       // Catch phi values are set at runtime by the exception delivery mechanism.
     } else {
       for (HInstructionIterator inst_it(block->GetPhis()); !inst_it.Done(); inst_it.Advance()) {
-        HInstruction* phi = inst_it.Current();
-        for (size_t i = 0, e = block->GetPredecessors().size(); i < e; ++i) {
-          HBasicBlock* predecessor = block->GetPredecessors()[i];
+        HPhi* phi = inst_it.Current()->AsPhi();
+        HInputsRef inputs = phi->GetInputs();
+        Location destination = phi->GetLiveInterval()->ToLocation();
+        for (auto [predecessor, input_index] : ZipCount(block->GetPredecessors())) {
           DCHECK_EQ(predecessor->GetNormalSuccessors().size(), 1u);
-          HInstruction* input = phi->InputAt(i);
-          Location source = input->GetLiveInterval()->GetLocationAt(
+          Location source = inputs[input_index]->GetLiveInterval()->GetLocationAt(
               predecessor->GetLifetimeEnd() - 1);
-          Location destination = phi->GetLiveInterval()->ToLocation();
           InsertParallelMoveAtExitOf(predecessor, phi, source, destination);
         }
       }
@@ -205,7 +202,7 @@ void RegisterAllocationResolver::Resolve(ArrayRef<HInstruction* const> safepoint
       continue;
     }
     HInstruction* at = liveness_.GetTempUser(temp);
-    size_t temp_index = liveness_.GetTempIndex(temp);
+    size_t temp_index = temp->GetTempIndex();
     LocationSummary* locations = at->GetLocations();
     switch (temp->GetType()) {
       case DataType::Type::kInt32:
@@ -230,8 +227,7 @@ void RegisterAllocationResolver::Resolve(ArrayRef<HInstruction* const> safepoint
 }
 
 void RegisterAllocationResolver::UpdateSafepointLiveRegisters() {
-  for (size_t i = 0, e = liveness_.GetNumberOfSsaValues(); i < e; ++i) {
-    HInstruction* instruction = liveness_.GetInstructionFromSsaIndex(i);
+  for (HInstruction* instruction : liveness_.GetInstructionsFromSsaIndexes()) {
     for (LiveInterval* current = instruction->GetLiveInterval();
          current != nullptr;
          current = current->GetNextSibling()) {
@@ -239,11 +235,9 @@ void RegisterAllocationResolver::UpdateSafepointLiveRegisters() {
         continue;
       }
       Location source = current->ToLocation();
-      for (SafepointPosition* safepoint_position = current->GetFirstSafepoint();
-           safepoint_position != nullptr;
-           safepoint_position = safepoint_position->GetNext()) {
-        DCHECK(current->CoversSlow(safepoint_position->GetPosition()));
-        LocationSummary* locations = safepoint_position->GetLocations();
+      for (const SafepointPosition& safepoint_position : current->GetSafepoints()) {
+        DCHECK(current->CoversSlow(safepoint_position.GetPosition()));
+        LocationSummary* locations = safepoint_position.GetLocations();
         switch (source.GetKind()) {
           case Location::kRegister:
           case Location::kFpuRegister: {
@@ -381,18 +375,16 @@ void RegisterAllocationResolver::ConnectSiblings(LiveInterval* interval) {
       InsertParallelMoveAt(current->GetEnd(), interval->GetDefinedBy(), source, destination);
     }
 
-    for (SafepointPosition* safepoint_position = current->GetFirstSafepoint();
-         safepoint_position != nullptr;
-         safepoint_position = safepoint_position->GetNext()) {
-      DCHECK(current->CoversSlow(safepoint_position->GetPosition()));
+    for (const SafepointPosition& safepoint_position : current->GetSafepoints()) {
+      DCHECK(current->CoversSlow(safepoint_position.GetPosition()));
 
       if (current->GetType() == DataType::Type::kReference) {
         DCHECK(interval->GetDefinedBy()->IsActualObject())
             << interval->GetDefinedBy()->DebugName()
             << '(' << interval->GetDefinedBy()->GetId() << ')'
-            << "@" << safepoint_position->GetInstruction()->DebugName()
-            << '(' << safepoint_position->GetInstruction()->GetId() << ')';
-        LocationSummary* locations = safepoint_position->GetLocations();
+            << "@" << safepoint_position.GetInstruction()->DebugName()
+            << '(' << safepoint_position.GetInstruction()->GetId() << ')';
+        LocationSummary* locations = safepoint_position.GetLocations();
         if (current->GetParent()->HasSpillSlot()) {
           locations->SetStackBit(current->GetParent()->GetSpillSlot() / kVRegSize);
         }
@@ -544,30 +536,35 @@ void RegisterAllocationResolver::AddInputMoveFor(HInstruction* input,
   AddMove(move, source, destination, nullptr, input->GetType());
 }
 
-static bool IsInstructionStart(size_t position) {
-  return (position & 1) == 0;
+static bool IsMovePositionAtInstructionStart(size_t position) {
+  static_assert(IsPowerOfTwo(kLivenessPositionsPerInstruction));
+  return (position & (kLivenessPositionsPerInstruction - 1)) == 0;
 }
 
-static bool IsInstructionEnd(size_t position) {
-  return (position & 1) == 1;
+static bool IsMovePositionAfterInstruction(size_t position) {
+  static_assert(IsPowerOfTwo(kLivenessPositionsPerInstruction));
+  return (position & (kLivenessPositionsPerInstruction - 1)) == kLivenessPositionForMoveAfter;
 }
 
 void RegisterAllocationResolver::InsertParallelMoveAt(size_t position,
                                                       HInstruction* instruction,
                                                       Location source,
                                                       Location destination) const {
+  DCHECK(IsMovePositionAtInstructionStart(position) ||
+         IsMovePositionAfterInstruction(position)) << position;
   DCHECK(IsValidDestination(destination)) << destination;
   if (source.Equals(destination)) return;
 
-  HInstruction* at = liveness_.GetInstructionFromPosition(position / 2);
+  HInstruction* at =
+      liveness_.GetInstructionFromPosition(position / kLivenessPositionsPerInstruction);
   HParallelMove* move;
   if (at == nullptr) {
-    if (IsInstructionStart(position)) {
+    if (IsMovePositionAtInstructionStart(position)) {
       // Block boundary, don't do anything the connection of split siblings will handle it.
       return;
     } else {
       // Move must happen before the first instruction of the block.
-      at = liveness_.GetInstructionFromPosition((position + 1) / 2);
+      at = liveness_.GetInstructionFromPosition(position / kLivenessPositionsPerInstruction + 1);
       // Note that parallel moves may have already been inserted, so we explicitly
       // ask for the first instruction of the block: `GetInstructionFromPosition` does
       // not contain the `HParallelMove` instructions.
@@ -590,7 +587,7 @@ void RegisterAllocationResolver::InsertParallelMoveAt(size_t position,
         move = at->AsParallelMove();
       }
     }
-  } else if (IsInstructionEnd(position)) {
+  } else if (IsMovePositionAfterInstruction(position)) {
     // Move must happen after the instruction.
     DCHECK(!at->IsControlFlow());
     move = at->GetNext()->AsParallelMoveOrNull();
@@ -686,7 +683,7 @@ void RegisterAllocationResolver::InsertMoveAfter(HInstruction* instruction,
     return;
   }
 
-  size_t position = instruction->GetLifetimePosition() + 1;
+  size_t position = instruction->GetLifetimePosition() + kLivenessPositionForMoveAfter;
   HParallelMove* move = instruction->GetNext()->AsParallelMoveOrNull();
   // This is a parallel move for moving the output of an instruction. We need
   // to differentiate with input moves, moves for connecting siblings in a

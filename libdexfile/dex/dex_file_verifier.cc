@@ -138,7 +138,6 @@ class DexFileVerifier {
                       std::numeric_limits<size_t>::max(),
                       std::numeric_limits<size_t>::max(),
                       std::numeric_limits<size_t>::max()} {
-    CHECK(!dex_file->IsCompactDexFile()) << "Not supported";
   }
 
   bool Verify();
@@ -1727,7 +1726,6 @@ bool DexFileVerifier::CheckIntraClassDataItem() {
 bool DexFileVerifier::CheckIntraCodeItem() {
   const dex::CodeItem* code_item = reinterpret_cast<const dex::CodeItem*>(ptr_);
 
-  DCHECK(dex_file_->IsStandardDexFile());
   if (!CheckListSize(code_item, 1, sizeof(StandardDexFile::CodeItem), "code")) {
     return false;
   }
@@ -2062,10 +2060,10 @@ bool DexFileVerifier::CheckIntraAnnotationItem() {
 
   // Check visibility
   uint8_t visibility = *(ptr_++);
-  switch (visibility) {
-    case DexFile::kDexVisibilityBuild:
-    case DexFile::kDexVisibilityRuntime:
-    case DexFile::kDexVisibilitySystem:
+  switch (static_cast<DexFile::DexVisibility>(visibility)) {
+    case DexFile::DexVisibility::kBuild:
+    case DexFile::DexVisibility::kRuntime:
+    case DexFile::DexVisibility::kSystem:
       break;
     default:
       ErrorStringPrintf("Bad annotation visibility: %x", visibility);
@@ -3212,12 +3210,14 @@ bool DexFileVerifier::CheckInterClassDataItem() {
   uint32_t defining_class = FindFirstClassDataDefiner(accessor);
   DCHECK(IsUint<16>(defining_class) || defining_class == kDexNoIndex) << defining_class;
   if (defining_class == kDexNoIndex) {
-    return true;  // Empty definitions are OK (but useless) and could be shared by multiple classes.
+    // Empty definitions are OK and could be shared by multiple classes.
+    ptr_ = accessor.ptr_pos_;  // Move over the empty `class_data_item`.
+    return true;
   }
   if (!defined_classes_[defining_class]) {
-      // Should really have a class definition for this class data item.
-      ErrorStringPrintf("Could not find declaring class for non-empty class data item.");
-      return false;
+    // Should really have a class definition for this class data item.
+    ErrorStringPrintf("Could not find declaring class for non-empty class data item.");
+    return false;
   }
   const dex::TypeIndex class_type_index(defining_class);
   const dex::ClassDef& class_def = dex_file_->GetClassDef(defined_class_indexes_[defining_class]);
@@ -3488,14 +3488,12 @@ bool DexFileVerifier::CheckInterSection() {
 
   const dex::MapList* map = OffsetToPtr<dex::MapList>(header_->map_off_);
   const dex::MapItem* item = map->list_;
-  uint32_t count = map->size_;
 
   // Cross check the items listed in the map.
-  for (; count != 0u; --count) {
+  for (uint32_t count = map->size_; count != 0u; --count) {
     uint32_t section_offset = item->offset_;
     uint32_t section_count = item->size_;
     DexFile::MapItemType type = static_cast<DexFile::MapItemType>(item->type_);
-    bool found = false;
 
     if (type == DexFile::kDexTypeClassDataItem) {
       FindStringRangesForMethodNames();
@@ -3510,7 +3508,6 @@ bool DexFileVerifier::CheckInterSection() {
       case DexFile::kDexTypeDebugInfoItem:
       case DexFile::kDexTypeAnnotationItem:
       case DexFile::kDexTypeEncodedArrayItem:
-        found = true;
         break;
       case DexFile::kDexTypeStringIdItem:
       case DexFile::kDexTypeTypeIdItem:
@@ -3528,14 +3525,11 @@ bool DexFileVerifier::CheckInterSection() {
         if (!CheckInterSectionIterate(section_offset, section_count, type)) {
           return false;
         }
-        found = true;
         break;
       }
-    }
-
-    if (!found) {
-      ErrorStringPrintf("Unknown map item type %x", item->type_);
-      return false;
+      default:
+        ErrorStringPrintf("Unknown map item type %x", item->type_);
+        return false;
     }
 
     item++;

@@ -145,6 +145,11 @@ apex_defaults {
             ],
         },
     },
+
+    licenses: [
+        "art_license",
+        "opensourcerequest",
+    ],
 }
 
 // Default values shared by Debug and Testing ART APEXes.
@@ -339,6 +344,10 @@ apex_test {
     native_shared_libs: [
         "libart",
         "libartd",
+        "libarttest",
+        "libarttestd",
+        "libtiagent",
+        "libtiagentd",
     ],
     multilib: {
         first: {

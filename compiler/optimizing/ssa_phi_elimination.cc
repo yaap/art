@@ -20,6 +20,8 @@
 #include "base/scoped_arena_allocator.h"
 #include "base/scoped_arena_containers.h"
 #include "base/bit_vector-inl.h"
+#include "loop_information.h"
+#include "nodes.h"
 
 namespace art HIDDEN {
 
@@ -44,7 +46,8 @@ void SsaDeadPhiElimination::MarkDeadPhis() {
 
   // Add to the worklist phis referenced by non-phi instructions.
   for (HBasicBlock* block : graph_->GetReversePostOrder()) {
-    for (HInstructionIterator inst_it(block->GetPhis()); !inst_it.Done(); inst_it.Advance()) {
+    for (HInstructionIteratorPrefetchNext inst_it(block->GetPhis()); !inst_it.Done();
+         inst_it.Advance()) {
       HPhi* phi = inst_it.Current()->AsPhi();
       if (phi->IsDead()) {
         continue;
@@ -123,6 +126,10 @@ void SsaDeadPhiElimination::EliminateDeadPhis() {
   }
 }
 
+inline bool IsIrreducibleLoopHeaderPhi(HPhi* phi) {
+  return phi->GetBlock()->IsLoopHeader() && phi->GetBlock()->GetLoopInformation()->IsIrreducible();
+}
+
 bool SsaRedundantPhiElimination::Run() {
   // Use local allocator for allocating memory used by this optimization.
   ScopedArenaAllocator allocator(graph_->GetArenaStack());
@@ -134,7 +141,8 @@ bool SsaRedundantPhiElimination::Run() {
   // Add all phis in the worklist. Order does not matter for correctness, and
   // neither will necessarily converge faster.
   for (HBasicBlock* block : graph_->GetReversePostOrder()) {
-    for (HInstructionIterator inst_it(block->GetPhis()); !inst_it.Done(); inst_it.Advance()) {
+    for (HInstructionIteratorPrefetchNext inst_it(block->GetPhis()); !inst_it.Done();
+         inst_it.Advance()) {
       worklist.push_back(inst_it.Current()->AsPhi());
     }
   }
@@ -165,7 +173,7 @@ bool SsaRedundantPhiElimination::Run() {
     cycle_worklist.push_back(phi);
     visited_phis_in_cycle.SetBit(phi->GetId());
     bool catch_phi_in_cycle = phi->IsCatchPhi();
-    bool irreducible_loop_phi_in_cycle = phi->IsIrreducibleLoopHeaderPhi();
+    bool irreducible_loop_phi_in_cycle = IsIrreducibleLoopHeaderPhi(phi);
 
     // First do a simple loop over inputs and check if they are all the same.
     for (HInstruction* input : phi->GetInputs()) {
@@ -197,7 +205,7 @@ bool SsaRedundantPhiElimination::Run() {
               cycle_worklist.push_back(input->AsPhi());
               visited_phis_in_cycle.SetBit(input->GetId());
               catch_phi_in_cycle |= input->AsPhi()->IsCatchPhi();
-              irreducible_loop_phi_in_cycle |= input->IsIrreducibleLoopHeaderPhi();
+              irreducible_loop_phi_in_cycle |= IsIrreducibleLoopHeaderPhi(input->AsPhi());
             } else {
               // Already visited, nothing to do.
             }

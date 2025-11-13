@@ -18,6 +18,7 @@
 
 #include "base/scoped_arena_containers.h"
 #include "induction_var_range.h"
+#include "loop_information-inl.h"
 
 namespace art HIDDEN {
 
@@ -170,7 +171,8 @@ static bool RewriteBreakLoopBody(const HLoopInformation* loop,
                                  HInstruction* upper,
                                  bool rewrite) {
   // Deal with Phis. Outside use prohibited, except for index (which gets exit value).
-  for (HInstructionIterator it(loop->GetHeader()->GetPhis()); !it.Done(); it.Advance()) {
+  for (HInstructionIteratorPrefetchNext it(loop->GetHeader()->GetPhis()); !it.Done();
+       it.Advance()) {
     HInstruction* exit_value = it.Current() == index ? upper : nullptr;
     if (!FixOutsideUse(loop, it.Current(), exit_value, rewrite)) {
       return false;
@@ -251,23 +253,31 @@ void HInductionVarAnalysis::VisitLoop(const HLoopInformation* loop) {
   // Find strongly connected components (SSCs) in the SSA graph of this loop using Tarjan's
   // algorithm. Due to the descendant-first nature, classification happens "on-demand".
   size_t global_depth = 0;
-  for (HBlocksInLoopIterator it_loop(*loop); !it_loop.Done(); it_loop.Advance()) {
-    HBasicBlock* loop_block = it_loop.Current();
+  for (HBasicBlock* loop_block : loop->GetBlocks()) {
     DCHECK(loop_block->IsInLoop());
     if (loop_block->GetLoopInformation() != loop) {
       continue;  // Inner loops visited later.
     }
     // Visit phi-operations and instructions.
-    for (HInstructionIterator it(loop_block->GetPhis()); !it.Done(); it.Advance()) {
+    for (HInstructionIteratorPrefetchNext it(loop_block->GetPhis()); !it.Done(); it.Advance()) {
       global_depth = TryVisitNodes(loop, it.Current(), global_depth, &visited_instructions);
     }
-    for (HInstructionIterator it(loop_block->GetInstructions()); !it.Done(); it.Advance()) {
+    for (HInstructionIteratorPrefetchNext it(loop_block->GetInstructions()); !it.Done();
+         it.Advance()) {
       global_depth = TryVisitNodes(loop, it.Current(), global_depth, &visited_instructions);
     }
   }
 
   // Determine the loop's trip-count.
   VisitControl(loop);
+}
+
+void HInductionVarAnalysis::ReVisitLoop(const HLoopInformation* loop) {
+  induction_.erase(loop);
+  for (HInstructionIterator it(loop->GetHeader()->GetPhis()); !it.Done(); it.Advance()) {
+    cycles_.erase(it.Current()->AsPhi());
+  }
+  VisitLoop(loop);
 }
 
 size_t HInductionVarAnalysis::TryVisitNodes(
@@ -1648,7 +1658,7 @@ bool HInductionVarAnalysis::IsPathologicalCase() {
       continue;
     }
 
-    for (HInstructionIterator it(block->GetPhis()); !it.Done(); it.Advance()) {
+    for (HInstructionIteratorPrefetchNext it(block->GetPhis()); !it.Done(); it.Advance()) {
       DCHECK(it.Current()->IsLoopHeaderPhi());
       HPhi* phi = it.Current()->AsPhi();
       CalculateLoopHeaderPhisInARow(phi, cached_values, local_allocator);

@@ -41,9 +41,6 @@ class ControlFlowSimplifierTest : public OptimizingUnitTest {
   bool CheckGraphAndTryControlFlowSimplifier() {
     graph_->BuildDominatorTree();
     EXPECT_TRUE(CheckGraph());
-
-    SideEffectsAnalysis side_effects(graph_);
-    side_effects.Run();
     return HControlFlowSimplifier(graph_, /*handles*/ nullptr, /*stats*/ nullptr).Run();
   }
 };
@@ -143,7 +140,7 @@ TEST_F(ControlFlowSimplifierTest, testSelectInIrreducibleLoop) {
   for (HBasicBlock* removed_block : {then_block, else_block, body}) {
     ASSERT_BLOCK_REMOVED(removed_block);
     uint32_t removed_block_id = removed_block->GetBlockId();
-    ASSERT_FALSE(loop_info->GetBlocks().IsBitSet(removed_block_id)) << removed_block_id;
+    ASSERT_FALSE(loop_info->GetBlockMask().IsBitSet(removed_block_id)) << removed_block_id;
   }
 }
 

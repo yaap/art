@@ -16,6 +16,8 @@
 
 #include "cha_guard_optimization.h"
 
+#include "nodes.h"
+
 namespace art HIDDEN {
 
 // Note we can only do CHA guard elimination/motion in a single pass, since
@@ -64,7 +66,7 @@ class CHAGuardVisitor final : public HGraphVisitor {
 
   // The iterator that's being used for this visitor. Need it to manually
   // advance the iterator due to removing/moving more than one instruction.
-  HInstructionIterator* instruction_iterator_;
+  HInstructionIteratorPrefetchNext* instruction_iterator_;
 
   // Used to short-circuit the pass when there is no more guards left to visit.
   uint32_t number_of_guards_to_visit_;
@@ -77,11 +79,11 @@ void CHAGuardVisitor::VisitBasicBlock(HBasicBlock* block) {
     return;
   }
   // Skip phis, just iterate through instructions.
-  HInstructionIterator it(block->GetInstructions());
+  HInstructionIteratorPrefetchNext it(block->GetInstructions());
   instruction_iterator_ = &it;
   for (; !it.Done(); it.Advance()) {
     DCHECK(it.Current()->IsInBlock());
-    it.Current()->Accept(this);
+    Dispatch(it.Current());
   }
 }
 

@@ -17,8 +17,11 @@
 #ifndef ART_RUNTIME_THREAD_H_
 #define ART_RUNTIME_THREAD_H_
 
+#include <android-base/properties.h>
+
 #include <atomic>
 #include <bitset>
+#include <cstdint>
 #include <deque>
 #include <iosfwd>
 #include <list>
@@ -33,6 +36,7 @@
 #include "base/pointer_size.h"
 #include "base/safe_map.h"
 #include "base/value_object.h"
+#include "com_android_art_flags.h"
 #include "entrypoints/jni/jni_entrypoints.h"
 #include "entrypoints/quick/quick_entrypoints.h"
 #include "handle.h"
@@ -200,6 +204,15 @@ enum class WeakRefAccessState : int32_t {
   kDisabled
 };
 
+enum VirtualThreadFlag : uint8_t {
+  // This flag is set only when a virtual thread is running on the given carrier thread.
+  kIsVirtual = 1u,
+  // The flag is set when a virtual thread is being parked and unmounted from the carrier thread.
+  kParking = 1u << 1,
+  // The flag is set when a virtual thread is being unparked and mounted from the carrier thread.
+  kUnparking = 1u << 2,
+};
+
 // ART uses two types of ABI/code: quick and native.
 //
 // Quick code includes:
@@ -238,6 +251,10 @@ static constexpr StackType kNativeStackType = StackType::kHardware;
 // For simulator builds this is the kSimulated stack and for non-simulator builds this is the
 // kHardware stack.
 static constexpr StackType kQuickStackType = StackType::kHardware;
+
+static_assert(com::android::art::flags::virtual_thread_impl_v1() ==
+              COM_ANDROID_ART_FLAGS_VIRTUAL_THREAD_IMPL_V1);
+static constexpr bool kIsVirtualThreadEnabled = com::android::art::flags::virtual_thread_impl_v1();
 
 // See Thread.tlsPtr_.active_suspend1_barriers below for explanation.
 struct WrappedSuspend1Barrier {
@@ -606,12 +623,31 @@ class EXPORT Thread {
   bool HoldsLock(ObjPtr<mirror::Object> object) const REQUIRES_SHARED(Locks::mutator_lock_);
 
   /*
-   * Changes the priority of this thread to match that of the java.lang.Thread object.
+   * Set native thread niceness to match the given Java priority.
    *
    * We map a priority value from 1-10 to Linux "nice" values, where lower
    * numbers indicate higher priority.
+   *
+   * Return the niceness value corresponding to the priority.
    */
-  void SetNativePriority(int newPriority);
+  int SetNativePriority(int newPriority) REQUIRES_SHARED(Locks::mutator_lock_);
+
+  /*
+   * Same thing, but niceness is supplied directly.
+   *
+   * Return 0 on success, or errno.
+   */
+  int SetNativeNiceness(int newNiceness) REQUIRES_SHARED(Locks::mutator_lock_);
+
+  /*
+   * Convert Java priority to Posix niceness using palette information.
+   */
+  static int PriorityToNiceness(int priority) { return GetPriorityMap()[priority]; }
+
+  /*
+   * Convert Posix niceness to the closest Java priority using palette information.
+   */
+  static int NicenessToPriority(int niceness);
 
   /*
    * Returns the priority of this thread by querying the system.
@@ -619,7 +655,14 @@ class EXPORT Thread {
    *
    * Returns a value from 1 to 10 (compatible with java.lang.Thread values).
    */
-  int GetNativePriority() const;
+  int GetNativePriority() const { return NicenessToPriority(GetNativeNiceness()); }
+
+  /*
+   * Return Posix niceness instead of Java priority. A very thin wrapper over getpriority().  May
+   * be inconsistent with PaletteSchedSetPriority, especially if that doesn't actually adjust
+   * priorities.
+   */
+  int GetNativeNiceness() const;
 
   // Guaranteed to be non-zero.
   uint32_t GetThreadId() const {
@@ -869,6 +912,28 @@ class EXPORT Thread {
   // should be handled in java code) returns immediately
   void Park(bool is_absolute, int64_t time) REQUIRES_SHARED(Locks::mutator_lock_);
   void Unpark();
+
+  ALWAYS_INLINE void SetVirtualThreadFlags(uint8_t flags_mask, bool enabled) {
+    if (enabled) {
+      virtual_thread_flags = virtual_thread_flags | flags_mask;
+    } else {
+      virtual_thread_flags = virtual_thread_flags & (~flags_mask);
+    }
+  }
+
+  ALWAYS_INLINE bool IsVirtualThreadParking() const {
+    return AreVirtualThreadFlagsEnabled(VirtualThreadFlag::kIsVirtual |
+                                        VirtualThreadFlag::kParking);
+  }
+
+  ALWAYS_INLINE bool IsVirtualThreadUnparking() const {
+    return AreVirtualThreadFlagsEnabled(VirtualThreadFlag::kIsVirtual |
+                                        VirtualThreadFlag::kUnparking);
+  }
+
+  ALWAYS_INLINE bool AreVirtualThreadFlagsEnabled(uint8_t flags_mask) const {
+    return (virtual_thread_flags & flags_mask) == flags_mask;
+  }
 
  private:
   void NotifyLocked(Thread* self) REQUIRES(wait_mutex_);
@@ -1519,6 +1584,11 @@ class EXPORT Thread {
     tlsPtr_.suspend_trigger.store(reinterpret_cast<uintptr_t*>(&tlsPtr_.suspend_trigger),
                                   std::memory_order_relaxed);
   }
+  // Check the suspend trigger value. This is not the way we normally check for suspension, but
+  // can be used to explicitly propagate the value to the suspend check register.
+  bool IsSuspendTriggerSet() {
+    return tlsPtr_.suspend_trigger.load(std::memory_order_relaxed) == nullptr;
+  }
 
   // Trigger a suspend check by making the suspend_trigger_ TLS value an invalid pointer.
   // The next time a suspend check is done, it will load from the value at this address
@@ -1577,7 +1647,8 @@ class EXPORT Thread {
   }
 
   bool IsForceInterpreter() const {
-    return tls32_.force_interpreter_count != 0;
+    return (tls32_.force_interpreter_count != 0) ||
+           AreVirtualThreadFlagsEnabled(VirtualThreadFlag::kIsVirtual);
   }
 
   bool IncrementMakeVisiblyInitializedCounter() {
@@ -1897,6 +1968,8 @@ class EXPORT Thread {
 
   static bool IsAotCompiler();
 
+  static int* GetPriorityMap();
+
   void SetCachedThreadName(const char* name);
 
   // Helper functions to get/set the tls stack pointer variables.
@@ -2200,48 +2273,49 @@ class EXPORT Thread {
   } tls64_;
 
   struct alignas(sizeof(void*)) tls_ptr_sized_values {
-      tls_ptr_sized_values() : card_table(nullptr),
-                               exception(nullptr),
-                               stack_end(nullptr),
-                               managed_stack(),
-                               suspend_trigger(nullptr),
-                               jni_env(nullptr),
-                               tmp_jni_env(nullptr),
-                               self(nullptr),
-                               opeer(nullptr),
-                               jpeer(nullptr),
-                               stack_begin(nullptr),
-                               stack_size(0),
-                               deps_or_stack_trace_sample(),
-                               wait_next(nullptr),
-                               monitor_enter_object(nullptr),
-                               top_handle_scope(nullptr),
-                               class_loader_override(nullptr),
-                               stacked_shadow_frame_record(nullptr),
-                               deoptimization_context_stack(nullptr),
-                               frame_id_to_shadow_frame(nullptr),
-                               name(nullptr),
-                               pthread_self(0),
-                               active_suspendall_barrier(nullptr),
-                               active_suspend1_barriers(nullptr),
-                               thread_local_pos(nullptr),
-                               thread_local_end(nullptr),
-                               thread_local_start(nullptr),
-                               thread_local_limit(nullptr),
-                               thread_local_objects(0),
-                               checkpoint_function(nullptr),
-                               thread_local_alloc_stack_top(nullptr),
-                               thread_local_alloc_stack_end(nullptr),
-                               mutator_lock(nullptr),
-                               flip_function(nullptr),
-                               thread_local_mark_stack(nullptr),
-                               async_exception(nullptr),
-                               top_reflective_handle_scope(nullptr),
-                               method_trace_buffer(nullptr),
-                               method_trace_buffer_curr_entry(nullptr),
-                               thread_exit_flags(nullptr),
-                               last_no_thread_suspension_cause(nullptr),
-                               last_no_transaction_checks_cause(nullptr) {
+    tls_ptr_sized_values()
+        : card_table(nullptr),
+          exception(nullptr),
+          stack_end(nullptr),
+          managed_stack(),
+          suspend_trigger(nullptr),
+          jni_env(nullptr),
+          tmp_jni_env(nullptr),
+          self(nullptr),
+          opeer(nullptr),
+          jpeer(nullptr),
+          stack_begin(nullptr),
+          stack_size(0),
+          deps_or_stack_trace_sample(),
+          wait_next(nullptr),
+          monitor_enter_object(nullptr),
+          top_handle_scope(nullptr),
+          class_loader_override(nullptr),
+          stacked_shadow_frame_record(nullptr),
+          deoptimization_context_stack(nullptr),
+          frame_id_to_shadow_frame(nullptr),
+          name(nullptr),
+          pthread_self(0),
+          active_suspendall_barrier(nullptr),
+          active_suspend1_barriers(nullptr),
+          thread_local_pos(nullptr),
+          thread_local_end(nullptr),
+          thread_local_start(nullptr),
+          thread_local_limit(nullptr),
+          thread_local_objects(0),
+          checkpoint_function(nullptr),
+          thread_local_alloc_stack_top(nullptr),
+          thread_local_alloc_stack_end(nullptr),
+          mutator_lock(nullptr),
+          flip_function(nullptr),
+          thread_local_mark_stack(nullptr),
+          async_exception(nullptr),
+          top_reflective_handle_scope(nullptr),
+          method_trace_buffer(nullptr),
+          method_trace_buffer_curr_entry(nullptr),
+          thread_exit_flags(nullptr),
+          last_no_thread_suspension_cause(nullptr),
+          last_no_transaction_checks_cause(nullptr) {
       std::fill(held_mutexes, held_mutexes + kLockLevelCount, nullptr);
     }
 
@@ -2445,6 +2519,12 @@ class EXPORT Thread {
 
   // Debug disable read barrier count, only is checked for debug builds and only in the runtime.
   uint8_t debug_disallow_read_barrier_ = 0;
+
+  // The flag value should only be accessed by the carrier thread itself.
+  // When a virtual thread is mounted onto this carrier thread, this flag value is
+  // non-zero. See VirtualThreadFlag for the details.
+  // For a regular java thread, this value is always zero.
+  uint8_t virtual_thread_flags = 0;
 
   // Counters used only for debugging and error reporting.  Likely to wrap.  Small to avoid
   // increasing Thread size.

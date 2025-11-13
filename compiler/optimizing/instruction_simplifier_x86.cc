@@ -14,8 +14,10 @@
  */
 
 #include "instruction_simplifier_x86.h"
-#include "instruction_simplifier_x86_shared.h"
+
 #include "code_generator_x86.h"
+#include "instruction_simplifier_x86_shared.h"
+#include "nodes.h"
 
 namespace art HIDDEN {
 
@@ -39,10 +41,10 @@ class InstructionSimplifierX86Visitor final : public HGraphVisitor {
   }
 
   void VisitBasicBlock(HBasicBlock* block) override {
-    for (HInstructionIterator it(block->GetInstructions()); !it.Done(); it.Advance()) {
+    for (HInstructionIteratorPrefetchNext it(block->GetInstructions()); !it.Done(); it.Advance()) {
       HInstruction* instruction = it.Current();
       if (instruction->IsInBlock()) {
-        instruction->Accept(this);
+        Dispatch(instruction);
       }
     }
   }

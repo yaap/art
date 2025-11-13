@@ -1389,11 +1389,12 @@ class ClassLinker {
                           ArtMethod* imt_conflict_method,
                           ObjPtr<mirror::Class> klass,
                           bool create_conflict_tables,
-                          bool ignore_copied_methods,
                           /*out*/bool* new_conflict,
                           /*out*/ArtMethod** imt) REQUIRES_SHARED(Locks::mutator_lock_);
 
   ObjPtr<mirror::IfTable> GetArrayIfTable() REQUIRES_SHARED(Locks::mutator_lock_);
+  LengthPrefixedArray<ArtField>* GetEmptyFieldArray() REQUIRES_SHARED(Locks::mutator_lock_);
+  LengthPrefixedArray<ArtMethod>* GetEmptyMethodArray() REQUIRES_SHARED(Locks::mutator_lock_);
 
   bool OpenAndInitImageDexFiles(const gc::space::ImageSpace* space,
                                 Handle<mirror::ClassLoader> class_loader,

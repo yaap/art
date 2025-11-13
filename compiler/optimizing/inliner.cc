@@ -116,7 +116,7 @@ std::string HInliner::DepthString(int line) const {
 static size_t CountNumberOfInstructions(HGraph* graph) {
   size_t number_of_instructions = 0;
   for (HBasicBlock* block : graph->GetReversePostOrderSkipEntryBlock()) {
-    for (HInstructionIterator instr_it(block->GetInstructions());
+    for (HInstructionIteratorPrefetchNext instr_it(block->GetInstructions());
          !instr_it.Done();
          instr_it.Advance()) {
       ++number_of_instructions;
@@ -140,7 +140,9 @@ bool HInliner::Run() {
   if (codegen_->GetCompilerOptions().GetInlineMaxCodeUnits() == 0) {
     // Inlining effectively disabled.
     return false;
-  } else if (graph_->IsDebuggable()) {
+  }
+
+  if (graph_->IsDebuggable()) {
     // For simplicity, we currently never inline when the graph is debuggable. This avoids
     // doing some logic in the runtime to discover if a method could have been inlined.
     return false;
@@ -1589,6 +1591,30 @@ bool HInliner::IsInliningEncouraged(const HInvoke* invoke_instruction,
     return false;
   }
 
+  if (total_number_of_dex_registers_ > kMaximumNumberOfCumulatedDexRegisters) {
+    // Heuristic: Skip building the callee graph for large environments, as we will likely discard
+    // it later.
+    LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedEnvironmentBudget)
+        << "Method " << method->PrettyMethod()
+        << " is not inlined because its block ends with a throw";
+    return false;
+  }
+
+  // The heuristic below tries to prevent inline attempts where the graph is built but discarded
+  // later due to its size being over the budget. A rough estimate of method size (`HInstruction`
+  // count) is 2/3 of code item size (it is not always true - a large code item may result in just
+  // a few `HInstruction`s, but experiments show such methods are relatively rare). We use factor
+  // 3/4 rather than 2/3 as the experiments show that it results in approximately the same number
+  // of prevented-successful inline attempts, but higher prevented-failed attempts.
+  size_t estimated_size = (accessor.InsnsSizeInCodeUnits() * 3u) / 4u;
+  if (estimated_size > inlining_budget_) {
+    LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedCodeItem)
+        << "Method " << method->PrettyMethod()
+        << " is not inlined because its estimated size based on code item exceeds inlining budget: "
+        << estimated_size << " > " << inlining_budget_;
+    return false;
+  }
+
   return true;
 }
 
@@ -1937,7 +1963,8 @@ void HInliner::SubstituteArguments(HGraph* callee_graph,
   ArtMethod* const resolved_method = callee_graph->GetArtMethod();
   size_t parameter_index = 0;
   bool run_rtp = false;
-  for (HInstructionIterator instructions(callee_graph->GetEntryBlock()->GetInstructions());
+  for (HInstructionIteratorPrefetchNext instructions(
+           callee_graph->GetEntryBlock()->GetInstructions());
        !instructions.Done();
        instructions.Advance()) {
     HInstruction* current = instructions.Current();
@@ -2071,8 +2098,6 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
     return false;
   }
 
-  const bool too_many_registers =
-      total_number_of_dex_registers_ > kMaximumNumberOfCumulatedDexRegisters;
   bool needs_bss_check = false;
   const bool can_encode_in_stack_map = CanEncodeInlinedMethodInStackMap(
       *outer_compilation_unit_.GetDexFile(), resolved_method, codegen_, &needs_bss_check);
@@ -2099,7 +2124,7 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
       }
     }
 
-    for (HInstructionIterator instr_it(block->GetInstructions());
+    for (HInstructionIteratorPrefetchNext instr_it(block->GetInstructions());
          !instr_it.Done();
          instr_it.Advance()) {
       if (++number_of_instructions > inlining_budget_) {
@@ -2111,14 +2136,6 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
       }
       HInstruction* current = instr_it.Current();
       if (current->NeedsEnvironment()) {
-        if (too_many_registers) {
-          LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedEnvironmentBudget)
-              << "Method " << resolved_method->PrettyMethod()
-              << " is not inlined because its caller has reached"
-              << " its environment budget limit.";
-          return false;
-        }
-
         if (!can_encode_in_stack_map) {
           LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedStackMaps)
               << "Method " << resolved_method->PrettyMethod() << " could not be inlined because "
@@ -2342,15 +2359,6 @@ void HInliner::RunOptimizations(HGraph* callee_graph,
   for (size_t i = 0; i < arraysize(optimizations); ++i) {
     HOptimization* optimization = optimizations[i];
     optimization->Run();
-  }
-
-  // Bail early for pathological cases on the environment (for example recursive calls,
-  // or too large environment).
-  if (total_number_of_dex_registers_ > kMaximumNumberOfCumulatedDexRegisters) {
-    LOG_NOTE() << "Calls in " << callee_graph->GetArtMethod()->PrettyMethod()
-             << " will not be inlined because the outer method has reached"
-             << " its environment budget limit.";
-    return;
   }
 
   // Bail early if we know we already are over the limit.

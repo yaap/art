@@ -31,6 +31,7 @@ extern "C" void android_set_application_target_sdk_version(uint32_t version);
 #include "android-base/strings.h"
 #include "arch/instruction_set.h"
 #include "art_method-inl.h"
+#include "base/flags.h"
 #include "base/pointer_size.h"
 #include "base/sdk_version.h"
 #include "class_linker-inl.h"
@@ -429,21 +430,15 @@ static jstring VMRuntime_getCurrentInstructionSet(JNIEnv* env, jclass) {
   return env->NewStringUTF(GetInstructionSetString(kRuntimeISA));
 }
 
-static void VMRuntime_setSystemDaemonThreadPriority([[maybe_unused]] JNIEnv* env,
-                                                    [[maybe_unused]] jclass klass) {
-#ifdef ART_TARGET_ANDROID
-  Thread* self = Thread::Current();
-  DCHECK(self != nullptr);
-  pid_t tid = self->GetTid();
+static int VMRuntime_getSystemDaemonNiceness() {
   // We use a priority lower than the default for the system daemon threads (eg HeapTaskDaemon) to
-  // avoid jank due to CPU contentions between GC and other UI-related threads. b/36631902.
+  // avoid jank due to CPU contention between GC and other UI-related threads. b/36631902.
   // We may use a native priority that doesn't have a corresponding java.lang.Thread-level priority.
-  static constexpr int kSystemDaemonNiceValue = 4;  // priority 124
-  if (setpriority(PRIO_PROCESS, tid, kSystemDaemonNiceValue) != 0) {
-    PLOG(INFO) << *self << " setpriority(PRIO_PROCESS, " << tid << ", "
-               << kSystemDaemonNiceValue << ") failed";
-  }
-#endif
+  // Currently we use a niceness value between those corresponding to priority 4 and 5, which
+  // matches the traditional niceness 4 value with the traditional mapping.
+  static int systemDaemonNiceValue =
+      (6 * Thread::PriorityToNiceness(5) + 4 * Thread::PriorityToNiceness(4) + 5) / 10;
+  return systemDaemonNiceValue;
 }
 
 static void VMRuntime_setDedupeHiddenApiWarnings([[maybe_unused]] JNIEnv* env,
@@ -554,6 +549,11 @@ static jlong VMRuntime_getFullGcCount([[maybe_unused]] JNIEnv* env, [[maybe_unus
   return metrics->FullGcCount()->Value();
 }
 
+static jboolean VMRuntime_isArtTestRwFlagEnabled([[maybe_unused]] JNIEnv* env,
+                                                 [[maybe_unused]] jclass klass) {
+  return is_test_rw_flag_enabled();
+}
+
 static JNINativeMethod gMethods[] = {
     FAST_NATIVE_METHOD(VMRuntime, addressOf, "(Ljava/lang/Object;)J"),
     NATIVE_METHOD(VMRuntime, bootClassPath, "()Ljava/lang/String;"),
@@ -598,7 +598,7 @@ static JNINativeMethod gMethods[] = {
                   "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;I)V"),
     NATIVE_METHOD(VMRuntime, isBootClassPathOnDisk, "(Ljava/lang/String;)Z"),
     NATIVE_METHOD(VMRuntime, getCurrentInstructionSet, "()Ljava/lang/String;"),
-    NATIVE_METHOD(VMRuntime, setSystemDaemonThreadPriority, "()V"),
+    CRITICAL_NATIVE_METHOD(VMRuntime, getSystemDaemonNiceness, "()I"),
     NATIVE_METHOD(VMRuntime, setDedupeHiddenApiWarnings, "(Z)V"),
     NATIVE_METHOD(VMRuntime, setProcessPackageName, "(Ljava/lang/String;)V"),
     NATIVE_METHOD(VMRuntime, setProcessDataDirectory, "(Ljava/lang/String;)V"),
@@ -608,6 +608,7 @@ static JNINativeMethod gMethods[] = {
     NATIVE_METHOD(
         VMRuntime, getBaseApkOptimizationInfo, "()Ldalvik/system/DexFile$OptimizationInfo;"),
     NATIVE_METHOD(VMRuntime, getFullGcCount, "()J"),
+    NATIVE_METHOD(VMRuntime, isArtTestRwFlagEnabled, "()Z"),
 };
 
 void register_dalvik_system_VMRuntime(JNIEnv* env) {

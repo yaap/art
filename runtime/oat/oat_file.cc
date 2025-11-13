@@ -97,7 +97,7 @@
 // dlopen_ext support from bionic.
 #ifdef ART_TARGET_ANDROID
 #include "android/dlext.h"
-#include "nativeloader/dlext_namespaces.h"
+#include "bionic/dlext_namespaces.h"
 #endif
 
 namespace art HIDDEN {
@@ -980,7 +980,9 @@ bool OatFileBase::Setup(int zip_fd,
       // expects this check to happen during oat file setup when the oat file
       // does not contain dex code.
       if (dex_file_checksum != external_dex_files_[i]->GetLocationChecksum()) {
-        CHECK(dex_file_sha1 != external_dex_files_[i]->GetSha1());
+        // The location checksum is affected by all dex files within container,
+        // so one dex file can match exactly by SHA1 and yet location checksum
+        // might differ for it if some other dex file in the container differs.
         *error_msg = ErrorPrintf("dex file checksum 0x%08x does not match"
                                      " checksum 0x%08x of external dex file '%s'",
                                  dex_file_checksum,
@@ -2330,9 +2332,6 @@ void OatDexFile::InitializeTypeLookupTable() {
       // TODO: Clean this up to create the type lookup table after the dex file has been created?
       if (StandardDexFile::IsMagicValid(dex_header->magic_)) {
         dex_data -= dex_header->HeaderOffset();
-      }
-      if (CompactDexFile::IsMagicValid(dex_header->magic_)) {
-        dex_data += dex_header->data_off_;
       }
       lookup_table_ = TypeLookupTable::Open(dex_data, lookup_table_data_, num_class_defs);
     }

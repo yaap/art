@@ -105,8 +105,6 @@ class HX86PackedSwitch final : public HExpression<2> {
     SetRawInputAt(1, method_base);
   }
 
-  bool IsControlFlow() const override { return true; }
-
   int32_t GetStartValue() const { return start_value_; }
 
   int32_t GetNumEntries() const { return num_entries_; }
@@ -138,8 +136,6 @@ class HX86AndNot final : public HBinaryOperation {
        uint32_t dex_pc = kNoDexPc)
       : HBinaryOperation(kX86AndNot, result_type, left, right, SideEffects::None(), dex_pc) {
   }
-
-  bool IsCommutative() const override { return false; }
 
   template <typename T> static T Compute(T x, T y) { return ~x & y; }
 

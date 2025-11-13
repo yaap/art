@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "app_info.h"
+#include "base/length_prefixed_array.h"
 #include "base/locks.h"
 #include "base/macros.h"
 #include "base/mem_map.h"
@@ -740,6 +741,10 @@ class Runtime {
     return is_running_on_memory_tool_;
   }
 
+  uint32_t GetSdkVersion() const {
+    return sdk_version_;
+  }
+
   void SetTargetSdkVersion(uint32_t version) {
     target_sdk_version_ = version;
   }
@@ -759,8 +764,6 @@ class Runtime {
   bool AreExperimentalFlagsEnabled(ExperimentalFlags flags) {
     return (experimental_flags_ & flags) != ExperimentalFlags::kNone;
   }
-
-  void CreateJitCodeCache(bool rwx_memory_allowed);
 
   // Create the JIT and instrumentation and code cache.
   void CreateJit();
@@ -1191,6 +1194,9 @@ class Runtime {
 
   void DCheckNoTransactionCheckAllowed();
 
+  // Only used for testing.
+  void SetSdkVersion(uint32_t version) { sdk_version_ = version; }
+
   // Don't use EXPORT ("default" visibility), because quick_entrypoints_x86.o
   // refers to this symbol and it can't link with R_386_PC32 relocation.
   // A pointer to the active runtime or null.
@@ -1362,6 +1368,18 @@ class Runtime {
 
   // Specifies target SDK version to allow workarounds for certain API levels.
   uint32_t target_sdk_version_;
+
+  // SDK version of the running OS.
+  // Field's value is equal to `ro.build.version.sdk` system property if it stores a valid integer
+  // or 0 (`SdkVersion::kUnset`) otherwise.
+  //
+  // Note that this value does not take into account pre-release SDK codenames. To take into account
+  // pre-release SDK codenames, also check `ro.build.version.codename`.
+  //
+  // For making compile-time decisions, DO NOT rely on this value because it may not be correct in
+  // the Pre-reboot Dexopt case. Instead, use `AssumeValueOptions::SdkInt`-related properties as
+  // provided by `CompilerOptions`.
+  uint32_t sdk_version_;
 
   // ART counterpart for the compat framework (go/compat-framework).
   CompatFramework compat_framework_;
@@ -1549,12 +1567,16 @@ class Runtime {
   metrics::ArtMetrics metrics_;
   std::unique_ptr<metrics::MetricsReporter> metrics_reporter_;
 
-  // Apex versions of boot classpath jars concatenated in a string. The format
-  // is of the type:
-  // '/apex1_version/apex2_version//'
+  // Apex timestamps of boot classpath jars concatenated in a string, one timestamp per jar, in the
+  // same order as the boot classpath. Each entry is a slash (`/`) followed by the mtime of the
+  // owning apex, in seconds, stringified without leading zeros, indicating the apex install time.
+  // - If an apex contributes multiple jars to the boot classpath, the apex timestamp is repeated.
+  // - If an apex is in the factory version, we only encode a slash (`/`) (like the third and fourth
+  //   entries in the example below).
+  // - If a jar is not owned by an apex, we don't encode it at all (not even a slash).
   //
-  // When the apex is the factory version, we don't encode it (for example in
-  // the third entry in the example above).
+  // The format is of the type:
+  // '/apex_timestamp_1/apex_timestamp_2//'
   std::string apex_versions_;
 
   // The info about the application code paths.

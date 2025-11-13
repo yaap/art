@@ -16,6 +16,7 @@
 
 #include "licm.h"
 
+#include "loop_information-inl.h"
 #include "side_effects_analysis.h"
 
 namespace art HIDDEN {
@@ -81,8 +82,16 @@ static void UpdateLoopPhisIn(ArenaAllocator* allocator,
 }
 
 bool LICM::Run() {
+  if (!graph_->HasLoops()) {
+    // Nothing to do.
+    return false;
+  }
+
   bool didLICM = false;
-  DCHECK(side_effects_.HasRun());
+  SideEffectsAnalysis side_effects(graph_);
+  side_effects.Run();
+
+  DCHECK(side_effects.HasRun());
 
   // Only used during debug.
   ArenaBitVector* visited = nullptr;
@@ -101,11 +110,10 @@ bool LICM::Run() {
     }
 
     HLoopInformation* loop_info = block->GetLoopInformation();
-    SideEffects loop_effects = side_effects_.GetLoopEffects(block);
+    SideEffects loop_effects = side_effects.GetLoopEffects(block);
     HBasicBlock* pre_header = loop_info->GetPreHeader();
 
-    for (HBlocksInLoopIterator it_loop(*loop_info); !it_loop.Done(); it_loop.Advance()) {
-      HBasicBlock* inner = it_loop.Current();
+    for (HBasicBlock* inner : loop_info->GetBlocks()) {
       DCHECK(inner->IsInLoop());
       if (inner->GetLoopInformation() != loop_info) {
         // Thanks to post order visit, inner loops were already visited.
@@ -128,7 +136,7 @@ bool LICM::Run() {
       // instruction that is not hoisted stops this optimization. Non-throwing instructions,
       // on the other hand, can still be hoisted.
       bool found_first_non_hoisted_visible_instruction_in_loop = !inner->IsLoopHeader();
-      for (HInstructionIterator inst_it(inner->GetInstructions());
+      for (HInstructionIteratorPrefetchNext inst_it(inner->GetInstructions());
            !inst_it.Done();
            inst_it.Advance()) {
         HInstruction* instruction = inst_it.Current();

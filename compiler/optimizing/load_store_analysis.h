@@ -39,12 +39,14 @@ class ReferenceInfo : public DeletableArenaObject<kArenaAllocLSA> {
         position_(pos),
         is_singleton_(true),
         is_singleton_and_not_returned_(true),
-        is_singleton_and_not_deopt_visible_(true) {
+        is_singleton_and_not_deopt_visible_(true),
+        is_singleton_and_not_read_by_invoke_(true) {
     CalculateEscape(reference_,
                     nullptr,
                     &is_singleton_,
                     &is_singleton_and_not_returned_,
-                    &is_singleton_and_not_deopt_visible_);
+                    &is_singleton_and_not_deopt_visible_,
+                    &is_singleton_and_not_read_by_invoke_);
   }
 
   HInstruction* GetReference() const {
@@ -62,18 +64,14 @@ class ReferenceInfo : public DeletableArenaObject<kArenaAllocLSA> {
     return is_singleton_;
   }
 
-  // Returns true if reference_ is a singleton and not returned to the caller or
-  // used as an environment local of an HDeoptimize instruction.
-  // The allocation and stores into reference_ may be eliminated for such cases.
   bool IsSingletonAndRemovable() const {
-    return is_singleton_and_not_returned_ && is_singleton_and_not_deopt_visible_;
+    return is_singleton_and_not_returned_ &&
+        is_singleton_and_not_deopt_visible_ &&
+        is_singleton_and_not_read_by_invoke_;
   }
 
-  // Returns true if reference_ is a singleton and returned to the caller or
-  // used as an environment local of an HDeoptimize instruction.
   bool IsSingletonAndNonRemovable() const {
-    return is_singleton_ &&
-           (!is_singleton_and_not_returned_ || !is_singleton_and_not_deopt_visible_);
+    return is_singleton_ && !IsSingletonAndRemovable();
   }
 
  private:
@@ -88,6 +86,8 @@ class ReferenceInfo : public DeletableArenaObject<kArenaAllocLSA> {
   bool is_singleton_and_not_returned_;
   // Is singleton and not used as an environment local of HDeoptimize.
   bool is_singleton_and_not_deopt_visible_;
+  // Is singleton and no invocation is reading it.
+  bool is_singleton_and_not_read_by_invoke_;
 
   DISALLOW_COPY_AND_ASSIGN(ReferenceInfo);
 };
@@ -458,7 +458,7 @@ class HeapLocationCollector final : public HGraphVisitor {
     }
   }
 
-  void VisitFieldAccess(HFieldAccess* instruction) override {
+  void HandleFieldAccess(HFieldAccess* instruction) {
     HInstruction* ref = instruction->InputAt(0);
     const FieldInfo& field_info = instruction->GetFieldInfo();
     DataType::Type type = field_info.GetFieldType();
@@ -489,22 +489,22 @@ class HeapLocationCollector final : public HGraphVisitor {
 
   void VisitInstanceFieldGet(HInstanceFieldGet* instruction) override {
     CreateReferenceInfoForReferenceType(instruction);
-    VisitFieldAccess(instruction);
+    HandleFieldAccess(instruction);
   }
 
   void VisitInstanceFieldSet(HInstanceFieldSet* instruction) override {
     has_heap_stores_ = true;
-    VisitFieldAccess(instruction);
+    HandleFieldAccess(instruction);
   }
 
   void VisitStaticFieldGet(HStaticFieldGet* instruction) override {
     CreateReferenceInfoForReferenceType(instruction);
-    VisitFieldAccess(instruction);
+    HandleFieldAccess(instruction);
   }
 
   void VisitStaticFieldSet(HStaticFieldSet* instruction) override {
     has_heap_stores_ = true;
-    VisitFieldAccess(instruction);
+    HandleFieldAccess(instruction);
   }
 
   // We intentionally don't collect HUnresolvedInstanceField/HUnresolvedStaticField accesses

@@ -414,14 +414,10 @@ class SchedulingLatencyVisitor : public HGraphDelegateVisitor {
     UNREACHABLE();
   }
 
-  void Visit(HInstruction* instruction) {
-    instruction->Accept(this);
-  }
-
   void CalculateLatency(SchedulingNode* node) {
     // By default nodes have no internal latency.
     last_visited_internal_latency_ = 0;
-    Visit(node->GetInstruction());
+    Dispatch(node->GetInstruction());
   }
 
   uint32_t GetLastVisitedLatency() const { return last_visited_latency_; }
@@ -524,7 +520,8 @@ class HScheduler {
       LatencyVisitor* latency_visitor) ALWAYS_INLINE {
     SchedulingGraph scheduling_graph(allocator, heap_location_collector);
     ScopedArenaVector<SchedulingNode*> scheduling_nodes(allocator->Adapter(kArenaAllocScheduler));
-    for (HBackwardInstructionIterator it(block->GetInstructions()); !it.Done(); it.Advance()) {
+    for (HBackwardInstructionIteratorPrefetchNext it(block->GetInstructions()); !it.Done();
+         it.Advance()) {
       HInstruction* instruction = it.Current();
       CHECK_EQ(instruction->GetBlock(), block)
           << instruction->DebugName()

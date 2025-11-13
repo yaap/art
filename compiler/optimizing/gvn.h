@@ -18,27 +18,20 @@
 #define ART_COMPILER_OPTIMIZING_GVN_H_
 
 #include "base/macros.h"
-#include "nodes.h"
 #include "optimization.h"
 
 namespace art HIDDEN {
 
-class SideEffectsAnalysis;
-
 class GVNOptimization : public HOptimization {
  public:
-  GVNOptimization(HGraph* graph,
-                  const SideEffectsAnalysis& side_effects,
-                  const char* pass_name = kGlobalValueNumberingPassName)
-      : HOptimization(graph, pass_name), side_effects_(side_effects) {}
+  explicit GVNOptimization(HGraph* graph, const char* pass_name = kGlobalValueNumberingPassName)
+      : HOptimization(graph, pass_name) {}
 
   bool Run() override;
 
   static constexpr const char* kGlobalValueNumberingPassName = "GVN";
 
  private:
-  const SideEffectsAnalysis& side_effects_;
-
   DISALLOW_COPY_AND_ASSIGN(GVNOptimization);
 };
 

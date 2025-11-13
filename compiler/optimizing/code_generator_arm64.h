@@ -486,7 +486,7 @@ class InstructionCodeGeneratorARM64 : public InstructionCodeGenerator {
 class LocationsBuilderARM64 : public HGraphVisitor {
  public:
   LocationsBuilderARM64(HGraph* graph, CodeGeneratorARM64* codegen)
-      : HGraphVisitor(graph), codegen_(codegen) {}
+      : HGraphVisitor(graph), codegen_(codegen), allocator_(graph->GetAllocator()) {}
 
 #define DECLARE_VISIT_INSTRUCTION(name, super) \
   void Visit##name(H##name* instr) override;
@@ -511,6 +511,7 @@ class LocationsBuilderARM64 : public HGraphVisitor {
   void HandleShift(HBinaryOperation* instr);
 
   CodeGeneratorARM64* const codegen_;
+  ArenaAllocator* const allocator_;
   InvokeDexCallingConventionVisitorARM64 parameter_visitor_;
 
   DISALLOW_COPY_AND_ASSIGN(LocationsBuilderARM64);
@@ -658,6 +659,12 @@ class CodeGeneratorARM64 : public CodeGenerator {
                      const CompilerOptions& compiler_options,
                      OptimizingCompilerStats* stats = nullptr);
   virtual ~CodeGeneratorARM64() {}
+
+  static void GenerateFrame(Arm64Assembler* assembler,
+                            int32_t frame_size,
+                            vixl::aarch64::CPURegList preserved_core_registers,
+                            vixl::aarch64::CPURegList preserved_fp_registers,
+                            bool requires_current_method);
 
   void GenerateFrameEntry() override;
   void GenerateFrameExit() override;

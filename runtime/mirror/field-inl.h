@@ -23,6 +23,9 @@
 #include "class-alloc-inl.h"
 #include "class_root-inl.h"
 #include "object-inl.h"
+#include "base/sdk_version.h"
+#include "runtime.h"
+#include "well_known_classes.h"
 
 namespace art HIDDEN {
 
@@ -30,6 +33,50 @@ namespace mirror {
 
 inline ObjPtr<mirror::Class> Field::GetDeclaringClass() REQUIRES_SHARED(Locks::mutator_lock_) {
   return GetFieldObject<Class>(OFFSET_OF_OBJECT_MEMBER(Field, declaring_class_));
+}
+
+inline bool Field::IsMonotonic() REQUIRES_SHARED(Locks::mutator_lock_) {
+  if (!IsFinal()) {
+    return false;
+  }
+
+  ObjPtr<mirror::Class> declaring_class = GetDeclaringClass();
+  DCHECK(declaring_class != nullptr);
+
+  if (declaring_class->IsRecordClass()) {
+    return true;
+  }
+
+  // Write-protected fields are `static final`, but can be modified nevertheless.
+  if (IsWriteProtected()) {
+    return false;
+  }
+
+  // Before and on Android B any field could be overwritten using reflection with final fields in
+  // record classes being the only exception. For compatibility purposes allow apps targeting B
+  // or an older release to overwrite such fields.
+  uint32_t target_sdk_version = Runtime::Current()->GetTargetSdkVersion();
+  if (IsSdkVersionSetAndAtMost(target_sdk_version, SdkVersion::kB)) {
+    return false;
+  }
+
+  // Make sure that OEMs code in bootclasspath won't be affected after ART module update.
+  uint32_t sdk_version = Runtime::Current()->GetSdkVersion();
+  if (IsSdkVersionSetAndAtMost(sdk_version, SdkVersion::kB)) {
+    return false;
+  }
+
+  return IsStatic() && IsFinal();
+}
+
+inline bool Field::IsWriteProtected() {
+  ArtField* art_field = GetArtField();
+  if (art_field == WellKnownClasses::java_lang_System_in ||
+      art_field == WellKnownClasses::java_lang_System_out ||
+      art_field == WellKnownClasses::java_lang_System_err) {
+    return true;
+  }
+  return false;
 }
 
 inline Primitive::Type Field::GetTypeAsPrimitiveType() {

@@ -17,15 +17,19 @@
 #ifndef ART_COMPILER_OPTIMIZING_OPTIMIZATION_H_
 #define ART_COMPILER_OPTIMIZING_OPTIMIZATION_H_
 
+#include <string_view>
+
+#include "base/arena_containers.h"
 #include "base/arena_object.h"
 #include "base/macros.h"
-#include "nodes.h"
 #include "optimizing_compiler_stats.h"
 
 namespace art HIDDEN {
 
 class CodeGenerator;
 class DexCompilationUnit;
+class HGraph;
+class OptimizingCompilerStats;
 
 /**
  * Abstraction to implement an optimization pass.
@@ -84,7 +88,6 @@ enum class OptimizationPass {
   kLoopOptimization,
   kReferenceTypePropagation,
   kScheduling,
-  kSideEffectsAnalysis,
   kWriteBarrierElimination,
 #ifdef ART_ENABLE_CODEGEN_arm
   kInstructionSimplifierArm,
@@ -115,23 +118,23 @@ enum class OptimizationPass {
 const char* OptimizationPassName(OptimizationPass pass);
 
 // Lookup optimization pass by name.
-OptimizationPass OptimizationPassByName(const std::string& pass_name);
+OptimizationPass OptimizationPassByName(std::string_view pass_name);
 
 // Optimization definition consisting of an optimization pass
 // an optional alternative name (nullptr denotes default), and
 // an optional pass dependence (kNone denotes no dependence).
 struct OptimizationDef {
-  OptimizationDef(OptimizationPass p, const char* pn, OptimizationPass d)
-      : pass(p), pass_name(pn), depends_on(d) {}
+  constexpr OptimizationDef(OptimizationPass p, const char* pn, OptimizationPass d)
+      : pass(p), depends_on(d), pass_name(pn) {}
   OptimizationPass pass;
-  const char* pass_name;
   OptimizationPass depends_on;
+  const char* pass_name;
 };
 
 // Helper method for optimization definition array entries.
-inline OptimizationDef OptDef(OptimizationPass pass,
-                              const char* pass_name = nullptr,
-                              OptimizationPass depends_on = OptimizationPass::kNone) {
+constexpr OptimizationDef OptDef(OptimizationPass pass,
+                                 const char* pass_name = nullptr,
+                                 OptimizationPass depends_on = OptimizationPass::kNone) {
   return OptimizationDef(pass, pass_name, depends_on);
 }
 

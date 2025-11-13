@@ -247,10 +247,18 @@ bool CodeGenerator::GoesToNextBlock(HBasicBlock* current, HBasicBlock* next) con
   return GetNextBlockToEmit() == FirstNonEmptyBlock(next);
 }
 
+// Returns true if the `block` emits nothing but a jump.
+inline bool IsSingleJump(HBasicBlock* block) {
+  HLoopInformation* loop_info = block->GetLoopInformation();
+  return (block->IsSingleGoto() || block->IsSingleTryBoundary())
+         // Back edges generate a suspend check.
+         && (loop_info == nullptr || !loop_info->IsBackEdge(*block));
+}
+
 HBasicBlock* CodeGenerator::GetNextBlockToEmit() const {
   for (size_t i = current_block_index_ + 1; i < block_order_->size(); ++i) {
     HBasicBlock* block = (*block_order_)[i];
-    if (!block->IsSingleJump()) {
+    if (!IsSingleJump(block)) {
       return block;
     }
   }
@@ -258,7 +266,7 @@ HBasicBlock* CodeGenerator::GetNextBlockToEmit() const {
 }
 
 HBasicBlock* CodeGenerator::FirstNonEmptyBlock(HBasicBlock* block) const {
-  while (block->IsSingleJump()) {
+  while (IsSingleJump(block)) {
     block = block->GetSuccessors()[0];
   }
   return block;
@@ -343,13 +351,15 @@ void CodeGenerator::Compile() {
     // Don't generate code for an empty block. Its predecessors will branch to its successor
     // directly. Also, the label of that block will not be emitted, so this helps catch
     // errors where we reference that label.
-    if (block->IsSingleJump()) continue;
+    if (IsSingleJump(block)) {
+      continue;
+    }
     Bind(block);
     // This ensures that we have correct native line mapping for all native instructions.
     // It is necessary to make stepping over a statement work. Otherwise, any initial
     // instructions (e.g. moves) would be assumed to be the start of next statement.
     MaybeRecordNativeDebugInfoForBlockEntry(block->GetDexPc());
-    for (HInstructionIterator it(block->GetInstructions()); !it.Done(); it.Advance()) {
+    for (HInstructionIteratorPrefetchNext it(block->GetInstructions()); !it.Done(); it.Advance()) {
       HInstruction* current = it.Current();
       if (current->HasEnvironment()) {
         // Catch StackMaps are dealt with later on in `RecordCatchBlockInfo`.
@@ -365,7 +375,7 @@ void CodeGenerator::Compile() {
       }
       DisassemblyScope disassembly_scope(current, *this);
       DCHECK(CheckTypeConsistency(current));
-      current->Accept(instruction_visitor);
+      instruction_visitor->Dispatch(current);
     }
   }
 
@@ -434,8 +444,8 @@ void CodeGenerator::InitializeCodeGeneration(size_t number_of_spill_slots,
 void CodeGenerator::CreateCommonInvokeLocationSummary(
     HInvoke* invoke, InvokeDexCallingConventionVisitor* visitor) {
   ArenaAllocator* allocator = invoke->GetBlock()->GetGraph()->GetAllocator();
-  LocationSummary* locations = new (allocator) LocationSummary(invoke,
-                                                               LocationSummary::kCallOnMainOnly);
+  LocationSummary* locations =
+      LocationSummary::Create(allocator, invoke, LocationSummary::kCallOnMainOnly);
 
   for (size_t i = 0; i < invoke->GetNumberOfArguments(); i++) {
     HInstruction* input = invoke->InputAt(i);
@@ -592,7 +602,7 @@ void CodeGenerator::CreateStringBuilderAppendLocations(HStringBuilderAppend* ins
                                                        Location out) {
   ArenaAllocator* allocator = GetGraph()->GetAllocator();
   LocationSummary* locations =
-      new (allocator) LocationSummary(instruction, LocationSummary::kCallOnMainOnly);
+      LocationSummary::Create(allocator, instruction, LocationSummary::kCallOnMainOnly);
   locations->SetOut(out);
   instruction->GetLocations()->SetInAt(instruction->FormatIndex(),
                                        Location::ConstantLocation(instruction->GetFormat()));
@@ -647,7 +657,7 @@ void CodeGenerator::CreateUnresolvedFieldLocationSummary(
 
   ArenaAllocator* allocator = GetGraph()->GetAllocator();
   LocationSummary* locations =
-      new (allocator) LocationSummary(field_access, LocationSummary::kCallOnMainOnly);
+      LocationSummary::Create(allocator, field_access, LocationSummary::kCallOnMainOnly);
 
   locations->AddTemp(calling_convention.GetFieldIndexLocation());
 
@@ -765,8 +775,9 @@ void CodeGenerator::CreateLoadClassRuntimeCallLocationSummary(HLoadClass* cls,
                                                               Location runtime_return_location) {
   DCHECK_EQ(cls->GetLoadKind(), HLoadClass::LoadKind::kRuntimeCall);
   DCHECK_EQ(cls->InputCount(), 1u);
-  LocationSummary* locations = new (cls->GetBlock()->GetGraph()->GetAllocator()) LocationSummary(
-      cls, LocationSummary::kCallOnMainOnly);
+  ArenaAllocator* allocator = cls->GetBlock()->GetGraph()->GetAllocator();
+  LocationSummary* locations =
+      LocationSummary::Create(allocator, cls, LocationSummary::kCallOnMainOnly);
   locations->SetInAt(0, Location::NoLocation());
   locations->AddTemp(runtime_type_index_location);
   locations->SetOut(runtime_return_location);
@@ -791,9 +802,9 @@ void CodeGenerator::CreateLoadMethodHandleRuntimeCallLocationSummary(
     Location runtime_proto_index_location,
     Location runtime_return_location) {
   DCHECK_EQ(method_handle->InputCount(), 1u);
+  ArenaAllocator* allocator = method_handle->GetBlock()->GetGraph()->GetAllocator();
   LocationSummary* locations =
-      new (method_handle->GetBlock()->GetGraph()->GetAllocator()) LocationSummary(
-          method_handle, LocationSummary::kCallOnMainOnly);
+      LocationSummary::Create(allocator, method_handle, LocationSummary::kCallOnMainOnly);
   locations->SetInAt(0, Location::NoLocation());
   locations->AddTemp(runtime_proto_index_location);
   locations->SetOut(runtime_return_location);
@@ -811,9 +822,9 @@ void CodeGenerator::CreateLoadMethodTypeRuntimeCallLocationSummary(
     Location runtime_proto_index_location,
     Location runtime_return_location) {
   DCHECK_EQ(method_type->InputCount(), 1u);
+  ArenaAllocator* allocator = method_type->GetBlock()->GetGraph()->GetAllocator();
   LocationSummary* locations =
-      new (method_type->GetBlock()->GetGraph()->GetAllocator()) LocationSummary(
-          method_type, LocationSummary::kCallOnMainOnly);
+      LocationSummary::Create(allocator, method_type, LocationSummary::kCallOnMainOnly);
   locations->SetInAt(0, Location::NoLocation());
   locations->AddTemp(runtime_proto_index_location);
   locations->SetOut(runtime_return_location);
@@ -913,7 +924,7 @@ void CodeGenerator::AllocateLocations(HInstruction* instruction) {
   for (HEnvironment* env = instruction->GetEnvironment(); env != nullptr; env = env->GetParent()) {
     env->AllocateLocations(allocator);
   }
-  instruction->Accept(GetLocationBuilder());
+  GetLocationBuilder()->Dispatch(instruction);
   DCHECK(CheckTypeConsistency(instruction));
   LocationSummary* locations = instruction->GetLocations();
   if (!instruction->IsSuspendCheckEntry()) {
@@ -1169,19 +1180,24 @@ void CodeGenerator::RecordPcInfo(HInstruction* instruction,
   DCHECK_IMPLIES(!native_debug_info, instruction->HasEnvironment()) << *instruction;
 
   LocationSummary* locations = instruction->GetLocations();
-  uint32_t register_mask = locations->GetRegisterMask();
-  DCHECK_EQ(register_mask & ~locations->GetLiveRegisters()->GetCoreRegisters(), 0u);
-  if (locations->OnlyCallsOnSlowPath()) {
-    // In case of slow path, we currently set the location of caller-save registers
-    // to register (instead of their stack location when pushed before the slow-path
-    // call). Therefore register_mask contains both callee-save and caller-save
-    // registers that hold objects. We must remove the spilled caller-save from the
-    // mask, since they will be overwritten by the callee.
-    uint32_t spills = GetSlowPathSpills(locations, /* core_registers= */ true);
-    register_mask &= ~spills;
-  } else {
-    // The register mask must be a subset of callee-save registers.
-    DCHECK_EQ(register_mask & core_callee_save_mask_, register_mask);
+  uint32_t register_mask = 0u;
+  BitVector* stack_mask = nullptr;
+  if (locations->CanCall()) {
+    stack_mask = locations->GetStackMask();
+    register_mask = locations->GetRegisterMask();
+    DCHECK_EQ(register_mask & ~locations->GetLiveRegisters()->GetCoreRegisters(), 0u);
+    if (locations->OnlyCallsOnSlowPath()) {
+      // In case of slow path, we currently set the location of caller-save registers
+      // to register (instead of their stack location when pushed before the slow-path
+      // call). Therefore register_mask contains both callee-save and caller-save
+      // registers that hold objects. We must remove the spilled caller-save from the
+      // mask, since they will be overwritten by the callee.
+      uint32_t spills = GetSlowPathSpills(locations, /* core_registers= */ true);
+      register_mask &= ~spills;
+    } else {
+      // The register mask must be a subset of callee-save registers.
+      DCHECK_EQ(register_mask & core_callee_save_mask_, register_mask);
+    }
   }
 
   uint32_t outer_dex_pc = dex_pc;
@@ -1207,12 +1223,8 @@ void CodeGenerator::RecordPcInfo(HInstruction* instruction,
       : (osr ? StackMap::Kind::OSR : StackMap::Kind::Default);
   bool needs_vreg_info = NeedsVregInfo(instruction, osr);
   StackMapStream* stack_map_stream = GetStackMapStream();
-  stack_map_stream->BeginStackMapEntry(outer_dex_pc,
-                                       native_pc,
-                                       register_mask,
-                                       locations->GetStackMask(),
-                                       kind,
-                                       needs_vreg_info);
+  stack_map_stream->BeginStackMapEntry(
+      outer_dex_pc, native_pc, register_mask, stack_mask, kind, needs_vreg_info);
 
   EmitEnvironment(environment, slow_path, needs_vreg_info);
   stack_map_stream->EndStackMapEntry();
@@ -1588,7 +1600,7 @@ LocationSummary* CodeGenerator::CreateThrowingSlowPathLocations(HInstruction* in
     call_kind = LocationSummary::kCallOnSlowPath;
   }
   LocationSummary* locations =
-      new (GetGraph()->GetAllocator()) LocationSummary(instruction, call_kind);
+      LocationSummary::Create(GetGraph()->GetAllocator(), instruction, call_kind);
   if (can_throw_into_catch_block && compiler_options_.GetImplicitNullChecks()) {
     locations->SetCustomSlowPathCallerSaves(caller_saves);  // Default: no caller-save registers.
   }
@@ -1835,9 +1847,8 @@ LocationSummary* CodeGenerator::CreateSystemArrayCopyLocationSummary(
   }
 
   ArenaAllocator* allocator = invoke->GetBlock()->GetGraph()->GetAllocator();
-  LocationSummary* locations = new (allocator) LocationSummary(invoke,
-                                                               LocationSummary::kCallOnSlowPath,
-                                                               kIntrinsified);
+  LocationSummary* locations =
+      LocationSummary::Create(allocator, invoke, LocationSummary::kCallOnSlowPath, kIntrinsified);
   // arraycopy(Object src, int src_pos, Object dest, int dest_pos, int length).
   locations->SetInAt(0, Location::RequiresRegister());
   locations->SetInAt(1, Location::RegisterOrConstant(invoke->InputAt(1)));

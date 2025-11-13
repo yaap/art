@@ -17,6 +17,7 @@
 #ifndef ART_COMPILER_OPTIMIZING_LOCATIONS_H_
 #define ART_COMPILER_OPTIMIZING_LOCATIONS_H_
 
+#include "base/arena_bit_vector.h"
 #include "base/arena_containers.h"
 #include "base/arena_object.h"
 #include "base/array_ref.h"
@@ -542,20 +543,45 @@ class LocationSummary : public ArenaObject<kArenaAllocLocationSummary> {
     kCallOnMainOnly
   };
 
-  explicit LocationSummary(HInstruction* instruction,
-                           CallKind call_kind = kNoCall,
-                           bool intrinsified = false);
+  // The `Create` function is parametrized by the instruction type to allow devirtualizing
+  // the underlying virtual call of the inlineable `instruction->InputCount()`.
+  // Note: Making this template-parameter-dependent also helps us avoid `#include "nodes.h"`
+  // which would lead to a circular dependency we would have to resolve.
+  template <typename InstructionType>
+  ALWAYS_INLINE
+  static LocationSummary* Create(ArenaAllocator* allocator,
+                                 InstructionType* instruction,
+                                 CallKind call_kind,
+                                 bool intrinsified = false) {
+    return CreateImpl(allocator, instruction, call_kind, intrinsified, instruction->InputCount());
+  }
+
+  template <typename InstructionType>
+  ALWAYS_INLINE
+  static LocationSummary* CreateNoCall(ArenaAllocator* allocator,
+                                       InstructionType* instruction,
+                                       bool intrinsified = false) {
+    return Create(allocator, instruction, kNoCall, intrinsified);
+  }
+
+  ArrayRef<Location> Inputs() {
+    return ArrayRef<Location>(&inputs_[0], input_count_);
+  }
+
+  ArrayRef<const Location> Inputs() const {
+    return ArrayRef<const Location>(&inputs_[0], input_count_);
+  }
 
   void SetInAt(uint32_t at, Location location) {
-    inputs_[at] = location;
+    Inputs()[at] = location;
   }
 
   Location InAt(uint32_t at) const {
-    return inputs_[at];
+    return Inputs()[at];
   }
 
   size_t GetInputCount() const {
-    return inputs_.size();
+    return input_count_;
   }
 
   // Set the output location.  Argument `overlaps` tells whether the
@@ -636,53 +662,65 @@ class LocationSummary : public ArenaObject<kArenaAllocLocationSummary> {
 
   void SetCustomSlowPathCallerSaves(const RegisterSet& caller_saves) {
     DCHECK(OnlyCallsOnSlowPath());
-    has_custom_slow_path_calling_convention_ = true;
-    custom_slow_path_caller_saves_ = caller_saves;
+    call_data_->has_custom_slow_path_calling_convention = true;
+    call_data_->custom_slow_path_caller_saves = caller_saves;
   }
 
   bool HasCustomSlowPathCallingConvention() const {
-    return has_custom_slow_path_calling_convention_;
+    // Meaningful only for `kCallOnSlowPath`. Allow checking also for `kCallOnMainAndSlowPath`.
+    DCHECK(CallsOnSlowPath());
+    DCHECK_IMPLIES(CallsOnMainAndSlowPath(), !call_data_->has_custom_slow_path_calling_convention);
+    return call_data_->has_custom_slow_path_calling_convention;
   }
 
   const RegisterSet& GetCustomSlowPathCallerSaves() const {
     DCHECK(HasCustomSlowPathCallingConvention());
-    return custom_slow_path_caller_saves_;
+    return call_data_->custom_slow_path_caller_saves;
   }
 
   void SetStackBit(uint32_t index) {
-    stack_mask_->SetBit(index);
+    DCHECK(CanCall());
+    call_data_->stack_mask.SetBit(index);
   }
 
   void ClearStackBit(uint32_t index) {
-    stack_mask_->ClearBit(index);
+    DCHECK(CanCall());
+    call_data_->stack_mask.ClearBit(index);
   }
 
   void SetRegisterBit(uint32_t reg_id) {
-    register_mask_ |= (1 << reg_id);
+    DCHECK(CanCall());
+    call_data_->register_mask |= (1 << reg_id);
   }
 
   uint32_t GetRegisterMask() const {
-    return register_mask_;
+    DCHECK(CanCall());
+    return call_data_->register_mask;
   }
 
   bool RegisterContainsObject(uint32_t reg_id) {
-    return RegisterSet::Contains(register_mask_, reg_id);
+    DCHECK(CanCall());
+    return RegisterSet::Contains(call_data_->register_mask, reg_id);
   }
 
   void AddLiveRegister(Location location) {
-    live_registers_.Add(location);
+    DCHECK(CanCall());
+    call_data_->live_registers.Add(location);
   }
 
   BitVector* GetStackMask() const {
-    return stack_mask_;
+    DCHECK(CanCall());
+    return &call_data_->stack_mask;
   }
 
   RegisterSet* GetLiveRegisters() {
-    return &live_registers_;
+    DCHECK(CanCall());
+    return &call_data_->live_registers;
   }
 
   size_t GetNumberOfLiveRegisters() const {
-    return live_registers_.GetNumberOfRegisters();
+    DCHECK(CanCall());
+    return call_data_->live_registers.GetNumberOfRegisters();
   }
 
   bool OutputUsesSameAs(uint32_t input_index) const {
@@ -692,7 +730,7 @@ class LocationSummary : public ArenaObject<kArenaAllocLocationSummary> {
   }
 
   bool IsFixedInput(uint32_t input_index) const {
-    Location input = inputs_[input_index];
+    Location input = Inputs()[input_index];
     return input.IsRegister()
         || input.IsFpuRegister()
         || input.IsPair()
@@ -709,36 +747,57 @@ class LocationSummary : public ArenaObject<kArenaAllocLocationSummary> {
   }
 
  private:
+  struct CallData : public ArenaObject<kArenaAllocLocationSummary> {
+   public:
+    explicit CallData(ArenaAllocator* allocator);
+
+    // Mask of objects that live in the stack.
+    ArenaBitVector stack_mask;
+
+    // Whether the slow path has default or custom calling convention.
+    bool has_custom_slow_path_calling_convention;
+
+    // Mask of objects that live in register.
+    uint32_t register_mask;
+
+    // Registers that are in use at this position.
+    RegisterSet live_registers;
+
+    // Custom slow path caller saves. Valid only if indicated by
+    // `has_custom_slow_path_calling_convention`.
+    RegisterSet custom_slow_path_caller_saves;
+  };
+
   LocationSummary(HInstruction* instruction,
                   CallKind call_kind,
                   bool intrinsified,
-                  ArenaAllocator* allocator);
+                  ArenaAllocator* allocator,
+                  size_t input_count);
 
-  ArrayRef<Location> inputs_;
+  static LocationSummary* CreateImpl(ArenaAllocator* allocator,
+                                     HInstruction* instruction,
+                                     CallKind call_kind,
+                                     bool intrinsified,
+                                     size_t input_count);
+
   ArenaVector<Location> temps_;
   Location output_;
 
-  // Mask of objects that live in the stack.
-  BitVector* stack_mask_;
+  // Data asociated with a call, null for `kNoCall`.
+  CallData* call_data_;
 
   const CallKind call_kind_;
   // Whether these are locations for an intrinsified call.
   const bool intrinsified_;
-  // Whether the slow path has default or custom calling convention.
-  bool has_custom_slow_path_calling_convention_;
   // Whether the output overlaps with any of the inputs. If it overlaps, then it cannot
   // share the same register as the inputs.
   Location::OutputOverlap output_overlaps_;
 
-  // Mask of objects that live in register.
-  uint32_t register_mask_;
+  // The number of inputs.
+  const uint32_t input_count_;
 
-  // Registers that are in use at this position.
-  RegisterSet live_registers_;
-
-  // Custom slow path caller saves. Valid only if indicated by
-  // `has_custom_slow_path_calling_convention_`.
-  RegisterSet custom_slow_path_caller_saves_;
+  // Inputs array allocated together with the `LocationSummary`.
+  Location inputs_[0];
 
   ART_FRIEND_TEST(RegisterAllocatorTest, ExpectedInRegisterHint);
   ART_FRIEND_TEST(RegisterAllocatorTest, SameAsFirstInputHint);

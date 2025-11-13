@@ -34,6 +34,12 @@ namespace art HIDDEN {
 class ArtMethod;
 class FaultHandler;
 
+namespace gc {
+namespace collector {
+class MarkCompact;
+}  // namespace collector
+}  // namespace gc
+
 class FaultManager {
  public:
   FaultManager();
@@ -55,6 +61,9 @@ class FaultManager {
   // Try to handle a SIGBUS fault, returns true if successful.
   bool HandleSigbusFault(int sig, siginfo_t* info, void* context);
 
+  // Try to handle a SIGSYS fault, returns true if successful.
+  bool HandleSigsysFault(int sig, siginfo_t* info, void* context);
+
   // Added handlers are owned by the fault handler and will be freed on Shutdown().
   EXPORT void AddHandler(FaultHandler* handler, bool generated_code);
   EXPORT void RemoveHandler(FaultHandler* handler);
@@ -74,6 +83,14 @@ class FaultManager {
   // Checks if the fault happened while running generated code.
   // Called in the context of a signal handler.
   bool IsInGeneratedCode(siginfo_t* siginfo, void *context) NO_THREAD_SAFETY_ANALYSIS;
+
+#ifdef __aarch64__
+  // Update context to cause pending thread suspension request to be recognized
+  // more quickly upon return from signal handler, if that is possible.
+  void SuspendFaster(siginfo_t* info, void* context);
+#else
+  void SuspendFaster(siginfo_t*, void*) {}
+#endif
 
  private:
   struct GeneratedCodeRange {
@@ -104,6 +121,7 @@ class FaultManager {
 
   std::vector<FaultHandler*> generated_code_handlers_;
   std::vector<FaultHandler*> other_handlers_;
+  gc::collector::MarkCompact* mark_compact_;
   bool initialized_;
 
   // We keep a certain number of generated code ranges locally to avoid too many

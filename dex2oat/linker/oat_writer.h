@@ -18,20 +18,21 @@
 #define ART_DEX2OAT_LINKER_OAT_WRITER_H_
 
 #include <stdint.h>
+
 #include <cstddef>
-#include <list>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "base/array_ref.h"
 #include "base/dchecked_vector.h"
-#include "base/os.h"
 #include "base/mem_map.h"
+#include "base/os.h"
 #include "base/safe_map.h"
 #include "debug/debug_info.h"
 #include "dex/method_reference.h"
-#include "dex/string_reference.h"
 #include "dex/proto_reference.h"
+#include "dex/string_reference.h"
 #include "dex/type_reference.h"
 #include "linker/relative_patcher.h"  // For RelativePatcherTargetProvider.
 #include "mirror/class.h"
@@ -270,6 +271,9 @@ class OatWriter {
     return compiler_options_;
   }
 
+  template <typename KeyType>
+  using BssMap = std::unordered_map<KeyType, size_t>;
+
  private:
   struct BssMappingInfo;
   class ChecksumUpdatingOutputStream;
@@ -393,6 +397,14 @@ class OatWriter {
     return RoundUp(GetFileOffset(offset_from_oat_data), alignment) - oat_data_offset_;
   }
 
+  template <typename T, typename Compare>
+  void InitBssLayoutOffset(BssMap<T>& map, size_t entry_size, Compare comp);
+
+  template <typename T, typename Compare>
+  std::vector<typename BssMap<T>::iterator> InitDataImgRelRoLayoutOffset(BssMap<T>& map,
+                                                                         size_t entry_size,
+                                                                         Compare comp);
+
   enum class WriteState {
     kAddingDexFileSources,
     kStartRoData,
@@ -499,42 +511,48 @@ class OatWriter {
   // for the target method in the dex file with the "method reference value comparator" for
   // deduplication. The value is the target offset for patching, starting at
   // `data_img_rel_ro_start_`.
-  SafeMap<MethodReference, size_t, MethodReferenceValueComparator> app_image_rel_ro_method_entries_;
+  BssMap<MethodReference> app_image_rel_ro_method_entries_;
+  // Vector containing iterators to `app_image_rel_ro_method_entries_`, sorted using
+  // MethodReferenceValueComparator.
+  std::vector<BssMap<MethodReference>::iterator> app_image_rel_ro_method_entries_sorted_;
 
   // Map for allocating ArtMethod entries in .bss. Indexed by MethodReference for the target
   // method in the dex file with the "method reference value comparator" for deduplication.
   // The value is the target offset for patching, starting at `bss_start_ + bss_methods_offset_`.
-  SafeMap<MethodReference, size_t, MethodReferenceValueComparator> bss_method_entries_;
+  BssMap<MethodReference> bss_method_entries_;
 
   // Map for allocating app image Class entries in .data.img.rel.ro. Indexed by TypeReference for
   // the source type in the dex file with the "type value comparator" for deduplication. The value
   // is the target offset for patching, starting at `data_img_rel_ro_start_`.
-  SafeMap<TypeReference, size_t, TypeReferenceValueComparator> app_image_rel_ro_type_entries_;
+  BssMap<TypeReference> app_image_rel_ro_type_entries_;
+  // Vector containing iterators to `app_image_rel_ro_type_entries_sorted_`, sorted using
+  // TypeReferenceValueComparator.
+  std::vector<BssMap<TypeReference>::iterator> app_image_rel_ro_type_entries_sorted_;
 
   // Map for allocating Class entries in .bss. Indexed by TypeReference for the source
   // type in the dex file with the "type value comparator" for deduplication. The value
   // is the target offset for patching, starting at `bss_start_ + bss_roots_offset_`.
-  SafeMap<TypeReference, size_t, TypeReferenceValueComparator> bss_type_entries_;
+  BssMap<TypeReference> bss_type_entries_;
 
   // Map for allocating public Class entries in .bss. Indexed by TypeReference for the source
   // type in the dex file with the "type value comparator" for deduplication. The value
   // is the target offset for patching, starting at `bss_start_ + bss_roots_offset_`.
-  SafeMap<TypeReference, size_t, TypeReferenceValueComparator> bss_public_type_entries_;
+  BssMap<TypeReference> bss_public_type_entries_;
 
   // Map for allocating package Class entries in .bss. Indexed by TypeReference for the source
   // type in the dex file with the "type value comparator" for deduplication. The value
   // is the target offset for patching, starting at `bss_start_ + bss_roots_offset_`.
-  SafeMap<TypeReference, size_t, TypeReferenceValueComparator> bss_package_type_entries_;
+  BssMap<TypeReference> bss_package_type_entries_;
 
   // Map for allocating String entries in .bss. Indexed by StringReference for the source
   // string in the dex file with the "string value comparator" for deduplication. The value
   // is the target offset for patching, starting at `bss_start_ + bss_roots_offset_`.
-  SafeMap<StringReference, size_t, StringReferenceValueComparator> bss_string_entries_;
+  BssMap<StringReference> bss_string_entries_;
 
   // Map for allocating MethodType entries in .bss. Indexed by ProtoReference for the source
   // proto in the dex file with the "proto value comparator" for deduplication. The value
   // is the target offset for patching, starting at `bss_start_ + bss_roots_offset_`.
-  SafeMap<ProtoReference, size_t, ProtoReferenceValueComparator> bss_method_type_entries_;
+  BssMap<ProtoReference> bss_method_type_entries_;
 
   // Offset of the oat data from the start of the mmapped region of the elf file.
   size_t oat_data_offset_;
@@ -630,12 +648,10 @@ class OatWriter {
   // Profile info used to generate new layout of files.
   ProfileCompilationInfo* profile_compilation_info_;
 
-  using OrderedMethodList = std::vector<OrderedMethodData>;
-
   // List of compiled methods, sorted by the order defined in OrderedMethodData.
   // Methods can be inserted more than once in case of duplicated methods.
   // This pointer is only non-null after InitOatCodeDexFiles succeeds.
-  std::unique_ptr<OrderedMethodList> ordered_methods_;
+  std::vector<OrderedMethodData> ordered_methods_;
 
   DISALLOW_COPY_AND_ASSIGN(OatWriter);
 };

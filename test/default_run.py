@@ -949,6 +949,8 @@ def default_run(ctx, args, **kwargs):
     skip_reg_exp = fr'#-# #:#:# # # ({skip_tag_set}) [^\n]*\n'
     skip_reg_exp = skip_reg_exp.replace('#', '[0-9.]+').replace(' ', ' +')
     ctx.run(fr"sed -i -z -E 's/{skip_reg_exp}//g' '{args.stderr_file}'")
+    ctx.run(fr"sed -i -E '/^.* E aconfig_cpp_codegen: error: failed to get package map file: failed to open/d' '{args.stderr_file}'")
+    ctx.run(fr"sed -i -E '/^.* E aconfig_cpp_codegen: error: package does not exist, returning flag default value./d' '{args.stderr_file}'")
     if not HAVE_IMAGE:
       message = "(Unable to open file|Could not create image space)"
       ctx.run(fr"sed -i -E '/^.* E dalvikvm(|32|64): .* {message}/d' '{args.stderr_file}'")
@@ -976,6 +978,9 @@ def default_run(ctx, args, **kwargs):
     # namespace, that gives libarttest(d).so full access to the internal ART
     # libraries.
     LD_LIBRARY_PATH = f"/data/{TEST_DIRECTORY}/com.android.art/lib{SUFFIX64}:{LD_LIBRARY_PATH}"
+    # TODO: Remove once testing apex is gone. The libs are copied into further subdirectory.
+    #       We intend to remove the testing apex, so this should be short lived work-around.
+    LD_LIBRARY_PATH = f"/apex/com.android.art/lib{SUFFIX64}/com.android.art/lib{SUFFIX64}:{LD_LIBRARY_PATH}"
     dlib = ("" if TEST_IS_NDEBUG else "d")
     art_test_internal_libraries = [
         f"libartagent{dlib}.so",

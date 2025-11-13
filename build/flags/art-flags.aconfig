@@ -15,11 +15,24 @@
 package: "com.android.art.flags"
 container: "com.android.art"
 
+# Flag for using userfaultfd move ioctl in CMC
+flag {
+  name: "use_uffd_move_ioctl"
+  namespace: "art_performance"
+  description: "Try to use userfaultfd's move ioctl in CMC GC. We may not be able to use it if"
+  "1. the kernel doesn't support it (<6.1), or"
+  "2. the necessary kernel bug-fixes aren't there, or"
+  "3. app's seccomp filter doesn't allow."
+  bug: "343220989"
+  is_fixed_read_only: true
+  is_exported: false
+}
+
 # Flag for generational CMC feature
 flag {
   name: "use_generational_cmc"
   namespace: "art_performance"
-  description: "Flag to control whether CMC's generational logic should be used or not"
+  description: "Use CMC's generational logic"
   bug: "343220989"
   is_fixed_read_only: true
   is_exported: false
@@ -33,6 +46,19 @@ flag {
   bug: "352518093"
   is_fixed_read_only: true
   is_exported: true
+}
+
+# Flag for better spill slot reuse in the register allocator.
+flag {
+  name: "reg_alloc_spill_slot_reuse"
+  namespace: "art_performance"
+  description: "Flag to control spill slot reuse in register allocator"
+  bug: "264678256"
+  is_fixed_read_only: true
+  is_exported: false
+  metadata {
+      purpose: PURPOSE_BUGFIX
+  }
 }
 
 # TODO(b/352723620): Ramp this fully, then add tests with it.
@@ -51,6 +77,15 @@ flag {
   is_exported: true
   description: "This flag includes the API for getting the compiled native executable offset info for a java method"
   bug: "296108553"
+  is_fixed_read_only: true
+}
+
+flag {
+  namespace: "system_performance"
+  name: "executable_method_file_offsets_deprecation"
+  is_exported: true
+  description: "Deprecate the original getExecutableMethodFileOffsets API which takes a Method"
+  bug: "400457896"
   is_fixed_read_only: true
 }
 
@@ -86,6 +121,24 @@ flag {
   namespace: "art_performance"
   description: "Flag to enable the fast ARM64 baseline compiler"
   bug: "384433113"
+  is_fixed_read_only: true
+  is_exported: false
+}
+
+flag {
+  name: "compile_sdk_int_constant"
+  namespace: "system_performance"
+  description: "Flag to enable use of SDK_INT as a compile-time constant"
+  bug: "204924812"
+  is_fixed_read_only: true
+  is_exported: false
+}
+
+flag {
+  name: "enforce_permitted_subclasses_checks"
+  namespace: "core_libraries"
+  description: "Flag to enable enforcement of the sealed classes annotations"
+  bug: "416480439"
   is_fixed_read_only: true
   is_exported: false
 }

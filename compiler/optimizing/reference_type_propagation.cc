@@ -124,7 +124,7 @@ ReferenceTypePropagation::ReferenceTypePropagation(HGraph* graph,
 
 void ReferenceTypePropagation::Visit(HInstruction* instruction) {
   RTPVisitor visitor(graph_, hint_dex_cache_, is_first_run_);
-  instruction->Accept(&visitor);
+  visitor.Dispatch(instruction);
 }
 
 void ReferenceTypePropagation::Visit(ArrayRef<HInstruction* const> instructions) {
@@ -136,7 +136,7 @@ void ReferenceTypePropagation::Visit(ArrayRef<HInstruction* const> instructions)
     }
   }
   for (HInstruction* instruction : instructions) {
-    instruction->Accept(&visitor);
+    visitor.Dispatch(instruction);
     // We don't know if the instruction list is ordered in the same way normal
     // visiting would be so we need to process every instruction manually.
     if (RTPVisitor::IsUpdateable(instruction)) {
@@ -316,7 +316,7 @@ void ReferenceTypePropagation::RTPVisitor::VisitBasicBlock(HBasicBlock* block) {
   VisitPhis(block);
 
   // Handle instructions. Since RTP may add HBoundType instructions just after the
-  // last visited instruction, use `HInstructionIteratorHandleChanges` iterator.
+  // last visited instruction, use `HInstructionIterator` iterator.
   VisitNonPhiInstructionsHandleChanges(block);
 
   // Add extra nodes to bound types.
@@ -714,7 +714,7 @@ void ReferenceTypePropagation::RTPVisitor::VisitCheckCast(HCheckCast* check_cast
   } else {
     // This is the first run of RTP and class is unresolved. Remove the binding.
     // The instruction itself is removed in VisitBoundType so as to not
-    // invalidate HInstructionIterator.
+    // invalidate HInstructionIteratorPrefetchNext.
     bound_type->ReplaceWith(bound_type->InputAt(0));
   }
 }

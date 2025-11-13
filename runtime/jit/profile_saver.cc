@@ -64,6 +64,9 @@ static_assert(ProfileCompilationInfo::kIndividualInlineCacheSize ==
 // At what priority to schedule the saver threads. 9 is the lowest foreground priority on device.
 static constexpr int kProfileSaverPthreadPriority = 9;
 
+// The valid window time for responding to profile delay signal.
+static constexpr uint64_t kProfileDelaySignalValidWindowMs = 2000;
+
 static void SetProfileSaverThreadPriority(pthread_t thread, int priority) {
 #if defined(ART_TARGET_ANDROID)
   int result = setpriority(PRIO_PROCESS, pthread_gettid_np(thread), priority);
@@ -104,7 +107,8 @@ ProfileSaver::ProfileSaver(const ProfileSaverOptions& options, jit::JitCodeCache
       total_ns_of_work_(0),
       total_number_of_hot_spikes_(0),
       total_number_of_wake_ups_(0),
-      options_(options) {
+      options_(options),
+      notify_delay_time_(0) {
   DCHECK(options_.IsEnabled());
 }
 
@@ -122,6 +126,16 @@ void ProfileSaver::NotifyStartupCompleted() {
   }
   MutexLock mu2(self, instance_->wait_lock_);
   instance_->period_condition_.Signal(self);
+}
+
+void ProfileSaver::NotifyDelayProfileSaving() {
+  Thread* self = Thread::Current();
+  MutexLock mu(self, *Locks::profiler_lock_);
+  if (instance_ == nullptr || instance_->shutting_down_) {
+    return;
+  }
+  instance_->notify_delay_time_.store(MilliTime(), std::memory_order_relaxed);
+  VLOG(profiler) << "Profile saving might be delayed";
 }
 
 void ProfileSaver::Run() {
@@ -184,10 +198,26 @@ void ProfileSaver::Run() {
     // a reasonable margin).
     uint64_t min_save_period_ns = MsToNs(force_first_save ? options_.GetMinFirstSaveMs() :
                                                                   options_.GetMinSavePeriodMs());
-    while (min_save_period_ns * 0.9 > sleep_time) {
+    // When the delay signal is valid (the notification delay time is within
+    // kProfileDelaySignalValidWindowMs), period_condition_.TimedWait is used to wait for
+    // the remaining window time to delay the processing of the profile. When there are multiple
+    // consecutive delays, the maximum sleep time does not exceed min_save_period_ns * 2.
+    // When profiling the boot class path, the delay mechanism is always disabled to ensure the
+    // profile collection is not impacted.
+    do {
+      uint64_t time_since_notify = MilliTime() - notify_delay_time_.load(std::memory_order_relaxed);
+      bool should_delay = !options_.GetProfileBootClassPath() &&
+                          (time_since_notify < kProfileDelaySignalValidWindowMs);
+
+      if (min_save_period_ns * 0.9 <= sleep_time &&
+          !(should_delay && min_save_period_ns * 2 > sleep_time)) {
+        break;
+      }
+      uint64_t wait_time = should_delay ? kProfileDelaySignalValidWindowMs - time_since_notify
+                                        : NsToMs(min_save_period_ns - sleep_time);
       {
         MutexLock mu(self, wait_lock_);
-        period_condition_.TimedWait(self, NsToMs(min_save_period_ns - sleep_time), 0);
+        period_condition_.TimedWait(self, wait_time, 0);
         sleep_time = NanoTime() - sleep_start;
       }
       // Check if the thread was woken up for shutdown.
@@ -195,7 +225,8 @@ void ProfileSaver::Run() {
         break;
       }
       total_number_of_wake_ups_++;
-    }
+    } while (true);
+
     total_ms_of_sleep_ += NsToMs(NanoTime() - sleep_start);
 
     if (ShuttingDown(self)) {
@@ -376,7 +407,6 @@ class ProfileSaver::GetClassesAndMethodsHelper {
   struct ClassRecord {
     dex::TypeIndex type_index;
     uint16_t array_dimension;
-    uint32_t copied_methods_start;
     LengthPrefixedArray<ArtMethod>* methods;
   };
 
@@ -477,9 +507,7 @@ void ProfileSaver::GetClassesAndMethodsHelper::CollectInternal(
         return true;
       }
 
-      // Attribute the array class to the defining dex file of the element class.
-      DCHECK_EQ(klass->GetCopiedMethodsStartOffset(), 0u);
-      DCHECK(klass->GetMethodsPtr() == nullptr);
+      DCHECK_EQ(klass->NumMethods(), 0u);
     } else {
       // Non-array class. There is no need to collect primitive types.
       DCHECK(kBootClassLoader || !k->IsPrimitive());
@@ -496,12 +524,7 @@ void ProfileSaver::GetClassesAndMethodsHelper::CollectInternal(
 
     const DexFile& dex_file = k->GetDexFile();
     dex::TypeIndex type_index = k->GetDexTypeIndex();
-    uint32_t copied_methods_start = klass->GetCopiedMethodsStartOffset();
     LengthPrefixedArray<ArtMethod>* methods = klass->GetMethodsPtr();
-    if (methods != nullptr) {
-      CHECK_LE(copied_methods_start, methods->size()) << k->PrettyClass();
-    }
-
     DexFileRecords* dex_file_records;
     auto it = dex_file_records_map_.find(&dex_file);
     if (it != dex_file_records_map_.end()) {
@@ -510,8 +533,7 @@ void ProfileSaver::GetClassesAndMethodsHelper::CollectInternal(
       dex_file_records = new (&allocator_) DexFileRecords(&allocator_);
       dex_file_records_map_.insert(std::make_pair(&dex_file, dex_file_records));
     }
-    dex_file_records->class_records.push_back(
-        ClassRecord{type_index, dim, copied_methods_start, methods});
+    dex_file_records->class_records.push_back(ClassRecord{type_index, dim, methods});
     return true;
   });
 }
@@ -547,12 +569,12 @@ void ProfileSaver::GetClassesAndMethodsHelper::CollectClasses(Thread* self) {
         continue;
       }
       const size_t methods_size = methods->size();
-      CHECK_LE(class_record.copied_methods_start, methods_size)
-          << dex_file->PrettyType(class_record.type_index);
-      for (size_t index = class_record.copied_methods_start; index != methods_size; ++index) {
+      for (size_t index = methods_size; index != 0u; --index) {
         // Note: Using `ArtMethod` array with implicit `kRuntimePointerSize`.
-        ArtMethod& method = methods->At(index);
-        CHECK(method.IsCopied()) << dex_file->PrettyType(class_record.type_index);
+        ArtMethod& method = methods->At(index - 1);
+        if (!method.IsCopied()) {
+          break;
+        }
         CHECK(!method.IsNative()) << dex_file->PrettyType(class_record.type_index);
         if (method.IsInvokable()) {
           const DexFile* method_dex_file = method.GetDexFile();
@@ -628,7 +650,7 @@ void ProfileSaver::GetClassesAndMethodsHelper::UpdateProfile(const std::set<std:
     for (const ClassRecord& class_record : dex_file_records->class_records) {
       if (class_record.array_dimension != 0u) {
         DCHECK(ShouldCollectClasses(startup));
-        DCHECK(class_record.methods == nullptr);  // No methods to process.
+        DCHECK_EQ(class_record.methods->size(), 0u);  // No methods to process.
         array_class_descriptor.assign(class_record.array_dimension, '[');
         array_class_descriptor += dex_file->GetTypeDescriptorView(class_record.type_index);
         dex::TypeIndex type_index =
@@ -641,18 +663,21 @@ void ProfileSaver::GetClassesAndMethodsHelper::UpdateProfile(const std::set<std:
         if (ShouldCollectClasses(startup)) {
           profile_info->AddClass(profile_index, class_record.type_index);
         }
-        const size_t num_declared_methods = class_record.copied_methods_start;
         LengthPrefixedArray<ArtMethod>* methods = class_record.methods;
-        for (size_t index = 0; index != num_declared_methods; ++index) {
-          // Note: Using `ArtMethod` array with implicit `kRuntimePointerSize`.
-          ArtMethod& method = methods->At(index);
-          DCHECK(!method.IsCopied());
-          // We do not record native methods. Once we AOT-compile the app,
-          // all native methods shall have their JNI stubs compiled.
-          if (method.IsInvokable() && !method.IsNative()) {
-            ProfileCompilationInfo::MethodHotness::Flag flags = get_method_flags(method);
-            if (flags != 0u) {
-              profile_info->AddMethod(profile_index, method.GetDexMethodIndex(), flags);
+        if (methods != nullptr) {
+          for (size_t index = 0, size = methods->size(); index != size; ++index) {
+            // Note: Using `ArtMethod` array with implicit `kRuntimePointerSize`.
+            ArtMethod& method = methods->At(index);
+            if (method.IsCopied()) {
+              break;
+            }
+            // We do not record native methods. Once we AOT-compile the app,
+            // all native methods shall have their JNI stubs compiled.
+            if (method.IsInvokable() && !method.IsNative()) {
+              ProfileCompilationInfo::MethodHotness::Flag flags = get_method_flags(method);
+              if (flags != 0u) {
+                profile_info->AddMethod(profile_index, method.GetDexMethodIndex(), flags);
+              }
             }
           }
         }

@@ -340,22 +340,29 @@ ALWAYS_INLINE inline static void SetFieldValue(ObjPtr<mirror::Object> o,
   }
 }
 
-ALWAYS_INLINE inline static bool ThrowIAEIfRecordFinalField(ObjPtr<mirror::Field> field)
+ALWAYS_INLINE inline static bool ThrowIAEIfFieldIsNotOverwritable(ObjPtr<mirror::Field> field)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  if (!(field->IsFinal())) {
-    return false;
-  }
-  ObjPtr<mirror::Class> declaring_class = field->GetDeclaringClass();
-  DCHECK(declaring_class != nullptr);
-  if (!(declaring_class->IsRecordClass())) {
-    return false;
-  }
+  // Write-protected fields can be modified via System.setIn/setOut/setErr methods only.
+  // However, before Android C, reflection and JNI APIs were allowed to modify them.
+  if (field->IsWriteProtected()) {
+    // See Field::IsMonotonic.
+    uint32_t target_sdk_version = Runtime::Current()->GetTargetSdkVersion();
+    if (IsSdkVersionSetAndAtMost(target_sdk_version, SdkVersion::kB)) {
+      return false;
+    }
 
+    uint32_t sdk_version = Runtime::Current()->GetSdkVersion();
+    if (IsSdkVersionSetAndAtMost(sdk_version, SdkVersion::kB)) {
+      return false;
+    }
+  } else if (!field->IsMonotonic()) {
+    return false;
+  }
   ThrowIllegalAccessException(
-          StringPrintf("Cannot set %s field %s of record class %s",
+          StringPrintf("Cannot set %s field %s of class %s",
               PrettyJavaAccessFlags(field->GetAccessFlags()).c_str(),
               ArtField::PrettyField(field->GetArtField()).c_str(),
-              declaring_class->PrettyClass().c_str()).c_str());
+              field->GetDeclaringClass()->PrettyClass().c_str()).c_str());
 
   return true;
 }
@@ -369,7 +376,7 @@ static void Field_set(JNIEnv* env, jobject javaField, jobject javaObj, jobject j
     DCHECK(soa.Self()->IsExceptionPending());
     return;
   }
-  if (ThrowIAEIfRecordFinalField(f)) {
+  if (ThrowIAEIfFieldIsNotOverwritable(f)) {
     DCHECK(soa.Self()->IsExceptionPending());
     return;
   }
@@ -399,6 +406,7 @@ static void Field_set(JNIEnv* env, jobject javaField, jobject javaObj, jobject j
     DCHECK(soa.Self()->IsExceptionPending());
     return;
   }
+
   SetFieldValue(o, f, field_prim_type, true, unboxed_value);
 }
 
@@ -413,7 +421,7 @@ static void SetPrimitiveField(JNIEnv* env,
   if (!CheckReceiver(soa, javaObj, &f, &o)) {
     return;
   }
-  if (ThrowIAEIfRecordFinalField(f)) {
+  if (ThrowIAEIfFieldIsNotOverwritable(f)) {
     DCHECK(soa.Self()->IsExceptionPending());
     return;
   }
@@ -549,6 +557,13 @@ static jboolean Field_isAnnotationPresentNative(JNIEnv* env,
   return annotations::IsFieldAnnotationPresent(field, klass);
 }
 
+static jboolean Field_isMonotonic0(JNIEnv* env, jobject javaField) {
+  ScopedObjectAccess soa(env);
+  ObjPtr<mirror::Field> f = soa.Decode<mirror::Field>(javaField);
+
+  return f->IsMonotonic();
+}
+
 static JNINativeMethod gMethods[] = {
   FAST_NATIVE_METHOD(Field, get,        "(Ljava/lang/Object;)Ljava/lang/Object;"),
   FAST_NATIVE_METHOD(Field, getBoolean, "(Ljava/lang/Object;)Z"),
@@ -566,6 +581,7 @@ static JNINativeMethod gMethods[] = {
   FAST_NATIVE_METHOD(Field, getNameInternal, "()Ljava/lang/String;"),
   FAST_NATIVE_METHOD(Field, getShort,   "(Ljava/lang/Object;)S"),
   FAST_NATIVE_METHOD(Field, isAnnotationPresentNative, "(Ljava/lang/Class;)Z"),
+  NATIVE_METHOD(Field,      isMonotonic0, "()Z"),
   FAST_NATIVE_METHOD(Field, set,        "(Ljava/lang/Object;Ljava/lang/Object;)V"),
   FAST_NATIVE_METHOD(Field, setBoolean, "(Ljava/lang/Object;Z)V"),
   FAST_NATIVE_METHOD(Field, setByte,    "(Ljava/lang/Object;B)V"),

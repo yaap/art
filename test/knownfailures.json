@@ -1141,6 +1141,7 @@
                   "692-vdex-inmem-loader",
                   "693-vdex-inmem-loader-evict",
                   "723-string-init-range",
+                  "733-priority-mappings",
                   "734-duplicate-fields",
                   "735-interface-clone",
                   "736-interface-super-Object",
@@ -1615,6 +1616,21 @@
       "bug": "b/328023607",
       "description": ["Fails on QEMU"],
       "env_vars": {"ART_TEST_ON_VM": "true"}
+    },
+    {
+      "tests": ["2042-reference-processing"],
+      "description": ["Timeout on QEMU"],
+      "env_vars": {"ART_TEST_ON_VM": "true"}
+    },
+    {
+      "tests": ["2390-virtual-thread-carrier-leak",
+                "2390-virtual-thread-context-leak",
+                "2390-virtual-thread-parking-error-leak",
+                "2391-virtual-thread-sleeps",
+                "2392-virtual-thread-pinning-jni",
+                "2393-virtual-thread-pinning-monitor"],
+      "variant": "jvm",
+      "description": ["Tests for ART-specific Virtual Thread APIs."]
     },
     {
         "tests": ["169-threadgroup-jni"],

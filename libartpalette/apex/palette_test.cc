@@ -25,6 +25,7 @@
 
 #include "base/testing.h"
 #include "gtest/gtest.h"
+#include "system/palette_system.h"
 
 #ifdef ART_TARGET_ANDROID
 #include "android-modules-utils/sdk_level.h"
@@ -43,6 +44,7 @@ pid_t GetTid() {
 }
 
 #ifdef ART_TARGET_ANDROID
+
 bool PaletteSetTaskProfilesIsSupported(palette_status_t res) {
   if (android::modules::sdklevel::IsAtLeastU()) {
     return true;
@@ -51,10 +53,21 @@ bool PaletteSetTaskProfilesIsSupported(palette_status_t res) {
       << "Device API level: " << android_get_device_api_level();
   return false;
 }
-bool PaletteDebugStoreIsSupported() {
-  // TODO(b/345433959): Switch to android::modules::sdklevel::IsAtLeastW
-  return android_get_device_api_level() >= 36;
+bool PaletteDebugStoreIsSupported() { return android::modules::sdklevel::IsAtLeastB(); }
+
+bool PaletteMapPriorityIsSupported() {
+  // TODO: Switch to android::modules::sdklevel::IsAtLeastC
+  int dummy_result;
+  return android_get_device_api_level() >= 37 ||
+         PaletteMapPriority(6, &dummy_result) != PALETTE_STATUS_NOT_SUPPORTED;
 }
+
+#else  // !ART_TARGET_ANDROID
+
+bool PaletteMapPriorityIsSupported() {
+  return true;  // Safe?
+}
+
 #endif
 
 }  // namespace
@@ -136,16 +149,29 @@ TEST_F(PaletteClientTest, JniInvocation) {
 #endif
 }
 
-TEST_F(PaletteClientTest, SetTaskProfiles) {
+// Run with the expectation to be both root and non-root, skipping the
+// inapplicable one. Useful when expected results depend on rootness, to make it
+// clear in test results which variant was executed.
+class PaletteClientRootParamTest : public ::testing::TestWithParam<bool> {
+ protected:
+  bool TestAsRoot() { return GetParam(); }
+  bool RunningAsRoot() { return getuid() == 0; }
+  bool ShouldSkip() { return TestAsRoot() != RunningAsRoot(); }
+};
+
+TEST_P(PaletteClientRootParamTest, SetTaskProfiles) {
 #ifndef ART_TARGET_ANDROID
   GTEST_SKIP() << "SetTaskProfiles is only supported on Android";
 #else
+  if (ShouldSkip()) {
+    GTEST_SKIP() << (RunningAsRoot() ? "Running as root" : "Not running as root");
+  }
   const char* profiles[] = {"ProcessCapacityHigh", "TimerSlackNormal"};
   palette_status_t res = PaletteSetTaskProfiles(GetTid(), &profiles[0], 2);
   if (PaletteSetTaskProfilesIsSupported(res)) {
     // SetTaskProfiles will only work fully if we run as root. Otherwise it'll
     // return false which is mapped to PALETTE_STATUS_FAILED_CHECK_LOG.
-    if (getuid() == 0) {
+    if (TestAsRoot()) {
       EXPECT_EQ(PALETTE_STATUS_OK, res);
     } else {
       EXPECT_EQ(PALETTE_STATUS_FAILED_CHECK_LOG, res);
@@ -154,16 +180,19 @@ TEST_F(PaletteClientTest, SetTaskProfiles) {
 #endif
 }
 
-TEST_F(PaletteClientTest, SetTaskProfilesCpp) {
+TEST_P(PaletteClientRootParamTest, SetTaskProfilesCpp) {
 #ifndef ART_TARGET_ANDROID
   GTEST_SKIP() << "SetTaskProfiles is only supported on Android";
 #else
+  if (ShouldSkip()) {
+    GTEST_SKIP() << (RunningAsRoot() ? "Running as root" : "Not running as root");
+  }
   std::vector<std::string> profiles = {"ProcessCapacityHigh", "TimerSlackNormal"};
   palette_status_t res = PaletteSetTaskProfiles(GetTid(), profiles);
   if (PaletteSetTaskProfilesIsSupported(res)) {
     // SetTaskProfiles will only work fully if we run as root. Otherwise it'll
     // return false which is mapped to PALETTE_STATUS_FAILED_CHECK_LOG.
-    if (getuid() == 0) {
+    if (TestAsRoot()) {
       EXPECT_EQ(PALETTE_STATUS_OK, res);
     } else {
       EXPECT_EQ(PALETTE_STATUS_FAILED_CHECK_LOG, res);
@@ -171,6 +200,14 @@ TEST_F(PaletteClientTest, SetTaskProfilesCpp) {
   }
 #endif
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    Rootness,
+    PaletteClientRootParamTest,
+    ::testing::Bool(),
+    [](const ::testing::TestParamInfo<PaletteClientRootParamTest::ParamType>& info) {
+      return info.param ? "Root" : "NonRoot";
+    });
 
 TEST_F(PaletteClientTest, DebugStore) {
 #ifndef ART_TARGET_ANDROID
@@ -192,4 +229,34 @@ TEST_F(PaletteClientTest, DebugStore) {
   EXPECT_TRUE(len > strlen(start) + strlen(end));
   EXPECT_EQ(strncmp(result.data() + len - strlen(end), end, strlen(end)), 0);
 #endif
+}
+
+TEST_F(PaletteClientTest, MapPriority) {
+  // Make sure the we are on a correct API level.
+  if (!PaletteMapPriorityIsSupported()) {
+    GTEST_SKIP() << "GetPriorityMapping is only supported on API 36.1+";
+  }
+  int result;
+  int last_result = 100;  // > any plausible niceness value.
+  palette_status_t pstatus;
+  for (int32_t i = art::palette::kMinManagedThreadPriority;
+       i <= art::palette::kMaxManagedThreadPriority;
+       ++i) {
+    pstatus = PaletteMapPriority(i, &result);
+    EXPECT_EQ(PALETTE_STATUS_OK, pstatus);
+    if (i == art::palette::kMinManagedThreadPriority) {
+      EXPECT_GT(result, 0);
+    }
+    if (i == art::palette::kMaxManagedThreadPriority) {
+      EXPECT_LT(result, 0);
+    }
+    EXPECT_LT(result, last_result);
+    last_result = result;
+  }
+
+  // This time with invalid Java priorities.
+  pstatus = PaletteMapPriority(art::palette::kMinManagedThreadPriority - 1, &result);
+  EXPECT_EQ(PALETTE_STATUS_INVALID_ARGUMENT, pstatus);
+  pstatus = PaletteMapPriority(art::palette::kMaxManagedThreadPriority + 1, &result);
+  EXPECT_EQ(PALETTE_STATUS_INVALID_ARGUMENT, pstatus);
 }

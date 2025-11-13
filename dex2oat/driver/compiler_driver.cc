@@ -16,11 +16,8 @@
 
 #include "compiler_driver.h"
 
-#include <unistd.h>
-
-#ifndef __APPLE__
 #include <malloc.h>  // For mallinfo
-#endif
+#include <unistd.h>
 
 #include <string_view>
 #include <vector>
@@ -952,7 +949,7 @@ class ResolveCatchBlockExceptionsClassVisitor : public ClassVisitor {
     }
     // Filter out classes without methods.
     // These include primitive types and array types which have no dex file.
-    if (c->GetMethodsPtr() == nullptr) {
+    if (c->GetMethodsPtr()->size() == 0u) {
       return true;
     }
     auto it = dex_file_records_.find(&c->GetDexFile());
@@ -1315,7 +1312,7 @@ static void MaybeAddToImageClasses(Thread* self,
       DCHECK(interface != nullptr);
       MaybeAddToImageClasses(self, interface, image_classes);
     }
-    for (auto& m : klass->GetVirtualMethods(pointer_size)) {
+    for (auto& m : klass->GetCopiedMethods(pointer_size)) {
       MaybeAddToImageClasses(self, m.GetDeclaringClass(), image_classes);
     }
     if (klass->IsArrayClass()) {
@@ -2522,12 +2519,13 @@ class InitializeClassVisitor : public CompilationVisitor {
       for (int32_t i = 0; i < klass->GetIfTableCount(); ++i) {
         super_klass.Assign(klass->GetIfTable()->GetInterface(i));
         if (klass->GetClassLoader() != super_klass->GetClassLoader()) {
-          uint32_t num_methods = super_klass->NumVirtualMethods();
-          for (uint32_t j = 0; j < num_methods; ++j) {
+          for (ArtMethod& super_m : super_klass->GetMethods(pointer_size)) {
+            if (!super_m.IsVirtual()) {
+              continue;
+            }
             ArtMethod* m = klass->GetIfTable()->GetMethodArray(i)->GetElementPtrSize<ArtMethod*>(
-                j, pointer_size);
-            ArtMethod* super_m = super_klass->GetVirtualMethod(j, pointer_size);
-            if (!ResolveTypesOfMethods(self, m) || !ResolveTypesOfMethods(self, super_m)) {
+                super_m.GetMethodIndex(), pointer_size);
+            if (!ResolveTypesOfMethods(self, m) || !ResolveTypesOfMethods(self, &super_m)) {
               return false;
             }
           }
@@ -2873,13 +2871,11 @@ std::string CompilerDriver::GetMemoryUsageString(bool extended) const {
   const size_t java_alloc = heap->GetBytesAllocated();
   oss << "arena alloc=" << PrettySize(max_arena_alloc_) << " (" << max_arena_alloc_ << "B)";
   oss << " java alloc=" << PrettySize(java_alloc) << " (" << java_alloc << "B)";
-#if defined(__BIONIC__) || defined(__GLIBC__) || defined(ANDROID_HOST_MUSL)
   const struct mallinfo info = mallinfo();
   const size_t allocated_space = static_cast<size_t>(info.uordblks);
   const size_t free_space = static_cast<size_t>(info.fordblks);
   oss << " native alloc=" << PrettySize(allocated_space) << " (" << allocated_space << "B)"
       << " free=" << PrettySize(free_space) << " (" << free_space << "B)";
-#endif
   compiled_method_storage_.DumpMemoryUsage(oss, extended);
   return oss.str();
 }
