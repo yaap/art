@@ -657,8 +657,9 @@ jvmtiError ThreadUtil::GetAllThreads(jvmtiEnv* env,
   i = tefs.begin();
   for (art::Thread* thread : thread_list) {
     art::ThreadExitFlag* tef = &*i++;
-    // Skip threads that have since exited or are still starting.
-    if (!tef->HasExited() && !thread->IsStillStarting()) {
+    // Skip threads that have since exited or are still starting. We also don't need to report
+    // runtime threads like jit worker threads.
+    if (!tef->HasExited() && !thread->IsStillStarting() && !thread->IsRuntimeThread()) {
       // LockedGetPeerFromOtherThreads() may release lock!
       art::ObjPtr<art::mirror::Object> peer = thread->LockedGetPeerFromOtherThread(tef);
       if (peer != nullptr) {

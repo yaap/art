@@ -25,15 +25,6 @@ package com.android.server.art;
  */
 parcelable ArtConstants {
     /**
-     * A special compilation reason to indicate that only the VDEX file is usable.
-     *
-     * This isn't a valid reason to feed into DexoptParams.
-     *
-     * Keep in sync with {@code kReasonVdex} in art/runtime/oat_file.h.
-     */
-    const @utf8InCpp String REASON_VDEX = "vdex";
-
-    /**
      * The file extension of the dex metadata file.
      *
      * Keep in sync with {@code kDmExtension} in art/libartbase/base/file_utils.h.

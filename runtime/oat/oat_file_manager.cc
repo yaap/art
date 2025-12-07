@@ -36,6 +36,7 @@
 #include "base/systrace.h"
 #include "class_linker.h"
 #include "class_loader_context.h"
+#include "com_android_art_rw_flags.h"
 #include "dex/art_dex_file_loader.h"
 #include "dex/dex_file-inl.h"
 #include "dex/dex_file_loader.h"
@@ -233,8 +234,13 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
     std::string compilation_reason;
     std::string odex_status;
     OatFileAssistant::Location ignored_location;
-    oat_file_assistant->GetOptimizationStatus(
-        &odex_location, &compilation_filter, &compilation_reason, &odex_status, &ignored_location);
+    bool ignored_is_backed_by_vdex_only;
+    oat_file_assistant->GetOptimizationStatus(&odex_location,
+                                              &compilation_filter,
+                                              &compilation_reason,
+                                              &odex_status,
+                                              &ignored_location,
+                                              &ignored_is_backed_by_vdex_only);
 
     ScopedTrace odex_loading(StringPrintf(
         "location=%s status=%s filter=%s reason=%s",
@@ -399,15 +405,30 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
           // Prefetch the dex file based on vdex size limit (name should
           // have been dex size limit).
           VLOG(oat) << "Madvising dex file: " << dex_file->GetLocation();
-          Runtime::MadviseFileForRange(madvise_size_limit,
-                                       dex_file->Size(),
-                                       dex_file->Begin(),
-                                       dex_file->Begin() + dex_file->Size(),
-                                       dex_file->GetLocation());
-          if (dex_file->Size() >= madvise_size_limit) {
+          madvise_size_limit -= Runtime::MadviseFileForRange(madvise_size_limit,
+                                                             dex_file->Size(),
+                                                             dex_file->Begin(),
+                                                             dex_file->Begin() + dex_file->Size(),
+                                                             dex_file->GetLocation());
+          if (madvise_size_limit == 0) {
             break;
           }
-          madvise_size_limit -= dex_file->Size();
+        }
+        if (com::android::art::rw::flags::madvise_type_lookup_table() && madvise_size_limit > 0) {
+          // If we have remaining madvise quota, use it to page in the type lookup table if present;
+          // this is typically on the critical path for startup.
+          const VdexFile* vdex_file = oat_file != nullptr ? oat_file->GetVdexFile() : nullptr;
+          if (vdex_file != nullptr && vdex_file->HasTypeLookupTableSection()) {
+            const VdexFile::VdexSectionHeader& section_header =
+                vdex_file->GetSectionHeader(VdexSection::kTypeLookupTableSection);
+            VLOG(oat) << "Madvising type lookup table: " << vdex_file->GetName();
+            madvise_size_limit -=
+                Runtime::MadviseFileForRange(madvise_size_limit,
+                                             section_header.section_size,
+                                             vdex_file->Begin() + section_header.section_offset,
+                                             vdex_file->End(),
+                                             vdex_file->GetName());
+          }
         }
       }
 
@@ -644,12 +665,12 @@ static bool UnlinkLeastRecentlyUsedVdexIfNeeded(const std::string& vdex_path_to_
 
   std::vector<std::pair<time_t, std::string>> cache;
 
-  DIR* c_dir = opendir(vdex_dir.c_str());
+  std::unique_ptr<DIR, int (*)(DIR*)> c_dir(opendir(vdex_dir.c_str()), closedir);
   if (c_dir == nullptr) {
     *error_msg = "Unable to open " + vdex_dir + " to delete unused vdex files";
     return false;
   }
-  for (struct dirent* de = readdir(c_dir); de != nullptr; de = readdir(c_dir)) {
+  for (struct dirent* de = readdir(c_dir.get()); de != nullptr; de = readdir(c_dir.get())) {
     if (de->d_type != DT_REG) {
       continue;
     }
@@ -668,7 +689,6 @@ static bool UnlinkLeastRecentlyUsedVdexIfNeeded(const std::string& vdex_path_to_
 
     cache.push_back(std::make_pair(s.st_atime, fullname));
   }
-  CHECK_EQ(0, closedir(c_dir)) << "Unable to close directory.";
 
   if (cache.size() < OatFileManager::kAnonymousVdexCacheSize) {
     return true;

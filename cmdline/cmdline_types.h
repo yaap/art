@@ -92,7 +92,7 @@ struct CmdlineType<JdwpProvider> : CmdlineTypeParser<JdwpProvider> {
    */
   Result Parse(const std::string& option) {
     if (option == "help") {
-      return Result::Usage(
+      return Result::Help(
           "Example: -XjdwpProvider:none to disable JDWP\n"
           "Example: -XjdwpProvider:adbconnection for adb connection mediated jdwp implementation\n"
           "Example: -XjdwpProvider:default for the default jdwp implementation\n");
@@ -214,7 +214,7 @@ struct CmdlineType<double> : CmdlineTypeParser<double> {
       return Result::Failure("Failed to parse double from " + str);
     }
     if (errno == ERANGE) {
-      return Result::OutOfRange(
+      return Result::Invalid(
           "Failed to parse double from " + str + "; overflow/underflow occurred");
     }
 
@@ -241,8 +241,7 @@ static inline CmdlineParseResult<T> ParseNumeric(const std::string& str) {
     return CmdlineParseResult<T>::Failure("Failed to parse integer from " + str);
   } else if ((errno == ERANGE) ||  // NOLINT [runtime/int] [4]
       result < std::numeric_limits<T>::min() || result > std::numeric_limits<T>::max()) {
-    return CmdlineParseResult<T>::OutOfRange(
-        "Failed to parse integer from " + str + "; out of range");
+    return CmdlineParseResult<T>::Invalid("Failed to parse integer from " + str + "; out of range");
   }
 
   return CmdlineParseResult<T>::Success(static_cast<T>(result));
@@ -507,7 +506,7 @@ struct CmdlineType<ParseIntList<Separator>> : CmdlineTypeParser<ParseIntList<Sep
       } else if ((errno == ERANGE) ||  // NOLINT [runtime/int] [4]
                  value < std::numeric_limits<int>::min() ||
                  value > std::numeric_limits<int>::max()) {
-        return Result::OutOfRange("Failed to parse integer from " + args + "; out of range");
+        return Result::Invalid("Failed to parse integer from " + args + "; out of range");
       }
       list.push_back(static_cast<int>(value));
       if (*end == '\0') {
@@ -624,7 +623,7 @@ struct CmdlineType<XGcOption> : CmdlineTypeParser<XGcOption> {
                  (gc_option == "noverifycardtable")) {
         // Ignored for backwards compatibility.
       } else {
-        return Result::Usage(std::string("Unknown -Xgc option ") + gc_option);
+        return Result::Invalid(std::string("Unknown -Xgc option ") + gc_option);
       }
     }
 
@@ -739,8 +738,10 @@ struct CmdlineType<LogVerbosity> : CmdlineTypeParser<LogVerbosity> {
         log_verbosity.agents = true;
       } else if (verbose_options[j] == "dex") {
         log_verbosity.dex = true;
+      } else if (verbose_options[j] == "hiddenapi") {
+        log_verbosity.hiddenapi = true;
       } else {
-        return Result::Usage(std::string("Unknown -verbose option ") + verbose_options[j]);
+        return Result::Invalid(std::string("Unknown -verbose option ") + verbose_options[j]);
       }
     }
 
@@ -751,7 +752,7 @@ struct CmdlineType<LogVerbosity> : CmdlineTypeParser<LogVerbosity> {
   static const char* DescribeType() {
     return "class|collector|compiler|deopt|gc|heap|interpreter|jdwp|jit|jni|monitor|oat|profiler|"
            "signals|simulator|startup|third-party-jni|threads|verifier|verifier-debug|image|"
-           "systrace-locks|plugin|agents|dex";
+           "systrace-locks|plugin|agents|dex|hiddenapi";
   }
 };
 

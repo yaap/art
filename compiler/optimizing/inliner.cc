@@ -113,18 +113,6 @@ std::string HInliner::DepthString(int line) const {
   return value;
 }
 
-static size_t CountNumberOfInstructions(HGraph* graph) {
-  size_t number_of_instructions = 0;
-  for (HBasicBlock* block : graph->GetReversePostOrderSkipEntryBlock()) {
-    for (HInstructionIteratorPrefetchNext instr_it(block->GetInstructions());
-         !instr_it.Done();
-         instr_it.Advance()) {
-      ++number_of_instructions;
-    }
-  }
-  return number_of_instructions;
-}
-
 void HInliner::UpdateInliningBudget() {
   if (total_number_of_instructions_ >= kMaximumNumberOfTotalInstructions) {
     // Always try to inline small methods.
@@ -153,7 +141,7 @@ bool HInliner::Run() {
   // Initialize the number of instructions for the method being compiled. Recursive calls
   // to HInliner::Run have already updated the instruction count.
   if (outermost_graph_ == graph_) {
-    total_number_of_instructions_ = CountNumberOfInstructions(graph_);
+    total_number_of_instructions_ = graph_->CountNumberOfInstructions();
   }
 
   UpdateInliningBudget();
@@ -959,7 +947,6 @@ HInstruction* HInliner::AddTypeGuard(HInstruction* receiver,
                                      Handle<mirror::Class> klass,
                                      HInstruction* invoke_instruction,
                                      bool with_deoptimization) {
-  ClassLinker* class_linker = caller_compilation_unit_.GetClassLinker();
   HInstanceFieldGet* receiver_class = BuildGetReceiverClass(
       receiver, invoke_instruction->GetDexPc());
   if (cursor != nullptr) {
@@ -2347,7 +2334,8 @@ void HInliner::RunOptimizations(HGraph* callee_graph,
   // Note: if the outermost_graph_ is being compiled OSR, we should not run any
   // optimization that could lead to a HDeoptimize. The following optimizations do not.
   HDeadCodeElimination dce(callee_graph, inline_stats_, "dead_code_elimination$inliner");
-  HConstantFolding fold(callee_graph, inline_stats_, "constant_folding$inliner");
+  HConstantFolding fold(
+      callee_graph, codegen_->GetCompilerOptions(), inline_stats_, "constant_folding$inliner");
   InstructionSimplifier simplify(callee_graph, codegen_, inline_stats_);
 
   HOptimization* optimizations[] = {
@@ -2362,7 +2350,7 @@ void HInliner::RunOptimizations(HGraph* callee_graph,
   }
 
   // Bail early if we know we already are over the limit.
-  size_t number_of_instructions = CountNumberOfInstructions(callee_graph);
+  size_t number_of_instructions = callee_graph->CountNumberOfInstructions();
   if (number_of_instructions > inlining_budget_) {
     LOG_NOTE() << "Calls in " << callee_graph->GetArtMethod()->PrettyMethod()
              << " will not be inlined because the outer method has reached"

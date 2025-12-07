@@ -52,7 +52,6 @@
 #include "gc/heap.h"
 #include "gc/scoped_gc_critical_section.h"
 #include "handle_scope-inl.h"
-#include "indirect_reference_table.h"
 #include "instrumentation.h"
 #include "interpreter/shadow_frame.h"
 #include "jni/jni_env_ext-inl.h"

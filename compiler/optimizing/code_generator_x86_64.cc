@@ -70,7 +70,7 @@ static constexpr int kC2ConditionMask = 0x400;
 static RegisterSet OneRegInReferenceOutSaveEverythingCallerSaves() {
   // Custom calling convention: RAX serves as both input and output.
   RegisterSet caller_saves = RegisterSet::Empty();
-  caller_saves.Add(Location::RegisterLocation(RAX));
+  caller_saves.AddCoreRegister(RAX);
   return caller_saves;
 }
 
@@ -1179,6 +1179,7 @@ void CodeGeneratorX86_64::GenerateStaticOrDirectCall(
     case MethodLoadKind::kBootImageLinkTimePcRelative:
       // For kCallCriticalNative we skip loading the method and do the call directly.
       if (invoke->GetCodePtrLocation() == CodePtrLocation::kCallCriticalNative) {
+        DCHECK(!callee_method.IsRegister());  // There are FP temps requested to block xmm12-15.
         break;
       }
       FALLTHROUGH_INTENDED;
@@ -1590,7 +1591,6 @@ static constexpr bool kIsIntrinsicUnimplemented[] = {
 
 }  // namespace detail
 
-static constexpr int kNumberOfCpuRegisterPairs = 0;
 // Use a fake return address register to mimic Quick.
 static constexpr Register kFakeReturnRegister = Register(kLastCpuRegister + 1);
 CodeGeneratorX86_64::CodeGeneratorX86_64(HGraph* graph,
@@ -1599,10 +1599,7 @@ CodeGeneratorX86_64::CodeGeneratorX86_64(HGraph* graph,
     : CodeGenerator(graph,
                     kNumberOfCpuRegisters,
                     kNumberOfFloatRegisters,
-                    kNumberOfCpuRegisterPairs,
-                    ComputeRegisterMask(kCoreCalleeSaves, arraysize(kCoreCalleeSaves))
-                        | (1 << kFakeReturnRegister),
-                    ComputeRegisterMask(kFpuCalleeSaves, arraysize(kFpuCalleeSaves)),
+                    ComputeCalleeSaves(),
                     compiler_options,
                     stats,
                     ArrayRef<const bool>(detail::kIsIntrinsicUnimplemented)),
@@ -1630,7 +1627,8 @@ CodeGeneratorX86_64::CodeGeneratorX86_64(HGraph* graph,
       jit_class_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       jit_method_type_patches_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       fixups_to_jump_tables_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)) {
-  AddAllocatedRegister(Location::RegisterLocation(kFakeReturnRegister));
+  blocked_registers_ = ComputeBlockedRegisters();
+  AddAllocatedCoreRegister(kFakeReturnRegister);
 }
 
 InstructionCodeGeneratorX86_64::InstructionCodeGeneratorX86_64(HGraph* graph,
@@ -1639,12 +1637,20 @@ InstructionCodeGeneratorX86_64::InstructionCodeGeneratorX86_64(HGraph* graph,
         assembler_(codegen->GetAssembler()),
         codegen_(codegen) {}
 
-void CodeGeneratorX86_64::SetupBlockedRegisters() const {
-  // Stack register is always reserved.
-  blocked_core_registers_[RSP] = true;
+inline RegisterSet CodeGeneratorX86_64::ComputeCalleeSaves() {
+  RegisterSet callee_saves = RegisterSet::Empty();
+  callee_saves.AddCoreRegisterSet(
+      ComputeRegisterMask(kCoreCalleeSaves, arraysize(kCoreCalleeSaves)) |
+      (1 << kFakeReturnRegister));
+  callee_saves.AddFpuRegisterSet(ComputeRegisterMask(kFpuCalleeSaves, arraysize(kFpuCalleeSaves)));
+  return callee_saves;
+}
 
-  // Block the register used as TMP.
-  blocked_core_registers_[TMP] = true;
+inline RegisterSet CodeGeneratorX86_64::ComputeBlockedRegisters() {
+  RegisterSet blocked_registers = RegisterSet::Empty();
+  // Stack register is always reserved. Block the register used as TMP.
+  blocked_registers.AddCoreRegisterSet((1u << RSP) | (1u << TMP));
+  return blocked_registers;
 }
 
 static dwarf::Reg DWARFReg(Register reg) {
@@ -1896,7 +1902,7 @@ void CodeGeneratorX86_64::GenerateFrameEntry() {
     size_t xmm_spill_slot_size = GetCalleePreservedFPWidth();
 
     for (int i = arraysize(kFpuCalleeSaves) - 1; i >= 0; --i) {
-      if (allocated_registers_.ContainsFloatingPointRegister(kFpuCalleeSaves[i])) {
+      if (allocated_registers_.ContainsFpuRegister(kFpuCalleeSaves[i])) {
         int offset = xmm_spill_location + (xmm_spill_slot_size * i);
         __ movsd(Address(CpuRegister(RSP), offset), XmmRegister(kFpuCalleeSaves[i]));
         __ cfi().RelOffset(DWARFReg(kFpuCalleeSaves[i]), offset);
@@ -1928,7 +1934,7 @@ void CodeGeneratorX86_64::GenerateFrameExit() {
     uint32_t xmm_spill_location = GetFpuSpillStart();
     size_t xmm_spill_slot_size = GetCalleePreservedFPWidth();
     for (size_t i = 0; i < arraysize(kFpuCalleeSaves); ++i) {
-      if (allocated_registers_.ContainsFloatingPointRegister(kFpuCalleeSaves[i])) {
+      if (allocated_registers_.ContainsFpuRegister(kFpuCalleeSaves[i])) {
         int offset = xmm_spill_location + (xmm_spill_slot_size * i);
         __ movsd(XmmRegister(kFpuCalleeSaves[i]), Address(CpuRegister(RSP), offset));
         __ cfi().Restore(DWARFReg(kFpuCalleeSaves[i]));
@@ -2096,7 +2102,7 @@ void CodeGeneratorX86_64::AddLocationAsTemp(Location location, LocationSummary* 
 }
 
 void InstructionCodeGeneratorX86_64::HandleGoto(HInstruction* got, HBasicBlock* successor) {
-  if (successor->IsExitBlock()) {
+  if (GetGraph()->IsExitBlock(successor)) {
     DCHECK(got->GetPrevious()->AlwaysThrows());
     return;  // no code needed
   }
@@ -2111,7 +2117,7 @@ void InstructionCodeGeneratorX86_64::HandleGoto(HInstruction* got, HBasicBlock* 
     return;
   }
 
-  if (block->IsEntryBlock() && (previous != nullptr) && previous->IsSuspendCheck()) {
+  if (GetGraph()->IsEntryBlock(block) && (previous != nullptr) && previous->IsSuspendCheck()) {
     GenerateSuspendCheck(previous->AsSuspendCheck(), nullptr);
   }
   if (!codegen_->GoesToNextBlock(got->GetBlock(), successor)) {
@@ -2133,7 +2139,7 @@ void LocationsBuilderX86_64::VisitTryBoundary(HTryBoundary* try_boundary) {
 
 void InstructionCodeGeneratorX86_64::VisitTryBoundary(HTryBoundary* try_boundary) {
   HBasicBlock* successor = try_boundary->GetNormalFlowSuccessor();
-  if (!successor->IsExitBlock()) {
+  if (!GetGraph()->IsExitBlock(successor)) {
     HandleGoto(try_boundary, successor);
   }
 }
@@ -2404,7 +2410,7 @@ void LocationsBuilderX86_64::VisitDeoptimize(HDeoptimize* deoptimize) {
       LocationSummary::Create(allocator_, deoptimize, LocationSummary::kCallOnSlowPath);
   InvokeRuntimeCallingConvention calling_convention;
   RegisterSet caller_saves = RegisterSet::Empty();
-  caller_saves.Add(Location::RegisterLocation(calling_convention.GetRegisterAt(0)));
+  caller_saves.AddCoreRegister(calling_convention.GetRegisterAt(0));
   locations->SetCustomSlowPathCallerSaves(caller_saves);
   if (IsBooleanValueOrMaterializedCondition(deoptimize->InputAt(0))) {
     locations->SetInAt(0, Location::Any());
@@ -3098,6 +3104,10 @@ void LocationsBuilderX86_64::VisitInvokeStaticOrDirect(HInvokeStaticOrDirect* in
     CriticalNativeCallingConventionVisitorX86_64 calling_convention_visitor(
         /*for_register_allocation=*/ true);
     CodeGenerator::CreateCommonInvokeLocationSummary(invoke, &calling_convention_visitor);
+    if (invoke->GetMethodLoadKind() != MethodLoadKind::kBootImageLinkTimePcRelative) {
+      // Use R10 for the target method. This is neither a calleee-save nor an argument register.
+      invoke->GetLocations()->AddTemp(Location::RegisterLocation(R10));
+    }
     CodeGeneratorX86_64::BlockNonVolatileXmmRegisters(invoke->GetLocations());
   } else {
     HandleInvoke(invoke);
@@ -6169,8 +6179,8 @@ void InstructionCodeGeneratorX86_64::VisitArrayLength(HArrayLength* instruction)
 void LocationsBuilderX86_64::VisitBoundsCheck(HBoundsCheck* instruction) {
   RegisterSet caller_saves = RegisterSet::Empty();
   InvokeRuntimeCallingConvention calling_convention;
-  caller_saves.Add(Location::RegisterLocation(calling_convention.GetRegisterAt(0)));
-  caller_saves.Add(Location::RegisterLocation(calling_convention.GetRegisterAt(1)));
+  caller_saves.AddCoreRegister(calling_convention.GetRegisterAt(0));
+  caller_saves.AddCoreRegister(calling_convention.GetRegisterAt(1));
   LocationSummary* locations = codegen_->CreateThrowingSlowPathLocations(instruction, caller_saves);
   locations->SetInAt(0, Location::RegisterOrConstant(instruction->InputAt(0)));
   HInstruction* length = instruction->InputAt(1);
@@ -6335,7 +6345,7 @@ void InstructionCodeGeneratorX86_64::VisitSuspendCheck(HSuspendCheck* instructio
     // The back edge will generate the suspend check.
     return;
   }
-  if (block->IsEntryBlock() && instruction->GetNext()->IsGoto()) {
+  if (GetGraph()->IsEntryBlock(block) && instruction->GetNext()->IsGoto()) {
     // The goto will generate the suspend check.
     return;
   }
@@ -6790,7 +6800,7 @@ void InstructionCodeGeneratorX86_64::VisitLoadClass(HLoadClass* cls) NO_THREAD_S
     }
     case HLoadClass::LoadKind::kJitTableAddress: {
       Address address = Address::Absolute(CodeGeneratorX86_64::kPlaceholder32BitOffset,
-                                          /* no_rip= */ true);
+                                          /* no_rip= */ false);
       Label* fixup_label =
           codegen_->NewJitRootClassPatch(cls->GetDexFile(), cls->GetTypeIndex(), cls->GetClass());
       // /* GcRoot<mirror::Class> */ out = *address
@@ -6893,7 +6903,7 @@ void InstructionCodeGeneratorX86_64::VisitLoadMethodType(HLoadMethodType* load) 
     }
     case HLoadMethodType::LoadKind::kJitTableAddress: {
       Address address = Address::Absolute(CodeGeneratorX86_64::kPlaceholder32BitOffset,
-                                          /* no_rip= */ true);
+                                          /* no_rip= */ false);
       Handle<mirror::MethodType> method_type = load->GetMethodType();
       DCHECK(method_type != nullptr);
       Label* fixup_label = codegen_->NewJitRootMethodTypePatch(
@@ -7010,7 +7020,7 @@ void InstructionCodeGeneratorX86_64::VisitLoadString(HLoadString* load) NO_THREA
     }
     case HLoadString::LoadKind::kJitTableAddress: {
       Address address = Address::Absolute(CodeGeneratorX86_64::kPlaceholder32BitOffset,
-                                          /* no_rip= */ true);
+                                          /* no_rip= */ false);
       Label* fixup_label = codegen_->NewJitRootStringPatch(
           load->GetDexFile(), load->GetStringIndex(), load->GetString());
       // /* GcRoot<mirror::String> */ out = *address
@@ -8548,35 +8558,39 @@ void CodeGeneratorX86_64::MoveInt64ToAddress(const Address& addr_low,
   }
 }
 
-void CodeGeneratorX86_64::PatchJitRootUse(uint8_t* code,
+void CodeGeneratorX86_64::PatchJitRootUse(uint8_t* buffer,
+                                          const uint8_t* code_address,
                                           const uint8_t* roots_data,
                                           const PatchInfo<Label>& info,
                                           uint64_t index_in_table) const {
   uint32_t code_offset = info.label.Position() - kLabelPositionToLiteralOffsetAdjustment;
-  uintptr_t address =
-      reinterpret_cast<uintptr_t>(roots_data) + index_in_table * sizeof(GcRoot<mirror::Object>);
-  using unaligned_uint32_t __attribute__((__aligned__(1))) = uint32_t;
-  reinterpret_cast<unaligned_uint32_t*>(code + code_offset)[0] =
-      dchecked_integral_cast<uint32_t>(address);
+  intptr_t address =
+      reinterpret_cast<intptr_t>(roots_data) + index_in_table * sizeof(GcRoot<mirror::Object>);
+  using unaligned_int32_t __attribute__((__aligned__(1))) = int32_t;
+  intptr_t code = reinterpret_cast<intptr_t>(code_address) + info.label.Position();
+  reinterpret_cast<unaligned_int32_t*>(buffer + code_offset)[0] =
+      dchecked_integral_cast<int32_t>(address - code);
 }
 
-void CodeGeneratorX86_64::EmitJitRootPatches(uint8_t* code, const uint8_t* roots_data) {
+void CodeGeneratorX86_64::EmitJitRootPatches(uint8_t* buffer,
+                                             const uint8_t* code_address,
+                                             const uint8_t* roots_data) {
   for (const PatchInfo<Label>& info : jit_string_patches_) {
     StringReference string_reference(info.target_dex_file, dex::StringIndex(info.offset_or_index));
     uint64_t index_in_table = GetJitStringRootIndex(string_reference);
-    PatchJitRootUse(code, roots_data, info, index_in_table);
+    PatchJitRootUse(buffer, code_address, roots_data, info, index_in_table);
   }
 
   for (const PatchInfo<Label>& info : jit_class_patches_) {
     TypeReference type_reference(info.target_dex_file, dex::TypeIndex(info.offset_or_index));
     uint64_t index_in_table = GetJitClassRootIndex(type_reference);
-    PatchJitRootUse(code, roots_data, info, index_in_table);
+    PatchJitRootUse(buffer, code_address, roots_data, info, index_in_table);
   }
 
   for (const PatchInfo<Label>& info : jit_method_type_patches_) {
     ProtoReference proto_reference(info.target_dex_file, dex::ProtoIndex(info.offset_or_index));
     uint64_t index_in_table = GetJitMethodTypeRootIndex(proto_reference);
-    PatchJitRootUse(code, roots_data, info, index_in_table);
+    PatchJitRootUse(buffer, code_address, roots_data, info, index_in_table);
   }
 }
 
@@ -8596,14 +8610,22 @@ bool InstructionCodeGeneratorX86_64::CpuHasAvx2FeatureFlag() {
   return codegen_->GetInstructionSetFeatures().HasAVX2();
 }
 
-void LocationsBuilderX86_64::VisitBitwiseNegatedRight(
-    [[maybe_unused]] HBitwiseNegatedRight* instruction) {
-  LOG(FATAL) << "Unimplemented";
+void LocationsBuilderX86_64::VisitBitwiseNegatedRight(HBitwiseNegatedRight* instruction) {
+  DCHECK(codegen_->GetInstructionSetFeatures().HasAVX2());
+  DCHECK(DataType::IsIntegralType(instruction->GetType())) << instruction->GetType();
+  LocationSummary* locations = LocationSummary::CreateNoCall(allocator_, instruction);
+  locations->SetInAt(0, Location::RequiresRegister());
+  locations->SetInAt(1, Location::RequiresRegister());
+  locations->SetOut(Location::RequiresRegister(), Location::kNoOutputOverlap);
 }
 
-void InstructionCodeGeneratorX86_64::VisitBitwiseNegatedRight(
-    [[maybe_unused]] HBitwiseNegatedRight* instruction) {
-  LOG(FATAL) << "Unimplemented";
+void InstructionCodeGeneratorX86_64::VisitBitwiseNegatedRight(HBitwiseNegatedRight* instruction) {
+  LocationSummary* locations = instruction->GetLocations();
+  Location first = locations->InAt(0);
+  Location second = locations->InAt(1);
+  Location dest = locations->Out();
+  __ andn(dest.AsRegister<CpuRegister>(), second.AsRegister<CpuRegister>(),
+          first.AsRegister<CpuRegister>());
 }
 
 #undef __

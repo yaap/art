@@ -32,7 +32,6 @@
 #include "base/unix_file/fd_file.h"
 #include "base/utils.h"
 #include "class_linker.h"
-#include "com_android_art_flags.h"
 #include "common_throws.h"
 #include "debugger.h"
 #include "dex/descriptors_names.h"
@@ -53,8 +52,6 @@
 #include "thread_list.h"
 #include "trace_common.h"
 #include "trace_profile.h"
-
-namespace art_flags = com::android::art::flags;
 
 namespace art HIDDEN {
 
@@ -835,7 +832,7 @@ void Trace::FlushThreadBuffer(Thread* self) {
   // Check if we still need to flush inside the trace_lock_. If we are stopping tracing it is
   // possible we already deleted the trace and flushed the buffer too.
   if (the_trace_ == nullptr) {
-    if (art_flags::always_enable_profile_code()) {
+    if (ShouldEnableProfileCode()) {
       TraceProfiler::ReleaseThreadBuffer(self);
     }
     DCHECK_EQ(self->GetMethodTraceBuffer(), nullptr);
@@ -849,7 +846,7 @@ void Trace::ReleaseThreadBuffer(Thread* self) {
   // Check if we still need to flush inside the trace_lock_. If we are stopping tracing it is
   // possible we already deleted the trace and flushed the buffer too.
   if (the_trace_ == nullptr) {
-    if (art_flags::always_enable_profile_code()) {
+    if (ShouldEnableProfileCode()) {
       TraceProfiler::ReleaseThreadBuffer(self);
     }
     DCHECK_EQ(self->GetMethodTraceBuffer(), nullptr);
@@ -1715,9 +1712,6 @@ void TraceWriter::FlushBuffer(uintptr_t* method_trace_entries,
   // method id for each method. We do that by maintaining a map from id to method for each newly
   // seen method. trace_writer_lock_ is required to serialize these.
   MutexLock mu(Thread::Current(), trace_writer_lock_);
-  size_t current_index = 0;
-  uint8_t* buffer_ptr = buf_.get();
-  size_t buffer_size = buffer_size_;
 
   size_t num_entries = GetNumEntries(clock_source_);
   size_t num_records = (kPerThreadBufSize - current_offset) / num_entries;

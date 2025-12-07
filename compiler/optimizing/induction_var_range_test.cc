@@ -73,7 +73,6 @@ class InductionVarRangeTest : public OptimizingUnitTest {
     std::tie(loop_preheader_, loop_header_, loop_body_) = CreateWhileLoop(return_block_);
     loop_header_->SwapSuccessors();  // Move the loop exit to the "else" successor.
     // Instructions.
-    HInstruction* lower_const = graph_->GetIntConstant(lower);
     HPhi* phi;
     std::tie(phi, increment_) = MakeLinearLoopVar(loop_header_, loop_body_, lower, stride);
     IfCondition cond = (stride > 0) ? kCondLT : kCondGT;

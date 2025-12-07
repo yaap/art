@@ -428,6 +428,26 @@ public class Main {
   /// CHECK-START-RISCV64: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_riscv64 (after)
   /// CHECK:                            BitwiseNegatedRight kind:And
 
+
+  /// CHECK-START-X86_64: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_x86_64 (before)
+  /// CHECK:       <<HAnd:i\d+>>        And [<<Left:i\d+>>,<<Right:i\d+>>]
+  /// CHECK:                            Sub [<<Left>>,<<HAnd>>]
+
+  /// CHECK-START-X86_64: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_x86_64 (after)
+  /// CHECK-IF: hasIsaFeature('avx2')
+  /// CHECK-NOT:                        And
+  /// CHECK-FI:
+
+  /// CHECK-START-X86_64: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_x86_64 (after)
+  /// CHECK-IF: hasIsaFeature('avx2')
+  /// CHECK-NOT:                        Sub
+  /// CHECK-FI:
+
+  /// CHECK-START-X86_64: int Main.$noinline$AndSubIntoBic(int, int) instruction_simplifier_x86_64 (after)
+  /// CHECK-IF: hasIsaFeature('avx2')
+  /// CHECK:                            BitwiseNegatedRight kind:And
+  /// CHECK-FI:
+
   public static int $noinline$AndSubIntoBic(int a, int b) {
       return a - (a & b);
   }
@@ -475,6 +495,26 @@ public class Main {
 
   /// CHECK-START-RISCV64: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_riscv64 (after)
   /// CHECK:                            BitwiseNegatedRight kind:And
+
+
+  /// CHECK-START-X86_64: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_x86_64 (before)
+  /// CHECK:       <<HAnd:i\d+>>        And [<<Left:i\d+>>,<<Right:i\d+>>]
+  /// CHECK:                            Sub [<<Right>>,<<HAnd>>]
+
+  /// CHECK-START-X86_64: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_x86_64 (after)
+  /// CHECK-IF: hasIsaFeature('avx2')
+  /// CHECK-NOT:                        And
+  /// CHECK-FI:
+
+  /// CHECK-START-X86_64: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_x86_64 (after)
+  /// CHECK-IF: hasIsaFeature('avx2')
+  /// CHECK-NOT:                        Sub
+  /// CHECK-FI:
+
+  /// CHECK-START-X86_64: int Main.$noinline$AndSubIntoBic_v2(int, int) instruction_simplifier_x86_64 (after)
+  /// CHECK-IF: hasIsaFeature('avx2')
+  /// CHECK:                            BitwiseNegatedRight kind:And
+  /// CHECK-FI:
 
   public static int $noinline$AndSubIntoBic_v2(int a, int b) {
       return b - (a & b);

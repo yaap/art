@@ -158,6 +158,7 @@ art_cc_defaults {
         "optimizing/data_type.cc",
         "optimizing/dead_code_elimination.cc",
         "optimizing/escape.cc",
+        "optimizing/graph.cc",
         "optimizing/graph_checker.cc",
         "optimizing/graph_visualizer.cc",
         "optimizing/gvn.cc",
@@ -302,6 +303,7 @@ gensrcs {
     tools: ["generate_operator_out"],
     srcs: [
         "linker/linker_patch.h",
+        "optimizing/graph.h",
         "optimizing/locations.h",
         "optimizing/nodes.h",
         "optimizing/optimizing_compiler_stats.h",
@@ -507,6 +509,7 @@ art_cc_defaults {
         "optimizing/prepare_for_register_allocation_test.cc",
         "optimizing/pretty_printer_test.cc",
         "optimizing/reference_type_propagation_test.cc",
+        "optimizing/register_allocator_test.cc",
         "optimizing/side_effects_test.cc",
         "optimizing/ssa_liveness_analysis_test.cc",
         "optimizing/ssa_test.cc",
@@ -524,11 +527,13 @@ art_cc_defaults {
     codegen: {
         arm: {
             srcs: [
+                "optimizing/instruction_simplifier_arm_test.cc",
                 "utils/arm/managed_register_arm_test.cc",
             ],
         },
         arm64: {
             srcs: [
+                "optimizing/instruction_simplifier_arm64_test.cc",
                 "utils/arm64/managed_register_arm64_test.cc",
             ],
         },
@@ -541,10 +546,6 @@ art_cc_defaults {
         x86: {
             srcs: [
                 "utils/x86/managed_register_x86_test.cc",
-
-                // This test is testing architecture-independent functionality,
-                // but happens to use x86 codegen as part of the test.
-                "optimizing/register_allocator_test.cc",
             ],
         },
         x86_64: {

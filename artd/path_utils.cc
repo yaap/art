@@ -18,6 +18,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "aidl/com/android/server/art/ArtConstants.h"
@@ -62,6 +63,11 @@ using TmpProfilePath = ProfilePath::TmpProfilePath;
 using WritableProfilePath = ProfilePath::WritableProfilePath;
 
 constexpr const char* kPreRebootSuffix = ".staged";
+constexpr const char* kPreRebootStagedMetadataFile = "/dalvik-cache/staged_metadata.txt.staged";
+
+// An old version doesn't know about the staged metadata file but only the Pre-reboot suffix. If the
+// file didn't end with the suffix, `Artd::cleanup` would consider it an unknown file and delete it.
+static_assert(std::string_view(kPreRebootStagedMetadataFile).ends_with(kPreRebootSuffix), "");
 
 // Only to be changed for testing.
 std::string_view gListRootDir = "/";
@@ -368,6 +374,10 @@ bool PreRebootFlag(const VdexPath& vdex_path) {
 
 bool IsPreRebootStagedFile(std::string_view filename) {
   return filename.ends_with(kPreRebootSuffix);
+}
+
+Result<std::string> GetPreRebootStagedMetadataFile() {
+  return OR_RETURN(GetAndroidDataOrError()) + kPreRebootStagedMetadataFile;
 }
 
 void TestOnlySetListRootDir(std::string_view root_dir) { gListRootDir = root_dir; }

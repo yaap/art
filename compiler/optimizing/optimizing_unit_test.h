@@ -95,20 +95,21 @@ inline std::ostream& operator<<(std::ostream& os, const InstructionDumper& id) {
 #define ASSERT_BLOCK_REMOVED(b) ASSERT_TRUE(IsRemoved(b)) << "Not removed: B" << b->GetBlockId()
 #define ASSERT_BLOCK_RETAINED(b) ASSERT_FALSE(IsRemoved(b)) << "Removed: B" << b->GetBlockId()
 
+// Build a `LiveInterval`. Does not support pair intervals.
 inline LiveInterval* BuildInterval(const size_t ranges[][2],
                                    size_t number_of_ranges,
                                    ScopedArenaAllocator* allocator,
-                                   int reg = -1,
+                                   uint32_t regs = kNoRegisters,
                                    HInstruction* defined_by = nullptr) {
   LiveInterval* interval =
-      LiveInterval::MakeInterval(allocator, DataType::Type::kInt32, defined_by);
+      LiveInterval::MakeInterval(allocator, DataType::Type::kInt32, /*is_pair=*/ false, defined_by);
   if (defined_by != nullptr) {
     defined_by->SetLiveInterval(interval);
   }
   for (size_t i = number_of_ranges; i > 0; --i) {
     interval->AddRange(ranges[i - 1][0], ranges[i - 1][1]);
   }
-  interval->SetRegister(reg);
+  interval->SetRegisters(regs);
   return interval;
 }
 
@@ -248,8 +249,8 @@ class OptimizingUnitTestHelper {
         std::make_shared<MemoryDexFileContainer>(dex_data, sizeof(StandardDexFile::Header));
     dex_files_.emplace_back(new StandardDexFile(dex_data,
                                                 "no_location",
-                                                /*location_checksum*/ 0,
-                                                /*oat_dex_file*/ nullptr,
+                                                /*location_checksum=*/ 0,
+                                                /*oat_dex_file=*/ nullptr,
                                                 std::move(container)));
 
     graph_ = new (allocator) HGraph(
@@ -257,8 +258,9 @@ class OptimizingUnitTestHelper {
         pool_and_allocator_->GetArenaStack(),
         handles,
         *dex_files_.back(),
-        /*method_idx*/-1,
-        kRuntimeISA);
+        /*method_idx=*/ -1,
+        kRuntimeISA,
+        kInvalidInvokeType);
     return graph_;
   }
 
@@ -649,6 +651,25 @@ class OptimizingUnitTestHelper {
     return array_length;
   }
 
+  HStaticFieldGet* MakeSFieldGet(HBasicBlock* block,
+                                 HLoadClass* load_class,
+                                 ArtField* field,
+                                 DataType::Type field_type,
+                                 uint32_t dex_pc = kNoDexPc) {
+    CHECK(field->IsStatic());
+    HStaticFieldGet* sget = new (GetAllocator()) HStaticFieldGet(load_class,
+                                                                 field,
+                                                                 field_type,
+                                                                 field->GetOffset(),
+                                                                 field->IsVolatile(),
+                                                                 kUnknownFieldIndex,
+                                                                 kUnknownClassDefIndex,
+                                                                 graph_->GetDexFile(),
+                                                                 dex_pc);
+    AddOrInsertInstruction(block, sget);
+    return sget;
+  }
+
   HNullCheck* MakeNullCheck(HBasicBlock* block,
                             HInstruction* value,
                             std::initializer_list<HInstruction*> env = {},
@@ -999,6 +1020,8 @@ class OptimizingUnitTestHelper {
   }
 
  protected:
+  static constexpr InvokeType kInvalidInvokeType = static_cast<InvokeType>(-1);
+
   bool CheckGraph(HGraph* graph, std::ostream& oss) {
     GraphChecker checker(graph);
     checker.Run();

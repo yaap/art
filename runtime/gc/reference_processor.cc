@@ -18,9 +18,9 @@
 
 #include "art_field-inl.h"
 #include "base/mutex.h"
+#include "base/systrace.h"
 #include "base/time_utils.h"
 #include "base/utils.h"
-#include "base/systrace.h"
 #include "class_root-inl.h"
 #include "collector/garbage_collector.h"
 #include "jni/java_vm_ext.h"

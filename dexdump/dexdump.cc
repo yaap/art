@@ -675,8 +675,15 @@ static void dumpFileHeader(const DexFile* pDexFile) {
           pHeader.signature_[0], pHeader.signature_[1],
           pHeader.signature_[DexFile::kSha1DigestSize - 2],
           pHeader.signature_[DexFile::kSha1DigestSize - 1]);
+  if (pDexFile->HasDexContainer()) {
+    fprintf(gOutFile, "container_size      : %d\n", pHeader.ContainerSize());
+  }
   fprintf(gOutFile, "file_size           : %d\n", pHeader.file_size_);
   fprintf(gOutFile, "header_size         : %d\n", pHeader.header_size_);
+  if (pDexFile->HasDexContainer()) {
+    fprintf(gOutFile, "header_off          : %d (0x%06x)\n",
+            pHeader.HeaderOffset(), pHeader.HeaderOffset());
+  }
   fprintf(gOutFile, "link_size           : %d\n", pHeader.link_size_);
   fprintf(gOutFile, "link_off            : %d (0x%06x)\n",
           pHeader.link_off_, pHeader.link_off_);

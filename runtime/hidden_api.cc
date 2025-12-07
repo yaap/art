@@ -16,7 +16,10 @@
 
 #include "hidden_api.h"
 
+#include <dlfcn.h>
+
 #include <atomic>
+#include <optional>
 
 #include "art_field-inl.h"
 #include "art_method-inl.h"
@@ -93,14 +96,48 @@ static const std::vector<std::string> kCorePlatformApiExemptions = {
     "Ldalvik/system/VMDebug;->removeApplication",
     "Ldalvik/system/VMDebug;->setUserId",
     "Ldalvik/system/VMDebug;->setWaitingForDebugger",
+    // frameworks/base/core/jni/eventlog_helper.h accesses these fields directly
+    // via JNI during initialisation (typically in the zygote).
+    "Ljava/lang/Integer;->value:I",
+    "Ljava/lang/Long;->value:J",
+    "Ljava/lang/Float;->value:F",
+    // More JNI accesses from libandroid_runtime.so in the platform.
+    "Ljava/io/FileDescriptor;-><init>(I)V",
+    "Ljava/lang/Thread;->dispatchUncaughtException(Ljava/lang/Throwable;)V",
+    "Ljava/util/zip/ZipEntry;-><init>(Ljava/lang/String;Ljava/lang/String;JJJII[BJ)V",
 };
 
-static inline std::ostream& operator<<(std::ostream& os, AccessMethod value) {
+static std::optional<std::string> FindDsoForNativeCaller(void* native_caller_addr) {
+  Dl_info info;
+  if (dladdr(native_caller_addr, &info)) {
+    return std::string(info.dli_fname);
+  }
+  return std::nullopt;
+}
+
+std::ostream& operator<<(std::ostream& os, EnforcementPolicy policy) {
+  switch (policy) {
+    case EnforcementPolicy::kDisabled:
+      os << "disabled";
+      break;
+    case EnforcementPolicy::kJustWarn:
+      os << "just-warn";
+      break;
+    case EnforcementPolicy::kEnabled:
+      os << "enabled";
+      break;
+  }
+  return os;
+}
+
+std::ostream& operator<<(std::ostream& os, AccessMethod value) {
   switch (value) {
     case AccessMethod::kCheck:
+      os << "<check>";
+      break;
     case AccessMethod::kCheckWithPolicy:
-      LOG(FATAL) << "Internal access to hidden API should not be logged";
-      UNREACHABLE();
+      os << "<check-with-policy>";
+      break;
     case AccessMethod::kReflection:
       os << "reflection";
       break;
@@ -114,7 +151,7 @@ static inline std::ostream& operator<<(std::ostream& os, AccessMethod value) {
   return os;
 }
 
-static inline std::ostream& operator<<(std::ostream& os, Domain domain) {
+std::ostream& operator<<(std::ostream& os, Domain domain) {
   switch (domain) {
     case Domain::kCorePlatform:
       os << "core-platform";
@@ -129,13 +166,19 @@ static inline std::ostream& operator<<(std::ostream& os, Domain domain) {
   return os;
 }
 
-static inline std::ostream& operator<<(std::ostream& os, const AccessContext& value)
+std::ostream& operator<<(std::ostream& os, const AccessContext& value)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   if (!value.GetClass().IsNull()) {
     std::string tmp;
     os << value.GetClass()->GetDescriptor(&tmp);
   } else if (value.GetDexFile() != nullptr) {
     os << value.GetDexFile()->GetLocation();
+  } else if (std::optional<std::string> dso_name =
+                 value.GetNativeCallerAddr() != nullptr
+                     ? FindDsoForNativeCaller(value.GetNativeCallerAddr())
+                     : std::nullopt;
+             dso_name.has_value()) {
+    os << dso_name.value();
   } else {
     os << "<unknown_caller>";
   }
@@ -155,26 +198,31 @@ static const char* FormatHiddenApiRuntimeFlags(uint32_t runtime_flags) {
   }
 }
 
-static Domain DetermineDomainFromLocation(const std::string& dex_location,
-                                          ObjPtr<mirror::ClassLoader> class_loader) {
+static std::optional<Domain> DetermineDomainForApexLocation(const std::string& location) {
   // If running with APEX, check `path` against known APEX locations.
   // These checks will be skipped on target buildbots where ANDROID_ART_ROOT
   // is set to "/system".
   if (ArtModuleRootDistinctFromAndroidRoot()) {
-    if (LocationIsOnArtModule(dex_location) || LocationIsOnConscryptModule(dex_location)) {
+    if (LocationIsOnArtModule(location) || LocationIsOnConscryptModule(location)) {
       return Domain::kCorePlatform;
     }
 
-    if (LocationIsOnApex(dex_location)) {
+    if (LocationIsOnApex(location)) {
       return Domain::kPlatform;
     }
   }
 
-  if (LocationIsOnSystemFramework(dex_location)) {
-    return Domain::kPlatform;
+  return std::nullopt;
+}
+
+static Domain DetermineDomainFromDexLocation(const std::string& dex_location,
+                                             ObjPtr<mirror::ClassLoader> class_loader) {
+  if (std::optional<Domain> dex_domain = DetermineDomainForApexLocation(dex_location);
+      dex_domain.has_value()) {
+    return dex_domain.value();
   }
 
-  if (LocationIsOnSystemExtFramework(dex_location)) {
+  if (LocationIsOnSystemFramework(dex_location) || LocationIsOnSystemExtFramework(dex_location)) {
     return Domain::kPlatform;
   }
 
@@ -190,8 +238,43 @@ static Domain DetermineDomainFromLocation(const std::string& dex_location,
   return Domain::kApplication;
 }
 
+AccessContext AccessContext::FromNativeCaller(void* native_caller_addr) {
+#ifdef ART_TARGET_ANDROID
+  if (std::optional<std::string> opt_dso_name = FindDsoForNativeCaller(native_caller_addr);
+      opt_dso_name.has_value()) {
+    std::string dso_name = std::move(opt_dso_name.value());
+    if (std::optional<Domain> d = DetermineDomainForApexLocation(dso_name); d.has_value()) {
+      return AccessContext(nullptr, nullptr, native_caller_addr, d.value());
+    }
+
+    if (LocationIsOnSystem(dso_name) || LocationIsOnSystemExt(dso_name)) {
+      return AccessContext(nullptr, nullptr, native_caller_addr, Domain::kPlatform);
+    }
+
+    return AccessContext(nullptr, nullptr, native_caller_addr, Domain::kApplication);
+  }
+
+  LOG(INFO) << "hiddenapi: DSO couldn't be determined for caller " << native_caller_addr;
+  return AccessContext(/*is_trusted=*/false);
+
+#else  // !ART_TARGET_ANDROID
+  // In host tests all APEX and system .so libs end up in the same directory
+  // (typically out/host/linux-x86/lib64), making it tedious to tell platform and
+  // core-platform domains apart. Leave the caller unidentified to use fallback
+  // code paths, but it means some tests may not behave correctly on host.
+  //
+  // With some work we could identify the .so libs in the tests themselves as
+  // belonging to the app domain (e.g. out/host/linux-x86/nativetest(64),
+  // out/host/linux-x86/testcases, and /tmp/art/test for run tests), but that's
+  // not done yet.
+  UNUSED(native_caller_addr);
+  VLOG(hiddenapi) << "hiddenapi: Skipping native caller check on host";
+  return AccessContext(/*is_trusted=*/false);
+#endif
+}
+
 void InitializeDexFileDomain(const DexFile& dex_file, ObjPtr<mirror::ClassLoader> class_loader) {
-  Domain dex_domain = DetermineDomainFromLocation(dex_file.GetLocation(), class_loader);
+  Domain dex_domain = DetermineDomainFromDexLocation(dex_file.GetLocation(), class_loader);
 
   // Assign the domain unless a more permissive domain has already been assigned.
   // This may happen when DexFile is initialized as trusted.
@@ -220,8 +303,157 @@ void InitializeCorePlatformApiPrivateFields() {
   }
 }
 
-hiddenapi::AccessContext GetReflectionCallerAccessContext(Thread* self)
-    REQUIRES_SHARED(Locks::mutator_lock_) {
+static bool EnableNativeCallerCheckForApp() {
+  uint32_t target_sdk_version = Runtime::Current()->GetTargetSdkVersion();
+  // Enable if the target SDK is higher than 36 (Android 16). Also enable if the
+  // target SDK version is not set, e.g. in the zygote.
+  return IsSdkVersionUnsetOrMoreThan(target_sdk_version, SdkVersion::kB);
+}
+
+template <typename T>
+bool ShouldDenyJniAccessToMember(T* member,
+                                 Thread* self,
+                                 AccessMethod access_kind,
+                                 void* native_caller_addr) {
+  struct {
+    Thread* self;
+    void* native_caller_addr;
+    std::optional<AccessContext> native_caller_context;
+    std::optional<AccessContext> java_caller_context;
+
+    AccessContext& GetNativeCallerContext() {
+      if (!native_caller_context.has_value()) {
+        native_caller_context.emplace(AccessContext::FromNativeCaller(native_caller_addr));
+      }
+      return native_caller_context.value();
+    }
+
+    AccessContext& GetJavaCallerContext() REQUIRES_SHARED(Locks::mutator_lock_) {
+      if (!java_caller_context.has_value()) {
+        ObjPtr<mirror::Class> caller = GetCallingClass(self, /* num_frames= */ 1);
+        // If the calling class cannot be determined, e.g. unattached threads, we
+        // conservatively assume the caller is trusted.
+        java_caller_context.emplace(caller.IsNull() ? AccessContext(/* is_trusted= */ true)
+                                                    : AccessContext(caller));
+      }
+      return java_caller_context.value();
+    }
+  } ctx{.self = self, .native_caller_addr = native_caller_addr};
+
+  if (com::android::art::flags::hiddenapi_platform_enforcement() &&
+      (!com::android::art::flags::hiddenapi_jni_api_callers() ||
+       !EnableNativeCallerCheckForApp())) {
+    // Special case to avoid false alarms when accesses from platform to
+    // core-platform are prohibited: If the topmost java frame is in platform
+    // but it has called into native code in an app, then it's possible that the
+    // app has access to APIs that the platform hasn't (e.g. if the app has an
+    // old and permissive target SDK level).
+    //
+    // That's not a problem for apps with a recent enough target SDK level where
+    // we always check the native caller in the standard code path below, but
+    // otherwise we need to check for that specific situation.
+    AccessMethod check_only_method =
+        IsCheckOnlyMethod(access_kind) ? access_kind : AccessMethod::kCheckWithPolicy;
+    if (ShouldDenyAccessToMember(
+            member,
+            [&ctx]() REQUIRES_SHARED(Locks::mutator_lock_) {
+              AccessContext& context = ctx.GetJavaCallerContext();
+              VLOG(hiddenapi) << "hiddenapi: Managed JNI caller " << context << " from "
+                              << context.GetDomain() << " (special case)";
+              return context;
+            },
+            check_only_method) &&
+        ctx.java_caller_context.value().GetDomain() == Domain::kPlatform) {
+      // The java caller is in platform and has been denied, so check the native caller.
+      if (!ShouldDenyAccessToMember(
+              member,
+              [&ctx]() REQUIRES_SHARED(Locks::mutator_lock_) {
+                AccessContext& context = ctx.GetNativeCallerContext();
+                VLOG(hiddenapi) << "hiddenapi: Native JNI caller " << context << " from "
+                                << context.GetDomain() << " (special case)";
+                return context;
+              },
+              check_only_method) &&
+          ctx.native_caller_context.value().GetNativeCallerAddr() != nullptr) {
+        // The native caller has been positively identified
+        // (GetNativeCallerAddr() != nullptr) and is allowed, so the access is fine.
+        return false;
+      }
+    }
+    // Fall through to the standard check in all other cases. The resolved
+    // native and java callers have been cached in ctx so it should be fast.
+  }
+
+  // Standard code path for the hiddenapi check.
+  return ShouldDenyAccessToMember(
+      member,
+      [&ctx]() REQUIRES_SHARED(Locks::mutator_lock_) {
+        if (com::android::art::flags::hiddenapi_jni_api_callers()) {
+          // Construct the context from the native caller address.
+          AccessContext& context = ctx.GetNativeCallerContext();
+
+          if (context.GetNativeCallerAddr() != nullptr) {
+            switch (context.GetDomain()) {
+              case Domain::kApplication:
+                // If the native caller is an app then it should only be used if
+                // the app's target SDK version is recent enough.
+                if (EnableNativeCallerCheckForApp()) {
+                  VLOG(hiddenapi) << "hiddenapi: Native JNI caller " << context << " from "
+                                  << context.GetDomain() << " (target_sdk_version="
+                                  << Runtime::Current()->GetTargetSdkVersion() << ")";
+                  return context;
+                }
+                VLOG(hiddenapi) << "hiddenapi: Native JNI caller " << context << " from "
+                                << context.GetDomain() << " ignored"
+                                << " (target_sdk_version="
+                                << Runtime::Current()->GetTargetSdkVersion() << ")";
+                break;
+
+              case Domain::kPlatform:
+                // If the native caller is platform then it should only be used if
+                // the SDK level is recent enough.
+                // TODO(b/377676642): Replace flag with SDK level check when ramped.
+                if (com::android::art::flags::hiddenapi_platform_enforcement()) {
+                  VLOG(hiddenapi) << "hiddenapi: Native JNI caller " << context << " from "
+                                  << context.GetDomain();
+                  return context;
+                }
+                VLOG(hiddenapi) << "hiddenapi: Native JNI caller " << context << " from "
+                                << context.GetDomain() << " ignored";
+                break;
+
+              case Domain::kCorePlatform:
+                // The native caller is essentially ourselves, and this is the most
+                // permissive domain so it's fine.
+                VLOG(hiddenapi) << "hiddenapi: Native JNI caller " << context << " from "
+                                << context.GetDomain();
+                return context;
+            }
+          }
+        }
+
+        // If we couldn't (or shouldn't) determine the context from the native
+        // caller address then look at the first calling class on the Java stack.
+        // This is the legacy approach, and it's also better than nothing if a DSO
+        // cannot be identified (e.g. for generated code).
+        AccessContext& context = ctx.GetJavaCallerContext();
+        VLOG(hiddenapi) << "hiddenapi: Managed JNI caller " << context << " from "
+                        << context.GetDomain();
+        return context;
+      },
+      access_kind);
+}
+
+template bool ShouldDenyJniAccessToMember<ArtField>(ArtField* member,
+                                                    Thread* self,
+                                                    AccessMethod access_kind,
+                                                    void* native_caller_addr);
+template bool ShouldDenyJniAccessToMember<ArtMethod>(ArtMethod* member,
+                                                     Thread* self,
+                                                     AccessMethod access_kind,
+                                                     void* native_caller_addr);
+
+AccessContext GetReflectionCallerAccessContext(Thread* self) REQUIRES_SHARED(Locks::mutator_lock_) {
   // Walk the stack and find the first frame not from java.lang.Class,
   // java.lang.invoke or java.lang.reflect. This is very expensive.
   // Save this till the last.
@@ -234,22 +466,27 @@ hiddenapi::AccessContext GetReflectionCallerAccessContext(Thread* self)
       ArtMethod* m = GetMethod();
       if (m == nullptr) {
         // Attached native thread. Assume this is *not* boot class path.
+        VLOG(hiddenapi) << "hiddenapi: Stack walk: " << "no method - giving up";
         caller = nullptr;
         return false;
       } else if (m->IsRuntimeMethod()) {
         // Internal runtime method, continue walking the stack.
+        VLOG(hiddenapi) << "hiddenapi: Stack walk: " << "internal method: " << m->PrettyMethod();
         return true;
       }
 
       ObjPtr<mirror::Class> declaring_class = m->GetDeclaringClass();
       if (declaring_class->IsBootStrapClassLoaded()) {
         if (declaring_class->IsClassClass()) {
+          VLOG(hiddenapi) << "hiddenapi: Stack walk: " << "java.lang.Class method: "
+                          << m->PrettyMethod();
           return true;
         }
 
         // MethodHandles.makeIdentity is doing findStatic to find hidden methods,
         // where reflection is used.
         if (m == WellKnownClasses::java_lang_invoke_MethodHandles_makeIdentity) {
+          VLOG(hiddenapi) << "hiddenapi: Stack walk: " << m->PrettyMethod() << " - end";
           return false;
         }
 
@@ -261,6 +498,8 @@ hiddenapi::AccessContext GetReflectionCallerAccessContext(Thread* self)
         ObjPtr<mirror::Class> lookup_class = GetClassRoot<mirror::MethodHandlesLookup>();
         if ((declaring_class == lookup_class || declaring_class->IsInSamePackage(lookup_class)) &&
             !m->IsClassInitializer()) {
+          VLOG(hiddenapi) << "hiddenapi: Stack walk: " << "java.lang.invoke package: "
+                          << m->PrettyMethod();
           return true;
         }
         // Check for classes in the java.lang.reflect package, except for java.lang.reflect.Proxy.
@@ -271,11 +510,14 @@ hiddenapi::AccessContext GetReflectionCallerAccessContext(Thread* self)
         CompatFramework& compat_framework = Runtime::Current()->GetCompatFramework();
         if (declaring_class->IsInSamePackage(proxy_class) && declaring_class != proxy_class) {
           if (compat_framework.IsChangeEnabled(kPreventMetaReflectionBlocklistAccess)) {
+            VLOG(hiddenapi) << "hiddenapi: Stack walk: " << "java.lang.reflect package: "
+                            << m->PrettyMethod();
             return true;
           }
         }
       }
 
+      VLOG(hiddenapi) << "hiddenapi: Stack walk: " << "found caller: " << m->PrettyMethod();
       caller = m;
       return false;
     }
@@ -291,7 +533,10 @@ hiddenapi::AccessContext GetReflectionCallerAccessContext(Thread* self)
   // we conservatively assume the caller is trusted.
   ObjPtr<mirror::Class> caller =
       (visitor.caller == nullptr) ? nullptr : visitor.caller->GetDeclaringClass();
-  return caller.IsNull() ? AccessContext(/* is_trusted= */ true) : AccessContext(caller);
+  AccessContext context =
+      caller.IsNull() ? AccessContext(/* is_trusted= */ true) : AccessContext(caller);
+  VLOG(hiddenapi) << "hiddenapi: Reflection caller " << context << " from " << context.GetDomain();
+  return context;
 }
 
 namespace detail {
@@ -386,8 +631,11 @@ void MemberSignature::LogAccessToLogcat(AccessMethod access_method,
                                         const AccessContext& caller_context,
                                         const AccessContext& callee_context,
                                         EnforcementPolicy policy) {
+  CHECK(access_method == AccessMethod::kReflection || access_method == AccessMethod::kJNI ||
+        access_method == AccessMethod::kLinking)
+      << access_method;
   static std::atomic<uint64_t> logged_access_count_ = 0;
-  if (logged_access_count_ > kMaxLogAccessesToLogcat) {
+  if (!gLogVerbosity.hiddenapi && logged_access_count_ > kMaxLogAccessesToLogcat) {
     return;
   }
   LOG(access_denied ? (policy == EnforcementPolicy::kEnabled ? ERROR : WARNING) : INFO)
@@ -395,14 +643,15 @@ void MemberSignature::LogAccessToLogcat(AccessMethod access_method,
       << Dumpable<MemberSignature>(*this)
       << " (runtime_flags=" << FormatHiddenApiRuntimeFlags(runtime_flags)
       << ", domain=" << callee_context.GetDomain() << ", api=" << api_list << ") from "
-      << caller_context << " (domain=" << caller_context.GetDomain() << ") using " << access_method
-      << (access_denied ? ": denied" : ": allowed");
+      << caller_context << " (domain=" << caller_context.GetDomain()
+      << ", TargetSdkVersion=" << Runtime::Current()->GetTargetSdkVersion() << ") using "
+      << access_method << (access_denied ? ": denied" : ": allowed");
   if (access_denied && api_list.IsTestApi()) {
     // see b/177047045 for more details about test api access getting denied
     LOG(WARNING) << "hiddenapi: If this is a platform test consider enabling "
                  << "VMRuntime.ALLOW_TEST_API_ACCESS change id for this package.";
   }
-  if (logged_access_count_ >= kMaxLogAccessesToLogcat) {
+  if (!gLogVerbosity.hiddenapi && logged_access_count_ >= kMaxLogAccessesToLogcat) {
     LOG(WARNING) << "hiddenapi: Reached maximum number of hidden api access messages.";
   }
   ++logged_access_count_;
@@ -421,8 +670,7 @@ void MemberSignature::LogAccessToEventLog(uint32_t sampled_value,
                                           AccessMethod access_method,
                                           bool access_denied) {
 #ifdef ART_TARGET_ANDROID
-  if (access_method == AccessMethod::kCheck || access_method == AccessMethod::kCheckWithPolicy ||
-      access_method == AccessMethod::kLinking) {
+  if (IsCheckOnlyMethod(access_method) || access_method == AccessMethod::kLinking) {
     // Checks do not correspond to actual accesses, so should be ignored.
     // Linking warnings come from static analysis/compilation of the bytecode
     // and can contain false positives (i.e. code that is never run). Hence we
@@ -698,7 +946,7 @@ bool ShouldDenyAccessToMemberImpl(T* member,
     }
   }
 
-  if (access_method != AccessMethod::kCheck && access_method != AccessMethod::kCheckWithPolicy) {
+  if (!IsCheckOnlyMethod(access_method)) {
     // Warn if blocked signature is being accessed or it is not exempted.
     if (deny_access || !member_signature.DoesPrefixMatchAny(kWarningExemptions)) {
       // Print a log message with information about this class member access.
@@ -811,6 +1059,7 @@ bool ShouldDenyAccessToMember(T* member,
   // This can be *very* expensive. This is why ShouldDenyAccessToMember
   // should not be called on every individual access.
   const AccessContext caller_context = fn_get_access_context();
+  caller_context.GetClass().AssertValid();
   const AccessContext callee_context(member->GetDeclaringClass());
 
   // Non-boot classpath callers should have exited early.
@@ -856,7 +1105,7 @@ bool ShouldDenyAccessToMember(T* member,
       }
 
       // Allow access if access checks are disabled.
-      EnforcementPolicy policy = Runtime::Current()->GetCorePlatformApiEnforcementPolicy();
+      EnforcementPolicy policy = runtime->GetCorePlatformApiEnforcementPolicy();
       if (policy == EnforcementPolicy::kDisabled) {
         return false;
       }
@@ -876,7 +1125,7 @@ bool ShouldDenyAccessToMember(T* member,
       if (api_list.GetMaxAllowedSdkVersion() == SdkVersion::kMax) {
         // Allow access and attempt to update the access flags to avoid
         // re-examining the dex flags next time.
-        detail::MaybeUpdateAccessFlags(Runtime::Current(), member, kAccCorePlatformApi);
+        detail::MaybeUpdateAccessFlags(runtime, member, kAccCorePlatformApi);
         return false;
       }
 
@@ -885,7 +1134,7 @@ bool ShouldDenyAccessToMember(T* member,
       detail::MemberSignature member_signature(member);
       if (member_signature.DoesPrefixMatchAny(kCorePlatformApiExemptions)) {
         // Avoid re-examining the exemption list next time.
-        detail::MaybeUpdateAccessFlags(Runtime::Current(), member, kAccCorePlatformApi);
+        detail::MaybeUpdateAccessFlags(runtime, member, kAccCorePlatformApi);
         return false;
       }
 

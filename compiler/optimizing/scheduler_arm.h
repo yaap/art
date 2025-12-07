@@ -35,10 +35,7 @@ class HSchedulerARM final : public HScheduler {
   bool IsSchedulable(const HInstruction* instruction) const override;
 
  protected:
-  std::pair<SchedulingGraph, ScopedArenaVector<SchedulingNode*>> BuildSchedulingGraph(
-      HBasicBlock* block,
-      ScopedArenaAllocator* allocator,
-      const HeapLocationCollector* heap_location_collector) override;
+  void CalculateLatencies(ArrayRef<SchedulingNode* const> scheduling_nodes) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(HSchedulerARM);

@@ -63,6 +63,11 @@ class JitOptions;
 static constexpr int16_t kJitCheckForOSR = -1;
 static constexpr int16_t kJitHotnessDisabled = -2;
 
+// The frequency at which we are going to check if we want to do fast
+// compilation. Only the main thread will request fast compilations.
+static constexpr int16_t kFastCompilerFrequencyCheck = 1024;
+static_assert(IsPowerOfTwo(kFastCompilerFrequencyCheck), "Must be a power of two");
+
 // Implemented and provided by the compiler library.
 class JitCompilerInterface {
  public:
@@ -153,7 +158,7 @@ class JitThreadPool : public AbstractThreadPool {
   JitThreadPool(const char* name,
                 size_t num_threads,
                 size_t worker_stack_size)
-      // We need peers as we may report the JIT thread, e.g., in the debugger.
+      // We need peers as JIT thread can load classes and we may report related events b/29547798.
       : AbstractThreadPool(name, num_threads, /* create_peers= */ true, worker_stack_size) {}
 
   // Try to fetch an entry from `methods`. Return null if `methods` is empty.
@@ -162,6 +167,7 @@ class JitThreadPool : public AbstractThreadPool {
   std::deque<Task*> generic_queue_ GUARDED_BY(task_queue_lock_);
 
   std::deque<ArtMethod*> osr_queue_ GUARDED_BY(task_queue_lock_);
+  std::deque<ArtMethod*> fast_queue_ GUARDED_BY(task_queue_lock_);
   std::deque<ArtMethod*> baseline_queue_ GUARDED_BY(task_queue_lock_);
   std::deque<ArtMethod*> optimized_queue_ GUARDED_BY(task_queue_lock_);
 
@@ -169,6 +175,7 @@ class JitThreadPool : public AbstractThreadPool {
   // adding them to the queue multiple times, which could bloat the
   // queues.
   std::set<ArtMethod*> osr_enqueued_methods_ GUARDED_BY(task_queue_lock_);
+  std::set<ArtMethod*> fast_enqueued_methods_ GUARDED_BY(task_queue_lock_);
   std::set<ArtMethod*> baseline_enqueued_methods_ GUARDED_BY(task_queue_lock_);
   std::set<ArtMethod*> optimized_enqueued_methods_ GUARDED_BY(task_queue_lock_);
 
@@ -388,8 +395,12 @@ class Jit {
   void NotifyZygoteCompilationDone();
 
   EXPORT void EnqueueOptimizedCompilation(ArtMethod* method, Thread* self);
+  EXPORT void EnqueueBaselineCompilation(ArtMethod* method, Thread* self)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   EXPORT void MaybeEnqueueCompilation(ArtMethod* method, Thread* self)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+  EXPORT void MaybeEnqueueFastCompilation(ArtMethod* method, Thread* self)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   EXPORT static bool TryPatternMatch(ArtMethod* method, CompilationKind compilation_kind)

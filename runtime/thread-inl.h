@@ -22,7 +22,7 @@
 #include "base/casts.h"
 #include "base/mutex-inl.h"
 #include "base/time_utils.h"
-#include "indirect_reference_table.h"
+#include "jni/indirect_reference_table.h"
 #include "jni/jni_env_ext.h"
 #include "managed_stack-inl.h"
 #include "obj_ptr-inl.h"
@@ -31,6 +31,7 @@
 #include "thread.h"
 #include "thread_list.h"
 #include "thread_pool.h"
+#include "well_known_classes.h"  // -inl.h doesn't work
 
 namespace art HIDDEN {
 

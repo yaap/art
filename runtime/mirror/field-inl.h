@@ -76,6 +76,20 @@ inline bool Field::IsWriteProtected() {
       art_field == WellKnownClasses::java_lang_System_err) {
     return true;
   }
+  // TODO(b/423809429): some `static final` fields defined in android.os.Build and
+  // android.os.Build$VERSION are overwritten for App Compat reasons on dogfood builds.
+  // Once these fields are no longer modified checks below could be removed altogether as released
+  // Android versions should not modify these fields.
+  if (IsStatic() && IsFinal()) {
+    ObjPtr<mirror::Class> declaring_class = GetDeclaringClass();
+    if (!declaring_class->IsBootStrapClassLoaded()) {
+      return false;
+    }
+    if (declaring_class->DescriptorEquals("Landroid/os/Build;") ||
+        declaring_class->DescriptorEquals("Landroid/os/Build$VERSION;")) {
+      return true;
+    }
+  }
   return false;
 }
 

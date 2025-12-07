@@ -17,13 +17,14 @@
 package com.android.server.art;
 
 import static com.android.server.art.PreRebootDexoptJob.JOB_ID;
-import static com.android.server.art.prereboot.PreRebootDriver.PreRebootResult;
 
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
+import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.isNull;
 import static org.mockito.Mockito.lenient;
@@ -36,6 +37,7 @@ import android.app.job.JobInfo;
 import android.app.job.JobParameters;
 import android.app.job.JobScheduler;
 import android.os.CancellationSignal;
+import android.os.ServiceSpecificException;
 import android.os.SystemProperties;
 import android.os.UpdateEngine;
 import android.platform.test.annotations.DisableFlags;
@@ -45,10 +47,15 @@ import android.provider.DeviceConfig;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.server.art.PreRebootDexoptJob.StagedFilesAge;
 import com.android.server.art.model.ArtFlags;
 import com.android.server.art.prereboot.PreRebootDriver;
+import com.android.server.art.prereboot.PreRebootDriver.PreRebootResult;
 import com.android.server.art.prereboot.PreRebootStatsReporter;
+import com.android.server.art.proto.PreRebootStats.Status;
+import com.android.server.art.testing.PreRebootStatsReporterHarness;
 import com.android.server.art.testing.StaticMockitoRule;
+import com.android.server.art.testing.TestingUtils;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -57,7 +64,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnitRunner;
 
-import java.io.File;
+import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -67,24 +74,28 @@ import java.util.function.Supplier;
 @RunWith(MockitoJUnitRunner.StrictStubs.class)
 public class PreRebootDexoptJobTest {
     private static final long TIMEOUT_SEC = 10;
+    private static final long CURRENT_TIME_MS = 10000000000l;
 
     @Rule
-    public StaticMockitoRule mockitoRule = new StaticMockitoRule(
-            SystemProperties.class, BackgroundDexoptJobService.class, ArtJni.class);
+    public StaticMockitoRule mockitoRule =
+            new StaticMockitoRule(SystemProperties.class, BackgroundDexoptJobService.class);
     @Rule public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
 
     @Mock private PreRebootDexoptJob.Injector mInjector;
     @Mock private JobScheduler mJobScheduler;
     @Mock private PreRebootDriver mPreRebootDriver;
     @Mock private BackgroundDexoptJobService mJobService;
+    @Mock private IArtd mArtd;
     @Mock private UpdateEngine mUpdateEngine;
-    @Mock private PreRebootStatsReporter.Injector mPreRebootStatsReporterInjector;
     private PreRebootDexoptJob mPreRebootDexoptJob;
     private JobInfo mJobInfo;
     private JobParameters mJobParameters;
+    private PreRebootStatsReporterHarness mPreRebootStatsReporterHarness;
 
     @Before
     public void setUp() throws Exception {
+        mPreRebootStatsReporterHarness = new PreRebootStatsReporterHarness();
+
         // By default, the job is enabled by a build-time flag.
         lenient()
                 .when(SystemProperties.getBoolean(eq("pm.dexopt.disable_bg_dexopt"), anyBoolean()))
@@ -97,24 +108,14 @@ public class PreRebootDexoptJobTest {
                         eq(DeviceConfig.NAMESPACE_RUNTIME), eq("enable_pr_dexopt"), anyBoolean()))
                 .thenReturn(false);
 
-        lenient()
-                .when(SystemProperties.getBoolean(
-                        eq("dalvik.vm.pre-reboot.has-started"), anyBoolean()))
-                .thenReturn(false);
-
         lenient().when(mInjector.getJobScheduler()).thenReturn(mJobScheduler);
         lenient().when(mInjector.getPreRebootDriver()).thenReturn(mPreRebootDriver);
         lenient()
                 .when(mInjector.getStatsReporter())
-                .thenAnswer(
-                        invocation -> new PreRebootStatsReporter(mPreRebootStatsReporterInjector));
+                .thenReturn(mPreRebootStatsReporterHarness.createStatsReporter());
+        lenient().when(mInjector.getArtd()).thenReturn(mArtd);
         lenient().when(mInjector.getUpdateEngine()).thenReturn(mUpdateEngine);
-
-        File tempFile = File.createTempFile("pre-reboot-stats", ".pb");
-        tempFile.deleteOnExit();
-        lenient()
-                .when(mPreRebootStatsReporterInjector.getFilename())
-                .thenReturn(tempFile.getAbsolutePath());
+        lenient().when(mInjector.getCurrentTimeMillis()).thenReturn(CURRENT_TIME_MS);
 
         lenient().when(mJobScheduler.schedule(any())).thenAnswer(invocation -> {
             mJobInfo = invocation.<JobInfo>getArgument(0);
@@ -158,6 +159,9 @@ public class PreRebootDexoptJobTest {
         assertThat(mJobInfo.isRequireDeviceIdle()).isTrue();
         assertThat(mJobInfo.isRequireCharging()).isTrue();
         assertThat(mJobInfo.isRequireBatteryNotLow()).isTrue();
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_SCHEDULED);
     }
 
     @Test
@@ -169,6 +173,9 @@ public class PreRebootDexoptJobTest {
                 .isEqualTo(ArtFlags.SCHEDULE_DISABLED_BY_SYSPROP);
 
         verify(mJobScheduler, never()).schedule(any());
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_NOT_SCHEDULED_DISABLED);
     }
 
     @Test
@@ -181,6 +188,9 @@ public class PreRebootDexoptJobTest {
 
         assertThat(future).isNull();
         verify(mPreRebootDriver, never()).run(any(), anyBoolean(), any());
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_NOT_SCHEDULED_DISABLED);
     }
 
     @Test
@@ -192,6 +202,9 @@ public class PreRebootDexoptJobTest {
                 .isEqualTo(ArtFlags.SCHEDULE_DISABLED_BY_SYSPROP);
 
         verify(mJobScheduler, never()).schedule(any());
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_NOT_SCHEDULED_DISABLED);
     }
 
     @Test
@@ -204,6 +217,9 @@ public class PreRebootDexoptJobTest {
 
         assertThat(future).isNull();
         verify(mPreRebootDriver, never()).run(any(), anyBoolean(), any());
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_NOT_SCHEDULED_DISABLED);
     }
 
     @Test
@@ -220,6 +236,9 @@ public class PreRebootDexoptJobTest {
                 .isEqualTo(ArtFlags.SCHEDULE_SUCCESS);
 
         verify(mJobScheduler).schedule(any());
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_SCHEDULED);
     }
 
     @Test
@@ -239,6 +258,9 @@ public class PreRebootDexoptJobTest {
                 .isEqualTo(ArtFlags.SCHEDULE_DISABLED_BY_SYSPROP);
 
         verify(mJobScheduler, never()).schedule(any());
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_NOT_SCHEDULED_DISABLED);
     }
 
     @Test
@@ -253,24 +275,17 @@ public class PreRebootDexoptJobTest {
         when(mPreRebootDriver.run(eq(otaSlot), mapSnapshotsForOtaMatcher.get(), any()))
                 .thenAnswer(invocation -> {
                     jobStarted.release();
-                    return new PreRebootResult(true /* success */);
+                    return new PreRebootResult(Status.STATUS_FINISHED);
                 });
 
-        when(ArtJni.setProperty("dalvik.vm.pre-reboot.has-started", "true"))
-                .thenAnswer(invocation -> {
-                    when(SystemProperties.getBoolean(
-                                 eq("dalvik.vm.pre-reboot.has-started"), anyBoolean()))
-                            .thenReturn(true);
-                    return null;
-                });
-
-        assertThat(mPreRebootDexoptJob.hasStarted()).isFalse();
         mPreRebootDexoptJob.onUpdateReadyImpl(otaSlot);
         mPreRebootDexoptJob.onStartJobImpl(mJobService, mJobParameters);
         assertThat(jobStarted.tryAcquire(TIMEOUT_SEC, TimeUnit.SECONDS)).isTrue();
-        assertThat(mPreRebootDexoptJob.hasStarted()).isTrue();
 
         mPreRebootDexoptJob.waitForRunningJob();
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_FINISHED);
     }
 
     @Test
@@ -293,15 +308,55 @@ public class PreRebootDexoptJobTest {
         verify(mUpdateEngine, never()).triggerPostinstall(any());
     }
 
+    @Test
+    @EnableFlags({android.os.Flags.FLAG_UPDATE_ENGINE_API})
+    public void testStartWithUpdateEngineApiSkippedDueToUpdateGone() throws Exception {
+        final int POSTINTALL_RUNNER_ERROR = 5;
+        doThrow(new ServiceSpecificException(POSTINTALL_RUNNER_ERROR,
+                        "Postinstall action did not run. OTA update must first reach the "
+                                + "Postinstall phase(which verfies that all partitions can be "
+                                + "mounted) before calling TriggerPostinstall"))
+                .when(mUpdateEngine)
+                .triggerPostinstall("system");
+
+        mPreRebootDexoptJob.onUpdateReadyImpl("_b");
+        mPreRebootDexoptJob.onStartJobImpl(mJobService, mJobParameters);
+
+        mPreRebootDexoptJob.waitForRunningJob();
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_FINISHED);
+    }
+
+    @Test
+    @EnableFlags({android.os.Flags.FLAG_UPDATE_ENGINE_API})
+    public void testStartWithUpdateEngineApiFailedDueToUnknownError() throws Exception {
+        final int POSTINTALL_RUNNER_ERROR = 5;
+        doThrow(new ServiceSpecificException(POSTINTALL_RUNNER_ERROR, "Some unknown error"))
+                .when(mUpdateEngine)
+                .triggerPostinstall("system");
+
+        mPreRebootDexoptJob.onUpdateReadyImpl("_b");
+        mPreRebootDexoptJob.onStartJobImpl(mJobService, mJobParameters);
+
+        mPreRebootDexoptJob.waitForRunningJob();
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_FAILED);
+    }
+
     private void checkSyncStart(boolean isUpdateEngineReady, boolean expectedMapSnapshotsForOta)
             throws Exception {
         when(mPreRebootDriver.run(eq("_b"), eq(expectedMapSnapshotsForOta), any()))
-                .thenReturn(new PreRebootResult(true /* success */));
+                .thenReturn(new PreRebootResult(Status.STATUS_FINISHED));
 
         CompletableFuture<Void> future =
                 mPreRebootDexoptJob.onUpdateReadyStartNow("_b" /* otaSlot */, isUpdateEngineReady);
 
         Utils.getFuture(future);
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_FINISHED);
     }
 
     @Test
@@ -333,7 +388,7 @@ public class PreRebootDexoptJobTest {
             cancellationSignal.setOnCancelListener(() -> dexoptCancelled.release());
             assertThat(dexoptCancelled.tryAcquire(TIMEOUT_SEC, TimeUnit.SECONDS)).isTrue();
             jobExited.release();
-            return new PreRebootResult(true /* success */);
+            return new PreRebootResult(Status.STATUS_FINISHED);
         });
 
         mPreRebootDexoptJob.onUpdateReadyImpl(null /* otaSlot */);
@@ -343,6 +398,9 @@ public class PreRebootDexoptJobTest {
         // Check that `onStopJob` is really blocking. If it wasn't, the check below might still pass
         // due to a race, but we would have a flaky test.
         assertThat(jobExited.tryAcquire()).isTrue();
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_FINISHED);
     }
 
     @Test
@@ -354,7 +412,7 @@ public class PreRebootDexoptJobTest {
             cancellationSignal.setOnCancelListener(() -> dexoptCancelled.release());
             assertThat(dexoptCancelled.tryAcquire(TIMEOUT_SEC, TimeUnit.SECONDS)).isTrue();
             jobExited.release();
-            return new PreRebootResult(true /* success */);
+            return new PreRebootResult(Status.STATUS_FINISHED);
         });
 
         CompletableFuture<Void> future = mPreRebootDexoptJob.onUpdateReadyStartNow(
@@ -364,6 +422,9 @@ public class PreRebootDexoptJobTest {
         // Check that `cancelGiven` is really blocking. If it wasn't, the check below might still
         // pass due to a race, but we would have a flaky test.
         assertThat(jobExited.tryAcquire()).isTrue();
+
+        mPreRebootStatsReporterHarness.recordFakeAfterRebootDataAndReport();
+        mPreRebootStatsReporterHarness.verifyJobStats(Status.STATUS_FINISHED);
     }
 
     @Test
@@ -372,7 +433,7 @@ public class PreRebootDexoptJobTest {
         mPreRebootDexoptJob.onUpdateReadyImpl(null /* otaSlot */);
 
         when(mPreRebootDriver.run(eq("_b"), anyBoolean(), any()))
-                .thenReturn(new PreRebootResult(true /* success */));
+                .thenReturn(new PreRebootResult(Status.STATUS_FINISHED));
 
         mPreRebootDexoptJob.onStartJobImpl(mJobService, mJobParameters);
         mPreRebootDexoptJob.waitForRunningJob();
@@ -384,7 +445,7 @@ public class PreRebootDexoptJobTest {
         mPreRebootDexoptJob.onUpdateReadyImpl("_a" /* otaSlot */);
 
         when(mPreRebootDriver.run(eq("_a"), anyBoolean(), any()))
-                .thenReturn(new PreRebootResult(true /* success */));
+                .thenReturn(new PreRebootResult(Status.STATUS_FINISHED));
 
         mPreRebootDexoptJob.onStartJobImpl(mJobService, mJobParameters);
         mPreRebootDexoptJob.waitForRunningJob();
@@ -396,7 +457,7 @@ public class PreRebootDexoptJobTest {
         mPreRebootDexoptJob.onUpdateReadyImpl(null /* otaSlot */);
 
         when(mPreRebootDriver.run(isNull(), anyBoolean(), any()))
-                .thenReturn(new PreRebootResult(true /* success */));
+                .thenReturn(new PreRebootResult(Status.STATUS_FINISHED));
 
         mPreRebootDexoptJob.onStartJobImpl(mJobService, mJobParameters);
         mPreRebootDexoptJob.waitForRunningJob();
@@ -408,7 +469,7 @@ public class PreRebootDexoptJobTest {
         mPreRebootDexoptJob.onUpdateReadyImpl("_b" /* otaSlot */);
 
         when(mPreRebootDriver.run(eq("_b"), anyBoolean(), any()))
-                .thenReturn(new PreRebootResult(true /* success */));
+                .thenReturn(new PreRebootResult(Status.STATUS_FINISHED));
 
         mPreRebootDexoptJob.onStartJobImpl(mJobService, mJobParameters);
         mPreRebootDexoptJob.waitForRunningJob();
@@ -425,6 +486,22 @@ public class PreRebootDexoptJobTest {
         mPreRebootDexoptJob.onUpdateReadyImpl("_bogus" /* otaSlot */);
     }
 
+    @Test
+    public void testStatsReportingForSuperseded() throws Exception {
+        mPreRebootDexoptJob.onUpdateReadyImpl(null /* otaSlot */);
+
+        when(mArtd.checkPreRebootStagedFilesStatus())
+                .thenReturn(TestingUtils.createPreRebootStagedFilesStatus(
+                        false /* isCommittable */, 200 /* createdAtMillis */));
+        when(mInjector.getCurrentTimeMillis()).thenReturn(800l);
+
+        mPreRebootDexoptJob.onUpdateReadyImpl("_a" /* otaSlot */);
+
+        mPreRebootStatsReporterHarness.verifyArtifactsStats(
+                PreRebootStatsReporter.END_STATUS_SUPERSEDED, 600 /* ageMillis */);
+        mPreRebootStatsReporterHarness.verifyTimes(1);
+    }
+
     /**
      * Verifies that `jobFinished` is not mistakenly called for an old job after a new job is
      * started.
@@ -436,7 +513,7 @@ public class PreRebootDexoptJobTest {
         when(mPreRebootDriver.run(any(), anyBoolean(), any())).thenAnswer(invocation -> {
             // Simulate that the job takes a while to exit, no matter it's cancelled or not.
             assertThat(jobBlocker.tryAcquire(TIMEOUT_SEC, TimeUnit.SECONDS)).isTrue();
-            return new PreRebootResult(true /* success */);
+            return new PreRebootResult(Status.STATUS_FINISHED);
         });
 
         // An update arrives. A job is scheduled.
@@ -522,7 +599,7 @@ public class PreRebootDexoptJobTest {
             cancellationSignal.setOnCancelListener(() -> dexoptCancelled.release());
             assertThat(dexoptCancelled.tryAcquire(TIMEOUT_SEC, TimeUnit.SECONDS)).isTrue();
             jobExited.release();
-            return new PreRebootResult(true /* success */);
+            return new PreRebootResult(Status.STATUS_FINISHED);
         });
 
         // An update arrives. A job is scheduled.
@@ -555,5 +632,50 @@ public class PreRebootDexoptJobTest {
 
         // Now the new job should be cancelled.
         assertThat(jobExited.tryAcquire()).isTrue();
+    }
+
+    @Test
+    public void testCheckStagedFilesAge() throws Exception {
+        when(SystemProperties.getInt(eq("dalvik.vm.pr_dexopt_retention"), anyInt())).thenReturn(30);
+        Duration createdAt = Duration.ofMillis(CURRENT_TIME_MS).minusDays(30).plusMillis(1);
+        when(mArtd.checkPreRebootStagedFilesStatus())
+                .thenReturn(TestingUtils.createPreRebootStagedFilesStatus(
+                        false /* isCommittable */, createdAt.toMillis()));
+
+        assertThat(mPreRebootDexoptJob.checkStagedFilesAge())
+                .isEqualTo(new StagedFilesAge(
+                        Duration.ofDays(30).minusMillis(1) /* age */, false /* isExpired */));
+    }
+
+    @Test
+    public void testCheckStagedFilesAgeExpired() throws Exception {
+        when(SystemProperties.getInt(eq("dalvik.vm.pr_dexopt_retention"), anyInt())).thenReturn(30);
+        Duration createdAt = Duration.ofMillis(CURRENT_TIME_MS).minusDays(30);
+        when(mArtd.checkPreRebootStagedFilesStatus())
+                .thenReturn(TestingUtils.createPreRebootStagedFilesStatus(
+                        false /* isCommittable */, createdAt.toMillis()));
+
+        assertThat(mPreRebootDexoptJob.checkStagedFilesAge())
+                .isEqualTo(new StagedFilesAge(Duration.ofDays(30) /* age */, true /* isExpired */));
+    }
+
+    @Test
+    public void testCheckStagedFilesAgeMissing() throws Exception {
+        lenient()
+                .when(SystemProperties.getInt(eq("dalvik.vm.pr_dexopt_retention"), anyInt()))
+                .thenReturn(30);
+        when(mArtd.checkPreRebootStagedFilesStatus()).thenReturn(null);
+
+        assertThat(mPreRebootDexoptJob.checkStagedFilesAge()).isEqualTo(null);
+    }
+
+    @Test
+    public void testCheckStagedFilesAgeError() throws Exception {
+        lenient()
+                .when(SystemProperties.getInt(eq("dalvik.vm.pr_dexopt_retention"), anyInt()))
+                .thenReturn(30);
+        when(mArtd.checkPreRebootStagedFilesStatus()).thenThrow(ServiceSpecificException.class);
+
+        assertThat(mPreRebootDexoptJob.checkStagedFilesAge()).isEqualTo(null);
     }
 }

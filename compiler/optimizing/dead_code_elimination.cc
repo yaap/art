@@ -570,10 +570,10 @@ void HDeadCodeElimination::ConnectSuccessiveBlocks() {
   // Order does not matter. Skip the entry block by starting at index 1 in reverse post order.
   for (size_t i = 1u, size = graph_->GetReversePostOrder().size(); i != size; ++i) {
     HBasicBlock* block  = graph_->GetReversePostOrder()[i];
-    DCHECK(!block->IsEntryBlock());
+    DCHECK(!graph_->IsEntryBlock(block));
     while (block->GetLastInstruction()->IsGoto()) {
       HBasicBlock* successor = block->GetSingleSuccessor();
-      if (successor->IsExitBlock() || successor->GetPredecessors().size() != 1u) {
+      if (graph_->IsExitBlock(successor) || successor->GetPredecessors().size() != 1u) {
         break;
       }
       DCHECK_LT(i, IndexOfElement(graph_->GetReversePostOrder(), successor));
@@ -668,7 +668,7 @@ void HDeadCodeElimination::RemoveTry(HBasicBlock* try_entry,
       DCHECK(!block->GetLastInstruction()->AsTryBoundary()->IsEntry());
       DisconnectHandlersAndUpdateTryBoundary(block, any_block_in_loop);
 
-      if (block->GetSingleSuccessor()->IsExitBlock()) {
+      if (graph_->IsExitBlock(block->GetSingleSuccessor())) {
         // `block` used to be a single exit TryBoundary that got turned into a Goto. It
         // is now pointing to the exit which we don't allow. To fix it, we disconnect
         // `block` from its predecessor and RemoveDeadBlocks will remove it from the
@@ -713,6 +713,9 @@ bool HDeadCodeElimination::RemoveUnneededTries() {
   }
 
   // Deduplicate the tries which have different try entries but they are really the same try.
+  // We store the surviving keys of `tries` to guarantee consistency when eliminating them below.
+  BitVectorView<size_t> keys =
+      ArenaBitVector::CreateFixedSize(&allocator, graph_->GetBlocks().size(), kArenaAllocDCE);
   for (auto it = tries.begin(); it != tries.end(); it++) {
     HBasicBlock* block = it->first;
     DCHECK(block->EndsWithTryBoundary());
@@ -735,16 +738,20 @@ bool HDeadCodeElimination::RemoveUnneededTries() {
         other_it++;
       }
     }
+    keys.SetBit(block->GetBlockId());
   }
 
   size_t removed_tries = 0;
   bool any_block_in_loop = false;
 
-  // Check which tries contain throwing instructions.
-  for (const auto& entry : tries) {
-    if (CanPerformTryRemoval(entry.second)) {
+  // Check which tries contain throwing instructions. Iterate in block id order to guarantee
+  // consistency.
+  for (size_t id : keys.Indexes()) {
+    auto entry = tries.find(graph_->GetBlocks()[id]);
+    DCHECK(entry != tries.end());
+    if (CanPerformTryRemoval(entry->second)) {
       ++removed_tries;
-      RemoveTry(entry.first, entry.second, &any_block_in_loop);
+      RemoveTry(entry->first, entry->second, &any_block_in_loop);
     }
   }
 

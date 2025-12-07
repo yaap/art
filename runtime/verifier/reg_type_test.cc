@@ -102,7 +102,6 @@ TEST_F(RegTypeTest, Pairs) {
   ScopedObjectAccess soa(Thread::Current());
   ScopedNullHandle<mirror::ClassLoader> loader;
   RegTypeCache cache(soa.Self(), class_linker_, arena_pool, loader, dex_file_.get());
-  int64_t val = static_cast<int32_t>(1234);
   const RegType& const_lo = cache.ConstantLo();
   const RegType& const_hi = cache.ConstantHi();
   const RegType& long_lo = cache.LongLo();

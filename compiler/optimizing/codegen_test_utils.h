@@ -91,15 +91,9 @@ class TestCodeGeneratorARMVIXL : public arm::CodeGeneratorARMVIXL {
  public:
   TestCodeGeneratorARMVIXL(HGraph* graph, const CompilerOptions& compiler_options)
       : arm::CodeGeneratorARMVIXL(graph, compiler_options) {
-    AddAllocatedRegister(Location::RegisterLocation(arm::R6));
-    AddAllocatedRegister(Location::RegisterLocation(arm::R7));
-  }
-
-  void SetupBlockedRegisters() const override {
-    arm::CodeGeneratorARMVIXL::SetupBlockedRegisters();
-    blocked_core_registers_[arm::R4] = true;
-    blocked_core_registers_[arm::R6] = false;
-    blocked_core_registers_[arm::R7] = false;
+    AddAllocatedCoreRegister(arm::R6);
+    AddAllocatedCoreRegister(arm::R7);
+    blocked_registers_.AddCoreRegisterSet((1u << arm::R4) | (1u << arm::R6) | (1u << arm::R7));
   }
 
   void MaybeGenerateMarkingRegisterCheck([[maybe_unused]] int code,
@@ -152,16 +146,14 @@ class TestCodeGeneratorX86 : public x86::CodeGeneratorX86 {
   TestCodeGeneratorX86(HGraph* graph, const CompilerOptions& compiler_options)
       : x86::CodeGeneratorX86(graph, compiler_options) {
     // Save edi, we need it for getting enough registers for long multiplication.
-    AddAllocatedRegister(Location::RegisterLocation(x86::EDI));
-  }
-
-  void SetupBlockedRegisters() const override {
-    x86::CodeGeneratorX86::SetupBlockedRegisters();
-    // ebx is a callee-save register in C, but caller-save for ART.
-    blocked_core_registers_[x86::EBX] = true;
-
-    // Make edi available.
-    blocked_core_registers_[x86::EDI] = false;
+    AddAllocatedCoreRegister(x86::EDI);
+    // Block EBX because it's a callee-save register in C, but caller-save for ART.
+    // Make EDI available.
+    RegisterSet blocked_registers = RegisterSet::Empty();
+    blocked_registers.AddCoreRegisterSet(
+        (blocked_registers_.GetCoreRegisterSet() | (1u << x86::EBX)) & ~(1u << x86::EDI));
+    blocked_registers.AddFpuRegisterSet(blocked_registers_.GetFpuRegisterSet());
+    blocked_registers_ = blocked_registers;
   }
 };
 #endif

@@ -59,6 +59,13 @@ cc_defaults {
         "base/utils.cc",
         "base/zip_archive.cc",
     ],
+    arch: {
+        riscv64: {
+            srcs: [
+                "arch/riscv64/sbc_v_adraln_workaround.cc",
+            ],
+        },
+    },
     target: {
         android: {
             srcs: [
@@ -142,14 +149,13 @@ cc_defaults {
             // libdexfile, and dexdump.
             static_libs: [
                 "art-aconfig-flags-lib",
-                "art-aconfig-native-flags-lib",
+                "art-aconfig-rw-flags-lib",
                 "libaconfig_storage_read_api_cc",
                 "libcore-aconfig-flags-native-lib",
             ],
             export_static_lib_headers: [
                 "art-aconfig-flags-lib",
-                "art-aconfig-native-flags-lib",
-                "libaconfig_storage_read_api_cc",
+                "art-aconfig-rw-flags-lib",
                 "libcore-aconfig-flags-native-lib",
             ],
         },
@@ -160,14 +166,13 @@ cc_defaults {
             // libdexfile, and dexdump.
             static_libs: [
                 "art-aconfig-flags-lib",
-                "art-aconfig-native-flags-lib",
+                "art-aconfig-rw-flags-lib",
                 "libaconfig_storage_read_api_cc",
                 "libcore-aconfig-flags-native-lib",
             ],
             export_static_lib_headers: [
                 "art-aconfig-flags-lib",
-                "art-aconfig-native-flags-lib",
-                "libaconfig_storage_read_api_cc",
+                "art-aconfig-rw-flags-lib",
                 "libcore-aconfig-flags-native-lib",
             ],
         },
@@ -202,7 +207,7 @@ cc_defaults {
         darwin: {
             whole_static_libs: [
                 "art-aconfig-flags-lib",
-                "art-aconfig-native-flags-lib",
+                "art-aconfig-rw-flags-lib",
                 "libaconfig_storage_read_api_cc",
             ],
         },
@@ -213,7 +218,7 @@ cc_defaults {
             // libdexfile, and dexdump.
             whole_static_libs: [
                 "art-aconfig-flags-lib",
-                "art-aconfig-native-flags-lib",
+                "art-aconfig-rw-flags-lib",
                 "libaconfig_storage_read_api_cc",
             ],
         },

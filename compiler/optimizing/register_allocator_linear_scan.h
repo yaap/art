@@ -77,10 +77,6 @@ class RegisterAllocatorLinearScan : public RegisterAllocator {
   // the interval and assign the register to the first part.
   void CheckForFixedOutput(HInstruction* instruction, bool will_call);
 
-  // Add all applicable safepoints to a live interval.
-  // Currently depends on instruction processing order.
-  void AddSafepointsFor(HInstruction* instruction);
-
   // Collect all live intervals associated with the temporary locations
   // needed by an instruction.
   void CheckForTempLiveIntervals(HInstruction* instruction, bool will_call);
@@ -88,9 +84,6 @@ class RegisterAllocatorLinearScan : public RegisterAllocator {
   // If a safe point is needed, add a synthesized interval to later record
   // the number of live registers at this point.
   void CheckForSafepoint(HInstruction* instruction);
-
-  // Try to remove the SuspendCheck at function entry. Returns true if it was successful.
-  bool TryRemoveSuspendCheckEntry(HInstruction* instruction);
 
   // List of intervals for core registers that must be processed, ordered by start
   // position. Last entry is the interval that has the lowest start position.

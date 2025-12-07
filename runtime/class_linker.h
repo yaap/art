@@ -75,6 +75,11 @@ struct ClassDef;
 struct MethodHandleItem;
 }  // namespace dex
 
+// Forward declaration for the friend statement below.
+namespace fuzzer {
+class FuzzerCommonHelper;
+}  // namespace fuzzer
+
 namespace gc {
 namespace space {
 class ImageSpace;
@@ -1499,8 +1504,7 @@ class ClassLinker {
   friend class linker::ImageWriter;  // for GetClassRoots
   friend class JniCompilerTest;  // for GetRuntimeQuickGenericJniStub
   friend class JniInternalTest;  // for GetRuntimeQuickGenericJniStub
-  friend class VerifyClassesFuzzerHelper;  // for FindDexCacheDataLocked.
-  friend class VerifyClassesFuzzerCorpusTestHelper;  // for FindDexCacheDataLocked.
+  friend class fuzzer::FuzzerCommonHelper;  // for FindDexCacheDataLocked.
   friend class VMClassLoader;  // for LookupClass and FindClassInBaseDexClassLoader.
   ART_FRIEND_TEST(ClassLinkerTest, RegisterDexFileName);  // for DexLock, and RegisterDexFileLocked
   ART_FRIEND_TEST(mirror::DexCacheMethodHandlesTest, Open);  // for AllocDexCache

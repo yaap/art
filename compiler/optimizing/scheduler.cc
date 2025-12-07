@@ -550,12 +550,25 @@ void HScheduler::Schedule(HBasicBlock* block,
   ScopedArenaAllocator allocator(block->GetGraph()->GetArenaStack());
 
   // Build the scheduling graph.
-  auto [scheduling_graph, scheduling_nodes] =
-      BuildSchedulingGraph(block, &allocator, heap_location_collector);
+  SchedulingGraph scheduling_graph(&allocator, heap_location_collector);
+  ScopedArenaVector<SchedulingNode*> scheduling_nodes(allocator.Adapter(kArenaAllocScheduler));
+  for (HBackwardInstructionIteratorPrefetchNext it(block->GetInstructions()); !it.Done();
+       it.Advance()) {
+    HInstruction* instruction = it.Current();
+    CHECK_EQ(instruction->GetBlock(), block)
+        << instruction->DebugName()
+        << " is in block " << instruction->GetBlock()->GetBlockId()
+        << ", and expected in block " << block->GetBlockId();
+    SchedulingNode* node =
+        scheduling_graph.AddNode(instruction, IsSchedulingBarrier(instruction));
+    scheduling_nodes.push_back(node);
+  }
 
   if (scheduling_graph.Size() <= 1) {
     return;
   }
+
+  CalculateLatencies(ArrayRef<SchedulingNode* const>(scheduling_nodes));
 
   cursor_ = block->GetLastInstruction();
 

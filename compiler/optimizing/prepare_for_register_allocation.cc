@@ -25,35 +25,40 @@
 
 namespace art HIDDEN {
 
-class PrepareForRegisterAllocationVisitor final : public HGraphDelegateVisitor {
+class PrepareForRegisterAllocationVisitor final
+    : public CRTPGraphVisitor<PrepareForRegisterAllocationVisitor> {
  public:
   PrepareForRegisterAllocationVisitor(HGraph* graph,
                                       const CompilerOptions& compiler_options,
                                       OptimizingCompilerStats* stats)
-      : HGraphDelegateVisitor(graph, stats),
-        compiler_options_(compiler_options) {}
+      : CRTPGraphVisitor(graph),
+        compiler_options_(compiler_options),
+        stats_(stats) {}
 
  private:
-  void VisitCheckCast(HCheckCast* check_cast) override;
-  void VisitInstanceOf(HInstanceOf* instance_of) override;
-  void VisitNullCheck(HNullCheck* check) override;
-  void VisitDivZeroCheck(HDivZeroCheck* check) override;
-  void VisitBoundsCheck(HBoundsCheck* check) override;
-  void VisitBoundType(HBoundType* bound_type) override;
-  void VisitArraySet(HArraySet* instruction) override;
-  void VisitClinitCheck(HClinitCheck* check) override;
-  void VisitIf(HIf* if_instr) override;
-  void VisitSelect(HSelect* select) override;
-  void VisitConstructorFence(HConstructorFence* constructor_fence) override;
-  void VisitInvokeStaticOrDirect(HInvokeStaticOrDirect* invoke) override;
-  void VisitDeoptimize(HDeoptimize* deoptimize) override;
-  void VisitTypeConversion(HTypeConversion* instruction) override;
+  void VisitCheckCast(HCheckCast* check_cast);
+  void VisitInstanceOf(HInstanceOf* instance_of);
+  void VisitNullCheck(HNullCheck* check);
+  void VisitDivZeroCheck(HDivZeroCheck* check);
+  void VisitBoundsCheck(HBoundsCheck* check);
+  void VisitBoundType(HBoundType* bound_type);
+  void VisitArraySet(HArraySet* instruction);
+  void VisitClinitCheck(HClinitCheck* check);
+  void VisitIf(HIf* if_instr);
+  void VisitSelect(HSelect* select);
+  void VisitConstructorFence(HConstructorFence* constructor_fence);
+  void VisitInvokeStaticOrDirect(HInvokeStaticOrDirect* invoke);
+  void VisitDeoptimize(HDeoptimize* deoptimize);
+  void VisitTypeConversion(HTypeConversion* instruction);
 
   bool CanMoveClinitCheck(HInstruction* input, HInstruction* user) const;
   bool CanEmitConditionAt(HCondition* condition, HInstruction* user) const;
   void TryToMoveConditionToUser(HInstruction* maybe_condition, HInstruction* user);
 
   const CompilerOptions& compiler_options_;
+  OptimizingCompilerStats* const stats_;
+
+  template <typename T> friend class CRTPGraphVisitor;
 };
 
 bool PrepareForRegisterAllocation::Run() {

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import dalvik.system.VMRuntime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -141,30 +142,109 @@ public class Main {
         System.out.print("testSetName finished\n");
     }
 
+    private static final int NICENESS_UNKNOWN = -1000;
+
     private static void testThreadPriorities() throws Exception {
         System.out.print("testThreadPriorities starting\n");
 
+        Thread.currentThread().setPriority(Thread.NORM_PRIORITY);
         if (supportsThreadPriorities()) {
-          PriorityStoringThread t1 = new PriorityStoringThread(false);
-          t1.setPriority(Thread.MAX_PRIORITY);
-          t1.start();
-          t1.join();
-          if (t1.getNativePriority() != Thread.MAX_PRIORITY) {
-              System.out.print("thread priority for t1 was " + t1.getNativePriority() +
-                  " [expected Thread.MAX_PRIORITY]\n");
-              System.out.println(getPriorityInfo());
-          }
-          PriorityStoringThread t2 = new PriorityStoringThread(true);
-          t2.start();
-          t2.join();
-          if (t2.getNativePriority() != Thread.MAX_PRIORITY) {
-              System.out.print("thread priority for t2 was " + t2.getNativePriority() +
-                  " [expected Thread.MAX_PRIORITY]\n");
-              System.out.println(getPriorityInfo());
-          }
+            if (haveNicenessApis()) {
+                // Should have no impact, because it's not inherited.
+                VMRuntime.getRuntime().setThreadNiceness(Thread.currentThread(), 10);
+            }
+            PriorityStoringThread t1 = new PriorityStoringThread(false);
+            t1.setPriority(Thread.MAX_PRIORITY);
+            t1.start();
+            if (t1.getPriority() != Thread.MAX_PRIORITY) {
+                System.out.print("thread priority for t1 while running was " + t1.getPriority() +
+                    " [expected Thread.MAX_PRIORITY]\n");
+                System.out.println(getPriorityInfo());
+            }
+            t1.join();
+            if (t1.getPriority() != Thread.MAX_PRIORITY) {
+                System.out.print("thread priority for t1 while running was " + t1.getPriority() +
+                    " [expected Thread.MAX_PRIORITY]\n");
+                System.out.println(getPriorityInfo());
+            }
+            if (t1.nativePriority != Thread.MAX_PRIORITY) {
+                System.out.print("thread priority for t1 was " + t1.nativePriority +
+                    " [expected Thread.MAX_PRIORITY]\n");
+                System.out.println(getPriorityInfo());
+            }
+            if (t1.reportedPriority != Thread.MAX_PRIORITY) {
+                System.out.println("Reported Java priority is wrong");
+            }
+            if (t1.reportedNiceness != NICENESS_UNKNOWN && t1.reportedNiceness >= 0) {
+                // Niceness should correspond to MAX_PRIORITY.
+                System.out.println("Reported Java niceness is wrong");
+            }
+
+            // Repeat, raising parent priority instead of child priority.
+            // Results should be the same.
+            Thread.currentThread().setPriority(Thread.MAX_PRIORITY);
+            PriorityStoringThread t2 = new PriorityStoringThread(false);
+            t2.start();
+            if (t2.getPriority() != Thread.MAX_PRIORITY) {
+                System.out.print("thread priority for t2 while running was " + t2.getPriority() +
+                    " [expected Thread.MAX_PRIORITY]\n");
+                System.out.println(getPriorityInfo());
+            }
+            t2.join();
+            if (t2.getPriority() != Thread.MAX_PRIORITY) {
+                System.out.print("thread priority for t2 while running was " + t2.getPriority() +
+                    " [expected Thread.MAX_PRIORITY]\n");
+                System.out.println(getPriorityInfo());
+            }
+            if (t2.nativePriority != Thread.MAX_PRIORITY) {
+                System.out.print("thread priority for t2 was " + t2.nativePriority +
+                    " [expected Thread.MAX_PRIORITY]\n");
+                System.out.println(getPriorityInfo());
+            }
+            if (t2.reportedPriority != Thread.MAX_PRIORITY) {
+                System.out.println("Reported Java priority is wrong");
+            }
+            if (t2.reportedNiceness != NICENESS_UNKNOWN && t2.reportedNiceness >= 0) {
+                // Niceness should correspond to MAX_PRIORITY.
+                System.out.println("Reported Java niceness is wrong");
+            }
+            Thread.currentThread().setPriority(Thread.NORM_PRIORITY);
+
+            PriorityStoringThread t3 = new PriorityStoringThread(true);
+            t3.start();
+            t3.join();
+            if (t3.nativePriority != Thread.MAX_PRIORITY) {
+                System.out.print("thread priority for t3 was " + t3.nativePriority +
+                    " [expected Thread.MAX_PRIORITY]\n");
+                System.out.println(getPriorityInfo());
+            }
+        }
+        if (Thread.currentThread().getPriority() != Thread.NORM_PRIORITY) {
+            System.out.println("Parent priority unexpectedly altered.");
+        }
+        if (haveNicenessApis()) {
+            PriorityStoringThread t4 = new PriorityStoringThread(false);
+            VMRuntime.getRuntime().setThreadNiceness(t4, 19);
+            // Since priority is inherited on creation, this should affect child thread.
+            t4.start();
+            t4.join();
+            if (supportsThreadPriorities() && t4.nativePriority != Thread.MIN_PRIORITY) {
+                System.out.print("Native thread priority for t4 was " + t4.nativePriority +
+                                 " [expected Thread.MIN_PRIORITY]\n");
+                System.out.println(getPriorityInfo());
+            }
+            // t4's children should have MAX_PRIORITY, since only niceness was changed.
+            if (t4.reportedPriority != Thread.NORM_PRIORITY) {
+                System.out.println("Reported t4 Java priority (" + t4.reportedPriority +
+                                   ") should be " + Thread.NORM_PRIORITY);
+            }
+            if (t4.reportedNiceness != 19) {
+                // Niceness should correspond to 19.
+                System.out.println("Reported Java niceness is wrong");
+            }
         }
 
-        System.out.print("testThreadPriorities finished\n");
+        System.out.println("testThreadPriorities finished");
     }
 
     private static void testMainThreadGroup() {
@@ -213,14 +293,19 @@ public class Main {
     private static native int getNativePriority();
     private static native boolean supportsThreadPriorities();
     private static native String getPriorityInfo();
+    private static native boolean haveNicenessApis();
 
     static class PriorityStoringThread extends Thread {
         private final boolean setPriority;
-        private volatile int nativePriority;
+        volatile int nativePriority;
+        volatile int reportedPriority;
+        volatile int reportedNiceness;
 
         public PriorityStoringThread(boolean setPriority) {
             this.setPriority = setPriority;
             this.nativePriority = -1;
+            this.reportedPriority = -1;
+            this.reportedNiceness = NICENESS_UNKNOWN;
         }
 
         @Override
@@ -230,10 +315,12 @@ public class Main {
             }
 
             nativePriority = Main.getNativePriority();
-        }
+            reportedPriority = getPriority();
+            if (haveNicenessApis()) {
+                this.reportedNiceness =
+                    VMRuntime.getRuntime().getThreadNiceness(Thread.currentThread());
+            }
 
-        public int getNativePriority() {
-            return nativePriority;
         }
     }
 }

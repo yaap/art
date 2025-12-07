@@ -53,13 +53,13 @@ class RegisterAllocationResolver : ValueObject {
 
  private:
   // Update live registers of safepoint location summary.
-  void UpdateSafepointLiveRegisters();
+  void UpdateSafepointLiveRegisters(ArrayRef<HInstruction* const> safepoints);
 
   // Calculate the maximum size of the spill area for safepoints.
   size_t CalculateMaximumSafepointSpillSize(ArrayRef<HInstruction* const> safepoints);
 
   // Connect adjacent siblings within blocks, and resolve inputs along the way.
-  void ConnectSiblings(LiveInterval* interval);
+  void ConnectSiblings(LiveInterval* interval, ArrayRef<HInstruction* const> safepoints);
 
   // Connect siblings between block entries and exits.
   void ConnectSplitSiblings(LiveInterval* interval, HBasicBlock* from, HBasicBlock* to) const;
@@ -87,6 +87,12 @@ class RegisterAllocationResolver : ValueObject {
                Location destination,
                HInstruction* instruction,
                DataType::Type type) const;
+
+  // Converts the location of the `interval` to a `Location` object.
+  static Location GetLocation(LiveInterval* interval);
+
+  // Returns the location of the `interval` following its siblings at `position`.
+  static Location GetLocationAt(LiveInterval* interval, size_t position);
 
   ArenaAllocator* const allocator_;
   CodeGenerator* const codegen_;

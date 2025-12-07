@@ -60,6 +60,7 @@ struct LogVerbosity {
   bool agents;
   bool dex;  // Some dex access output etc.
   bool plugin;  // Used by some plugins.
+  bool hiddenapi;
 };
 
 // Global log verbosity setting, initialized by InitLogging.

@@ -78,6 +78,8 @@ class EXPORT CommonCompilerTestImpl {
 
   void ClearBootImageOption();
 
+  void OverrideAssumedValue(ArtField* field, int32_t value);
+
   InstructionSet instruction_set_ =
       (kRuntimeISA == InstructionSet::kArm) ? InstructionSet::kThumb2 : kRuntimeISA;
   // Take the default set of instruction features from the build.

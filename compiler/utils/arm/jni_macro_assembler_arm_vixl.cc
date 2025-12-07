@@ -20,7 +20,7 @@
 #include <type_traits>
 
 #include "entrypoints/quick/quick_entrypoints.h"
-#include "indirect_reference_table.h"
+#include "jni/indirect_reference_table.h"
 #include "jni/jni_env_ext.h"
 #include "jni/local_reference_table.h"
 #include "lock_word.h"

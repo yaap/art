@@ -19,6 +19,7 @@ package com.android.server.art;
 import static com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
 import static com.android.server.art.OutputArtifacts.PermissionSettings;
 import static com.android.server.art.model.DexoptResult.DexContainerFileDexoptResult;
+import static com.android.server.art.testing.TestDataHelper.newPackageState;
 import static com.android.server.art.testing.TestingUtils.deepEq;
 
 import static com.google.common.truth.Truth.assertThat;
@@ -161,7 +162,7 @@ public class SecondaryDexopterTest {
                 .thenReturn(dexoptIsNeeded());
         lenient()
                 .when(mArtd.dexopt(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(),
-                        any(), any()))
+                        any(), any(), any()))
                 .thenReturn(createArtdDexoptResult());
 
         lenient()
@@ -227,26 +228,13 @@ public class SecondaryDexopterTest {
                 null /* classLoaderContext */, false /* isPublic */);
     }
 
-    private AndroidPackage createPackage() {
-        var pkg = mock(AndroidPackage.class);
-        lenient().when(pkg.isVmSafeMode()).thenReturn(false);
-        lenient().when(pkg.isDebuggable()).thenReturn(false);
-        lenient().when(pkg.getTargetSdkVersion()).thenReturn(123);
-        lenient().when(pkg.isSignedWithPlatformKey()).thenReturn(false);
-        lenient().when(pkg.isNonSdkApiRequested()).thenReturn(false);
-        return pkg;
-    }
-
     private PackageState createPackageState() {
-        var pkgState = mock(PackageState.class);
-        lenient().when(pkgState.getPackageName()).thenReturn(PKG_NAME);
-        lenient().when(pkgState.getPrimaryCpuAbi()).thenReturn("arm64-v8a");
-        lenient().when(pkgState.getSecondaryCpuAbi()).thenReturn("armeabi-v7a");
-        lenient().when(pkgState.getAppId()).thenReturn(APP_ID);
-        lenient().when(pkgState.getSeInfo()).thenReturn("se-info");
-        AndroidPackage pkg = createPackage();
-        lenient().when(pkgState.getAndroidPackage()).thenReturn(pkg);
-        return pkgState;
+        return newPackageState(PKG_NAME)
+                .setAbis("arm64-v8a", "armeabi-v7a")
+                .setAppId(APP_ID)
+                .setSeInfo("se-info")
+                .setTargetSdkVersion(123)
+                .build();
     }
 
     private List<CheckedSecondaryDexInfo> createSecondaryDexInfo() throws Exception {
@@ -331,7 +319,7 @@ public class SecondaryDexopterTest {
                 false /* isInDalvikCache */, permissionSettings, false /* isPreReboot */);
         artd.dexopt(deepEq(outputArtifacts), eq(dexPath), eq(isa), eq(classLoaderContext),
                 eq("speed-profile"), deepEq(profile), any(), isNull() /* dmFile */, anyInt(),
-                argThat(dexoptOptions -> dexoptOptions.generateAppImage == true), any());
+                argThat(dexoptOptions -> dexoptOptions.generateAppImage == true), any(), any());
     }
 
     private void checkDexoptWithNoProfile(IArtd artd, String dexPath, String isa,
@@ -341,7 +329,7 @@ public class SecondaryDexopterTest {
                 false /* isInDalvikCache */, permissionSettings, false /* isPreReboot */);
         artd.dexopt(deepEq(outputArtifacts), eq(dexPath), eq(isa), eq(classLoaderContext),
                 eq(compilerFilter), isNull(), any(), isNull() /* dmFile */, anyInt(),
-                argThat(dexoptOptions -> dexoptOptions.generateAppImage == false), any());
+                argThat(dexoptOptions -> dexoptOptions.generateAppImage == false), any(), any());
     }
 
     private PermissionSettings buildPermissionSettings(boolean isPublic) {

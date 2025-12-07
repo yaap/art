@@ -18,6 +18,7 @@
 #define ART_COMPILER_OPTIMIZING_INSTRUCTION_SIMPLIFIER_SHARED_H_
 
 #include "base/macros.h"
+#include "base/scoped_arena_containers.h"
 #include "nodes.h"
 
 namespace art HIDDEN {
@@ -59,9 +60,54 @@ inline bool IsSubRightSubLeftShl(HSub *sub) {
   return right->IsSub() && right->AsSub()->GetLeft()->IsShl();
 }
 
+// Helper class for mapping instructions to their inputs that should be merged to shifter operand.
+// This class maintains its own `ScopedArenaAllocator` and should be wrapped in `std::optional` to
+// avoid the construction/destruction overhead unless we actually find something to record.
+class ShifterOperandMap {
+ public:
+  explicit ShifterOperandMap(ArenaStack* stack)
+      : allocator_(stack),
+        instruction_map_(allocator_.Adapter(kArenaAllocMisc)) {}
+
+  void Add(HInstruction* use, HInstruction* bitfield_op) {
+    DCHECK(!Contains(use));
+    instruction_map_.Overwrite(use, bitfield_op);
+  }
+
+  bool Contains(HInstruction* use) const {
+    return instruction_map_.find(use) != instruction_map_.end();
+  }
+
+  HInstruction* TryTakingBitFieldOp(HInstruction* use) {
+    auto it = instruction_map_.find(use);
+    if (it == instruction_map_.end()) {
+      return nullptr;
+    }
+    HInstruction* bitfield_op = it->second;
+    instruction_map_.erase(it);  // The caller is about to replace the `use`, so remove the entry.
+    return bitfield_op;
+  }
+
+  bool IsEmpty() const {
+    return instruction_map_.empty();
+  }
+
+ private:
+  ScopedArenaAllocator allocator_;
+  // Maps the shift/extend instruction's use to the shift/extend instruction to merge.
+  ScopedArenaHashMap<HInstruction*, HInstruction*> instruction_map_;
+};
+
+// Is an instruction before another one in reverse post order?
+//
+// Used to determine if an instruction was already visited, os shall be visited later
+// during reverse post order visit. Not applicable to Phis.
+bool IsBeforeInReversePostOrder(HGraph* graph, HInstruction* lhs, HInstruction* rhs);
+
 }  // namespace helpers
 
-bool TryCombineMultiplyAccumulate(HMul* mul, InstructionSet isa);
+bool TrySimpleMultiplyAccumulatePatterns(HMul* mul, InstructionSet isa);
+bool TryCombineMultiplyAccumulate(HInstruction* use, HMul* mul, InstructionSet isa);
 
 bool TryExtractArrayAccessAddress(CodeGenerator* codegen,
                                   HInstruction* access,

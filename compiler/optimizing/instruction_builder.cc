@@ -378,7 +378,7 @@ bool HInstructionBuilder::Build() {
 
     InitializeBlockLocals();
 
-    if (current_block_->IsEntryBlock()) {
+    if (graph_->IsEntryBlock(current_block_)) {
       InitializeParameters();
       AppendInstruction(new (allocator_) HSuspendCheck(0u));
       if (graph_->IsDebuggable() && code_generator_->GetCompilerOptions().IsJitCompiler()) {
@@ -386,7 +386,7 @@ bool HInstructionBuilder::Build() {
       }
       AppendInstruction(new (allocator_) HGoto(0u));
       continue;
-    } else if (current_block_->IsExitBlock()) {
+    } else if (graph_->IsExitBlock(current_block_)) {
       AppendInstruction(new (allocator_) HExit());
       continue;
     } else if (current_block_->IsLoopHeader()) {
@@ -630,7 +630,7 @@ void HInstructionBuilder::UpdateLocal(uint32_t reg_number, HInstruction* stored_
 }
 
 void HInstructionBuilder::InitializeParameters() {
-  DCHECK(current_block_->IsEntryBlock());
+  DCHECK(graph_->IsEntryBlock(current_block_));
 
   // outer_compilation_unit_ is null only when unit testing.
   if (outer_compilation_unit_ == nullptr) {

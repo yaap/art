@@ -188,10 +188,7 @@ bool JitMemoryRegion::Initialize(size_t initial_capacity,
       }
     }
 
-    // Map in low 4gb to simplify accessing root tables for x86_64.
-    // We could do PC-relative addressing to avoid this problem, but that
-    // would require reserving code and data area before submitting, which
-    // means more windows for the code memory to be RWX.
+    // Map in low 4gb for smaller code size loading JIT root tables.
     data_pages = MemMap::MapFile(
         data_capacity + exec_capacity,
         kProtR,

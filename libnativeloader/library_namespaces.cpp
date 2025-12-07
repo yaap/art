@@ -373,6 +373,24 @@ Result<NativeLoaderNamespace*> LibraryNamespaces::Create(JNIEnv* env,
     }
   }
 
+  // Unlike system public libraries, vendor public libraries should be filtered
+  // against <uses-native-library>.
+  for (const auto& [apex_ns_name, public_libs] : vendor_apex_public_libraries()) {
+    const std::string filtered_public_libs =
+        filter_public_libraries(target_sdk_version, uses_libraries, public_libs);
+    if (filtered_public_libs.empty()) {
+      continue;
+    }
+    Result<NativeLoaderNamespace> ns =
+        NativeLoaderNamespace::GetExportedNamespace(apex_ns_name, is_bridged);
+    if (ns.ok()) {
+      linked = app_ns->Link(&ns.value(), filtered_public_libs);
+      if (!linked.ok()) {
+        return linked.error();
+      }
+    }
+  }
+
   // Give access to VNDK-SP libraries from the 'vndk' namespace for unbundled vendor apps.
   if (unbundled_app_domain == API_DOMAIN_VENDOR && !vndksp_libraries_vendor().empty()) {
     Result<NativeLoaderNamespace> vndk_ns =

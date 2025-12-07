@@ -150,7 +150,7 @@ class EmitAdrCode {
 static RegisterSet OneRegInReferenceOutSaveEverythingCallerSaves() {
   InvokeRuntimeCallingConventionARMVIXL calling_convention;
   RegisterSet caller_saves = RegisterSet::Empty();
-  caller_saves.Add(LocationFrom(calling_convention.GetRegisterAt(0)));
+  caller_saves.AddCoreRegister(calling_convention.GetRegisterAt(0).GetCode());
   // TODO: Add GetReturnLocation() to the calling convention so that we can DCHECK()
   // that the kPrimNot result register is the same as the first argument register.
   return caller_saves;
@@ -304,8 +304,8 @@ void SlowPathCodeARMVIXL::SaveLiveRegisters(CodeGenerator* codegen, LocationSumm
   size_t stack_offset = codegen->GetFirstRegisterSlotInSlowPath();
   size_t orig_offset = stack_offset;
 
-  const uint32_t core_spills = codegen->GetSlowPathSpills(locations, /* core_registers= */ true);
-  for (uint32_t i : LowToHighBits(core_spills)) {
+  const RegisterSet spills = codegen->GetSlowPathSpills(locations);
+  for (uint32_t i : LowToHighBits(spills.GetCoreRegisterSet())) {
     // If the register holds an object, update the stack mask.
     if (locations->RegisterContainsObject(i)) {
       locations->SetStackBit(stack_offset / kVRegSize);
@@ -317,9 +317,9 @@ void SlowPathCodeARMVIXL::SaveLiveRegisters(CodeGenerator* codegen, LocationSumm
   }
 
   CodeGeneratorARMVIXL* arm_codegen = down_cast<CodeGeneratorARMVIXL*>(codegen);
-  arm_codegen->GetAssembler()->StoreRegisterList(core_spills, orig_offset);
+  arm_codegen->GetAssembler()->StoreRegisterList(spills.GetCoreRegisterSet(), orig_offset);
 
-  uint32_t fp_spills = codegen->GetSlowPathSpills(locations, /* core_registers= */ false);
+  uint32_t fp_spills = spills.GetFpuRegisterSet();
   orig_offset = stack_offset;
   for (uint32_t i : LowToHighBits(fp_spills)) {
     DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
@@ -342,8 +342,8 @@ void SlowPathCodeARMVIXL::RestoreLiveRegisters(CodeGenerator* codegen, LocationS
   size_t stack_offset = codegen->GetFirstRegisterSlotInSlowPath();
   size_t orig_offset = stack_offset;
 
-  const uint32_t core_spills = codegen->GetSlowPathSpills(locations, /* core_registers= */ true);
-  for (uint32_t i : LowToHighBits(core_spills)) {
+  const RegisterSet spills = codegen->GetSlowPathSpills(locations);
+  for (uint32_t i : LowToHighBits(spills.GetCoreRegisterSet())) {
     DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
     DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
     stack_offset += kArmWordSize;
@@ -351,9 +351,9 @@ void SlowPathCodeARMVIXL::RestoreLiveRegisters(CodeGenerator* codegen, LocationS
 
   // TODO(VIXL): Check the coherency of stack_offset after this with a test.
   CodeGeneratorARMVIXL* arm_codegen = down_cast<CodeGeneratorARMVIXL*>(codegen);
-  arm_codegen->GetAssembler()->LoadRegisterList(core_spills, orig_offset);
+  arm_codegen->GetAssembler()->LoadRegisterList(spills.GetCoreRegisterSet(), orig_offset);
 
-  uint32_t fp_spills = codegen->GetSlowPathSpills(locations, /* core_registers= */ false);
+  uint32_t fp_spills = spills.GetFpuRegisterSet();
   while (fp_spills != 0u) {
     uint32_t begin = CTZ(fp_spills);
     uint32_t tmp = fp_spills + (1u << begin);
@@ -1918,9 +1918,7 @@ CodeGeneratorARMVIXL::CodeGeneratorARMVIXL(HGraph* graph,
     : CodeGenerator(graph,
                     kNumberOfCoreRegisters,
                     kNumberOfSRegisters,
-                    kNumberOfRegisterPairs,
-                    kCoreCalleeSaves.GetList(),
-                    ComputeSRegisterListMask(kFpuCalleeSaves),
+                    ComputeCalleeSaves(),
                     compiler_options,
                     stats,
                     ArrayRef<const bool>(detail::kIsIntrinsicUnimplemented)),
@@ -1951,8 +1949,13 @@ CodeGeneratorARMVIXL::CodeGeneratorARMVIXL(HGraph* graph,
                          graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       jit_baker_read_barrier_slow_paths_(std::less<uint32_t>(),
                                          graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)) {
+  // 64-bit types require register pairs.
+  data_types_requiring_register_pair_ =
+      (1u << enum_cast<>(DataType::Type::kFloat64)) | (1u << enum_cast<>(DataType::Type::kInt64));
+
+  blocked_registers_ = ComputeBlockedRegisters(graph);
   // Always save the LR register to mimic Quick.
-  AddAllocatedRegister(Location::RegisterLocation(LR));
+  AddAllocatedCoreRegister(LR);
   // Give D30 and D31 as scratch register to VIXL. The register allocator only works on
   // S0-S31, which alias to D0-D15.
   GetVIXLAssembler()->GetScratchVRegisterList()->Combine(d31);
@@ -2106,36 +2109,35 @@ void CodeGeneratorARMVIXL::Finalize() {
   }
 }
 
-void CodeGeneratorARMVIXL::SetupBlockedRegisters() const {
-  // Stack register, LR and PC are always reserved.
-  blocked_core_registers_[SP] = true;
-  blocked_core_registers_[LR] = true;
-  blocked_core_registers_[PC] = true;
+inline RegisterSet CodeGeneratorARMVIXL::ComputeCalleeSaves() {
+  RegisterSet callee_saves = RegisterSet::Empty();
+  callee_saves.AddCoreRegisterSet(kCoreCalleeSaves.GetList());
+  callee_saves.AddFpuRegisterSet(ComputeSRegisterListMask(kFpuCalleeSaves));
+  return callee_saves;
+}
 
-  // TODO: We don't need to reserve marking-register for userfaultfd GC. But
-  // that would require some work in the assembler code as the right GC is
-  // chosen at load-time and not compile time.
-  if (kReserveMarkingRegister) {
-    // Reserve marking register.
-    blocked_core_registers_[MR] = true;
-  }
+inline RegisterSet CodeGeneratorARMVIXL::ComputeBlockedRegisters(HGraph* graph) {
+  RegisterSet blocked_registers = RegisterSet::Empty();
+  blocked_registers.AddCoreRegisterSet(
+      // Stack register, LR and PC are always reserved.
+      (1u << SP) | (1u << LR) | (1u << PC) |
+      // Reserve marking register.
+      // TODO: We don't need to reserve marking-register for userfaultfd GC. But
+      // that would require some work in the assembler code as the right GC is
+      // chosen at load-time and not compile time.
+      (kReserveMarkingRegister ? 1u << MR : 0u) |
+      // Reserve thread register.
+      (1u << TR) |
+      // Reserve temp register.
+      (1u << IP));
 
-  // Reserve thread register.
-  blocked_core_registers_[TR] = true;
-
-  // Reserve temp register.
-  blocked_core_registers_[IP] = true;
-
-  if (GetGraph()->IsDebuggable()) {
+  if (graph->IsDebuggable()) {
     // Stubs do not save callee-save floating point registers. If the graph
     // is debuggable, we need to deal with these registers differently. For
     // now, just block them.
-    for (uint32_t i = kFpuCalleeSaves.GetFirstSRegister().GetCode();
-         i <= kFpuCalleeSaves.GetLastSRegister().GetCode();
-         ++i) {
-      blocked_fpu_registers_[i] = true;
-    }
+    blocked_registers.AddFpuRegisterSet(ComputeSRegisterListMask(kFpuCalleeSaves));
   }
+  return blocked_registers;
 }
 
 InstructionCodeGeneratorARMVIXL::InstructionCodeGeneratorARMVIXL(HGraph* graph,
@@ -2145,22 +2147,20 @@ InstructionCodeGeneratorARMVIXL::InstructionCodeGeneratorARMVIXL(HGraph* graph,
         codegen_(codegen) {}
 
 void CodeGeneratorARMVIXL::ComputeSpillMask() {
-  core_spill_mask_ = allocated_registers_.GetCoreRegisters() & core_callee_save_mask_;
-  DCHECK_NE(core_spill_mask_ & (1u << kLrCode), 0u)
+  CodeGenerator::ComputeSpillMask();
+  DCHECK_NE(GetCoreSpillMask() & (1u << kLrCode), 0u)
       << "At least the return address register must be saved";
   // 16-bit PUSH/POP (T1) can save/restore just the LR/PC.
   DCHECK(GetVIXLAssembler()->IsUsingT32());
-  fpu_spill_mask_ = allocated_registers_.GetFloatingPointRegisters() & fpu_callee_save_mask_;
   // We use vpush and vpop for saving and restoring floating point registers, which take
   // a SRegister and the number of registers to save/restore after that SRegister. We
-  // therefore update the `fpu_spill_mask_` to also contain those registers not allocated,
-  // but in the range.
-  if (fpu_spill_mask_ != 0) {
-    uint32_t least_significant_bit = LeastSignificantBit(fpu_spill_mask_);
-    uint32_t most_significant_bit = MostSignificantBit(fpu_spill_mask_);
-    for (uint32_t i = least_significant_bit + 1 ; i < most_significant_bit; ++i) {
-      fpu_spill_mask_ |= (1 << i);
-    }
+  // therefore update the spilled FP register set to also contain those registers not
+  // allocated, but in the range.
+  if (GetFpuSpillMask() != 0u) {
+    uint32_t least_significant_bit = LeastSignificantBit(GetFpuSpillMask());
+    uint32_t most_significant_bit = MostSignificantBit(GetFpuSpillMask());
+    spilled_registers_.AddFpuRegisterSet(
+        (1u << most_significant_bit) - (1u << least_significant_bit));
   }
 }
 
@@ -2331,7 +2331,7 @@ void CodeGeneratorARMVIXL::GenerateFrameEntry() {
 
     vixl32::Register temp1 = temps.Acquire();
     // Use r4 as other temporary register.
-    DCHECK(!blocked_core_registers_[R4]);
+    DCHECK(!IsBlockedCoreRegister(R4));
     DCHECK(!kCoreCalleeSaves.Includes(r4));
     vixl32::Register temp2 = r4;
     for (vixl32::Register reg : kParameterCoreRegistersVIXL) {
@@ -2392,7 +2392,7 @@ void CodeGeneratorARMVIXL::GenerateFrameEntry() {
     // sure r4 is not blocked, e.g. in special purpose
     // TestCodeGeneratorARMVIXL; also asserting that r4 is available
     // here.
-    if (!blocked_core_registers_[R4]) {
+    if (!IsBlockedCoreRegister(R4)) {
       for (vixl32::Register reg : kParameterCoreRegistersVIXL) {
         DCHECK(!reg.Is(r4));
       }
@@ -2413,7 +2413,7 @@ void CodeGeneratorARMVIXL::GenerateFrameEntry() {
   uint32_t frame_size = GetFrameSize();
   uint32_t core_spills_offset = frame_size - GetCoreSpillSize();
   uint32_t fp_spills_offset = frame_size - FrameEntrySpillSize();
-  if ((fpu_spill_mask_ == 0u || IsPowerOfTwo(fpu_spill_mask_)) &&
+  if ((GetFpuSpillMask() == 0u || IsPowerOfTwo(GetFpuSpillMask())) &&
       core_spills_offset <= 3u * kArmWordSize) {
     // Do a single PUSH for core registers including the method and up to two
     // filler registers. Then store the single FP spill if any.
@@ -2422,37 +2422,38 @@ void CodeGeneratorARMVIXL::GenerateFrameEntry() {
     // aligned 16-byte chunk where we're already writing anyway.)
     DCHECK_EQ(kMethodRegister.GetCode(), 0u);
     uint32_t extra_regs = MaxInt<uint32_t>(core_spills_offset / kArmWordSize);
-    DCHECK_LT(MostSignificantBit(extra_regs), LeastSignificantBit(core_spill_mask_));
-    __ Push(RegisterList(core_spill_mask_ | extra_regs));
+    DCHECK_LT(MostSignificantBit(extra_regs), LeastSignificantBit(GetCoreSpillMask()));
+    __ Push(RegisterList(GetCoreSpillMask() | extra_regs));
     GetAssembler()->cfi().AdjustCFAOffset(frame_size);
     GetAssembler()->cfi().RelOffsetForMany(DWARFReg(kMethodRegister),
                                            core_spills_offset,
-                                           core_spill_mask_,
+                                           GetCoreSpillMask(),
                                            kArmWordSize);
-    if (fpu_spill_mask_ != 0u) {
-      DCHECK(IsPowerOfTwo(fpu_spill_mask_));
-      vixl::aarch32::SRegister sreg(LeastSignificantBit(fpu_spill_mask_));
+    if (GetFpuSpillMask() != 0u) {
+      DCHECK(IsPowerOfTwo(GetFpuSpillMask()));
+      vixl::aarch32::SRegister sreg(LeastSignificantBit(GetFpuSpillMask()));
       GetAssembler()->StoreSToOffset(sreg, sp, fp_spills_offset);
       GetAssembler()->cfi().RelOffset(DWARFReg(sreg), /*offset=*/ fp_spills_offset);
     }
   } else {
-    __ Push(RegisterList(core_spill_mask_));
-    GetAssembler()->cfi().AdjustCFAOffset(kArmWordSize * POPCOUNT(core_spill_mask_));
+    __ Push(RegisterList(GetCoreSpillMask()));
+    GetAssembler()->cfi().AdjustCFAOffset(kArmWordSize * POPCOUNT(GetCoreSpillMask()));
     GetAssembler()->cfi().RelOffsetForMany(DWARFReg(kMethodRegister),
                                            /*offset=*/ 0,
-                                           core_spill_mask_,
+                                           GetCoreSpillMask(),
                                            kArmWordSize);
-    if (fpu_spill_mask_ != 0) {
-      uint32_t first = LeastSignificantBit(fpu_spill_mask_);
+    if (GetFpuSpillMask() != 0) {
+      uint32_t first = LeastSignificantBit(GetFpuSpillMask());
 
       // Check that list is contiguous.
-      DCHECK_EQ(fpu_spill_mask_ >> CTZ(fpu_spill_mask_), ~0u >> (32 - POPCOUNT(fpu_spill_mask_)));
+      DCHECK_EQ(GetFpuSpillMask() >> CTZ(GetFpuSpillMask()),
+                ~0u >> (32 - POPCOUNT(GetFpuSpillMask())));
 
-      __ Vpush(SRegisterList(vixl32::SRegister(first), POPCOUNT(fpu_spill_mask_)));
-      GetAssembler()->cfi().AdjustCFAOffset(kArmWordSize * POPCOUNT(fpu_spill_mask_));
+      __ Vpush(SRegisterList(vixl32::SRegister(first), POPCOUNT(GetFpuSpillMask())));
+      GetAssembler()->cfi().AdjustCFAOffset(kArmWordSize * POPCOUNT(GetFpuSpillMask()));
       GetAssembler()->cfi().RelOffsetForMany(DWARFReg(s0),
                                              /*offset=*/ 0,
-                                             fpu_spill_mask_,
+                                             GetFpuSpillMask(),
                                              kArmWordSize);
     }
 
@@ -2490,21 +2491,21 @@ void CodeGeneratorARMVIXL::GenerateFrameExit() {
   }
 
   // Pop LR into PC to return.
-  DCHECK_NE(core_spill_mask_ & (1 << kLrCode), 0U);
-  uint32_t pop_mask = (core_spill_mask_ & (~(1 << kLrCode))) | 1 << kPcCode;
+  DCHECK_NE(GetCoreSpillMask() & (1 << kLrCode), 0U);
+  uint32_t pop_mask = (GetCoreSpillMask() & (~(1 << kLrCode))) | 1 << kPcCode;
 
   uint32_t frame_size = GetFrameSize();
   uint32_t core_spills_offset = frame_size - GetCoreSpillSize();
   uint32_t fp_spills_offset = frame_size - FrameEntrySpillSize();
-  if ((fpu_spill_mask_ == 0u || IsPowerOfTwo(fpu_spill_mask_)) &&
+  if ((GetFpuSpillMask() == 0u || IsPowerOfTwo(GetFpuSpillMask())) &&
       // r4 is blocked by TestCodeGeneratorARMVIXL used by some tests.
-      core_spills_offset <= (blocked_core_registers_[r4.GetCode()] ? 2u : 3u) * kArmWordSize) {
+      core_spills_offset <= (IsBlockedCoreRegister(R4) ? 2u : 3u) * kArmWordSize) {
     // Load the FP spill if any and then do a single POP including the method
     // and up to two filler registers. If we have no FP spills, this also has
     // the advantage that we do not need to emit CFI directives.
-    if (fpu_spill_mask_ != 0u) {
-      DCHECK(IsPowerOfTwo(fpu_spill_mask_));
-      vixl::aarch32::SRegister sreg(LeastSignificantBit(fpu_spill_mask_));
+    if (GetFpuSpillMask() != 0u) {
+      DCHECK(IsPowerOfTwo(GetFpuSpillMask()));
+      vixl::aarch32::SRegister sreg(LeastSignificantBit(GetFpuSpillMask()));
       GetAssembler()->cfi().RememberState();
       GetAssembler()->LoadSFromOffset(sreg, sp, fp_spills_offset);
       GetAssembler()->cfi().Restore(DWARFReg(sreg));
@@ -2515,22 +2516,23 @@ void CodeGeneratorARMVIXL::GenerateFrameExit() {
     DCHECK_EQ(extra_regs & kCoreCalleeSaves.GetList(), 0u);
     DCHECK_LT(MostSignificantBit(extra_regs), LeastSignificantBit(pop_mask));
     __ Pop(RegisterList(pop_mask | extra_regs));
-    if (fpu_spill_mask_ != 0u) {
+    if (GetFpuSpillMask() != 0u) {
       GetAssembler()->cfi().RestoreState();
     }
   } else {
     GetAssembler()->cfi().RememberState();
     DecreaseFrame(fp_spills_offset);
-    if (fpu_spill_mask_ != 0) {
-      uint32_t first = LeastSignificantBit(fpu_spill_mask_);
+    if (GetFpuSpillMask() != 0) {
+      uint32_t first = LeastSignificantBit(GetFpuSpillMask());
 
       // Check that list is contiguous.
-      DCHECK_EQ(fpu_spill_mask_ >> CTZ(fpu_spill_mask_), ~0u >> (32 - POPCOUNT(fpu_spill_mask_)));
+      DCHECK_EQ(GetFpuSpillMask() >> CTZ(GetFpuSpillMask()),
+                ~0u >> (32 - POPCOUNT(GetFpuSpillMask())));
 
-      __ Vpop(SRegisterList(vixl32::SRegister(first), POPCOUNT(fpu_spill_mask_)));
+      __ Vpop(SRegisterList(vixl32::SRegister(first), POPCOUNT(GetFpuSpillMask())));
       GetAssembler()->cfi().AdjustCFAOffset(
-          -static_cast<int>(kArmWordSize) * POPCOUNT(fpu_spill_mask_));
-      GetAssembler()->cfi().RestoreMany(DWARFReg(vixl32::SRegister(0)), fpu_spill_mask_);
+          -static_cast<int>(kArmWordSize) * POPCOUNT(GetFpuSpillMask()));
+      GetAssembler()->cfi().RestoreMany(DWARFReg(vixl32::SRegister(0)), GetFpuSpillMask());
     }
     __ Pop(RegisterList(pop_mask));
     GetAssembler()->cfi().RestoreState();
@@ -2813,7 +2815,7 @@ void CodeGeneratorARMVIXL::InvokeRuntimeWithoutRecordingPcInfo(int32_t entry_poi
 }
 
 void InstructionCodeGeneratorARMVIXL::HandleGoto(HInstruction* got, HBasicBlock* successor) {
-  if (successor->IsExitBlock()) {
+  if (GetGraph()->IsExitBlock(successor)) {
     DCHECK(got->GetPrevious()->AlwaysThrows());
     return;  // no code needed
   }
@@ -2827,7 +2829,7 @@ void InstructionCodeGeneratorARMVIXL::HandleGoto(HInstruction* got, HBasicBlock*
     GenerateSuspendCheck(info->GetSuspendCheck(), successor);
     return;
   }
-  if (block->IsEntryBlock() && (previous != nullptr) && previous->IsSuspendCheck()) {
+  if (GetGraph()->IsEntryBlock(block) && (previous != nullptr) && previous->IsSuspendCheck()) {
     GenerateSuspendCheck(previous->AsSuspendCheck(), nullptr);
     codegen_->MaybeGenerateMarkingRegisterCheck(/* code= */ 2);
   }
@@ -2850,7 +2852,7 @@ void LocationsBuilderARMVIXL::VisitTryBoundary(HTryBoundary* try_boundary) {
 
 void InstructionCodeGeneratorARMVIXL::VisitTryBoundary(HTryBoundary* try_boundary) {
   HBasicBlock* successor = try_boundary->GetNormalFlowSuccessor();
-  if (!successor->IsExitBlock()) {
+  if (!GetGraph()->IsExitBlock(successor)) {
     HandleGoto(try_boundary, successor);
   }
 }
@@ -3050,7 +3052,7 @@ void LocationsBuilderARMVIXL::VisitDeoptimize(HDeoptimize* deoptimize) {
       LocationSummary::Create(allocator_, deoptimize, LocationSummary::kCallOnSlowPath);
   InvokeRuntimeCallingConventionARMVIXL calling_convention;
   RegisterSet caller_saves = RegisterSet::Empty();
-  caller_saves.Add(LocationFrom(calling_convention.GetRegisterAt(0)));
+  caller_saves.AddCoreRegister(calling_convention.GetRegisterAt(0).GetCode());
   locations->SetCustomSlowPathCallerSaves(caller_saves);
   if (IsBooleanValueOrMaterializedCondition(deoptimize->InputAt(0))) {
     locations->SetInAt(0, Location::RequiresRegister());
@@ -3121,8 +3123,8 @@ void InstructionCodeGeneratorARMVIXL::VisitSelect(HSelect* select) {
       !IsBooleanValueOrMaterializedCondition(condition) &&
       !out.Equals(first) &&
       !out.Equals(second) &&
-      (condition->GetLocations()->InAt(0).Equals(out) ||
-       condition->GetLocations()->InAt(1).Equals(out));
+      (condition->GetLocations()->InAt(0).OverlapsWith(out) ||
+       condition->GetLocations()->InAt(1).OverlapsWith(out));
   DCHECK_IMPLIES(output_overlaps_with_condition_inputs, condition->IsCondition());
   Location src;
 
@@ -3604,6 +3606,12 @@ void LocationsBuilderARMVIXL::VisitInvokeStaticOrDirect(HInvokeStaticOrDirect* i
     CriticalNativeCallingConventionVisitorARMVIXL calling_convention_visitor(
         /*for_register_allocation=*/ true);
     CodeGenerator::CreateCommonInvokeLocationSummary(invoke, &calling_convention_visitor);
+    // Use the next argument register, if any, as the target method temp. Otherwise, we'll use LR.
+    // We prefer the low register temp that allows shorter encoding than LR.
+    Location maybe_temp = calling_convention_visitor.GetNextLocation(DataType::Type::kInt32);
+    if (maybe_temp.IsRegister()) {
+      invoke->GetLocations()->AddTemp(maybe_temp);
+    }
   } else {
     HandleInvoke(invoke);
   }
@@ -7234,8 +7242,8 @@ void InstructionCodeGeneratorARMVIXL::VisitIntermediateAddressIndex(
 void LocationsBuilderARMVIXL::VisitBoundsCheck(HBoundsCheck* instruction) {
   RegisterSet caller_saves = RegisterSet::Empty();
   InvokeRuntimeCallingConventionARMVIXL calling_convention;
-  caller_saves.Add(LocationFrom(calling_convention.GetRegisterAt(0)));
-  caller_saves.Add(LocationFrom(calling_convention.GetRegisterAt(1)));
+  caller_saves.AddCoreRegister(calling_convention.GetRegisterAt(0).GetCode());
+  caller_saves.AddCoreRegister(calling_convention.GetRegisterAt(1).GetCode());
   LocationSummary* locations = codegen_->CreateThrowingSlowPathLocations(instruction, caller_saves);
 
   HInstruction* index = instruction->InputAt(0);
@@ -7374,7 +7382,7 @@ void InstructionCodeGeneratorARMVIXL::VisitSuspendCheck(HSuspendCheck* instructi
     // The back edge will generate the suspend check.
     return;
   }
-  if (block->IsEntryBlock() && instruction->GetNext()->IsGoto()) {
+  if (GetGraph()->IsEntryBlock(block) && instruction->GetNext()->IsGoto()) {
     // The goto will generate the suspend check.
     return;
   }
@@ -9568,7 +9576,13 @@ void CodeGeneratorARMVIXL::GenerateStaticOrDirectCall(
       // offset instructions MOVW+MOVT from the entrypoint load, so they cannot be fused.
       FALLTHROUGH_INTENDED;
     default: {
-      LoadMethod(invoke->GetMethodLoadKind(), temp, invoke);
+      if (callee_method.IsInvalid()) {
+        DCHECK_EQ(invoke->GetCodePtrLocation(), CodePtrLocation::kCallCriticalNative);
+        // Use LR for both the target method and then the code pointer. The code shall be two
+        // bytes longer because we'll have to use 32-bit instead of 16-bit encoding for one LDR.
+        callee_method = Location::RegisterLocation(lr.GetCode());
+      }
+      LoadMethod(invoke->GetMethodLoadKind(), callee_method, invoke);
       break;
     }
   }
@@ -10220,18 +10234,20 @@ static void PatchJitRootUse(uint8_t* code,
   reinterpret_cast<uint32_t*>(data)[0] = dchecked_integral_cast<uint32_t>(address);
 }
 
-void CodeGeneratorARMVIXL::EmitJitRootPatches(uint8_t* code, const uint8_t* roots_data) {
+void CodeGeneratorARMVIXL::EmitJitRootPatches(uint8_t* buffer,
+                                              [[maybe_unused]] const uint8_t* code_address,
+                                              const uint8_t* roots_data) {
   for (const auto& entry : jit_string_patches_) {
     const StringReference& string_reference = entry.first;
     VIXLUInt32Literal* table_entry_literal = entry.second;
     uint64_t index_in_table = GetJitStringRootIndex(string_reference);
-    PatchJitRootUse(code, roots_data, table_entry_literal, index_in_table);
+    PatchJitRootUse(buffer, roots_data, table_entry_literal, index_in_table);
   }
   for (const auto& entry : jit_class_patches_) {
     const TypeReference& type_reference = entry.first;
     VIXLUInt32Literal* table_entry_literal = entry.second;
     uint64_t index_in_table = GetJitClassRootIndex(type_reference);
-    PatchJitRootUse(code, roots_data, table_entry_literal, index_in_table);
+    PatchJitRootUse(buffer, roots_data, table_entry_literal, index_in_table);
   }
 }
 

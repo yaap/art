@@ -35,7 +35,7 @@
 #include "base/mutex-inl.h"
 #include "base/utils.h"
 #include "base/zip_archive.h"
-#include "com_android_art_flags.h"
+#include "com_android_art_rw_flags.h"
 #include "common_runtime_test.h"
 #include "dex/art_dex_file_loader.h"
 #include "dex/base64_test_util.h"
@@ -1943,6 +1943,32 @@ TEST_F(Dex2oatClassLoaderContextTest, StoredClassLoaderContext) {
       }));
 }
 
+TEST_F(Dex2oatClassLoaderContextTest, StoredClassLoaderContextDuplicateEntries) {
+  std::vector<std::unique_ptr<const DexFile>> dex_files = OpenTestDexFiles("MultiDex");
+  const std::string out_dir = GetScratchDir();
+  const std::string odex_location = out_dir + "/base.odex";
+  const std::string valid_context =
+      "PCL[" + dex_files[0]->GetLocation() + ":" + dex_files[0]->GetLocation() + "]";
+  const std::string stored_context = "PCL[/system/not_real_lib.jar:/system/not_real_lib.jar]";
+  uint32_t checksum = DexFileLoader::GetMultiDexChecksum(dex_files);
+  std::string expected_stored_context =
+      "PCL[/system/not_real_lib.jar*" + std::to_string(checksum) + ":" +
+          "/system/not_real_lib.jar*" + std::to_string(checksum) + "]";
+  // The stored context should match what we expect even though it's invalid.
+  EXPECT_TRUE(GenerateOdexForTest(
+      GetTestDexFileName("ManyMethods"),
+      odex_location,
+      CompilerFilter::Filter::kVerify,
+      {"--class-loader-context=" + valid_context,
+       "--stored-class-loader-context=" + stored_context},
+      /*expect_status=*/Status::kSuccess,
+      /*use_fd=*/false,
+      /*use_zip_fd=*/false,
+      [&](const OatFile& oat_file) {
+        EXPECT_EQ(oat_file.GetClassLoaderContext(), expected_stored_context) << output_;
+      }));
+}
+
 class Dex2oatISAFeaturesRuntimeDetectionTest : public Dex2oatTest {
  protected:
   void RunTest(const std::vector<std::string>& extra_args = {}) {
@@ -2118,7 +2144,7 @@ TEST_F(Dex2oatTest, AssumedValuesPropagateToOatHeader) {
                                                    &error_msg));
   ASSERT_TRUE(odex_file != nullptr);
   // The assumed SDK_INT arg should only propagate when the feature flag is enabled.
-  if (com::android::art::flags::compile_sdk_int_constant()) {
+  if (com::android::art::rw::flags::assume_value_sdk_int()) {
     ASSERT_TRUE(odex_file->GetOatHeader().HasAssumeValueSdkInt());
     EXPECT_EQ(odex_file->GetOatHeader().GetAssumeValueSdkInt(), 77);
   } else {

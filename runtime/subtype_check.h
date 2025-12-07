@@ -453,7 +453,7 @@ struct SubtypeCheck {
 
     if (kIsDebugBuild) {
       SubtypeCheckBitsAndStatus tmp;
-      memcpy(&tmp, &int32_data, sizeof(tmp));
+      memcpy(static_cast<void*>(&tmp), &int32_data, sizeof(tmp));
       DCHECK_EQ(0, memcmp(&tmp, &current_bits_and_status, sizeof(tmp))) << int32_data;
     }
     return current_bits_and_status;

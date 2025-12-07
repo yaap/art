@@ -27,6 +27,8 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.server.LocalManagerRegistry;
 import com.android.server.art.model.ArtServiceJobInterface;
 
+import java.util.Arrays;
+
 /**
  * Entry point for the callback from the job scheduler. This class is instantiated by the system
  * automatically.
@@ -50,7 +52,8 @@ public class BackgroundDexoptJobService extends JobService {
 
     @NonNull
     static ArtServiceJobInterface getJob(int jobId) {
-        if (jobId == BackgroundDexoptJob.JOB_ID) {
+        if (Arrays.stream(BackgroundDexoptJob.JobType.values())
+                        .anyMatch(t -> t.getJobId() == jobId)) {
             return LocalManagerRegistry.getManager(ArtManagerLocal.class).getBackgroundDexoptJob();
         } else if (jobId == PreRebootDexoptJob.JOB_ID && SdkLevel.isAtLeastV()) {
             return LocalManagerRegistry.getManager(ArtManagerLocal.class).getPreRebootDexoptJob();

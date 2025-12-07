@@ -17,16 +17,31 @@
 #ifndef ART_RUNTIME_TRACE_COMMON_H_
 #define ART_RUNTIME_TRACE_COMMON_H_
 
+#include "android-base/file.h"
 #include "android-base/stringprintf.h"
 #include "art_method-inl.h"
+#include "com_android_art_rw_flags.h"
+#include "compiler_callbacks.h"
 #include "dex/descriptors_names.h"
 #include "oat/oat_quick_method_header.h"
 
+using ::android::base::GetBoolProperty;
 using android::base::StringPrintf;
 
 namespace art HIDDEN {
 
-static std::string GetMethodInfoLine(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_) {
+inline bool ShouldEnableProfileCode() {
+  if (Runtime::Current() != nullptr && Runtime::Current()->IsAotCompiler()) {
+    // For dex2oat invocations just look at the flag passed to the dex2oat command.
+    return Runtime::Current()->GetCompilerCallbacks()->ShouldEnableProfileCode();
+  }
+  bool build_enabled = GetBoolProperty("dalvik.vm.allow_profile_code", false);
+  return com::android::art::rw::flags::enable_profile_code_rw() && build_enabled;
+}
+
+static constexpr double kSecondsToNanoseconds = 1000 * 1000 * 1000;
+
+inline std::string GetMethodInfoLine(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_) {
   method = method->GetInterfaceMethodIfProxy(kRuntimePointerSize);
   return StringPrintf("%s\t%s\t%s\t%s\n",
                       PrettyDescriptor(method->GetDeclaringClassDescriptor()).c_str(),
@@ -76,7 +91,6 @@ class TimestampCounter {
     // user space. Seem comment in GetTimestamp for more details.
     tsc_to_nanosec_scaling_factor = 1.0;
 #elif defined(__aarch64__)
-    double seconds_to_nanoseconds = 1000 * 1000;
     uint64_t freq = 0;
     // See Arm Architecture Registers  Armv8 section System Registers
     asm volatile("mrs %0,  cntfrq_el0" : "=r"(freq));
@@ -85,7 +99,7 @@ class TimestampCounter {
       // devices don't do this. In such cases fall back to computing the frequency. See b/315139000.
       tsc_to_nanosec_scaling_factor = computeScalingFactor();
     } else {
-      tsc_to_nanosec_scaling_factor = seconds_to_nanoseconds / static_cast<double>(freq);
+      tsc_to_nanosec_scaling_factor = kSecondsToNanoseconds / static_cast<double>(freq);
     }
 #elif defined(__i386__) || defined(__x86_64__)
     tsc_to_nanosec_scaling_factor = GetScalingFactorForX86();
@@ -152,8 +166,7 @@ class TimestampCounter {
     // frequency = coreCrystalFreq * (ebx / eax)
     // scaling_factor = seconds_to_nanoseconds / frequency
     //                = seconds_to_nanoseconds * eax / (coreCrystalFreq * ebx)
-    double seconds_to_nanoseconds = 1000 * 1000;
-    double scaling_factor = (seconds_to_nanoseconds * eax) / (coreCrystalFreq * ebx);
+    double scaling_factor = (kSecondsToNanoseconds * eax) / (coreCrystalFreq * ebx);
     return scaling_factor;
   }
 #endif

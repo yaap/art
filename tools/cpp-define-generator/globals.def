@@ -19,6 +19,7 @@
 #include "base/callee_save_type.h"
 #include "base/pointer_size.h"
 #include "base/globals.h"
+#include "com_android_art_flags.h"
 #include "dex/modifiers.h"
 #include "gc/accounting/card_table.h"
 #include "gc/heap.h"
@@ -91,3 +92,4 @@ ASM_DEFINE(TAGGED_JNI_SP_MASK_TOGGLED32,
            ~static_cast<uint32_t>(art::ManagedStack::kTaggedJniSpMask))
 ASM_DEFINE(TAGGED_JNI_SP_MASK_TOGGLED64,
            ~static_cast<uint64_t>(art::ManagedStack::kTaggedJniSpMask))
+ASM_DEFINE(FAST_COMPILER_SUPPORTED, com::android::art::flags::fast_baseline_compiler())

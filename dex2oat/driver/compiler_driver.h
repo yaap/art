@@ -25,6 +25,7 @@
 #include "arch/instruction_set.h"
 #include "base/array_ref.h"
 #include "base/bit_utils.h"
+#include "base/bit_vector.h"
 #include "base/hash_set.h"
 #include "base/mutex.h"
 #include "base/os.h"
@@ -110,6 +111,7 @@ class CompilerDriver {
                   const std::vector<const DexFile*>& dex_files,
                   TimingLogger* timings)
       REQUIRES(!Locks::mutator_lock_);
+  void PostCompile(const std::vector<const DexFile*>& dex_files, TimingLogger* timings);
 
   const CompilerOptions& GetCompilerOptions() const {
     return *compiler_options_;
@@ -290,10 +292,27 @@ class CompilerDriver {
 
   void CheckThreadPools();
 
+  // Map dex files to storage for bit vectors representing a set of string ids.
+  using DexFileStringReferences = std::unordered_map<const DexFile*, std::unique_ptr<size_t[]>>;
+
+  // Get string index storage for a dex file. Add storage if needed.
+  static BitVectorView<size_t> StringIndexesForDexFile(
+      const DexFile* dex_file, /*inout*/ DexFileStringReferences* dex_file_string_references);
+
+  // Collect string references needed for linker patches.
+  void CollectStringsForLinkerPatches(
+      /*inout*/ DexFileStringReferences* dex_file_string_references,
+      /*inout*/ TimingLogger* timings);
+
+  // Strongly intern strings for the collected string references.
+  static void InternStrings(const DexFileStringReferences& dex_file_string_references,
+                            /*inout*/ TimingLogger* timings);
+
   // Resolve const string literals that are loaded from dex code. If only_startup_strings is
   // specified, only methods that are marked startup in the profile are resolved.
   void ResolveConstStrings(const std::vector<const DexFile*>& dex_files,
                            bool only_startup_strings,
+                           /*inout*/ DexFileStringReferences* dex_file_string_references,
                            /*inout*/ TimingLogger* timings);
 
   const CompilerOptions* const compiler_options_;

@@ -186,13 +186,17 @@ void InternTable::BroadcastForNewInterns() {
   weak_intern_condition_.Broadcast(self);
 }
 
+inline bool InternTable::WeakAccessEnabled(Thread* self) {
+  return gUseReadBarrier ? self->GetWeakRefAccessEnabled()
+                         : weak_root_state_ != gc::kWeakRootStateNoReadsOrWrites;
+}
+
 void InternTable::WaitUntilAccessible(Thread* self) {
   Locks::intern_table_lock_->ExclusiveUnlock(self);
   {
     ScopedThreadSuspension sts(self, ThreadState::kWaitingWeakGcRootRead);
     MutexLock mu(self, *Locks::intern_table_lock_);
-    while ((!gUseReadBarrier && weak_root_state_ == gc::kWeakRootStateNoReadsOrWrites) ||
-           (gUseReadBarrier && !self->GetWeakRefAccessEnabled())) {
+    while (!WeakAccessEnabled(self)) {
       weak_intern_condition_.Wait(self);
     }
   }
@@ -219,8 +223,7 @@ ObjPtr<mirror::String> InternTable::Insert(ObjPtr<mirror::String> s,
     if (strong != nullptr) {
       return strong;
     }
-    if (gUseReadBarrier ? self->GetWeakRefAccessEnabled()
-                        : weak_root_state_ != gc::kWeakRootStateNoReadsOrWrites) {
+    if (WeakAccessEnabled(self)) {
       break;
     }
     num_searched_strong_frozen_tables = strong_interns_.tables_.size() - 1u;
@@ -250,7 +253,8 @@ ObjPtr<mirror::String> InternTable::Insert(ObjPtr<mirror::String> s,
   return is_strong ? InsertStrong(s, hash) : InsertWeak(s, hash);
 }
 
-ObjPtr<mirror::String> InternTable::InternStrong(uint32_t utf16_length, const char* utf8_data) {
+ObjPtr<mirror::String> InternTable::Intern(
+    uint32_t utf16_length, const char* utf8_data, bool is_strong) {
   DCHECK(utf8_data != nullptr);
   uint32_t hash = Utf8String::Hash(utf16_length, utf8_data);
   Thread* self = Thread::Current();
@@ -262,6 +266,9 @@ ObjPtr<mirror::String> InternTable::InternStrong(uint32_t utf16_length, const ch
     DCHECK(!strong_interns_.tables_.empty());
     num_searched_strong_frozen_tables = strong_interns_.tables_.size() - 1u;
     s = strong_interns_.Find(Utf8String(utf16_length, utf8_data), hash);
+    if (s == nullptr && !is_strong && WeakAccessEnabled(self)) {
+      s = weak_interns_.Find(Utf8String(utf16_length, utf8_data), hash);
+    }
   }
   if (s != nullptr) {
     return s;
@@ -275,18 +282,11 @@ ObjPtr<mirror::String> InternTable::InternStrong(uint32_t utf16_length, const ch
     return nullptr;
   }
   s->SetHashCode(static_cast<int32_t>(hash));
-  return Insert(s, hash, /*is_strong=*/ true, num_searched_strong_frozen_tables);
+  return Insert(s, hash, is_strong, num_searched_strong_frozen_tables);
 }
 
-ObjPtr<mirror::String> InternTable::InternStrong(const char* utf8_data) {
-  DCHECK(utf8_data != nullptr);
-  Thread* self = Thread::Current();
-  ObjPtr<mirror::String> s = mirror::String::AllocFromModifiedUtf8(self, utf8_data);
-  if (UNLIKELY(s == nullptr)) {
-    self->AssertPendingOOMException();
-    return nullptr;
-  }
-  return InternStrong(s);
+ObjPtr<mirror::String> InternTable::InternStrong(uint32_t utf16_length, const char* utf8_data) {
+  return Intern(utf16_length, utf8_data, /*is_strong=*/ true);
 }
 
 ObjPtr<mirror::String> InternTable::InternStrong(ObjPtr<mirror::String> s) {
@@ -296,15 +296,8 @@ ObjPtr<mirror::String> InternTable::InternStrong(ObjPtr<mirror::String> s) {
   return Insert(s, hash, /*is_strong=*/ true);
 }
 
-ObjPtr<mirror::String> InternTable::InternWeak(const char* utf8_data) {
-  DCHECK(utf8_data != nullptr);
-  Thread* self = Thread::Current();
-  ObjPtr<mirror::String> s = mirror::String::AllocFromModifiedUtf8(self, utf8_data);
-  if (UNLIKELY(s == nullptr)) {
-    self->AssertPendingOOMException();
-    return nullptr;
-  }
-  return InternWeak(s);
+ObjPtr<mirror::String> InternTable::InternWeak(uint32_t utf16_length, const char* utf8_data) {
+  return Intern(utf16_length, utf8_data, /*is_strong=*/ false);
 }
 
 ObjPtr<mirror::String> InternTable::InternWeak(ObjPtr<mirror::String> s) {

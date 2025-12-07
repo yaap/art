@@ -66,7 +66,6 @@ class FaultManager {
 
   // Added handlers are owned by the fault handler and will be freed on Shutdown().
   EXPORT void AddHandler(FaultHandler* handler, bool generated_code);
-  EXPORT void RemoveHandler(FaultHandler* handler);
 
   void AddGeneratedCodeRange(const void* start, size_t size);
   void RemoveGeneratedCodeRange(const void* start, size_t size)
@@ -139,30 +138,28 @@ class FaultManager {
 
 class FaultHandler {
  public:
-  EXPORT explicit FaultHandler(FaultManager* manager);
+  EXPORT FaultHandler() {}
   virtual ~FaultHandler() {}
-  FaultManager* GetFaultManager() {
-    return manager_;
-  }
 
   virtual bool Action(int sig, siginfo_t* siginfo, void* context) = 0;
-
- protected:
-  FaultManager* const manager_;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(FaultHandler);
 };
 
+//
+// Null pointer fault handler
+//
 class NullPointerHandler final : public FaultHandler {
  public:
-  explicit NullPointerHandler(FaultManager* manager);
+  NullPointerHandler() {}
 
   // NO_THREAD_SAFETY_ANALYSIS: Called after the fault manager determined that
   // the thread is `Runnable` and holds the mutator lock (shared) but without
   // telling annotalysis that we actually hold the lock.
   bool Action(int sig, siginfo_t* siginfo, void* context) override
       NO_THREAD_SAFETY_ANALYSIS;
+  constexpr static bool IsGeneratedCodeHandler() { return true; }
 
  private:
   // Helper functions for checking whether the signal can be interpreted
@@ -184,33 +181,45 @@ class NullPointerHandler final : public FaultHandler {
   DISALLOW_COPY_AND_ASSIGN(NullPointerHandler);
 };
 
+//
+// Suspension fault handler
+//
 class SuspensionHandler final : public FaultHandler {
  public:
-  explicit SuspensionHandler(FaultManager* manager);
-
+  SuspensionHandler() {}
   bool Action(int sig, siginfo_t* siginfo, void* context) override;
+  constexpr static bool IsGeneratedCodeHandler() { return true; }
 
  private:
   DISALLOW_COPY_AND_ASSIGN(SuspensionHandler);
 };
 
+//
+// Stack overflow fault handler
+//
 class StackOverflowHandler final : public FaultHandler {
  public:
-  explicit StackOverflowHandler(FaultManager* manager);
-
+  StackOverflowHandler() {}
   bool Action(int sig, siginfo_t* siginfo, void* context) override;
+  constexpr static bool IsGeneratedCodeHandler() { return true; }
 
  private:
   DISALLOW_COPY_AND_ASSIGN(StackOverflowHandler);
 };
 
+//
+// Stack trace handler, used to help get a stack trace from SIGSEGV inside of compiled code.
+//
 class JavaStackTraceHandler final : public FaultHandler {
  public:
-  explicit JavaStackTraceHandler(FaultManager* manager);
+  explicit JavaStackTraceHandler(FaultManager* manager) : manager_(manager) {}
 
   bool Action(int sig, siginfo_t* siginfo, void* context) override NO_THREAD_SAFETY_ANALYSIS;
+  constexpr static bool IsGeneratedCodeHandler() { return false; }
 
  private:
+  FaultManager* manager_;
+
   DISALLOW_COPY_AND_ASSIGN(JavaStackTraceHandler);
 };
 

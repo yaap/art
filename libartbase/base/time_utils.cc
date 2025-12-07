@@ -191,7 +191,11 @@ uint64_t NanoTime() {
 uint64_t ThreadCpuNanoTime() {
 #if defined(__linux__)
   timespec now;
-  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now);
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now) != 0) {
+    // TODO(415170313): For now just log an error. Once we have verified that
+    // these don't happen often change this to a CHECK.
+    PLOG(ERROR) << "Failed to get thread cpu time";
+  }
   return static_cast<uint64_t>(now.tv_sec) * UINT64_C(1000000000) + now.tv_nsec;
 #else
   UNIMPLEMENTED(WARNING);

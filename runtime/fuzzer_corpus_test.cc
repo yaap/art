@@ -21,38 +21,12 @@
 #include "android-base/file.h"
 #include "android-base/macros.h"
 #include "common_runtime_test.h"
-#include "dex/class_accessor-inl.h"
-#include "dex/dex_file_verifier.h"
-#include "dex/standard_dex_file.h"
+#include "fuzzer_common.h"
 #include "gtest/gtest.h"
 #include "handle_scope-inl.h"
-#include "jni/java_vm_ext.h"
-#include "verifier/class_verifier.h"
 #include "ziparchive/zip_archive.h"
 
 namespace art {
-// Global variable to count how many DEX files passed DEX file verification and they were
-// registered, since these are the cases for which we would be running the GC.
-int skipped_gc_iterations = 0;
-// Global variable to call the GC once every maximum number of iterations.
-// TODO: These values were obtained from local experimenting. They can be changed after
-// further investigation.
-static constexpr int kMaxSkipGCIterations = 100;
-
-// A class to be friends with ClassLinker and access the internal FindDexCacheDataLocked method.
-// TODO: Deduplicate this since it is the same with tools/fuzzer/libart_verify_classes_fuzzer.cc.
-class VerifyClassesFuzzerCorpusTestHelper {
- public:
-  static const ClassLinker::DexCacheData* GetDexCacheData(Runtime* runtime, const DexFile* dex_file)
-      REQUIRES_SHARED(Locks::mutator_lock_) {
-    Thread* self = Thread::Current();
-    ReaderMutexLock mu(self, *Locks::dex_lock_);
-    ClassLinker* class_linker = runtime->GetClassLinker();
-    const ClassLinker::DexCacheData* cached_data = class_linker->FindDexCacheDataLocked(*dex_file);
-    return cached_data;
-  }
-};
-
 // Manages the ZipArchiveHandle liveness.
 class ZipArchiveHandleScope {
  public:
@@ -69,20 +43,7 @@ class FuzzerCorpusTest : public CommonRuntimeTest {
                                   size_t size,
                                   const std::string& name,
                                   bool expected_success) {
-    // Do not verify the checksum as we only care about the DEX file contents,
-    // and know that the checksum would probably be erroneous (i.e. random).
-    constexpr bool kVerify = false;
-
-    auto container = std::make_shared<MemoryDexFileContainer>(data, size);
-    StandardDexFile dex_file(data,
-                             /*location=*/name,
-                             /*location_checksum=*/0,
-                             /*oat_dex_file=*/nullptr,
-                             container);
-
-    std::string error_msg;
-    bool is_valid_dex_file =
-        dex::Verify(&dex_file, dex_file.GetLocation().c_str(), kVerify, &error_msg);
+    const bool is_valid_dex_file = fuzzer::VerifyDexFile(data, size, name) != nullptr;
     ASSERT_EQ(is_valid_dex_file, expected_success) << " Failed for " << name;
   }
 
@@ -90,99 +51,61 @@ class FuzzerCorpusTest : public CommonRuntimeTest {
                                 size_t size,
                                 const std::string& name,
                                 bool expected_success) {
-    // Do not verify the checksum as we only care about the DEX file contents,
-    // and know that the checksum would probably be erroneous (i.e. random)
-    constexpr bool kVerify = false;
-    bool passed_class_verification = true;
-
-    auto container = std::make_shared<MemoryDexFileContainer>(data, size);
-    StandardDexFile dex_file(data,
-                             /*location=*/name,
-                             /*location_checksum=*/0,
-                             /*oat_dex_file=*/nullptr,
-                             container);
-
-    std::string error_msg;
-    const bool success_dex =
-        dex::Verify(&dex_file, dex_file.GetLocation().c_str(), kVerify, &error_msg);
-    ASSERT_EQ(success_dex, true) << " Failed for " << name;
+    std::unique_ptr<StandardDexFile> dex_file = fuzzer::VerifyDexFile(data, size, name);
+    ASSERT_EQ(dex_file != nullptr, true) << " Failed for " << name;
 
     Runtime* runtime = Runtime::Current();
     CHECK(runtime != nullptr);
 
-    ScopedObjectAccess soa(Thread::Current());
-    ClassLinker* class_linker = runtime->GetClassLinker();
-    jobject class_loader = RegisterDexFileAndGetClassLoader(runtime, &dex_file);
-
-    // Scope for the handles
-    {
-      art::StackHandleScope<4> scope(soa.Self());
-      art::Handle<art::mirror::ClassLoader> h_loader =
-          scope.NewHandle(soa.Decode<art::mirror::ClassLoader>(class_loader));
-      art::MutableHandle<art::mirror::Class> h_klass(scope.NewHandle<art::mirror::Class>(nullptr));
-      art::MutableHandle<art::mirror::DexCache> h_dex_cache(
-          scope.NewHandle<art::mirror::DexCache>(nullptr));
-      art::MutableHandle<art::mirror::ClassLoader> h_dex_cache_class_loader =
-          scope.NewHandle(h_loader.Get());
-
-      for (art::ClassAccessor accessor : dex_file.GetClasses()) {
-        h_klass.Assign(
-            class_linker->FindClass(soa.Self(), dex_file, accessor.GetClassIdx(), h_loader));
-        // Ignore classes that couldn't be loaded since we are looking for crashes during
-        // class/method verification.
-        if (h_klass == nullptr || h_klass->IsErroneous()) {
-          // Treat as failure to pass verification
-          passed_class_verification = false;
-          soa.Self()->ClearException();
-          continue;
-        }
-        h_dex_cache.Assign(h_klass->GetDexCache());
-
-        // The class loader from the class's dex cache is different from the dex file's class loader
-        // for boot image classes e.g. java.util.AbstractCollection.
-        h_dex_cache_class_loader.Assign(h_klass->GetDexCache()->GetClassLoader());
-        verifier::FailureKind failure =
-            verifier::ClassVerifier::VerifyClass(soa.Self(),
-                                                 /* verifier_deps= */ nullptr,
-                                                 h_dex_cache->GetDexFile(),
-                                                 h_klass,
-                                                 h_dex_cache,
-                                                 h_dex_cache_class_loader,
-                                                 *h_klass->GetClassDef(),
-                                                 runtime->GetCompilerCallbacks(),
-                                                 verifier::HardFailLogMode::kLogWarning,
-                                                 /* api_level= */ 0,
-                                                 &error_msg);
-        if (failure != verifier::FailureKind::kNoFailure) {
-          passed_class_verification = false;
-        }
-      }
-    }
-    skipped_gc_iterations++;
-
-    // Delete weak root to the DexCache before removing a DEX file from the cache. This is usually
-    // handled by the GC, but since we are not calling it every iteration, we need to delete them
-    // manually.
-    const ClassLinker::DexCacheData* dex_cache_data =
-        VerifyClassesFuzzerCorpusTestHelper::GetDexCacheData(runtime, &dex_file);
-    soa.Env()->GetVm()->DeleteWeakGlobalRef(soa.Self(), dex_cache_data->weak_root);
-
-    class_linker->RemoveDexFromCaches(dex_file);
-
-    // Delete global ref and unload class loader to free RAM.
-    soa.Env()->GetVm()->DeleteGlobalRef(soa.Self(), class_loader);
-
-    if (skipped_gc_iterations == kMaxSkipGCIterations) {
-      runtime->GetHeap()->CollectGarbage(/* clear_soft_references */ true);
-      skipped_gc_iterations = 0;
-    }
-
+    jobject class_loader = fuzzer::RegisterDexFileAndGetClassLoader(runtime, dex_file.get());
+    const bool passed_class_verification = fuzzer::VerifyClasses(class_loader, dex_file.get());
+    fuzzer::IterationCleanup(class_loader, dex_file.get());
     ASSERT_EQ(passed_class_verification, expected_success) << " Failed for " << name;
+  }
+
+  static void CommonCompilation(const uint8_t* data,
+                                size_t size,
+                                const std::string& name,
+                                bool expected_success,
+                                bool is_baseline) {
+    std::unique_ptr<StandardDexFile> dex_file = fuzzer::VerifyDexFile(data, size, name);
+    ASSERT_EQ(dex_file != nullptr, true) << " Failed for " << name;
+
+    Runtime* runtime = Runtime::Current();
+    CHECK(runtime != nullptr);
+
+    fuzzer::FuzzerCompiledMethodStorage storage;
+    std::unique_ptr<fuzzer::FuzzerCompilerCallbacks> callbacks(
+        new fuzzer::FuzzerCompilerCallbacks());
+    std::unique_ptr<CompilerOptions> compiler_options = fuzzer::CreateCompilerOptions(is_baseline);
+    std::unique_ptr<Compiler> compiler(fuzzer::CreateCompiler(*compiler_options, &storage));
+
+    jobject class_loader = fuzzer::RegisterDexFileAndGetClassLoader(runtime, dex_file.get());
+    fuzzer::VerifyClasses(class_loader, dex_file.get());
+    const bool at_least_one_method_called_the_compiler = fuzzer::CompileClasses(
+        class_loader, dex_file.get(), compiler.get(), callbacks.get(), /*kDebugPrints=*/false);
+    // Note: no need to reset callbacks as they will get destroyed
+    fuzzer::IterationCleanup(class_loader, dex_file.get());
+    ASSERT_EQ(at_least_one_method_called_the_compiler, expected_success) << " Failed for " << name;
+  }
+
+  static void OptimizedCompilation(const uint8_t* data,
+                                   size_t size,
+                                   const std::string& name,
+                                   bool expected_success) {
+    CommonCompilation(data, size, name, expected_success, /*is_baseline=*/false);
+  }
+
+  static void BaselineCompilation(const uint8_t* data,
+                                  size_t size,
+                                  const std::string& name,
+                                  bool expected_success) {
+    CommonCompilation(data, size, name, expected_success, /*is_baseline=*/true);
   }
 
   void TestFuzzerHelper(
       const std::string& archive_filename,
-      const std::unordered_set<std::string>& valid_dex_files,
+      std::function<bool(std::string&)> should_expect_success,
       std::function<void(const uint8_t*, size_t, const std::string&, bool)> verify_file) {
     // Consistency checks.
     const std::string folder = android::base::GetExecutableDirectory();
@@ -223,24 +146,11 @@ class FuzzerCorpusTest : public CommonRuntimeTest {
         file_data = reinterpret_cast<const uint8_t*>(&name);
       }
 
-      const bool is_valid_dex_file = valid_dex_files.find(name) != valid_dex_files.end();
-      verify_file(file_data, data.size(), name, is_valid_dex_file);
+      verify_file(file_data, data.size(), name, should_expect_success(name));
     }
 
     ASSERT_TRUE(error >= -1) << "failed iterating " << filename << " : " << ErrorCodeString(error);
     EndIteration(cookie);
-  }
-
- private:
-  static jobject RegisterDexFileAndGetClassLoader(Runtime* runtime, StandardDexFile* dex_file)
-      REQUIRES_SHARED(Locks::mutator_lock_) {
-    Thread* self = Thread::Current();
-    ClassLinker* class_linker = runtime->GetClassLinker();
-    const std::vector<const DexFile*> dex_files = {dex_file};
-    jobject class_loader = class_linker->CreatePathClassLoader(self, dex_files);
-    ObjPtr<mirror::ClassLoader> cl = self->DecodeJObject(class_loader)->AsClassLoader();
-    class_linker->RegisterDexFile(*dex_file, cl);
-    return class_loader;
   }
 };
 
@@ -250,7 +160,12 @@ TEST_F(FuzzerCorpusTest, VerifyCorpusDexFiles) {
   const std::unordered_set<std::string> valid_dex_files = {"Main.dex", "hello_world.dex"};
   const std::string archive_filename = "dex_verification_fuzzer_corpus.zip";
 
-  TestFuzzerHelper(archive_filename, valid_dex_files, DexFileVerification);
+  TestFuzzerHelper(
+      archive_filename,
+      [&valid_dex_files](std::string& str) {
+        return valid_dex_files.find(str) != valid_dex_files.end();
+      },
+      DexFileVerification);
 }
 
 // Tests that we can verify classes from dex files without crashing.
@@ -259,7 +174,30 @@ TEST_F(FuzzerCorpusTest, VerifyCorpusClassDexFiles) {
   const std::unordered_set<std::string> valid_dex_files = {"Main.dex", "hello_world.dex"};
   const std::string archive_filename = "class_verification_fuzzer_corpus.zip";
 
-  TestFuzzerHelper(archive_filename, valid_dex_files, ClassVerification);
+  TestFuzzerHelper(
+      archive_filename,
+      [&valid_dex_files](std::string& str) {
+        return valid_dex_files.find(str) != valid_dex_files.end();
+      },
+      ClassVerification);
+}
+
+// Tests that we can compile classes with kOptimizing from dex files without crashing.
+TEST_F(FuzzerCorpusTest, OptimizeCompileDexFiles) {
+  const std::string archive_filename = "optimized_compiler_fuzzer_corpus.zip";
+
+  // All added dex files should try to compile at least one method.
+  constexpr auto should_expect_success = [](std::string&) { return true; };
+  TestFuzzerHelper(archive_filename, should_expect_success, OptimizedCompilation);
+}
+
+// Tests that we can compile classes with kBaseline from dex files without crashing.
+TEST_F(FuzzerCorpusTest, BaselineCompileDexFiles) {
+  const std::string archive_filename = "baseline_compiler_fuzzer_corpus.zip";
+
+  // All added dex files should try to compile at least one method.
+  constexpr auto should_expect_success = [](std::string&) { return true; };
+  TestFuzzerHelper(archive_filename, should_expect_success, BaselineCompilation);
 }
 
 }  // namespace art

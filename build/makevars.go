@@ -29,7 +29,7 @@ var (
 	// The original prebuilts directory is not accessible when running tests remotely.
 	prebuiltToolsForTests = []string{
 		"bin/clang",
-		"bin/clang.real",
+		"bin/clang-real",
 		"bin/llvm-addr2line",
 		"bin/llvm-dwarfdump",
 		"bin/llvm-objdump",
@@ -75,7 +75,7 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.Strict("ART_TESTCASES_CONTENT", strings.Join(copy_cmds, " "))
 
 	// Add prebuilt tools.
-	clang_path := filepath.Join(config.ClangDefaultBase, ctx.Config().PrebuiltOS(), config.ClangDefaultVersion)
+	clang_path := filepath.Join(config.ClangDefaultBase, ctx.Config().PrebuiltOS(), config.ClangVersion(ctx))
 	copy_cmds = []string{}
 	for _, tool := range prebuiltToolsForTests {
 		src := filepath.Join(clang_path, "/", tool)

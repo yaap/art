@@ -21,10 +21,10 @@ public class Main {
 
     // Test 1: This test checks whether the SuspendCheck is removed from a simple field get.
 
-    /// CHECK-START: java.lang.String Main$Inner.$noinline$removeSuspendCheckFieldGet() register (before)
+    /// CHECK-START: java.lang.String Main$Inner.$noinline$removeSuspendCheckFieldGet() liveness (before)
     /// CHECK: SuspendCheck
     /// CHECK: InstanceFieldGet
-    /// CHECK-START: java.lang.String Main$Inner.$noinline$removeSuspendCheckFieldGet() register (after)
+    /// CHECK-START: java.lang.String Main$Inner.$noinline$removeSuspendCheckFieldGet() liveness (after)
     /// CHECK-NOT: SuspendCheck
     /// CHECK: InstanceFieldGet
     public String $noinline$removeSuspendCheckFieldGet() {
@@ -33,10 +33,10 @@ public class Main {
 
     // Test 2: This test checks whether the SuspendCheck is removed from a simple array get.
 
-    /// CHECK-START: int Main$Inner.$noinline$removeSuspendCheckArrayGet() register (before)
+    /// CHECK-START: int Main$Inner.$noinline$removeSuspendCheckArrayGet() liveness (before)
     /// CHECK: SuspendCheck
     /// CHECK: ArrayGet
-    /// CHECK-START: int Main$Inner.$noinline$removeSuspendCheckArrayGet() register (after)
+    /// CHECK-START: int Main$Inner.$noinline$removeSuspendCheckArrayGet() liveness (after)
     /// CHECK-NOT: SuspendCheck
     /// CHECK: ArrayGet
     public int $noinline$removeSuspendCheckArrayGet() {
@@ -45,10 +45,10 @@ public class Main {
 
     // Test 3: This test checks whether the SuspendCheck is removed from a simple array set.
 
-    /// CHECK-START: int Main$Inner.$noinline$removeSuspendCheckArraySet() register (before)
+    /// CHECK-START: int Main$Inner.$noinline$removeSuspendCheckArraySet() liveness (before)
     /// CHECK: SuspendCheck
     /// CHECK: ArraySet
-    /// CHECK-START: int Main$Inner.$noinline$removeSuspendCheckArraySet() register (after)
+    /// CHECK-START: int Main$Inner.$noinline$removeSuspendCheckArraySet() liveness (after)
     /// CHECK-NOT: SuspendCheck
     /// CHECK: ArraySet
     public int $noinline$removeSuspendCheckArraySet() {

@@ -22,7 +22,7 @@
 #include "class_linker.h"
 #include "common_throws.h"
 #include "dex/dex_file-inl.h"
-#include "indirect_reference_table-inl.h"
+#include "jni/indirect_reference_table-inl.h"
 #include "jni/java_vm_ext.h"
 #include "jni/jni_internal.h"
 #include "jvalue-inl.h"

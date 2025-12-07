@@ -26,6 +26,26 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size);
 
 namespace art {
 
+class Compiler;
+// Forward declaration for the friend statement below.
+namespace fuzzer {
+ALWAYS_INLINE std::unique_ptr<StandardDexFile> VerifyDexFile(const uint8_t* data,
+                                                             size_t size,
+                                                             const std::string& location);
+
+class FuzzerCompilerCallbacks;
+ALWAYS_INLINE int CompilerFuzzerTestOneInput(
+    const uint8_t* data,
+    size_t size,
+    Compiler* compiler,
+    FuzzerCompilerCallbacks* callbacks,
+    int* skipped_gc_iterations,
+    int max_skip_gc_iterations,
+    bool debug_prints,
+    std::vector<std::unique_ptr<uint8_t[]>>& data_to_delete,
+    std::vector<std::unique_ptr<StandardDexFile>>& dex_files_to_delete);
+}  // namespace fuzzer
+
 class OatDexFile;
 
 // Standard dex file. This is the format that is packaged in APKs and produced by tools.
@@ -129,11 +149,24 @@ class StandardDexFile : public DexFile {
 
   friend class DexFileLoader;
   friend class DexFileVerifierTest;
-  friend class FuzzerCorpusTest;  // for constructor
 
   ART_FRIEND_TEST(ClassLinkerTest, RegisterDexFileName);  // for constructor
   friend class OptimizingUnitTestHelper;  // for constructor
   friend int ::LLVMFuzzerTestOneInput(const uint8_t*, size_t);  // for constructor
+  friend ALWAYS_INLINE std::unique_ptr<StandardDexFile> fuzzer::VerifyDexFile(
+      const uint8_t* data,
+      size_t size,
+      const std::string& location);  // for constructor
+  friend ALWAYS_INLINE int fuzzer::CompilerFuzzerTestOneInput(
+      const uint8_t* data,
+      size_t size,
+      Compiler* compiler,
+      fuzzer::FuzzerCompilerCallbacks* callbacks,
+      int* skipped_gc_iterations,
+      int max_skip_gc_iterations,
+      bool debug_prints,
+      std::vector<std::unique_ptr<uint8_t[]>>& data_to_delete,
+      std::vector<std::unique_ptr<StandardDexFile>>& dex_files_to_delete);  // for constructor
 
   DISALLOW_COPY_AND_ASSIGN(StandardDexFile);
 };

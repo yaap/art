@@ -195,6 +195,7 @@ def default_run(ctx, args, **kwargs):
       setattr(args, name, new_value)
 
   ON_VM = os.environ.get("ART_TEST_ON_VM")
+  ON_SBC = os.environ.get("ART_TEST_ON_SBC")
 
   # Store copy of stdout&stderr of command in files so that we can diff them later.
   # This may run under 'adb shell' so we are limited only to 'sh' shell feature set.
@@ -424,7 +425,7 @@ def default_run(ctx, args, **kwargs):
     VDEX_ARGS += f" {arg}"
 
 # HACK: Force the use of `signal_dumper` on host.
-  if HOST or ON_VM:
+  if HOST or ON_VM or ON_SBC:
     TIME_OUT = "timeout"
 
 # Give extra 60 min for tests on QEMU (to avoid timeouts in debuggable mode).
@@ -661,7 +662,7 @@ def default_run(ctx, args, **kwargs):
   else:
     FLAGS += " -Xnorelocate"
 
-  if BIONIC and not ON_VM:
+  if BIONIC and not ON_VM and not ON_SBC:
     # This is the location that soong drops linux_bionic builds. Despite being
     # called linux_bionic-x86 the build is actually amd64 (x86_64) only.
     assert path.exists(f"{OUT_DIR}/soong/host/linux_bionic-x86"), (
@@ -791,7 +792,7 @@ def default_run(ctx, args, **kwargs):
                           -d '{ANDROID_BUILD_TOP}' --args "
 
     dex2oat_logger = ""
-    if ON_VM:
+    if ON_VM or ON_SBC:
       dex2oat_logger = "--runtime-arg -Xuse-stderr-logger"
 
     dex2oat_cmdline += f"'{ANDROID_ART_BIN_DIR}/{dex2oat_binary}' \
@@ -897,7 +898,7 @@ def default_run(ctx, args, **kwargs):
   # b/24664297
 
   dalvikvm_logger = ""
-  if ON_VM:
+  if ON_VM or ON_SBC:
     dalvikvm_logger = "-Xuse-stderr-logger"
 
   dalvikvm_cmdline = f"{INVOKE_WITH} {GDB} {ANDROID_ART_BIN_DIR}/{DALVIKVM} \
@@ -932,8 +933,6 @@ def default_run(ctx, args, **kwargs):
   RUN_TEST_ASAN_OPTIONS = ""
 
   # Multiple shutdown leaks. b/38341789
-  if RUN_TEST_ASAN_OPTIONS != "":
-    RUN_TEST_ASAN_OPTIONS = f"{RUN_TEST_ASAN_OPTIONS}:"
   RUN_TEST_ASAN_OPTIONS = f"{RUN_TEST_ASAN_OPTIONS}detect_leaks=0"
 
   assert not args.external_log_tags, "Deprecated: use --android-log-tags=*:v"
@@ -956,7 +955,7 @@ def default_run(ctx, args, **kwargs):
       ctx.run(fr"sed -i -E '/^.* E dalvikvm(|32|64): .* {message}/d' '{args.stderr_file}'")
     if ANDROID_LOG_TAGS != "*:i" and "D" in skip_tag_set:
       ctx.run(fr"sed -i -E '/^(Time zone|I18n) APEX ICU file found/d' '{args.stderr_file}'")
-    if ON_VM:
+    if ON_VM or ON_SBC:
       messages = "|".join([
         "failed to connect to tombstoned",
         "Failed to write stack traces to tombstoned",
@@ -992,7 +991,7 @@ def default_run(ctx, args, **kwargs):
     dlib = ""
     art_test_internal_libraries = []
 
-    if not ON_VM:
+    if not ON_VM and not ON_SBC:
       # Needed to access the test's Odex files.
       LD_LIBRARY_PATH = f"{DEX_LOCATION}/oat/{ISA}:{LD_LIBRARY_PATH}"
     # Needed to access the test's native libraries (see e.g. 674-hiddenapi,
@@ -1020,7 +1019,7 @@ def default_run(ctx, args, **kwargs):
       #       dumping do not lead to a deadlock, we also use the "-k" option to definitely kill the
       #       child.
       # Note: Using "--foreground" to not propagate the signal to children, i.e., the runtime.
-      if ON_VM:
+      if ON_VM or ON_SBC:
         timeout_prefix = f"timeout -k 120s {TIME_OUT_VALUE}s"
       else:
         timeout_prefix = f"timeout --foreground -k 120s {TIME_OUT_VALUE}s {timeout_dumper_cmd}"
@@ -1035,6 +1034,7 @@ def default_run(ctx, args, **kwargs):
       ANDROID_TZDATA_ROOT = ANDROID_TZDATA_ROOT,
       ANDROID_LOG_TAGS = ANDROID_LOG_TAGS,
       ART_TEST_ON_VM=ON_VM,
+      ART_TEST_ON_SBC=ON_SBC,
       LD_LIBRARY_PATH = LD_LIBRARY_PATH,
       NATIVELOADER_DEFAULT_NAMESPACE_LIBS = NATIVELOADER_DEFAULT_NAMESPACE_LIBS,
       PATH = f"{PREPEND_TARGET_PATH}:$PATH",
@@ -1053,7 +1053,7 @@ def default_run(ctx, args, **kwargs):
     ctx.run(tee(f"{timeout_prefix} {dalvikvm_cmdline}"),
             expected_exit_code=args.expected_exit_code, desc="DalvikVM")
 
-    if ON_VM:
+    if ON_VM or ON_SBC:
       filter_output()
 
   else:

@@ -17,6 +17,8 @@
 #ifndef ART_RUNTIME_HIDDEN_API_H_
 #define ART_RUNTIME_HIDDEN_API_H_
 
+#include <ostream>
+
 #include "art_field.h"
 #include "art_method.h"
 #include "base/hiddenapi_domain.h"
@@ -54,21 +56,30 @@ inline EnforcementPolicy EnforcementPolicyFromInt(int api_policy_int) {
 // This must be kept in sync with VMRuntime.HiddenApiUsageLogger.ACCESS_METHOD_*
 // for the access methods that are logged.
 enum class AccessMethod {
-  // An internal check that does not correspond to an actual access by an app.
-  // It's not logged and the current EnforcementPolicy is not applied. The check
-  // can also be one that, if denied, will be followed by another check with one
-  // of the other methods below (except kCheckWithPolicy), which will then log
-  // and apply the policy (if that one is denied too).
+  // Internal checks that don't log access warnings or failures. They may be
+  // used for checks that don't correspond to an actual access by the running
+  // app. They may also be used for a check that, if denied, will be followed by
+  // zero or more kCheck or kCheckWithPolicy checks and eventually an
+  // AccessMethod that is something else. That last check will then log and
+  // apply the policy (if it is denied too).
+  //
+  // kCheck returns whether the access would be allowed by hiddenapi or not,
+  // regardless of the current EnforcementPolicy in the runtime.
+  // kCheckWithPolicy does apply the policy and hence may only return a denial
+  // if it's kEnabled.
   kCheck = 0,
-
-  // Like kCheck, except the current EnforcementPolicy is applied (but it still
-  // doesn't log).
   kCheckWithPolicy = 4,
 
+  // Checks that log access warnings and failures, depending on the current
+  // EnforcementPolicy in the runtime.
   kReflection = 1,
   kJNI = 2,
   kLinking = 3,
 };
+
+inline bool IsCheckOnlyMethod(AccessMethod access_method) {
+  return access_method == AccessMethod::kCheck || access_method == AccessMethod::kCheckWithPolicy;
+}
 
 // Represents the API domain of a caller/callee.
 class AccessContext {
@@ -77,6 +88,7 @@ class AccessContext {
   explicit AccessContext(bool is_trusted)
       : klass_(nullptr),
         dex_file_(nullptr),
+        native_caller_addr_(nullptr),
         domain_(ComputeDomain(is_trusted)) {}
 
   // Initialize from class loader and dex file (via dex cache).
@@ -84,23 +96,26 @@ class AccessContext {
       REQUIRES_SHARED(Locks::mutator_lock_)
       : klass_(nullptr),
         dex_file_(GetDexFileFromDexCache(dex_cache)),
+        native_caller_addr_(nullptr),
         domain_(ComputeDomain(class_loader, dex_file_)) {}
 
   // Initialize from class loader and dex file (only used by tests).
   AccessContext(ObjPtr<mirror::ClassLoader> class_loader, const DexFile* dex_file)
       : klass_(nullptr),
         dex_file_(dex_file),
+        native_caller_addr_(nullptr),
         domain_(ComputeDomain(class_loader, dex_file_)) {}
 
   // Initialize from Class.
-  explicit AccessContext(ObjPtr<mirror::Class> klass)
-      REQUIRES_SHARED(Locks::mutator_lock_)
+  explicit AccessContext(ObjPtr<mirror::Class> klass) REQUIRES_SHARED(Locks::mutator_lock_)
       : klass_(klass),
         dex_file_(GetDexFileFromDexCache(klass->GetDexCache())),
+        native_caller_addr_(nullptr),
         domain_(ComputeDomain(klass, dex_file_)) {}
 
   ObjPtr<mirror::Class> GetClass() const { return klass_; }
   const DexFile* GetDexFile() const { return dex_file_; }
+  void* GetNativeCallerAddr() const { return native_caller_addr_; }
   Domain GetDomain() const { return domain_; }
   bool IsApplicationDomain() const { return domain_ == Domain::kApplication; }
 
@@ -109,7 +124,22 @@ class AccessContext {
     return IsDomainAtLeastAsTrustedAs(domain_, callee.domain_);
   }
 
+  // Returns an AccessContext based on the return address to a native (non-OAT)
+  // caller. If the DSO (dynamic shared object) of the caller can't be
+  // determined then returns a fully-untrusted context for which
+  // GetNativeCallerAddr returns nullptr.
+  static AccessContext FromNativeCaller(void* native_caller_addr);
+
  private:
+  explicit AccessContext(ObjPtr<mirror::Class> klass,
+                         const DexFile* dex_file,
+                         void* native_caller_addr,
+                         Domain domain)
+      : klass_(klass),
+        dex_file_(dex_file),
+        native_caller_addr_(native_caller_addr),
+        domain_(domain) {}
+
   static const DexFile* GetDexFileFromDexCache(ObjPtr<mirror::DexCache> dex_cache)
       REQUIRES_SHARED(Locks::mutator_lock_) {
     return dex_cache.IsNull() ? nullptr : dex_cache->GetDexFile();
@@ -151,9 +181,17 @@ class AccessContext {
   // DexFile of the caller/callee (null if not provided).
   const DexFile* const dex_file_;
 
+  // The return address for a native (non-OAT) caller.
+  void* native_caller_addr_;
+
   // Computed domain of the caller/callee.
   const Domain domain_;
 };
+
+std::ostream& operator<<(std::ostream&, EnforcementPolicy);
+std::ostream& operator<<(std::ostream&, AccessMethod);
+std::ostream& operator<<(std::ostream&, Domain);
+std::ostream& operator<<(std::ostream&, const AccessContext&);
 
 class ScopedHiddenApiEnforcementPolicySetting {
  public:
@@ -172,6 +210,12 @@ class ScopedHiddenApiEnforcementPolicySetting {
 };
 
 void InitializeCorePlatformApiPrivateFields() REQUIRES(!Locks::mutator_lock_);
+
+template <typename T>
+bool ShouldDenyJniAccessToMember(T* member,
+                                 Thread* self,
+                                 AccessMethod access_kind,
+                                 void* native_caller_addr) REQUIRES_SHARED(Locks::mutator_lock_);
 
 // Walks the stack, finds the caller of this reflective call and returns
 // a hiddenapi AccessContext formed from its declaring class.
@@ -447,6 +491,7 @@ inline bool ShouldDenyAccessToMember(T* member,
                                      const AccessContext& access_context,
                                      AccessMethod access_method)
     REQUIRES_SHARED(Locks::mutator_lock_) {
+  access_context.GetClass().AssertValid();
   return ShouldDenyAccessToMember(member, [&]() { return access_context; }, access_method);
 }
 

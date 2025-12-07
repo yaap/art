@@ -83,7 +83,6 @@ static constexpr const char* kAndroidDataDefaultPath = "/data";
 static constexpr const char* kAndroidExpandEnvVar = "ANDROID_EXPAND";
 static constexpr const char* kAndroidExpandDefaultPath = "/mnt/expand";
 static constexpr const char* kAndroidArtRootEnvVar = "ANDROID_ART_ROOT";
-static constexpr const char* kAndroidConscryptRootEnvVar = "ANDROID_CONSCRYPT_ROOT";
 static constexpr const char* kApexDefaultPath = "/apex/";
 static constexpr const char* kArtApexDataEnvVar = "ART_APEX_DATA";
 static constexpr const char* kBootImageStem = "boot";
@@ -321,7 +320,7 @@ static bool MaybeAppendBootImageMainlineExtension(const std::string& android_roo
                                                   bool deny_art_apex_data_files,
                                                   /*inout*/ std::string* location,
                                                   /*out*/ std::string* error_msg) {
-  if (!kIsTargetAndroid || RunningOnVM()) {
+  if (!kIsTargetAndroid || RunningOnVM() || RunningOnSBC()) {
     return true;
   }
   // Due to how the runtime determines the mapping between boot images and bootclasspath jars, the
@@ -729,15 +728,6 @@ bool LocationIsOnArtApexData(std::string_view location) {
   return location.starts_with(art_apex_data);
 }
 
-bool LocationIsOnArtModule(std::string_view full_path) {
-  std::string unused_error_msg;
-  std::string module_path = GetArtRootSafe(/* must_exist= */ kIsTargetBuild, &unused_error_msg);
-  if (module_path.empty()) {
-    return false;
-  }
-  return full_path.starts_with(module_path);
-}
-
 static bool StartsWithSlash(const char* str) {
   DCHECK(str != nullptr);
   return str[0] == '/';
@@ -804,10 +794,6 @@ bool LocationIsOnSystemExtFramework(std::string_view full_path) {
                       kAndroidRootEnvVar,
                       kAndroidRootDefaultPath,
                       /* subdir= */ "system_ext/framework/");
-}
-
-bool LocationIsOnConscryptModule(std::string_view full_path) {
-  return IsLocationOn(full_path, kAndroidConscryptRootEnvVar, kAndroidConscryptApexDefaultPath);
 }
 
 bool LocationIsOnApex(std::string_view full_path) {

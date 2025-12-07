@@ -20,6 +20,7 @@
 
 #include "art_field-inl.h"
 #include "art_method-alloc-inl.h"
+#include "base/inlined_vector.h"
 #include "base/pointer_size.h"
 #include "class_linker-inl.h"
 #include "class_root-inl.h"
@@ -421,16 +422,6 @@ static jobject Class_getDeclaredConstructorInternal(
   return soa.AddLocalReference<jobject>(result.Get());
 }
 
-static ALWAYS_INLINE inline bool MethodMatchesConstructor(
-    ArtMethod* m,
-    bool public_only,
-    const hiddenapi::AccessContext& hiddenapi_context) REQUIRES_SHARED(Locks::mutator_lock_) {
-  DCHECK(m != nullptr);
-  return m->IsConstructor() &&
-         !m->IsStatic() &&
-         mirror::Class::IsDiscoverable(public_only, hiddenapi_context, m);
-}
-
 static jobjectArray Class_getDeclaredConstructorsInternal(
     JNIEnv* env, jobject javaThis, jboolean publicOnly) {
   ScopedFastNativeObjectAccess soa(env);
@@ -442,30 +433,34 @@ static jobjectArray Class_getDeclaredConstructorsInternal(
     ThrowRuntimeException("Obsolete Object!");
     return nullptr;
   }
-  size_t constructor_count = 0;
-  // Two pass approach for speed.
+  // Collect discoverable constructors as `ArtMethod*`.
+  static constexpr size_t kMaxStackEntries = 8u;
+  InlinedVector<ArtMethod*, kMaxStackEntries> constructors;
   for (auto& m : h_klass->GetMethods(kRuntimePointerSize)) {
-    constructor_count += MethodMatchesConstructor(&m, public_only, hiddenapi_context) ? 1u : 0u;
+    if (m.IsConstructor() &&
+        !m.IsStatic() &&
+        mirror::Class::IsDiscoverable(public_only, hiddenapi_context, &m)) {
+      constructors.push_back(&m);
+    }
   }
+  // Create managed array and `Constructor` objects.
   auto h_constructors = hs.NewHandle(mirror::ObjectArray<mirror::Constructor>::Alloc(
-      soa.Self(), GetClassRoot<mirror::ObjectArray<mirror::Constructor>>(), constructor_count));
+      soa.Self(), GetClassRoot<mirror::ObjectArray<mirror::Constructor>>(), constructors.size()));
   if (UNLIKELY(h_constructors == nullptr)) {
     soa.Self()->AssertPendingException();
     return nullptr;
   }
-  constructor_count = 0;
-  for (auto& m : h_klass->GetMethods(kRuntimePointerSize)) {
-    if (MethodMatchesConstructor(&m, public_only, hiddenapi_context)) {
-      DCHECK_EQ(Runtime::Current()->GetClassLinker()->GetImagePointerSize(), kRuntimePointerSize);
-      DCHECK(!Runtime::Current()->IsActiveTransaction());
-      ObjPtr<mirror::Constructor> constructor =
-          mirror::Constructor::CreateFromArtMethod<kRuntimePointerSize>(soa.Self(), &m);
-      if (UNLIKELY(constructor == nullptr)) {
-        soa.Self()->AssertPendingOOMException();
-        return nullptr;
-      }
-      h_constructors->SetWithoutChecks<false>(constructor_count++, constructor);
+  size_t constructor_count = 0;
+  for (ArtMethod* c : constructors.GetArray()) {
+    DCHECK_EQ(Runtime::Current()->GetClassLinker()->GetImagePointerSize(), kRuntimePointerSize);
+    DCHECK(!Runtime::Current()->IsActiveTransaction());
+    ObjPtr<mirror::Constructor> constructor =
+        mirror::Constructor::CreateFromArtMethod<kRuntimePointerSize>(soa.Self(), c);
+    if (UNLIKELY(constructor == nullptr)) {
+      soa.Self()->AssertPendingOOMException();
+      return nullptr;
     }
+    h_constructors->SetWithoutChecks<false>(constructor_count++, constructor);
   }
   return soa.AddLocalReference<jobjectArray>(h_constructors.Get());
 }
@@ -507,36 +502,32 @@ static jobjectArray Class_getDeclaredMethodsUnchecked(JNIEnv* env, jobject javaT
     ThrowRuntimeException("Obsolete Object!");
     return nullptr;
   }
-  size_t num_methods = 0;
+  // Collect discoverable declared non-constructor methods as `ArtMethod*`.
+  static constexpr size_t kMaxStackEntries = 8u;
+  InlinedVector<ArtMethod*, kMaxStackEntries> methods;
   for (ArtMethod& m : klass->GetDeclaredMethods(kRuntimePointerSize)) {
-    uint32_t modifiers = m.GetAccessFlags();
-    // Add non-constructor declared methods.
-    if ((modifiers & kAccConstructor) == 0 &&
-        mirror::Class::IsDiscoverable(public_only, hiddenapi_context, &m)) {
-      ++num_methods;
+    if (!m.IsConstructor() && mirror::Class::IsDiscoverable(public_only, hiddenapi_context, &m)) {
+      methods.push_back(&m);
     }
   }
+  // Create managed array and `Method` objects.
   auto ret = hs.NewHandle(mirror::ObjectArray<mirror::Method>::Alloc(
-      soa.Self(), GetClassRoot<mirror::ObjectArray<mirror::Method>>(), num_methods));
+      soa.Self(), GetClassRoot<mirror::ObjectArray<mirror::Method>>(), methods.size()));
   if (ret == nullptr) {
     soa.Self()->AssertPendingOOMException();
     return nullptr;
   }
-  num_methods = 0;
-  for (ArtMethod& m : klass->GetDeclaredMethods(kRuntimePointerSize)) {
-    uint32_t modifiers = m.GetAccessFlags();
-    if ((modifiers & kAccConstructor) == 0 &&
-        mirror::Class::IsDiscoverable(public_only, hiddenapi_context, &m)) {
-      DCHECK_EQ(Runtime::Current()->GetClassLinker()->GetImagePointerSize(), kRuntimePointerSize);
-      DCHECK(!Runtime::Current()->IsActiveTransaction());
-      ObjPtr<mirror::Method> method =
-          mirror::Method::CreateFromArtMethod<kRuntimePointerSize>(soa.Self(), &m);
-      if (method == nullptr) {
-        soa.Self()->AssertPendingException();
-        return nullptr;
-      }
-      ret->SetWithoutChecks<false>(num_methods++, method);
+  size_t num_methods = 0;
+  for (ArtMethod* m : methods.GetArray()) {
+    DCHECK_EQ(Runtime::Current()->GetClassLinker()->GetImagePointerSize(), kRuntimePointerSize);
+    DCHECK(!Runtime::Current()->IsActiveTransaction());
+    ObjPtr<mirror::Method> method =
+        mirror::Method::CreateFromArtMethod<kRuntimePointerSize>(soa.Self(), m);
+    if (method == nullptr) {
+      soa.Self()->AssertPendingException();
+      return nullptr;
     }
+    ret->SetWithoutChecks<false>(num_methods++, method);
   }
   return soa.AddLocalReference<jobjectArray>(ret.Get());
 }

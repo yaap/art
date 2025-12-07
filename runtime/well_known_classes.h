@@ -162,6 +162,9 @@ struct EXPORT WellKnownClasses {
   static ArtMethod* jdk_internal_math_FloatingDecimal_getBinaryToASCIIConverter_D;
   static ArtMethod* jdk_internal_math_FloatingDecimal_getBinaryToASCIIConverter_F;
   static ArtMethod* jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_getChars;
+  static ArtMethod* jdk_internal_vm_Continuation_doYieldNative;
+  static ArtMethod* jdk_internal_vm_Continuation_enter;
+  static ArtMethod* jdk_internal_vm_Continuation_enterSpecial;
   static ArtMethod* libcore_reflect_AnnotationFactory_createAnnotation;
   static ArtMethod* libcore_reflect_AnnotationMember_init;
   static ArtMethod* org_apache_harmony_dalvik_ddmc_DdmServer_broadcast;
@@ -191,6 +194,7 @@ struct EXPORT WellKnownClasses {
   static ArtField* java_lang_System_in;
   static ArtField* java_lang_System_out;
   static ArtField* java_lang_System_err;
+  static ArtField* java_lang_Thread_cont;
   static ArtField* java_lang_Thread_parkBlocker;
   static ArtField* java_lang_Thread_daemon;
   static ArtField* java_lang_Thread_group;
@@ -223,6 +227,7 @@ struct EXPORT WellKnownClasses {
   static ArtField* java_nio_ByteBuffer_offset;
   static ArtField* java_util_Collections_EMPTY_LIST;
   static ArtField* java_util_concurrent_ThreadLocalRandom_seeder;
+  static ArtField* jdk_internal_vm_Continuation_virtualThreadContext;
   static ArtField* jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_buffer;
   static ArtField* jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer_image;
   static ArtField* libcore_util_EmptyArray_STACK_TRACE_ELEMENT;

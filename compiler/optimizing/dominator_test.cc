@@ -42,7 +42,7 @@ void OptimizerTest::TestCode(const std::vector<uint16_t>& data,
       } else {
         // Only the entry block has no dominator.
         ASSERT_EQ(nullptr, graph->GetBlocks()[i]->GetDominator());
-        ASSERT_TRUE(graph->GetBlocks()[i]->IsEntryBlock());
+        ASSERT_TRUE(graph->IsEntryBlock(graph->GetBlocks()[i]));
       }
     } else {
       ASSERT_NE(nullptr, graph->GetBlocks()[i]->GetDominator());

@@ -916,7 +916,6 @@ static ObjPtr<mirror::CallSite> InvokeBootstrapMethod(Thread* self,
 
   // Check if this BSM is targeting a variable arity method. If so,
   // we'll need to collect the trailing arguments into an array.
-  Handle<mirror::Array> collector_arguments;
   int32_t collector_arguments_length;
   if (bsm->GetTargetMethod()->IsVarargs()) {
     int number_of_bsm_parameters = bsm->GetMethodType()->GetNumberOfPTypes();
@@ -1249,14 +1248,11 @@ static inline bool DoCallCommon(ArtMethod* called_method,
       CREATE_SHADOW_FRAME(num_regs, called_method, /* dex pc */ 0);
   ShadowFrame* new_shadow_frame = shadow_frame_unique_ptr.get();
   // Restore the values of virtual registers if a virtual thread is unparking
-  if (kIsVirtualThreadEnabled && self->IsVirtualThreadUnparking()) {
+  if (kIsVirtualThreadEnabled && UNLIKELY(self->IsVirtualThreadUnparking())) {
     FillVirtualThreadFrame(self, new_shadow_frame);
-  }
-  // TODO: Consider skip the following operations, e.g. copying registers, if
-  //   a virtual thread is unparking.
-
-  // Initialize new shadow frame by copying the registers from the callee shadow frame.
-  if (!shadow_frame.GetMethod()->SkipAccessChecks()) {
+    self->EndAssertNoThreadSuspension(old_cause);
+    // Else initialize new shadow frame by copying the registers from the callee shadow frame.
+  } else if (!shadow_frame.GetMethod()->SkipAccessChecks()) {
     // Slow path.
     // We might need to do class loading, which incurs a thread state change to kNative. So
     // register the shadow frame as under construction and allow suspension again.
@@ -1376,7 +1372,15 @@ static inline bool DoCallCommon(ArtMethod* called_method,
 void FillVirtualThreadFrame(Thread* self, ShadowFrame* frame) {
   ScopedAssertNoThreadSuspension ns("No thread suspension when filling virtual thread frame)");
   ObjPtr<mirror::Object> jpeer = self->GetPeer();
-  ObjPtr<mirror::Object> v_context = WellKnownClasses::java_lang_Thread_target->GetObject(jpeer);
+  ObjPtr<mirror::Object> v_context;
+  if (self->AreVirtualThreadFlagsEnabled(kContinuation)) {
+    ObjPtr<mirror::Object> cont = WellKnownClasses::java_lang_Thread_cont->GetObject(jpeer);
+    DCHECK(!cont.IsNull());
+    v_context =
+        WellKnownClasses::jdk_internal_vm_Continuation_virtualThreadContext->GetObject(cont);
+  } else {
+    v_context = WellKnownClasses::java_lang_Thread_target->GetObject(jpeer);
+  }
   DCHECK(v_context->GetClass()->DescriptorEquals("Ldalvik/system/VirtualThreadContext;"))
       << frame->GetMethod()->PrettyMethod();
   ObjPtr<mirror::Object> parked_states =

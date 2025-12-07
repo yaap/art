@@ -68,8 +68,14 @@ public class ReasonMapping {
      * Dexopting apps before the reboot for an OTA or a mainline update, known as Pre-reboot
      * Dexopt.
      */
-    @FlaggedApi(Flags.FLAG_ART_SERVICE_V3)
     public static final String REASON_PRE_REBOOT_DEXOPT = "ab-ota";
+    /**
+     * Dexopting apps after the reboot for an OTA or a mainline update, if the reboot is
+     * unattended, known as Post-UR Dexopt.
+     *
+     * @hide
+     */
+    public static final String REASON_POST_UNATTENDED_REBOOT = "post-ur";
 
     // Reasons for Play Install Hints (go/install-hints).
     public static final String REASON_INSTALL_FAST = "install-fast";
@@ -88,7 +94,7 @@ public class ReasonMapping {
     /** @hide */
     public static final Set<String> BATCH_DEXOPT_REASONS =
             Set.of(REASON_FIRST_BOOT, REASON_BOOT_AFTER_OTA, REASON_BOOT_AFTER_MAINLINE_UPDATE,
-                    REASON_BG_DEXOPT, REASON_PRE_REBOOT_DEXOPT);
+                    REASON_BG_DEXOPT, REASON_PRE_REBOOT_DEXOPT, REASON_POST_UNATTENDED_REBOOT);
 
     /** @hide */
     public static final Set<String> BOOT_REASONS =
@@ -106,6 +112,7 @@ public class ReasonMapping {
         REASON_BOOT_AFTER_MAINLINE_UPDATE,
         REASON_BG_DEXOPT,
         REASON_PRE_REBOOT_DEXOPT,
+        REASON_POST_UNATTENDED_REBOOT,
     })
     // clang-format on
     @Retention(RetentionPolicy.SOURCE)
@@ -139,6 +146,11 @@ public class ReasonMapping {
     public static String getCompilerFilterForReason(@NonNull String reason) {
         String value = SystemProperties.get("pm.dexopt." + reason);
         if (TextUtils.isEmpty(value)) {
+            if (reason.equals(REASON_POST_UNATTENDED_REBOOT)) {
+                // The Post unattended reboot job is supposed to use the bg-dexopt compiler filter,
+                // unless explicitly overridden.
+                return getCompilerFilterForReason(REASON_BG_DEXOPT);
+            }
             throw new IllegalArgumentException("No compiler filter for reason '" + reason + "'");
         }
         if (!Utils.isValidArtServiceCompilerFilter(value)) {
@@ -190,6 +202,7 @@ public class ReasonMapping {
                 return ArtFlags.PRIORITY_INTERACTIVE;
             case REASON_BG_DEXOPT:
             case REASON_PRE_REBOOT_DEXOPT:
+            case REASON_POST_UNATTENDED_REBOOT:
             case REASON_INACTIVE:
             case REASON_INSTALL_BULK:
             case REASON_INSTALL_BULK_SECONDARY:
@@ -210,7 +223,94 @@ public class ReasonMapping {
      */
     public static int getConcurrencyForReason(@NonNull @BatchDexoptReason String reason) {
         // TODO(jiakaiz): Revisit the concurrency for non-boot reasons.
-        return SystemProperties.getInt("pm.dexopt." + reason + ".concurrency",
-                BOOT_REASONS.contains(reason) ? 4 : 1 /* def */);
+        int defaultValue = 1;
+        if (BOOT_REASONS.contains(reason)) {
+            defaultValue = 4;
+        } else if (reason.equals(REASON_POST_UNATTENDED_REBOOT)) {
+            // The Post unattended reboot job is supposed to use the bg-dexopt concurrency, unless
+            // explicitly overridden.
+            defaultValue = getConcurrencyForReason(REASON_BG_DEXOPT);
+        }
+
+        return SystemProperties.getInt("pm.dexopt." + reason + ".concurrency", defaultValue);
+    }
+
+    /**
+     * Maps the compiler filter string to an integer representation for reporting stats defined in
+     * the "framework" module (specifically, the {@code package_optimization_compilation_filter}
+     * field of the {@code AppStartOccurred} and {@code AppStartFullyDrawn} protos defined in {@code
+     * frameworks/proto_logging/stats/atoms.proto}). The integer is not supposed to be understood by
+     * the caller but to be filled as-is into the fields mentioned above.
+     *
+     * <p>Note that this mapping is different from the one used in the "art" module and must not be
+     * used for reporting ART stats (e.g., ART runtime metrics).
+     *
+     * @param compilerFilter The string obtained from {@link DexFile.OptimizationInfo#getStatus()}.
+     */
+    @FlaggedApi(Flags.FLAG_UPDATABLE_FILTER_AND_REASON)
+    public static int getCompilerFilterValueForFrameworkStatsReporting(
+            @NonNull String compilerFilter) {
+        return switch (compilerFilter) {
+            // Reserved -1, 0, 3, 5, 14-27.
+            case "unknown" -> 1;
+            case "assume-verified" -> 2;
+            case "verify" -> 4;
+            case "space-profile" -> 6;
+            case "space" -> 7;
+            case "speed-profile" -> 8;
+            case "speed" -> 9;
+            case "everything-profile" -> 10;
+            case "everything" -> 11;
+            case "run-from-apk" -> 12;
+            case "run-from-apk-fallback" -> 13;
+            default -> 28;
+        };
+    }
+
+    /**
+     * Maps the compilation reason string to an integer representation for reporting stats defined
+     * in the "framework" module (specifically, the {@code package_optimization_compilation_reason}
+     * field of the {@code AppStartOccurred} and {@code AppStartFullyDrawn} protos defined in {@code
+     * frameworks/proto_logging/stats/atoms.proto}). The integer is not supposed to be understood by
+     * the caller but to be filled as-is into the fields mentioned above.
+     *
+     * <p>Note that this mapping is different from the one used in the "art" module and must not be
+     * used for reporting ART stats (e.g., ART runtime metrics).
+     *
+     * @param compilationReason The string obtained from {@link
+     *     DexFile.OptimizationInfo#getReason()}.
+     */
+    @FlaggedApi(Flags.FLAG_UPDATABLE_FILTER_AND_REASON)
+    public static int getCompilationReasonValueForFrameworkStatsReporting(
+            @NonNull String compilationReason) {
+        return switch (compilationReason) {
+            // Reserved -1, 0, 3, 8, 21.
+            case "unknown" -> 1;
+            case "first-boot" -> 2;
+            case "install" -> 4;
+            case "bg-dexopt" -> 5;
+            case "ab-ota" -> 6;
+            case "inactive" -> 7;
+            case "install-dm" -> 9;
+            case "install-fast" -> 10;
+            case "install-bulk" -> 11;
+            case "install-bulk-secondary" -> 12;
+            case "install-bulk-downgraded" -> 13;
+            case "install-bulk-secondary-downgraded" -> 14;
+            case "install-fast-dm" -> 15;
+            case "install-bulk-dm" -> 16;
+            case "install-bulk-secondary-dm" -> 17;
+            case "install-bulk-downgraded-dm" -> 18;
+            case "install-bulk-secondary-downgraded-dm" -> 19;
+            case "boot-after-ota" -> 20;
+            case "cmdline" -> 22;
+            case "prebuilt" -> 23;
+            case "vdex" -> 24;
+            case "boot-after-mainline-update" -> 25;
+            case "cloud" -> 26;
+            case "vdex-dm" -> 27;
+            case "post-ur" -> 29;
+            default -> 28;
+        };
     }
 }

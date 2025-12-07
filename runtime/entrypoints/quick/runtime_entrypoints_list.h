@@ -91,6 +91,9 @@ enum class DeoptimizationKind;
   V(artCompileOptimized, REQUIRES_SHARED(Locks::mutator_lock_), void,                             \
       ArtMethod* method,                                                                          \
       Thread* self)                                                                               \
+  V(artCompileBaseline, REQUIRES_SHARED(Locks::mutator_lock_), void,                              \
+      ArtMethod* method,                                                                          \
+      Thread* self)                                                                               \
                                                                                                   \
   V(artQuickToInterpreterBridge, REQUIRES_SHARED(Locks::mutator_lock_), uint64_t,                 \
       ArtMethod* method,                                                                          \

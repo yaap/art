@@ -33,6 +33,13 @@
 
 namespace art HIDDEN {
 
+// Forward declare CompilerOptions so that the CreateCompilerOptions forward declare works.
+class CompilerOptions;
+
+namespace fuzzer {
+std::unique_ptr<CompilerOptions> CreateCompilerOptions(bool is_baseline);
+}  // namespace fuzzer
+
 namespace jit {
 class JitCompiler;
 }  // namespace jit
@@ -387,6 +394,8 @@ class CompilerOptions final {
   const AssumeValueOptions& GetAssumeValueOptions() const { return assume_value_options_; }
   AssumeValueOptions& GetAssumeValueOptions() { return assume_value_options_; }
 
+  bool EnableProfileCode() const { return enable_profile_code_; }
+
  private:
   EXPORT bool ParseDumpInitFailures(const std::string& option, std::string* error_msg);
 
@@ -412,7 +421,6 @@ class CompilerOptions final {
   // Classes listed in the preloaded-classes file, used for boot image and
   // boot image extension compilation.
   HashSet<std::string> preloaded_classes_;
-
   CompilerType compiler_type_;
   ImageType image_type_;
   bool multi_image_;
@@ -492,6 +500,9 @@ class CompilerOptions final {
 
   AssumeValueOptions assume_value_options_;
 
+  // Generate code for low-overhead tracing
+  bool enable_profile_code_;
+
   friend class Dex2Oat;
   friend class CommonCompilerDriverTest;
   friend class CommonCompilerTestImpl;
@@ -499,6 +510,8 @@ class CompilerOptions final {
   friend class verifier::VerifierDepsTest;
   friend class linker::Arm64RelativePatcherTest;
   friend class linker::Thumb2RelativePatcherTest;
+
+  friend std::unique_ptr<CompilerOptions> fuzzer::CreateCompilerOptions(bool is_baseline);
 
   template <class Base>
   friend bool ReadCompilerOptions(Base& map, CompilerOptions* options, std::string* error_msg);

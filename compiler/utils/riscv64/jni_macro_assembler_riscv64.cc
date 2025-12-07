@@ -20,7 +20,7 @@
 #include "dwarf/register.h"
 #include "entrypoints/quick/quick_entrypoints.h"
 #include "gc_root.h"
-#include "indirect_reference_table.h"
+#include "jni/indirect_reference_table.h"
 #include "lock_word.h"
 #include "managed_register_riscv64.h"
 #include "offsets.h"

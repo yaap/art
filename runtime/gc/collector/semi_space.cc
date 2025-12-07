@@ -37,7 +37,6 @@
 #include "gc/space/image_space.h"
 #include "gc/space/large_object_space.h"
 #include "gc/space/space-inl.h"
-#include "indirect_reference_table.h"
 #include "intern_table.h"
 #include "jni/jni_internal.h"
 #include "mark_sweep-inl.h"

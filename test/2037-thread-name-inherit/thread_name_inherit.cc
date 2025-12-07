@@ -15,6 +15,7 @@
  */
 
 #include <jni.h>
+#include <pthread.h>
 
 #include <iostream>
 

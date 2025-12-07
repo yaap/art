@@ -378,15 +378,6 @@ JNIEXPORT void JVM_StartThread(JNIEnv* env, jobject jthread, jlong stack_size, j
   art::Thread::CreateNativeThread(env, jthread, stack_size, daemon == JNI_TRUE);
 }
 
-JNIEXPORT void JVM_SetThreadPriority(JNIEnv* env, jobject jthread, jint prio) {
-  art::ScopedObjectAccess soa(env);
-  art::MutexLock mu(soa.Self(), *art::Locks::thread_list_lock_);
-  art::Thread* thread = art::Thread::FromManagedThread(soa, jthread);
-  if (thread != nullptr) {
-    thread->SetNativePriority(prio);
-  }
-}
-
 JNIEXPORT void JVM_Yield([[maybe_unused]] JNIEnv* env, [[maybe_unused]] jclass threadClass) {
   sched_yield();
 }

@@ -26,22 +26,22 @@ constexpr bool kWBEEnabled = true;
 
 namespace art HIDDEN {
 
-class WBEVisitor final : public HGraphVisitor {
+class WBEVisitor final : public CRTPGraphVisitor<WBEVisitor> {
  public:
   WBEVisitor(HGraph* graph, OptimizingCompilerStats* stats)
-      : HGraphVisitor(graph),
+      : CRTPGraphVisitor(graph),
         scoped_allocator_(graph->GetArenaStack()),
         current_write_barriers_(scoped_allocator_.Adapter(kArenaAllocWBE)),
         stats_(stats) {}
 
-  void VisitBasicBlock(HBasicBlock* block) override {
+  void VisitBasicBlock(HBasicBlock* block) {
     // We clear the map to perform this optimization only in the same block. Doing it across blocks
     // would entail non-trivial merging of states.
     current_write_barriers_.clear();
     VisitNonPhiInstructions(block);
   }
 
-  void VisitInstanceFieldSet(HInstanceFieldSet* instruction) override {
+  void VisitInstanceFieldSet(HInstanceFieldSet* instruction) {
     DCHECK(!instruction->GetSideEffects().Includes(SideEffects::CanTriggerGC()));
 
     if (instruction->GetFieldType() != DataType::Type::kReference ||
@@ -68,7 +68,7 @@ class WBEVisitor final : public HGraphVisitor {
     }
   }
 
-  void VisitStaticFieldSet(HStaticFieldSet* instruction) override {
+  void VisitStaticFieldSet(HStaticFieldSet* instruction) {
     DCHECK(!instruction->GetSideEffects().Includes(SideEffects::CanTriggerGC()));
 
     if (instruction->GetFieldType() != DataType::Type::kReference ||
@@ -94,7 +94,7 @@ class WBEVisitor final : public HGraphVisitor {
     }
   }
 
-  void VisitArraySet(HArraySet* instruction) override {
+  void VisitArraySet(HArraySet* instruction) {
     if (instruction->GetSideEffects().Includes(SideEffects::CanTriggerGC())) {
       ClearCurrentValues();
     }
@@ -122,7 +122,7 @@ class WBEVisitor final : public HGraphVisitor {
     }
   }
 
-  void VisitInstruction(HInstruction* instruction) override {
+  void VisitInstruction(HInstruction* instruction) {
     if (instruction->GetSideEffects().Includes(SideEffects::CanTriggerGC())) {
       ClearCurrentValues();
     }

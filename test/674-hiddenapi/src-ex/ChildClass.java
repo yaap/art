@@ -15,11 +15,15 @@
  */
 
 import dalvik.system.VMRuntime;
+
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.function.Consumer;
+
+import sun.misc.Unsafe;
 
 public class ChildClass {
   enum PrimitiveType {
@@ -79,15 +83,33 @@ public class ChildClass {
 
   private static final boolean booleanValues[] = new boolean[] { false, true };
 
-  public static void runTest(String libFileName, int parentDomainOrdinal,
-      int childDomainOrdinal, boolean everythingSdked) throws Exception {
+  // checkNativeOnly: Only run tests where the caller is in native code - this ChildClass object
+  // is in the core-platform domain when it is true.
+  public static void runTest(String libFileName, int parentDomainOrdinal, int childDomainOrdinal,
+      boolean everythingSdked, boolean checkNativeOnly) throws Exception {
     System.load(libFileName);
 
-    parentDomain = DexDomain.values()[parentDomainOrdinal];
-    childDomain = DexDomain.values()[childDomainOrdinal];
+    DexDomain parentDomain = DexDomain.values()[parentDomainOrdinal];
+    DexDomain childDomain = DexDomain.values()[childDomainOrdinal];
 
-    configMessage = "parentDomain=" + parentDomain.name() + ", childDomain=" + childDomain.name()
-        + ", everythingSdked=" + everythingSdked;
+    boolean skipJniTests = false;
+    if (childDomain == DexDomain.Application) {
+      registerAppJniApiCallers(JNI.class);
+    } else if (childDomain == DexDomain.CorePlatform) {
+      registerCorePlatformJniApiCallers(JNI.class);
+    } else {
+      // It's difficult to put a .so in a location that identifies it as the platform domain, so
+      // skip those JNI tests.
+      skipJniTests = true;
+    }
+
+    int targetSdkVersion = VMRuntime.getRuntime().getTargetSdkVersion();
+    if (checkNativeOnly) {
+      if (targetSdkVersion != 10000) {
+        throw new RuntimeException(
+            "Expected future targetSdkVersion for native caller tests, got " + targetSdkVersion);
+      }
+    }
 
     // Check expectations about loading into boot class path.
     boolean isParentInBoot = (ParentClass.class.getClassLoader().getParent() == null);
@@ -98,13 +120,12 @@ public class ChildClass {
     }
     boolean isChildInBoot = (ChildClass.class.getClassLoader().getParent() == null);
     boolean expectedChildInBoot = (childDomain != DexDomain.Application);
-    if (isChildInBoot != expectedChildInBoot) {
+    if (isChildInBoot != expectedChildInBoot && !checkNativeOnly) {
       throw new RuntimeException("Expected ChildClass " + (expectedChildInBoot ? "" : "not ") +
                                  "in boot class path");
     }
-    ChildClass.everythingSdked = everythingSdked;
 
-    boolean isSameBoot = (isParentInBoot == isChildInBoot);
+    boolean isSameBoot = (expectedParentInBoot == expectedChildInBoot);
 
     // For compat reasons, meta-reflection should still be usable by apps if hidden api check
     // hardening is disabled (i.e. target SDK is Q or earlier). The only configuration where this
@@ -135,43 +156,75 @@ public class ChildClass {
                  hiddenness == Hiddenness.BlocklistAndCorePlatformApi) {
         expected = Behaviour.Denied;
         invokesMemberCallback = true;
+      } else if (hiddenness == Hiddenness.ConditionallyBlocked && targetSdkVersion == 10000) {
+        expected = Behaviour.Denied;
+        invokesMemberCallback = true; // Not applicable when checkNativeOnly is true.
       } else {
         expected = Behaviour.Warning;
         invokesMemberCallback = true;
       }
 
-      for (boolean isStatic : booleanValues) {
-        String suffix = (isStatic ? "Static" : "") + hiddenness.name();
+      // Saved variables from the loops below to be shown in the test context if an exception is
+      // thrown.
+      boolean saveIsStatic = false;
+      Visibility saveVisibility = Visibility.Public;
+      Class saveParentClass = null;
 
-        for (Visibility visibility : Visibility.values()) {
-          // Test reflection and JNI on methods and fields
-          for (Class klass : new Class<?>[] { ParentClass.class, ParentInterface.class }) {
-            String baseName = visibility.name() + suffix;
-            checkField(klass, "field" + baseName, isStatic, visibility, expected,
-                invokesMemberCallback, testHiddenApiCheckHardeningDisabled);
-            checkMethod(klass, "method" + baseName, isStatic, visibility, expected,
-                invokesMemberCallback, testHiddenApiCheckHardeningDisabled);
+      try {
+        for (boolean isStatic : booleanValues) {
+          saveIsStatic = isStatic;
+          String suffix = (isStatic ? "Static" : "") + hiddenness.name();
+
+          for (Visibility visibility : Visibility.values()) {
+            saveVisibility = visibility;
+            // Test reflection and JNI on methods and fields
+            for (Class parentClass : new Class<?>[] {ParentClass.class, ParentInterface.class}) {
+              saveParentClass = parentClass;
+              String baseName = visibility.name() + suffix;
+              checkField(parentClass, "field" + baseName, isStatic, visibility, expected,
+                  invokesMemberCallback, testHiddenApiCheckHardeningDisabled, skipJniTests,
+                  checkNativeOnly);
+              checkMethod(parentClass, "method" + baseName, isStatic, visibility, expected,
+                  invokesMemberCallback, testHiddenApiCheckHardeningDisabled, skipJniTests,
+                  checkNativeOnly);
+            }
+            saveParentClass = null;
+
+            // Check whether one can use a class constructor.
+            checkConstructor(ParentClass.class, visibility, hiddenness, expected,
+                testHiddenApiCheckHardeningDisabled, skipJniTests, checkNativeOnly);
+
+            // Check whether one can use an interface default method.
+            String name = "method" + visibility.name() + "Default" + hiddenness.name();
+            checkMethod(ParentInterface.class, name, /*isStatic*/ false, visibility, expected,
+                invokesMemberCallback, testHiddenApiCheckHardeningDisabled, skipJniTests,
+                checkNativeOnly);
           }
 
-          // Check whether one can use a class constructor.
-          checkConstructor(ParentClass.class, visibility, hiddenness, expected,
-                testHiddenApiCheckHardeningDisabled);
-
-          // Check whether one can use an interface default method.
-          String name = "method" + visibility.name() + "Default" + hiddenness.name();
-          checkMethod(ParentInterface.class, name, /*isStatic*/ false, visibility, expected,
-              invokesMemberCallback, testHiddenApiCheckHardeningDisabled);
+          if (!checkNativeOnly) {
+            // Test whether static linking succeeds.
+            checkLinking("LinkFieldGet" + suffix, /*takesParameter*/ false, expected);
+            checkLinking("LinkFieldSet" + suffix, /*takesParameter*/ true, expected);
+            checkLinking("LinkMethod" + suffix, /*takesParameter*/ false, expected);
+            checkLinking("LinkMethodInterface" + suffix, /*takesParameter*/ false, expected);
+          }
         }
 
-        // Test whether static linking succeeds.
-        checkLinking("LinkFieldGet" + suffix, /*takesParameter*/ false, expected);
-        checkLinking("LinkFieldSet" + suffix, /*takesParameter*/ true, expected);
-        checkLinking("LinkMethod" + suffix, /*takesParameter*/ false, expected);
-        checkLinking("LinkMethodInterface" + suffix, /*takesParameter*/ false, expected);
+        if (!checkNativeOnly) {
+          // Check whether Class.newInstance succeeds.
+          checkNullaryConstructor(
+              Class.forName("NullaryConstructor" + hiddenness.name()), expected);
+        }
+      } catch (Exception e) {
+        throw new RuntimeException("Exception in test context {parentDomain=" + parentDomain.name()
+                + ", childDomain=" + childDomain.name() + ", everythingSdked=" + everythingSdked
+                + ", checkNativeOnly=" + checkNativeOnly
+                + ", targetSdkVersion=" + targetSdkVersion + ", hiddenness=" + hiddenness
+                + ", expected=" + expected + ", invokesMemberCallback=" + invokesMemberCallback
+                + ", isStatic=" + saveIsStatic + ", visibility=" + saveVisibility
+                + ", parentClass=" + saveParentClass + "}",
+            e);
       }
-
-      // Check whether Class.newInstance succeeds.
-      checkNullaryConstructor(Class.forName("NullaryConstructor" + hiddenness.name()), expected);
     }
   }
 
@@ -224,8 +277,8 @@ public class ChildClass {
 
   private static void checkField(Class<?> klass, String name, boolean isStatic,
       Visibility visibility, Behaviour behaviour, boolean invokesMemberCallback,
-      boolean testHiddenApiCheckHardeningDisabled) throws Exception {
-
+      boolean testHiddenApiCheckHardeningDisabled, boolean skipJniTests, boolean checkNativeOnly)
+      throws Exception {
     boolean isPublic = (visibility == Visibility.Public);
     boolean canDiscover = (behaviour != Behaviour.Denied);
 
@@ -234,103 +287,111 @@ public class ChildClass {
       return;
     }
 
-    // Test discovery with reflection.
-
-    if (Reflection.canDiscoverWithGetDeclaredField(klass, name) != canDiscover) {
-      throwDiscoveryException(klass, name, true, "getDeclaredField()", canDiscover);
-    }
-
-    if (Reflection.canDiscoverWithGetDeclaredFields(klass, name) != canDiscover) {
-      throwDiscoveryException(klass, name, true, "getDeclaredFields()", canDiscover);
-    }
-
-    if (Reflection.canDiscoverWithGetField(klass, name) != (canDiscover && isPublic)) {
-      throwDiscoveryException(klass, name, true, "getField()", (canDiscover && isPublic));
-    }
-
-    if (Reflection.canDiscoverWithGetFields(klass, name) != (canDiscover && isPublic)) {
-      throwDiscoveryException(klass, name, true, "getFields()", (canDiscover && isPublic));
-    }
-
     // Test discovery with JNI.
 
-    if (JNI.canDiscoverField(klass, name, isStatic) != canDiscover) {
+    if (!skipJniTests && JNI.canDiscoverField(klass, name, isStatic) != canDiscover) {
       throwDiscoveryException(klass, name, true, "JNI", canDiscover);
     }
 
-    // Test discovery with MethodHandles.lookup() which is caller
-    // context sensitive.
+    if (!checkNativeOnly) {
+      // Test discovery with reflection.
 
-    final MethodHandles.Lookup lookup = MethodHandles.lookup();
-    if (JLI.canDiscoverWithLookupFindGetter(lookup, klass, name, int.class)
-        != canDiscover) {
-      throwDiscoveryException(klass, name, true, "MethodHandles.lookup().findGetter()",
-                              canDiscover);
-    }
-    if (JLI.canDiscoverWithLookupFindStaticGetter(lookup, klass, name, int.class)
-        != canDiscover) {
-      throwDiscoveryException(klass, name, true, "MethodHandles.lookup().findStaticGetter()",
-                              canDiscover);
-    }
+      if (Reflection.canDiscoverWithGetDeclaredField(klass, name) != canDiscover) {
+        throwDiscoveryException(klass, name, true, "getDeclaredField()", canDiscover);
+      }
 
-    // Test discovery with MethodHandles.publicLookup() which can only
-    // see public fields. Looking up setters here and fields in
-    // interfaces are implicitly final.
+      if (Reflection.canDiscoverWithGetDeclaredFields(klass, name) != canDiscover) {
+        throwDiscoveryException(klass, name, true, "getDeclaredFields()", canDiscover);
+      }
 
-    final MethodHandles.Lookup publicLookup = MethodHandles.publicLookup();
-    if (JLI.canDiscoverWithLookupFindSetter(publicLookup, klass, name, int.class)
-        != canDiscover) {
-      throwDiscoveryException(klass, name, true, "MethodHandles.publicLookup().findSetter()",
-                              canDiscover);
-    }
-    if (JLI.canDiscoverWithLookupFindStaticSetter(publicLookup, klass, name, int.class)
-        != canDiscover) {
-      throwDiscoveryException(klass, name, true, "MethodHandles.publicLookup().findStaticSetter()",
-                              canDiscover);
-    }
+      if (Reflection.canDiscoverWithGetField(klass, name) != (canDiscover && isPublic)) {
+        throwDiscoveryException(klass, name, true, "getField()", (canDiscover && isPublic));
+      }
 
-    // Check for meta reflection.
+      if (Reflection.canDiscoverWithGetFields(klass, name) != (canDiscover && isPublic)) {
+        throwDiscoveryException(klass, name, true, "getFields()", (canDiscover && isPublic));
+      }
 
-    // With hidden api check hardening enabled, only white and light greylisted fields should be
-    // discoverable.
-    if (Reflection.canDiscoverFieldWithMetaReflection(klass, name, true) != canDiscover) {
-      throwDiscoveryException(klass, name, false,
-          "Meta reflection with hidden api hardening enabled", canDiscover);
-    }
+      // Test discovery with MethodHandles.lookup() which is caller
+      // context sensitive.
 
-    if (testHiddenApiCheckHardeningDisabled) {
-      // With hidden api check hardening disabled, all fields should be discoverable.
-      if (Reflection.canDiscoverFieldWithMetaReflection(klass, name, false) != true) {
-        throwDiscoveryException(klass, name, false,
-            "Meta reflection with hidden api hardening enabled", canDiscover);
+      final MethodHandles.Lookup lookup = MethodHandles.lookup();
+      if (JLI.canDiscoverWithLookupFindGetter(lookup, klass, name, int.class) != canDiscover) {
+        throwDiscoveryException(
+            klass, name, true, "MethodHandles.lookup().findGetter()", canDiscover);
+      }
+      if (JLI.canDiscoverWithLookupFindStaticGetter(lookup, klass, name, int.class)
+          != canDiscover) {
+        throwDiscoveryException(
+            klass, name, true, "MethodHandles.lookup().findStaticGetter()", canDiscover);
+      }
+
+      // Test discovery with MethodHandles.publicLookup() which can only
+      // see public fields. Looking up setters here and fields in
+      // interfaces are implicitly final.
+
+      final MethodHandles.Lookup publicLookup = MethodHandles.publicLookup();
+      if (JLI.canDiscoverWithLookupFindSetter(publicLookup, klass, name, int.class)
+          != canDiscover) {
+        throwDiscoveryException(
+            klass, name, true, "MethodHandles.publicLookup().findSetter()", canDiscover);
+      }
+      if (JLI.canDiscoverWithLookupFindStaticSetter(publicLookup, klass, name, int.class)
+          != canDiscover) {
+        throwDiscoveryException(
+            klass, name, true, "MethodHandles.publicLookup().findStaticSetter()", canDiscover);
+      }
+
+      // Check for meta reflection.
+
+      // With hidden api check hardening enabled, only white and light greylisted fields should be
+      // discoverable.
+      if (Reflection.canDiscoverFieldWithMetaReflection(klass, name, true) != canDiscover) {
+        throwDiscoveryException(
+            klass, name, false, "Meta reflection with hidden api hardening enabled", canDiscover);
+      }
+
+      if (testHiddenApiCheckHardeningDisabled) {
+        // With hidden api check hardening disabled, all fields should be discoverable.
+        if (Reflection.canDiscoverFieldWithMetaReflection(klass, name, false) != true) {
+          throwDiscoveryException(
+              klass, name, false, "Meta reflection with hidden api hardening enabled", canDiscover);
+        }
       }
     }
 
     if (canDiscover) {
-      // Test that modifiers are unaffected.
+      if (!checkNativeOnly) {
+        // Test that modifiers are unaffected.
 
-      if (Reflection.canObserveFieldHiddenAccessFlags(klass, name)) {
-        throwModifiersException(klass, name, true);
+        if (Reflection.canObserveFieldHiddenAccessFlags(klass, name)) {
+          throwModifiersException(klass, name, true);
+        }
+
+        // Test getters and setters when meaningful.
+
+        if (!Reflection.canGetField(klass, name)) {
+          throwAccessException(klass, name, true, "Field.getInt()");
+        }
+        if (!isUnmodifiable(klass, name) && !Reflection.canSetField(klass, name)) {
+          throwAccessException(klass, name, true, "Field.setInt()");
+        }
       }
 
-      // Test getters and setters when meaningful.
-
-      if (!Reflection.canGetField(klass, name)) {
-        throwAccessException(klass, name, true, "Field.getInt()");
-      }
-      if (!isUnmodifiable(klass, name) && !Reflection.canSetField(klass, name)) {
-        throwAccessException(klass, name, true, "Field.setInt()");
-      }
-      if (!JNI.canGetField(klass, name, isStatic)) {
-        throwAccessException(klass, name, true, "getIntField");
-      }
-      if (!isUnmodifiable(klass, name) && !JNI.canSetField(klass, name, isStatic)) {
-        throwAccessException(klass, name, true, "setIntField");
+      if (!skipJniTests) {
+        if (!JNI.canGetField(klass, name, isStatic)) {
+          throwAccessException(klass, name, true, "getIntField");
+        }
+        if (!isUnmodifiable(klass, name) && !JNI.canSetField(klass, name, isStatic)) {
+          throwAccessException(klass, name, true, "setIntField");
+        }
       }
     }
 
     // Test that callbacks are invoked correctly.
-    checkMemberCallback(klass, name, isPublic, true /* isField */, invokesMemberCallback);
+    if (!checkNativeOnly) {
+      checkMemberCallback(klass, name, isPublic, true /* isField */, invokesMemberCallback);
+    }
   }
 
   private static final boolean isUnmodifiable(Class<?> klass, String fieldName) throws Exception {
@@ -341,8 +402,8 @@ public class ChildClass {
 
   private static void checkMethod(Class<?> klass, String name, boolean isStatic,
       Visibility visibility, Behaviour behaviour, boolean invokesMemberCallback,
-      boolean testHiddenApiCheckHardeningDisabled) throws Exception {
-
+      boolean testHiddenApiCheckHardeningDisabled, boolean skipJniTests, boolean checkNativeOnly)
+      throws Exception {
     boolean isPublic = (visibility == Visibility.Public);
     if (klass.isInterface() && !isPublic) {
       // All interface members are public.
@@ -351,58 +412,60 @@ public class ChildClass {
 
     boolean canDiscover = (behaviour != Behaviour.Denied);
 
-    // Test discovery with reflection.
-
-    if (Reflection.canDiscoverWithGetDeclaredMethod(klass, name) != canDiscover) {
-      throwDiscoveryException(klass, name, false, "getDeclaredMethod()", canDiscover);
-    }
-
-    if (Reflection.canDiscoverWithGetDeclaredMethods(klass, name) != canDiscover) {
-      throwDiscoveryException(klass, name, false, "getDeclaredMethods()", canDiscover);
-    }
-
-    if (Reflection.canDiscoverWithGetMethod(klass, name) != (canDiscover && isPublic)) {
-      throwDiscoveryException(klass, name, false, "getMethod()", (canDiscover && isPublic));
-    }
-
-    if (Reflection.canDiscoverWithGetMethods(klass, name) != (canDiscover && isPublic)) {
-      throwDiscoveryException(klass, name, false, "getMethods()", (canDiscover && isPublic));
-    }
-
     // Test discovery with JNI.
 
-    if (JNI.canDiscoverMethod(klass, name, isStatic) != canDiscover) {
+    if (!skipJniTests && JNI.canDiscoverMethod(klass, name, isStatic) != canDiscover) {
       throwDiscoveryException(klass, name, false, "JNI", canDiscover);
     }
 
-    // Test discovery with MethodHandles.lookup().
+    if (!checkNativeOnly) {
+      // Test discovery with reflection.
 
-    final MethodHandles.Lookup lookup = MethodHandles.lookup();
-    final MethodType methodType = MethodType.methodType(int.class);
-    if (JLI.canDiscoverWithLookupFindVirtual(lookup, klass, name, methodType) != canDiscover) {
-      throwDiscoveryException(klass, name, false, "MethodHandles.lookup().findVirtual()",
-                              canDiscover);
-    }
+      if (Reflection.canDiscoverWithGetDeclaredMethod(klass, name) != canDiscover) {
+        throwDiscoveryException(klass, name, false, "getDeclaredMethod()", canDiscover);
+      }
 
-    if (JLI.canDiscoverWithLookupFindStatic(lookup, klass, name, methodType) != canDiscover) {
-      throwDiscoveryException(klass, name, false, "MethodHandles.lookup().findStatic()",
-                              canDiscover);
-    }
+      if (Reflection.canDiscoverWithGetDeclaredMethods(klass, name) != canDiscover) {
+        throwDiscoveryException(klass, name, false, "getDeclaredMethods()", canDiscover);
+      }
 
-    // Check for meta reflection.
+      if (Reflection.canDiscoverWithGetMethod(klass, name) != (canDiscover && isPublic)) {
+        throwDiscoveryException(klass, name, false, "getMethod()", (canDiscover && isPublic));
+      }
 
-    // With hidden api check hardening enabled, only white and light greylisted methods should be
-    // discoverable.
-    if (Reflection.canDiscoverMethodWithMetaReflection(klass, name, true) != canDiscover) {
-      throwDiscoveryException(klass, name, false,
-          "Meta reflection with hidden api hardening enabled", canDiscover);
-    }
+      if (Reflection.canDiscoverWithGetMethods(klass, name) != (canDiscover && isPublic)) {
+        throwDiscoveryException(klass, name, false, "getMethods()", (canDiscover && isPublic));
+      }
 
-    if (testHiddenApiCheckHardeningDisabled) {
-      // With hidden api check hardening disabled, all methods should be discoverable.
-      if (Reflection.canDiscoverMethodWithMetaReflection(klass, name, false) != true) {
-        throwDiscoveryException(klass, name, false,
-            "Meta reflection with hidden api hardening enabled", canDiscover);
+      // Test discovery with MethodHandles.lookup().
+
+      final MethodHandles.Lookup lookup = MethodHandles.lookup();
+      final MethodType methodType = MethodType.methodType(int.class);
+      if (JLI.canDiscoverWithLookupFindVirtual(lookup, klass, name, methodType) != canDiscover) {
+        throwDiscoveryException(
+            klass, name, false, "MethodHandles.lookup().findVirtual()", canDiscover);
+      }
+
+      if (JLI.canDiscoverWithLookupFindStatic(lookup, klass, name, methodType) != canDiscover) {
+        throwDiscoveryException(
+            klass, name, false, "MethodHandles.lookup().findStatic()", canDiscover);
+      }
+
+      // Check for meta reflection.
+
+      // With hidden api check hardening enabled, only white and light greylisted methods should be
+      // discoverable.
+      if (Reflection.canDiscoverMethodWithMetaReflection(klass, name, true) != canDiscover) {
+        throwDiscoveryException(
+            klass, name, false, "Meta reflection with hidden api hardening enabled", canDiscover);
+      }
+
+      if (testHiddenApiCheckHardeningDisabled) {
+        // With hidden api check hardening disabled, all methods should be discoverable.
+        if (Reflection.canDiscoverMethodWithMetaReflection(klass, name, false) != true) {
+          throwDiscoveryException(
+              klass, name, false, "Meta reflection with hidden api hardening enabled", canDiscover);
+        }
       }
     }
 
@@ -411,31 +474,35 @@ public class ChildClass {
     if (canDiscover) {
       // Test that modifiers are unaffected.
 
-      if (Reflection.canObserveMethodHiddenAccessFlags(klass, name)) {
+      if (!checkNativeOnly && Reflection.canObserveMethodHiddenAccessFlags(klass, name)) {
         throwModifiersException(klass, name, false);
       }
 
       // Test whether we can invoke the method. This skips non-static interface methods.
       if (!klass.isInterface() || isStatic) {
-        if (!Reflection.canInvokeMethod(klass, name)) {
+        if (!checkNativeOnly && !Reflection.canInvokeMethod(klass, name)) {
           throwAccessException(klass, name, false, "invoke()");
         }
-        if (!JNI.canInvokeMethodA(klass, name, isStatic)) {
-          throwAccessException(klass, name, false, "CallMethodA");
-        }
-        if (!JNI.canInvokeMethodV(klass, name, isStatic)) {
-          throwAccessException(klass, name, false, "CallMethodV");
+        if (!skipJniTests) {
+          if (!JNI.canInvokeMethodA(klass, name, isStatic)) {
+            throwAccessException(klass, name, false, "CallMethodA");
+          }
+          if (!JNI.canInvokeMethodV(klass, name, isStatic)) {
+            throwAccessException(klass, name, false, "CallMethodV");
+          }
         }
       }
     }
 
     // Test that callbacks are invoked correctly.
-    checkMemberCallback(klass, name, isPublic, false /* isField */, invokesMemberCallback);
+    if (!checkNativeOnly) {
+      checkMemberCallback(klass, name, isPublic, false /* isField */, invokesMemberCallback);
+    }
   }
 
   private static void checkConstructor(Class<?> klass, Visibility visibility, Hiddenness hiddenness,
-      Behaviour behaviour, boolean testHiddenApiCheckHardeningDisabled) throws Exception {
-
+      Behaviour behaviour, boolean testHiddenApiCheckHardeningDisabled, boolean skipJniTests,
+      boolean checkNativeOnly) throws Exception {
     boolean isPublic = (visibility == Visibility.Public);
     String signature = "(" + visibility.mAssociatedType.mShorty +
                              hiddenness.mAssociatedType.mShorty + ")V";
@@ -448,75 +515,79 @@ public class ChildClass {
 
     boolean canDiscover = (behaviour != Behaviour.Denied);
 
-    // Test discovery with reflection.
-
-    if (Reflection.canDiscoverWithGetDeclaredConstructor(klass, args) != canDiscover) {
-      throwDiscoveryException(klass, fullName, false, "getDeclaredConstructor()", canDiscover);
-    }
-
-    if (Reflection.canDiscoverWithGetDeclaredConstructors(klass, args) != canDiscover) {
-      throwDiscoveryException(klass, fullName, false, "getDeclaredConstructors()", canDiscover);
-    }
-
-    if (Reflection.canDiscoverWithGetConstructor(klass, args) != (canDiscover && isPublic)) {
-      throwDiscoveryException(
-          klass, fullName, false, "getConstructor()", (canDiscover && isPublic));
-    }
-
-    if (Reflection.canDiscoverWithGetConstructors(klass, args) != (canDiscover && isPublic)) {
-      throwDiscoveryException(
-          klass, fullName, false, "getConstructors()", (canDiscover && isPublic));
-    }
-
     // Test discovery with JNI.
 
-    if (JNI.canDiscoverConstructor(klass, signature) != canDiscover) {
+    if (!skipJniTests && JNI.canDiscoverConstructor(klass, signature) != canDiscover) {
       throwDiscoveryException(klass, fullName, false, "JNI", canDiscover);
     }
 
-    // Test discovery with MethodHandles.lookup()
+    if (!checkNativeOnly) {
+      // Test discovery with reflection.
 
-    final MethodHandles.Lookup lookup = MethodHandles.lookup();
-    if (JLI.canDiscoverWithLookupFindConstructor(lookup, klass, methodType) != canDiscover) {
-      throwDiscoveryException(klass, fullName, false, "MethodHandles.lookup().findConstructor",
-                              canDiscover);
-    }
+      if (Reflection.canDiscoverWithGetDeclaredConstructor(klass, args) != canDiscover) {
+        throwDiscoveryException(klass, fullName, false, "getDeclaredConstructor()", canDiscover);
+      }
 
-    final MethodHandles.Lookup publicLookup = MethodHandles.publicLookup();
-    if (JLI.canDiscoverWithLookupFindConstructor(publicLookup, klass, methodType) != canDiscover) {
-      throwDiscoveryException(klass, fullName, false,
-                              "MethodHandles.publicLookup().findConstructor",
-                              canDiscover);
-    }
+      if (Reflection.canDiscoverWithGetDeclaredConstructors(klass, args) != canDiscover) {
+        throwDiscoveryException(klass, fullName, false, "getDeclaredConstructors()", canDiscover);
+      }
 
-    // Check for meta reflection.
+      if (Reflection.canDiscoverWithGetConstructor(klass, args) != (canDiscover && isPublic)) {
+        throwDiscoveryException(
+            klass, fullName, false, "getConstructor()", (canDiscover && isPublic));
+      }
 
-    // With hidden api check hardening enabled, only white and light greylisted constructors should
-    // be discoverable.
-    if (Reflection.canDiscoverConstructorWithMetaReflection(klass, args, true) != canDiscover) {
-      throwDiscoveryException(klass, fullName, false,
-          "Meta reflection with hidden api hardening enabled", canDiscover);
-    }
+      if (Reflection.canDiscoverWithGetConstructors(klass, args) != (canDiscover && isPublic)) {
+        throwDiscoveryException(
+            klass, fullName, false, "getConstructors()", (canDiscover && isPublic));
+      }
 
-    if (testHiddenApiCheckHardeningDisabled) {
-      // With hidden api check hardening disabled, all constructors should be discoverable.
-      if (Reflection.canDiscoverConstructorWithMetaReflection(klass, args, false) != true) {
+      // Test discovery with MethodHandles.lookup()
+
+      final MethodHandles.Lookup lookup = MethodHandles.lookup();
+      if (JLI.canDiscoverWithLookupFindConstructor(lookup, klass, methodType) != canDiscover) {
+        throwDiscoveryException(
+            klass, fullName, false, "MethodHandles.lookup().findConstructor", canDiscover);
+      }
+
+      final MethodHandles.Lookup publicLookup = MethodHandles.publicLookup();
+      if (JLI.canDiscoverWithLookupFindConstructor(publicLookup, klass, methodType)
+          != canDiscover) {
+        throwDiscoveryException(
+            klass, fullName, false, "MethodHandles.publicLookup().findConstructor", canDiscover);
+      }
+
+      // Check for meta reflection.
+
+      // With hidden api check hardening enabled, only white and light greylisted constructors
+      // should be discoverable.
+      if (Reflection.canDiscoverConstructorWithMetaReflection(klass, args, true) != canDiscover) {
         throwDiscoveryException(klass, fullName, false,
             "Meta reflection with hidden api hardening enabled", canDiscover);
+      }
+
+      if (testHiddenApiCheckHardeningDisabled) {
+        // With hidden api check hardening disabled, all constructors should be discoverable.
+        if (Reflection.canDiscoverConstructorWithMetaReflection(klass, args, false) != true) {
+          throwDiscoveryException(klass, fullName, false,
+              "Meta reflection with hidden api hardening enabled", canDiscover);
+        }
       }
     }
 
     if (canDiscover) {
       // Test whether we can invoke the constructor.
 
-      if (!Reflection.canInvokeConstructor(klass, args, initargs)) {
+      if (!checkNativeOnly && !Reflection.canInvokeConstructor(klass, args, initargs)) {
         throwAccessException(klass, fullName, false, "invoke()");
       }
-      if (!JNI.canInvokeConstructorA(klass, signature)) {
-        throwAccessException(klass, fullName, false, "NewObjectA");
-      }
-      if (!JNI.canInvokeConstructorV(klass, signature)) {
-        throwAccessException(klass, fullName, false, "NewObjectV");
+      if (!skipJniTests) {
+        if (!JNI.canInvokeConstructorA(klass, signature)) {
+          throwAccessException(klass, fullName, false, "NewObjectA");
+        }
+        if (!JNI.canInvokeConstructorV(klass, signature)) {
+          throwAccessException(klass, fullName, false, "NewObjectV");
+        }
       }
     }
   }
@@ -526,8 +597,8 @@ public class ChildClass {
     boolean canAccess = (behaviour != Behaviour.Denied);
 
     if (Reflection.canUseNewInstance(klass) != canAccess) {
-      throw new RuntimeException("Expected to " + (canAccess ? "" : "not ") +
-          "be able to construct " + klass.getName() + ". " + configMessage);
+      throw new RuntimeException(
+          "Expected to " + (canAccess ? "" : "not ") + "be able to construct " + klass.getName());
     }
   }
 
@@ -536,22 +607,21 @@ public class ChildClass {
     boolean canAccess = (behaviour != Behaviour.Denied);
 
     if (Linking.canAccess(className, takesParameter) != canAccess) {
-      throw new RuntimeException("Expected to " + (canAccess ? "" : "not ") +
-          "be able to verify " + className + "." + configMessage);
+      throw new RuntimeException(
+          "Expected to " + (canAccess ? "" : "not ") + "be able to verify " + className);
     }
   }
 
   private static void throwDiscoveryException(Class<?> klass, String name, boolean isField,
       String fn, boolean canAccess) {
-    throw new RuntimeException("Expected " + (isField ? "field " : "method ") + klass.getName() +
-        "." + name + " to " + (canAccess ? "" : "not ") + "be discoverable with " + fn + ". " +
-        configMessage);
+    throw new RuntimeException("Expected " + (isField ? "field " : "method ") + klass.getName()
+        + "." + name + " to " + (canAccess ? "" : "not ") + "be discoverable with " + fn);
   }
 
   private static void throwAccessException(Class<?> klass, String name, boolean isField,
       String fn) {
-    throw new RuntimeException("Expected to be able to access " + (isField ? "field " : "method ") +
-        klass.getName() + "." + name + " using " + fn + ". " + configMessage);
+    throw new RuntimeException("Expected to be able to access " + (isField ? "field " : "method ")
+        + klass.getName() + "." + name + " using " + fn);
   }
 
   private static void throwModifiersException(Class<?> klass, String name, boolean isField) {
@@ -559,9 +629,24 @@ public class ChildClass {
         "." + name + " to not expose hidden modifiers");
   }
 
-  private static DexDomain parentDomain;
-  private static DexDomain childDomain;
-  private static boolean everythingSdked;
+  private static native void registerCorePlatformJniApiCallers(Class targetClass);
+  private static native void registerAppJniApiCallers(Class targetClass);
 
-  private static String configMessage;
+  // Check a few real symbols that HiddenApiSdk28AppTest depends on being inaccessible from platform
+  // to core-platform, to avoid false negatives. Only called when ChildClass is in the platform
+  // domain.
+  public static void checkNonCorePlatformApis() {
+    try {
+      Field f = Byte.class.getDeclaredField("value");
+      throw new RuntimeException("Expected java.lang.Byte.value to be inaccessible from platform");
+    } catch (NoSuchFieldException expected) {
+    }
+    try {
+      Method m =
+          Unsafe.class.getDeclaredMethod("getAndAddInt", Object.class, Long.class, Integer.class);
+      throw new RuntimeException(
+          "Expected sun.misc.Unsafe.getAndAddInt to be inaccessible from platform");
+    } catch (NoSuchMethodException expected) {
+    }
+  }
 }

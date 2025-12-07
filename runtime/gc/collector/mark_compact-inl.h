@@ -164,6 +164,7 @@ uint32_t MarkCompact::LiveWordsBitmap<kAlignment>::FindNthLiveWordOffset(size_t 
                                                                          uint32_t n) const {
   DCHECK_LT(n, kBitsPerVectorWord);
   const size_t index = chunk_idx * kBitmapWordsPerVectorWord;
+  uint32_t orig_n = n;
   for (uint32_t i = 0; i < kBitmapWordsPerVectorWord; i++) {
     uintptr_t word = Bitmap::Begin()[index + i];
     if (~word == 0) {
@@ -190,7 +191,9 @@ uint32_t MarkCompact::LiveWordsBitmap<kAlignment>::FindNthLiveWordOffset(size_t 
       }
     }
   }
-  LOG(FATAL) << "Unreachable";
+  static_assert(kBitmapWordsPerVectorWord == 1);
+  LOG(FATAL) << "Unreachable: chunk_idx:" << chunk_idx << " index:" << index << " n:" << orig_n
+             << " live_word:" << std::hex << Bitmap::Begin()[index];
   UNREACHABLE();
 }
 

@@ -52,7 +52,11 @@ void StackMapStream::BeginMethod(size_t frame_size_in_bytes,
                                  uint32_t num_dex_registers,
                                  bool baseline,
                                  bool debuggable,
-                                 bool has_should_deoptimize_flag) {
+                                 bool has_should_deoptimize_flag,
+                                 bool fast) {
+  DCHECK_IMPLIES(fast, !baseline);
+  DCHECK_IMPLIES(fast, !debuggable);
+  DCHECK_IMPLIES(fast, !has_should_deoptimize_flag);
   DCHECK(!in_method_) << "Mismatched Begin/End calls";
   in_method_ = true;
   DCHECK_EQ(packed_frame_size_, 0u) << "BeginMethod was already called";
@@ -64,6 +68,7 @@ void StackMapStream::BeginMethod(size_t frame_size_in_bytes,
   num_dex_registers_ = num_dex_registers;
   baseline_ = baseline;
   debuggable_ = debuggable;
+  fast_ = fast;
   has_should_deoptimize_flag_ = has_should_deoptimize_flag;
 
   if (kVerifyStackMaps) {
@@ -381,6 +386,7 @@ ScopedArenaVector<uint8_t> StackMapStream::Encode() {
   uint32_t flags = 0;
   flags |= (inline_infos_.size() > 0) ? CodeInfo::kHasInlineInfo : 0;
   flags |= baseline_ ? CodeInfo::kIsBaseline : 0;
+  flags |= fast_ ? CodeInfo::kIsFast : 0;
   flags |= debuggable_ ? CodeInfo::kIsDebuggable : 0;
   flags |= has_should_deoptimize_flag_ ? CodeInfo::kHasShouldDeoptimizeFlag : 0;
 

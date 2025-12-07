@@ -196,13 +196,31 @@ std::string GetSystemOdexFilenameForApex(std::string_view location, InstructionS
 std::string ReplaceFileExtension(std::string_view filename, std::string_view new_extension);
 
 // Return whether the location is on /apex/com.android.art
-bool LocationIsOnArtModule(std::string_view location);
+inline bool LocationIsOnArtModule(std::string_view location) {
+  // No need to check the environment variable - on device it's never set, and on host paths
+  // aren't necessarily absolute so we cannot check that the environment variable is a prefix
+  // anyway. Instead look for the apex directory anywhere in the path on host, to match e.g.
+  // out/host/linux-x86/apex/com.android.art/... (from -Xbootclasspath-locations) and
+  // /full/path/to/android/build/root/out/host/linux-x86/apex/com.android.art/...
+#ifdef ART_TARGET_ANDROID
+  return location.starts_with(kAndroidArtApexDefaultPath);
+#else
+  return location.find(kAndroidArtApexDefaultPath) != std::string::npos;
+#endif
+}
+
+// Return whether the location is on /apex/com.android.conscrypt
+inline bool LocationIsOnConscryptModule(std::string_view location) {
+  // See comment in LocationIsOnArtModule.
+#ifdef ART_TARGET_ANDROID
+  return location.starts_with(kAndroidConscryptApexDefaultPath);
+#else
+  return location.find(kAndroidConscryptApexDefaultPath) != std::string::npos;
+#endif
+}
 
 // Return whether the location is on /data/misc/apexdata/com.android.art/.
 bool LocationIsOnArtApexData(std::string_view location);
-
-// Return whether the location is on /apex/com.android.conscrypt
-bool LocationIsOnConscryptModule(std::string_view location);
 
 // Return whether the location is on system (i.e. android root).
 bool LocationIsOnSystem(const std::string& location);

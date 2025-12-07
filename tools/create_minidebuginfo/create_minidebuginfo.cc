@@ -83,10 +83,10 @@ static void WriteMinidebugInfo(const std::vector<uint8_t>& input, std::vector<ui
       }
 
       // Exclude symbols at the same offset as a symbol in the set of
-      // dynamic symbols.
+      // dynamic symbols as long as the dynamic symbol is bigger or the same
+      // size as the other symbol.
       auto dyn_it = dyn_funcs_by_offset.find(sym.st_value);
-      if (dyn_it != dyn_funcs_by_offset.end()) {
-        CHECK(dyn_it->second >= sym.st_size);
+      if (dyn_it != dyn_funcs_by_offset.end() && dyn_it->second >= sym.st_size) {
         return;
       }
 

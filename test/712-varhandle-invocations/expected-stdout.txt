@@ -3787,6 +3787,7 @@ TooManyArgumentsCausingWrongMethodTypeTest...OK
 TooFewArgumentsCausingWrongMethodTypeTest...OK
 ReturnTypeCausingWrongMethodTypeTest...OK
 UnsupportedAccessModePreemptsWrongMethodTypeExceptionTest...OK
+JNI_OnLoad called
 ArrayStoreTest...OK
 FieldCoordinateTypeTest...OK
 ArrayElementOutOfBoundsIndexTest...OK

@@ -23,6 +23,7 @@ import android.annotation.Nullable;
 import android.util.Log;
 
 import com.android.server.art.CopyAndRewriteProfileResult;
+import com.android.server.art.PreRebootStagedFilesStatus;
 
 import com.google.common.truth.Correspondence;
 import com.google.common.truth.Truth;
@@ -36,6 +37,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 public final class TestingUtils {
+    public static final String FLAGS_PREFIX = "com.android.server.art.jarjar.";
     private static final String TAG = "ArtServiceTesting";
 
     private TestingUtils() {}
@@ -182,6 +184,14 @@ public final class TestingUtils {
         var result = new CopyAndRewriteProfileResult();
         result.status = CopyAndRewriteProfileResult.Status.BAD_PROFILE;
         result.errorMsg = errorMsg;
+        return result;
+    }
+
+    public static PreRebootStagedFilesStatus createPreRebootStagedFilesStatus(
+            boolean isCommittable, long createdAtMillis) {
+        var result = new PreRebootStagedFilesStatus();
+        result.isCommittable = isCommittable;
+        result.createdAtMillis = createdAtMillis;
         return result;
     }
 

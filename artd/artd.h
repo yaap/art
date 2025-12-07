@@ -53,19 +53,7 @@
 namespace art {
 namespace artd {
 
-// Define these function types instead of getting them from C headers because those from glibc C
-// headers contain the unwanted `noexcept`.
-using KillFn = int(pid_t, int);
-using FstatFn = int(int, struct stat*);
-using PollFn = int(struct pollfd*, nfds_t, int);
-using MountFn = int(const char*, const char*, const char*, uint32_t, const void*);
-
-android::base::Result<void> Restorecon(
-    const std::string& path,
-    const std::optional<
-        aidl::com::android::server::art::OutputArtifacts::PermissionSettings::SeContext>&
-        se_context,
-    bool recurse);
+class Artd;
 
 struct Options {
   // If true, this artd instance is for Pre-reboot Dexopt. It runs in a chroot environment that is
@@ -73,9 +61,54 @@ struct Options {
   bool is_pre_reboot = false;
 };
 
+class ArtdInjector {
+ public:
+  virtual ~ArtdInjector() = default;
+
+  virtual std::unique_ptr<art::tools::SystemProperties> GetSystemProperties() {
+    return std::make_unique<art::tools::SystemProperties>();
+  }
+
+  virtual std::unique_ptr<ExecUtils> GetExecUtils() { return std::make_unique<ExecUtils>(); }
+
+  virtual int Kill(pid_t pid, int sig) { return kill(pid, sig); }
+
+  android::base::Result<struct stat> Fstat(const File& file);
+
+  virtual int Fstat(int fd, struct stat* statbuf) { return fstat(fd, statbuf); }
+
+  virtual int Poll(struct pollfd* fds, nfds_t nfds, int timeout) {
+    return poll(fds, nfds, timeout);
+  }
+
+  virtual int Mount(const char* source,
+                    const char* target,
+                    const char* filesystemtype,
+                    unsigned long mountflags,  // NOLINT
+                    const void* data) {
+    return mount(source, target, filesystemtype, mountflags, data);
+  }
+
+  virtual android::base::Result<void> Restorecon(
+      const std::string& path,
+      const std::optional<
+          aidl::com::android::server::art::OutputArtifacts::PermissionSettings::SeContext>&
+          se_context,
+      bool recurse);
+
+  virtual const char* GetPreRebootTmpDir();
+
+  virtual const char* GetInitEnvironRcPath();
+
+  virtual android::base::Result<std::unique_ptr<art::tools::SystemProperties>>
+  GetPreRebootBuildSystemProperties();
+
+  virtual android::base::Result<std::string> GetApexVersions(Artd* artd);
+};
+
 class ArtdCancellationSignal : public aidl::com::android::server::art::BnArtdCancellationSignal {
  public:
-  explicit ArtdCancellationSignal(std::function<KillFn> kill_func) : kill_(std::move(kill_func)) {}
+  explicit ArtdCancellationSignal(ArtdInjector* injector) : injector_(injector) {}
 
   ndk::ScopedAStatus cancel() override;
 
@@ -94,17 +127,17 @@ class ArtdCancellationSignal : public aidl::com::android::server::art::BnArtdCan
   // The pids of currently running child processes that are bound to this signal.
   std::unordered_set<pid_t> pids_ GUARDED_BY(mu_);
 
-  std::function<KillFn> kill_;
+  ArtdInjector* const injector_;
 };
 
 class ArtdNotification : public aidl::com::android::server::art::BnArtdNotification {
  public:
-  ArtdNotification() : done_(true) {}
-  ArtdNotification(std::function<PollFn> poll_func,
+  ArtdNotification() : injector_(nullptr), done_(true) {}
+  ArtdNotification(ArtdInjector* injector,
                    const std::string& path,
                    android::base::unique_fd&& inotify_fd,
                    android::base::unique_fd&& pidfd)
-      : poll_(poll_func),
+      : injector_(injector),
         path_(std::move(path)),
         inotify_fd_(std::move(inotify_fd)),
         pidfd_(std::move(pidfd)),
@@ -117,7 +150,7 @@ class ArtdNotification : public aidl::com::android::server::art::BnArtdNotificat
  private:
   void CleanUp() EXCLUDES(mu_);
 
-  const std::function<PollFn> poll_;
+  ArtdInjector* const injector_;
 
   std::mutex mu_;
   std::string path_ GUARDED_BY(mu_);
@@ -130,28 +163,11 @@ class ArtdNotification : public aidl::com::android::server::art::BnArtdNotificat
 class Artd : public aidl::com::android::server::art::BnArtd {
  public:
   explicit Artd(Options&& options,
-                std::unique_ptr<art::tools::SystemProperties> props =
-                    std::make_unique<art::tools::SystemProperties>(),
-                std::unique_ptr<ExecUtils> exec_utils = std::make_unique<ExecUtils>(),
-                std::function<KillFn> kill_func = kill,
-                std::function<FstatFn> fstat_func = fstat,
-                std::function<PollFn> poll_func = poll,
-                std::function<MountFn> mount_func = mount,
-                std::function<decltype(Restorecon)> restorecon_func = Restorecon,
-                std::optional<std::string> pre_reboot_tmp_dir = std::nullopt,
-                std::optional<std::string> init_environ_rc_path = std::nullopt,
-                std::unique_ptr<art::tools::SystemProperties> pre_reboot_build_props = nullptr)
+                std::unique_ptr<ArtdInjector> injector = std::make_unique<ArtdInjector>())
       : options_(std::move(options)),
-        props_(std::move(props)),
-        exec_utils_(std::move(exec_utils)),
-        kill_(std::move(kill_func)),
-        fstat_(std::move(fstat_func)),
-        poll_(std::move(poll_func)),
-        mount_(std::move(mount_func)),
-        restorecon_(std::move(restorecon_func)),
-        pre_reboot_tmp_dir_(std::move(pre_reboot_tmp_dir)),
-        init_environ_rc_path_(std::move(init_environ_rc_path)),
-        pre_reboot_build_props_(std::move(pre_reboot_build_props)) {}
+        injector_(std::move(injector)),
+        props_(injector_->GetSystemProperties()),
+        exec_utils_(injector_->GetExecUtils()) {}
 
   ndk::ScopedAStatus isAlive(bool* _aidl_return) override;
 
@@ -235,6 +251,7 @@ class Artd : public aidl::com::android::server::art::BnArtd {
       const aidl::com::android::server::art::DexoptOptions& in_dexoptOptions,
       const std::shared_ptr<aidl::com::android::server::art::IArtdCancellationSignal>&
           in_cancellationSignal,
+      const ndk::ScopedFileDescriptor& in_loggingFd,
       aidl::com::android::server::art::ArtdDexoptResult* _aidl_return) override;
 
   ndk::ScopedAStatus createCancellationSignal(
@@ -295,6 +312,12 @@ class Artd : public aidl::com::android::server::art::BnArtd {
 
   ndk::ScopedAStatus checkPreRebootSystemRequirements(const std::string& in_chrootDir,
                                                       bool* _aidl_return) override;
+
+  ndk::ScopedAStatus checkPreRebootStagedFilesStatus(
+      std::optional<aidl::com::android::server::art::PreRebootStagedFilesStatus>* _aidl_return)
+      override;
+
+  ndk::ScopedAStatus deletePreRebootStagedMetadata() override;
 
   ndk::ScopedAStatus preRebootInit(
       const std::shared_ptr<aidl::com::android::server::art::IArtdCancellationSignal>&
@@ -359,8 +382,6 @@ class Artd : public aidl::com::android::server::art::BnArtd {
                           /*out*/ art::tools::CmdlineBuilder& art_exec_args,
                           /*out*/ art::tools::CmdlineBuilder& args);
 
-  android::base::Result<struct stat> Fstat(const art::File& file) const;
-
   // Creates a new dir at `source` and bind-mounts it at `target`.
   android::base::Result<void> BindMountNewDir(const std::string& source,
                                               const std::string& target) const;
@@ -390,16 +411,12 @@ class Artd : public aidl::com::android::server::art::BnArtd {
   std::unique_ptr<OatFileAssistantContext> ofa_context_ GUARDED_BY(ofa_context_mu_);
 
   const Options options_;
+  const std::unique_ptr<ArtdInjector> injector_;
   const std::unique_ptr<art::tools::SystemProperties> props_;
   const std::unique_ptr<ExecUtils> exec_utils_;
-  const std::function<KillFn> kill_;
-  const std::function<FstatFn> fstat_;
-  const std::function<PollFn> poll_;
-  const std::function<MountFn> mount_;
-  const std::function<decltype(Restorecon)> restorecon_;
-  const std::optional<std::string> pre_reboot_tmp_dir_;
-  const std::optional<std::string> init_environ_rc_path_;
-  std::unique_ptr<art::tools::SystemProperties> pre_reboot_build_props_;
+  std::unique_ptr<art::tools::SystemProperties> pre_reboot_build_props_ = nullptr;
+
+  friend class ArtdInjector;
 };
 
 // A class for getting system properties from a `build.prop` file.

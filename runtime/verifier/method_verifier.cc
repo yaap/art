@@ -4457,9 +4457,7 @@ MethodVerifierImpl::HandleMoveException(const Instruction* inst)  {
   bool skip_verification_of_exception_handler = false;
   if (unresolved != nullptr) {
     // Soft-fail, but do not handle this with a synthetic throw.
-    Fail(VERIFY_ERROR_UNRESOLVED_TYPE_CHECK, /*pending_exc=*/ false)
-        << "Unresolved catch handler";
-    bool should_continue = true;
+    Fail(VERIFY_ERROR_UNRESOLVED_TYPE_CHECK, /*pending_exc=*/ false) << "Unresolved catch handler";
     if (common_super != nullptr) {
       reg_type = &unresolved->Merge(*common_super, &reg_types_, this);
     } else {

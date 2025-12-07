@@ -24,12 +24,14 @@
 #include "android-base/logging.h"
 #include "android-base/macros.h"
 #include "android-base/stringprintf.h"
-
 #include "assume_value_options.h"
+#include "assume_value_signatures.h"
 #include "base/macros.h"
 #include "cmdline_parser.h"
-#include "com_android_art_flags.h"
+#include "com_android_art_rw_flags.h"
 #include "compiler_options.h"
+
+using ::android::base::GetBoolProperty;
 
 namespace art HIDDEN {
 
@@ -62,17 +64,22 @@ struct CmdlineType<AssumeValueOptions> : CmdlineTypeParser<AssumeValueOptions> {
       return Result::Failure(std::string("Invalid --assume-value value: '") + args + "'");
     }
 
-    if (!com::android::art::flags::compile_sdk_int_constant()) {
+    if (!com::android::art::rw::flags::assume_value_sdk_int()) {
       // Feature disabled, silently ignore setting the value. Note that if we ever add additional
       // support beyond for more assumed values beyond SDK_INT, this will need to be adjusted.
+      static_assert(AssumeValueSignatures::kSignatures.size() == 1);
       return Result::SuccessNoValue();
     }
 
-    if (!assume_value_options.MaybeSetAssumedValue(
-            class_descriptor, member_name, parsed_value.GetValue())) {
-      return Result::Failure(std::string("Invalid --assume-value assignment: '") + args + "'");
+    auto known_signature = AssumeValueSignatures::Lookup(class_descriptor, member_name);
+    if (known_signature == AssumeValueSignatures::kSdkInt) {
+      assume_value_options.SetSdkInt(parsed_value.GetValue());
+      return Result::SuccessNoValue();
     }
 
+    // Note that we treat unhandled assumed value members as benign, as the optimization is
+    // strictly best-effort and shouldn't break compilation.
+    LOG(WARNING) << "Unhandled --assume-value member: " << args;
     return Result::SuccessNoValue();
   }
 
@@ -155,6 +162,14 @@ inline bool ReadCompilerOptions(Base& map, CompilerOptions* options, std::string
   }
 
   map.AssignIfExists(Base::AssumeValueOpts, &options->assume_value_options_);
+
+  // If the option isn't explicitly set, use the system property. Mostly used for tests.
+  // Other uses are expected to set the required value.
+  bool build_enabled = map.Exists(Base::AllowProfileCode)
+      ? *map.Get(Base::AllowProfileCode)
+      : GetBoolProperty("dalvik.vm.allow_profile_code", false);
+  options->enable_profile_code_ =
+      com::android::art::rw::flags::enable_profile_code_rw() && build_enabled;
 
   return true;
 }
@@ -296,6 +311,11 @@ NO_INLINE void AddCompilerOptionsArgumentParserOptions(Builder& b) {
           .WithHelp("Optional assumed value for compiling a given field.\n"
                     "E.g.: --assume-value=Landroid/os/Build$VERSION;->SDK_INT:23")
           .IntoKey(Map::AssumeValueOpts)
+
+      .Define({"--allow-profile-code", "--no-allow-profile-code"})
+          .WithHelp("Generate code for supporting low overhead tracing")
+          .WithValues({true, false})
+          .IntoKey(Map::AllowProfileCode)
 
       // Obsolete flags
       .Ignore({

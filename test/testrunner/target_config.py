@@ -3,8 +3,6 @@ target_config = {
     # Configuration syntax:
     #
     #   Required keys: (Use one or more of these)
-    #    * golem - specify a golem machine-type to build, e.g. android-armv8
-    #              (uses art/tools/golem/build-target.sh)
     #    * make - specify a make target to build, e.g. build-art-host
     #    * run-test - runs the tests in art/test/ directory with testrunner.py,
     #                 specify a list of arguments to pass to testrunner.py
@@ -277,30 +275,5 @@ target_config = {
             'SANITIZE_HOST' : 'address',
             'ASAN_OPTIONS' : 'detect_leaks=0'
         }
-    },
-
-    # ART Golem build targets used by go/lem (continuous ART benchmarking),
-    # (art-opt-cc is used by default since it mimics the default preopt config),
-    #
-    # calls golem/build-target.sh which builds a golem tarball of the target name,
-    #     e.g. 'golem: android-armv7' produces an 'android-armv7.tar.gz' upon success.
-
-    'art-golem-android-armv7': {
-        'golem' : 'android-armv7'
-    },
-    'art-golem-android-armv8': {
-        'golem' : 'android-armv8'
-    },
-    'art-golem-linux-armv7': {
-        'golem' : 'linux-armv7'
-    },
-    'art-golem-linux-armv8': {
-        'golem' : 'linux-armv8'
-    },
-    'art-golem-linux-ia32': {
-        'golem' : 'linux-ia32'
-    },
-    'art-golem-linux-x64': {
-        'golem' : 'linux-x64'
     },
 }

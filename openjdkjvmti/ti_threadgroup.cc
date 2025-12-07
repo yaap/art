@@ -184,7 +184,9 @@ static void GetThreads(art::Handle<art::mirror::Object> thread_group,
   for (art::Thread* t : thread_list) {
     art::ThreadExitFlag* tef = &*i++;
     art::ObjPtr<art::mirror::Object> peer = t->LockedGetPeerFromOtherThread(tef);
-    if (peer != nullptr && !tef->HasExited() && !t->IsStillStarting() &&
+    // Ignore runtime threads. They are internal threads and we don't have to report them to
+    // debuggers.
+    if (peer != nullptr && !tef->HasExited() && !t->IsStillStarting() && !t->IsRuntimeThread() &&
         IsInDesiredThreadGroup(thread_group, peer)) {
       thread_peers->push_back(peer);
     }

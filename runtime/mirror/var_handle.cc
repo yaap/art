@@ -1971,7 +1971,7 @@ bool ByteBufferViewVarHandle::Access(AccessMode access_mode,
         WellKnownClasses::java_nio_ByteBuffer_hb->GetOffset());
     data = heap_byte_array->GetData();
   } else {
-    data = reinterpret_cast<int8_t*>(static_cast<uint32_t>(native_address));
+    data = reinterpret_cast<int8_t*>(native_address);
   }
 
   bool byte_swap = !GetNativeByteOrder();

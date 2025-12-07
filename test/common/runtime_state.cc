@@ -298,7 +298,7 @@ static void ForceJitCompiled(Thread* self,
       // If we're requesting optimized, check that we did get the method
       // compiled optimized.
       OatQuickMethodHeader* method_header = OatQuickMethodHeader::FromEntryPoint(entry_point);
-      if (!CodeInfo::IsBaseline(method_header->GetOptimizedCodeInfoPtr())) {
+      if (CodeInfo::IsOptimized(method_header->GetOptimizedCodeInfoPtr())) {
         break;
       }
     }

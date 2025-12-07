@@ -412,28 +412,41 @@ void HSharpening::ProcessLoadString(
       // if needed, to ensure the string will be added to the boot image.
       DCHECK(!compiler_options.IsJitCompiler());
       if (compiler_options.GetCompilePic()) {
-        if (compiler_options.IsForceDeterminism()) {
-          // Strings for methods we're compiling should be pre-resolved but Strings in inlined
-          // methods may not be if these inlined methods are not in the boot image profile.
-          // Multiple threads allocating new Strings can cause non-deterministic boot image
-          // because of the image relying on the order of GC roots we walk. (We could fix that
-          // by ordering the roots we walk in ImageWriter.) Therefore we avoid allocating these
-          // strings even if that results in omitting them from the boot image and using the
-          // sub-optimal load kind kBssEntry.
-          string = class_linker->LookupString(string_index, dex_cache.Get());
-        } else {
-          string = class_linker->ResolveString(string_index, dex_cache);
-          CHECK(string != nullptr);
-        }
-        if (string != nullptr) {
-          if (runtime->GetHeap()->ObjectIsInBootImageSpace(string)) {
-            DCHECK(compiler_options.IsBootImageExtension());
+        if (com::android::art::flags::weak_const_string()) {
+          if (compiler_options.IsBootImageExtension()) {
+            string = class_linker->LookupString(string_index, dex_cache.Get());
+          }
+          if (string != nullptr && runtime->GetHeap()->ObjectIsInBootImageSpace(string)) {
             desired_load_kind = HLoadString::LoadKind::kBootImageRelRo;
           } else {
+            // We shall collect and strongly intern all strings that make it to the
+            // linking stage, referenced by a corresponding `LinkerPatch`.
             desired_load_kind = HLoadString::LoadKind::kBootImageLinkTimePcRelative;
           }
         } else {
-          desired_load_kind = HLoadString::LoadKind::kBssEntry;
+          if (compiler_options.IsForceDeterminism()) {
+            // Strings for methods we're compiling should be pre-resolved but Strings in inlined
+            // methods may not be if these inlined methods are not in the boot image profile.
+            // Multiple threads allocating new Strings can cause non-deterministic boot image
+            // because of the image relying on the order of GC roots we walk. (We could fix that
+            // by ordering the roots we walk in ImageWriter.) Therefore we avoid allocating these
+            // strings even if that results in omitting them from the boot image and using the
+            // sub-optimal load kind kBssEntry.
+            string = class_linker->LookupString(string_index, dex_cache.Get());
+          } else {
+            string = class_linker->ResolveString(string_index, dex_cache);
+            CHECK(string != nullptr);
+          }
+          if (string != nullptr) {
+            if (runtime->GetHeap()->ObjectIsInBootImageSpace(string)) {
+              DCHECK(compiler_options.IsBootImageExtension());
+              desired_load_kind = HLoadString::LoadKind::kBootImageRelRo;
+            } else {
+              desired_load_kind = HLoadString::LoadKind::kBootImageLinkTimePcRelative;
+            }
+          } else {
+            desired_load_kind = HLoadString::LoadKind::kBssEntry;
+          }
         }
       } else {
         // Test configuration, do not sharpen.

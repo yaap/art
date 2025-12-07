@@ -631,6 +631,7 @@ class TestingChecker:
     self._checker.check_art_test_data('art-gtest-jars-ErroneousA.jar')
     self._checker.check_art_test_data('art-gtest-jars-HiddenApiSignatures.jar')
     self._checker.check_art_test_data('art-gtest-jars-ForClassLoaderB.jar')
+    self._checker.check_art_test_data('art-gtest-jars-InlinedString.jar')
     self._checker.check_art_test_data('art-gtest-jars-LinkageTest.dex')
     self._checker.check_art_test_data('art-gtest-jars-MethodTypes.jar')
     self._checker.check_art_test_data('art-gtest-jars-ErroneousInit.jar')
@@ -656,6 +657,7 @@ class TestingChecker:
     self._checker.check_art_test_data('art-gtest-jars-ForClassLoaderA.jar')
     self._checker.check_art_test_data('art-gtest-jars-StaticLeafMethods.jar')
     self._checker.check_art_test_data('art-gtest-jars-MultiDex.jar')
+    self._checker.check_art_test_data('art-gtest-jars-MultiDexContainer.jar')
     self._checker.check_art_test_data('art-gtest-jars-Packages.jar')
     self._checker.check_art_test_data('art-gtest-jars-ProtoCompare2.jar')
     self._checker.check_art_test_data('art-gtest-jars-Statics.jar')
@@ -670,6 +672,8 @@ class TestingChecker:
     # Fuzzer cases
     self._checker.check_art_test_data('dex_verification_fuzzer_corpus.zip')
     self._checker.check_art_test_data('class_verification_fuzzer_corpus.zip')
+    self._checker.check_art_test_data('optimized_compiler_fuzzer_corpus.zip')
+    self._checker.check_art_test_data('baseline_compiler_fuzzer_corpus.zip')
 
 
 class NoSuperfluousFilesChecker:

@@ -52,8 +52,8 @@ SessionData SessionData::CreateDefault() {
   return SessionData{
       .session_id = kInvalidSessionId,
       .uid = uid,
-      .compilation_reason = CompilationReason::kUnknown,
-      .compiler_filter = CompilerFilterReporting::kUnknown,
+      .compilation_reason = CompilationReason::kAbsent,
+      .compiler_filter = CompilerFilterReporting::kAbsent,
   };
 }
 
@@ -290,8 +290,8 @@ void FileBackend::EndReport() {
 }
 
 // Make sure CompilationReasonName and CompilationReasonForName are inverses.
-static_assert(CompilationReasonFromName(CompilationReasonName(CompilationReason::kError)) ==
-              CompilationReason::kError);
+static_assert(CompilationReasonFromName(CompilationReasonName(CompilationReason::kAbsent)) ==
+              CompilationReason::kAbsent);
 static_assert(CompilationReasonFromName(CompilationReasonName(CompilationReason::kUnknown)) ==
               CompilationReason::kUnknown);
 static_assert(CompilationReasonFromName(CompilationReasonName(CompilationReason::kFirstBoot)) ==
@@ -335,6 +335,16 @@ static_assert(CompilationReasonFromName(CompilationReasonName(CompilationReason:
 static_assert(
     CompilationReasonFromName(CompilationReasonName(CompilationReason::kBootAfterMainlineUpdate)) ==
     CompilationReason::kBootAfterMainlineUpdate);
+static_assert(CompilationReasonFromName(CompilationReasonName(CompilationReason::kOther)) ==
+              CompilationReason::kOther);
+static_assert(CompilationReasonFromName(CompilationReasonName(CompilationReason::kCloud)) ==
+              CompilationReason::kCloud);
+static_assert(CompilationReasonFromName(CompilationReasonName(CompilationReason::kVdexDm)) ==
+              CompilationReason::kVdexDm);
+static_assert(CompilationReasonFromName(CompilationReasonName(CompilationReason::kDefDexopt)) ==
+              CompilationReason::kDefDexopt);
+static_assert(CompilationReasonFromName(CompilationReasonName(CompilationReason::kPostUr)) ==
+              CompilationReason::kPostUr);
 
 }  // namespace metrics
 }  // namespace art

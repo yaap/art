@@ -25,9 +25,10 @@ else
   verbose=false
 fi
 
-# Testing on a Linux VM requires special setup.
-if [[ -n "$ART_TEST_ON_VM" ]]; then
-  [[ -d "$ART_TEST_VM_DIR" ]] || { msgfatal "no VM found in $ART_TEST_VM_DIR"; }
+# Testing on a Linux VM or SBC requires special setup.
+if [[ -n "$ART_TEST_ON_VM" ]] || [[ -n "$ART_TEST_ON_SBC" ]]; then
+  [[ -z "$ART_TEST_ON_VM" ]] || [[ -d "$ART_TEST_VM_DIR" ]] || \
+      { msgfatal "no VM found in $ART_TEST_VM_DIR"; }
   $ART_SSH_CMD "true" || { msgerror "no VM (tried \"$ART_SSH_CMD true\""; }
   $ART_SSH_CMD "
     mkdir $ART_TEST_CHROOT

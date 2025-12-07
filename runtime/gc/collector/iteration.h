@@ -65,6 +65,7 @@ class Iteration {
   uint64_t GetScannedBytes() const {
     return bytes_scanned_;
   }
+  uint64_t GetStartTime() const { return start_time_; }
   void SetScannedBytes(uint64_t bytes) {
       bytes_scanned_ = bytes;
   }
@@ -104,6 +105,7 @@ class Iteration {
   ObjectBytePair freed_los_;
   uint64_t freed_bytes_revoke_;  // see Heap::num_bytes_freed_revoke_.
   std::vector<uint64_t> pause_times_;
+  uint64_t start_time_;
 
   friend class GarbageCollector;
   DISALLOW_COPY_AND_ASSIGN(Iteration);

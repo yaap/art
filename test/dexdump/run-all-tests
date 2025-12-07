@@ -47,6 +47,9 @@ SUFFIX_COMMAND_MAP[xml]="${DEXDUMP} -e -l xml"
 SUFFIX_COMMAND_MAP[lst]="${DEXLIST}"
 
 ALL_DEX_FILES_JAR=all-dex-files.jar
+# List of files to exclude when aggregating into the ALL_DEX_FILES_JAR target.
+# Containerized dex can't simply be appended to a multi-dex jar archive.
+EXCLUDE_FROM_ALL_DEX_FILES_JAR=(multidex-container.dex)
 
 # Parse command-line options
 UPDATE="no"
@@ -89,6 +92,9 @@ if [ "${UPDATE}" = "yes" ]; then
   # Create a .jar file containing all dex files, renamed as expected by the runtime.
   count=0
   for i in *.dex; do
+    if [[ " ${EXCLUDE_FROM_ALL_DEX_FILES_JAR[@]} " =~ " ${i} " ]]; then
+      continue
+    fi
     if [ ${count} = 0 ] ; then
       dex_file=classes.dex
       flags="-cf"

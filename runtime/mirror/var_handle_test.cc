@@ -119,7 +119,6 @@ class VarHandleTest : public CommonRuntimeTest {
     ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
     Handle<Class> var_type = hs.NewHandle(view_array_class->GetComponentType());
     Handle<Class> index_type = hs.NewHandle(class_linker->FindPrimitiveClass('I'));
-    Handle<ClassLoader> boot_class_loader;
     Handle<Class> byte_buffer_class = hs.NewHandle(
         class_linker->FindSystemClass(self, "Ljava/nio/ByteBuffer;"));
     InitializeVarHandle(bvh.Get(), var_type, byte_buffer_class, index_type, access_modes_bit_mask);
@@ -234,8 +233,6 @@ ObjPtr<MethodType> VarHandleTest::MethodTypeOf(const std::string& method_descrip
     }
   }
 
-  Runtime* const runtime = Runtime::Current();
-  ClassLinker* const class_linker = runtime->GetClassLinker();
   Thread* const self = Thread::Current();
 
   ScopedObjectAccess soa(self);

@@ -30,6 +30,7 @@
    movl rSELF:THREAD_SELF_OFFSET, ARG0
    movl 0(%esp), ARG1
    movl rPC, ARG2
+   movl rFP, ARG3
    call nterp_get_method
    .if $is_super
    jmp 1b
@@ -118,6 +119,7 @@
    movl rSELF:THREAD_SELF_OFFSET, ARG0
    movl 0(%esp), ARG1
    movl rPC, ARG2
+   movl rFP, ARG3
    call nterp_get_method
    jmp .L${opcode}_resume
 
@@ -136,6 +138,7 @@
    movl rSELF:THREAD_SELF_OFFSET, ARG0
    movl 0(%esp), ARG1
    movl rPC, ARG2
+   movl rFP, ARG3
    call nterp_get_method
    jmp $helper
 
@@ -171,6 +174,7 @@
    movl rSELF:THREAD_SELF_OFFSET, ARG0
    movl 0(%esp), ARG1
    movl rPC, ARG2
+   movl rFP, ARG3
    call nterp_get_method
    jmp 1b
 

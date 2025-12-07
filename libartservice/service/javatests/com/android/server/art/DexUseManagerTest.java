@@ -19,6 +19,8 @@ package com.android.server.art;
 import static com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
 import static com.android.server.art.DexUseManagerLocal.DexLoader;
 import static com.android.server.art.DexUseManagerLocal.SecondaryDexInfo;
+import static com.android.server.art.testing.TestDataHelper.newPackageState;
+import static com.android.server.art.testing.TestDataHelper.newSplit;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -48,6 +50,7 @@ import com.android.server.art.model.DexContainerFileUseInfo;
 import com.android.server.art.proto.DexUseProto;
 import com.android.server.art.testing.MockClock;
 import com.android.server.art.testing.StaticMockitoRule;
+import com.android.server.art.testing.TestDataHelper.PackageStateBuilder;
 import com.android.server.pm.PackageManagerLocal;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.AndroidPackageSplit;
@@ -132,20 +135,23 @@ public class DexUseManagerTest {
         mPackageStates = new LinkedHashMap<>();
 
         // Put the null package in front of other packages to verify that it's properly skipped.
-        PackageState nullPkgState =
-                createPackageState("com.example.null", "arm64-v8a", false /* hasPackage */);
+        PackageState nullPkgState = newPackageStateWithDefaults("com.example.null")
+                                            .setAbi("arm64-v8a")
+                                            .clearAndroidPackage()
+                                            .build();
         addPackage("com.example.null", nullPkgState, true /* isVisible */);
         PackageState loadingPkgState =
-                createPackageState(LOADING_PKG_NAME, "armeabi-v7a", true /* hasPackage */);
+                newPackageStateWithDefaults(LOADING_PKG_NAME).setAbi("armeabi-v7a").build();
         addPackage(LOADING_PKG_NAME, loadingPkgState, true /* isVisible */);
         PackageState owningPkgState =
-                createPackageState(OWNING_PKG_NAME, "arm64-v8a", true /* hasPackage */);
+                newPackageStateWithDefaults(OWNING_PKG_NAME).setAbi("arm64-v8a").build();
         addPackage(OWNING_PKG_NAME, owningPkgState, true /* isVisible */);
-        PackageState platformPkgState =
-                createPackageState(Utils.PLATFORM_PACKAGE_NAME, "arm64-v8a", true /* hasPackage */);
+        PackageState platformPkgState = newPackageStateWithDefaults(Utils.PLATFORM_PACKAGE_NAME)
+                                                .setAbi("arm64-v8a")
+                                                .build();
         addPackage(Utils.PLATFORM_PACKAGE_NAME, platformPkgState, true /* isVisible */);
         PackageState invisiblePkgState =
-                createPackageState(INVISIBLE_PKG_NAME, "arm64-v8a", true /* hasPackage */);
+                newPackageStateWithDefaults(INVISIBLE_PKG_NAME).setAbi("arm64-v8a").build();
         addPackage(INVISIBLE_PKG_NAME, invisiblePkgState, false /* isVisible */);
 
         lenient().when(mUnfilteredSnapshot.getPackageStates()).thenReturn(mPackageStates);
@@ -352,7 +358,7 @@ public class DexUseManagerTest {
         assertThat(mDexUseManager.getPrimaryDexLoaders(OWNING_PKG_NAME, SPLIT_APK))
                 .containsExactly(DexLoader.create(OWNING_PKG_NAME, false /* isolatedProcess */));
 
-        assertThat(mDexUseManager.getPackageLastUsedAtMs(OWNING_PKG_NAME)).isEqualTo(2000l);
+        assertThat(mDexUseManager.getPackageLastUsedAtMillis(OWNING_PKG_NAME)).isEqualTo(2000l);
     }
 
     @Test
@@ -591,7 +597,7 @@ public class DexUseManagerTest {
                         DexContainerFileUseInfo.create(
                                 mCeDir + "/baz.apk", mUserHandle, Set.of(OWNING_PKG_NAME)));
 
-        assertThat(mDexUseManager.getPackageLastUsedAtMs(OWNING_PKG_NAME)).isEqualTo(2000l);
+        assertThat(mDexUseManager.getPackageLastUsedAtMillis(OWNING_PKG_NAME)).isEqualTo(2000l);
     }
 
     @Test
@@ -682,8 +688,9 @@ public class DexUseManagerTest {
 
     @Test
     public void testCleanupDeletedPackage() throws Exception {
-        PackageState pkgState = createPackageState(
-                "com.example.deletedpackage", "arm64-v8a", true /* hasPackage */);
+        PackageState pkgState = newPackageStateWithDefaults("com.example.deletedpackage")
+                                        .setAbi("arm64-v8a")
+                                        .build();
         addPackage("com.example.deletedpackage", pkgState, true /* isVisible */);
         lenient()
                 .when(mArtd.getDexFileVisibility(
@@ -958,37 +965,17 @@ public class DexUseManagerTest {
                 .hasSize(MAX_SECONDARY_DEX_FILES_PER_OWNER_FOR_TESTING);
     }
 
-    private AndroidPackage createPackage(String packageName) {
-        AndroidPackage pkg = mock(AndroidPackage.class);
-        lenient().when(pkg.getStorageUuid()).thenReturn(StorageManager.UUID_DEFAULT);
-
-        var baseSplit = mock(AndroidPackageSplit.class);
-        lenient()
-                .when(baseSplit.getPath())
-                .thenReturn("/somewhere/app/" + packageName + "/base.apk");
-        lenient().when(baseSplit.isHasCode()).thenReturn(true);
-        lenient().when(baseSplit.getClassLoaderName()).thenReturn(PathClassLoader.class.getName());
-
-        var split0 = mock(AndroidPackageSplit.class);
-        lenient().when(split0.getName()).thenReturn("split_0");
-        lenient()
-                .when(split0.getPath())
-                .thenReturn("/somewhere/app/" + packageName + "/split_0.apk");
-        lenient().when(split0.isHasCode()).thenReturn(true);
-
-        lenient().when(pkg.getSplits()).thenReturn(List.of(baseSplit, split0));
-
-        return pkg;
-    }
-
-    private PackageState createPackageState(
-            String packageName, String primaryAbi, boolean hasPackage) {
-        PackageState pkgState = mock(PackageState.class);
-        lenient().when(pkgState.getPackageName()).thenReturn(packageName);
-        AndroidPackage pkg = createPackage(packageName);
-        lenient().when(pkgState.getAndroidPackage()).thenReturn(hasPackage ? pkg : null);
-        lenient().when(pkgState.getPrimaryCpuAbi()).thenReturn(primaryAbi);
-        return pkgState;
+    private PackageStateBuilder newPackageStateWithDefaults(String packageName) {
+        return newPackageState(packageName)
+                .setStorageUuid(StorageManager.UUID_DEFAULT)
+                .addSplit(newSplit()
+                                .setPath("/somewhere/app/" + packageName + "/base.apk")
+                                .setClassLoaderName(PathClassLoader.class.getName())
+                                .build())
+                .addSplit(newSplit()
+                                .setName("split_0")
+                                .setPath("/somewhere/app/" + packageName + "/split_0.apk")
+                                .build());
     }
 
     private void addPackage(String packageName, PackageState pkgState, boolean isVisible) {

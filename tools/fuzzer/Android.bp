@@ -23,8 +23,59 @@ package {
     default_applicable_licenses: ["art_license"],
 }
 
+// Defaults used for both the fuzzers and the common library. This library is also used for gtests.
 cc_defaults {
-    name: "libart_fuzzer-defaults",
+    name: "art_fuzzer_release_defaults",
+    defaults: [
+        "art_defaults",
+        "libart-runtime-for-test_static_defaults",
+        "libart-compiler_static_defaults",
+    ],
+}
+
+cc_defaults {
+    name: "art_fuzzer_debug_defaults",
+    defaults: [
+        "art_debug_defaults",
+        "libartd-runtime-for-test_static_defaults",
+        "libartd-compiler_static_defaults",
+    ],
+}
+
+// Library definitions.
+cc_library_static {
+    name: "libart_fuzzer-common",
+    srcs: [
+        "fuzzer_common.cc",
+    ],
+    host_supported: true,
+    export_include_dirs: ["."],
+    defaults: ["art_fuzzer_release_defaults"],
+    whole_static_libs: [
+        // `libsigchain` must be statically linked. ASAN init uses sigaction,
+        // which makes `libsigchain.so` initialize earlier than required.
+        "libsigchain",
+    ],
+}
+
+cc_library_static {
+    name: "libart_fuzzerd-common",
+    srcs: [
+        "fuzzer_common.cc",
+    ],
+    host_supported: true,
+    export_include_dirs: ["."],
+    defaults: ["art_fuzzer_debug_defaults"],
+    whole_static_libs: [
+        // `libsigchain` must be statically linked. ASAN init uses sigaction,
+        // which makes `libsigchain.so` initialize earlier than required.
+        "libsigchain",
+    ],
+}
+
+// Common fuzzer defaults.
+cc_defaults {
+    name: "libart_fuzzer-base-defaults",
 
     // Build and run on x86 too.
     host_supported: true,
@@ -52,23 +103,28 @@ cc_defaults {
     },
 }
 
+// Release/debug defaults that fuzzers should use to abstract from the ones above.
 cc_defaults {
-    name: "libart_verify_dex_fuzzer-defaults",
-    srcs: ["libart_verify_dex_fuzzer.cc"],
-
+    name: "libart_fuzzer-defaults",
     defaults: [
-        "libart_fuzzer-defaults",
+        "art_fuzzer_release_defaults",
+        "libart_fuzzer-base-defaults",
     ],
+    static_libs: ["libart_fuzzer-common"],
 }
 
 cc_defaults {
-    name: "libart_verify_classes_fuzzer-defaults",
-    srcs: ["libart_verify_classes_fuzzer.cc"],
-
+    name: "libart_fuzzerd-defaults",
     defaults: [
-        "libart_fuzzer-defaults",
+        "art_fuzzer_debug_defaults",
+        "libart_fuzzer-base-defaults",
     ],
+    static_libs: ["libart_fuzzerd-common"],
+}
 
+// Extra defaults for fuzzers that create a runtime
+cc_defaults {
+    name: "fuzzer-creating-runtime-defaults",
     target: {
         android: {
             shared_libs: [
@@ -76,17 +132,11 @@ cc_defaults {
             ],
         },
     },
-
     device_common_data: [
-        ":core-oj",
-        ":core-libart",
-        ":okhttp",
-        ":bouncycastle",
-        ":apache-xml",
+        ":bootclasspath_jars",
         ":core-icu4j-fuzzer",
         ":conscrypt-fuzzer",
     ],
-
     whole_static_libs: [
         // `libsigchain` must be statically linked. ASAN init uses sigaction,
         // which makes `libsigchain.so` initialize earlier than required.
@@ -94,11 +144,12 @@ cc_defaults {
     ],
 }
 
+// Verify dex fuzzer.
 cc_fuzz {
     name: "libart_verify_dex_fuzzer",
+    srcs: ["libart_verify_dex_fuzzer.cc"],
     defaults: [
-        "libart_verify_dex_fuzzer-defaults",
-        "libart_static_defaults",
+        "libart_fuzzer-defaults",
     ],
     // Can not be in defaults due to soong limitations.
     device_common_corpus: [
@@ -109,9 +160,9 @@ cc_fuzz {
 
 cc_fuzz {
     name: "libart_verify_dex_fuzzerd",
+    srcs: ["libart_verify_dex_fuzzer.cc"],
     defaults: [
-        "libart_verify_dex_fuzzer-defaults",
-        "libartd_static_defaults",
+        "libart_fuzzerd-defaults",
     ],
     // Can not be in defaults due to soong limitations.
     device_common_corpus: [
@@ -120,13 +171,13 @@ cc_fuzz {
     ],
 }
 
+// Verify classes fuzzer
 cc_fuzz {
     name: "libart_verify_classes_fuzzer",
+    srcs: ["libart_verify_classes_fuzzer.cc"],
     defaults: [
-        "art_defaults",
-        "libart-runtime-for-test_static_defaults",
-        "libart-compiler_static_defaults",
-        "libart_verify_classes_fuzzer-defaults",
+        "libart_fuzzer-defaults",
+        "fuzzer-creating-runtime-defaults",
     ],
     // Can not be in defaults due to soong limitations.
     device_common_corpus: [
@@ -137,17 +188,107 @@ cc_fuzz {
 
 cc_fuzz {
     name: "libart_verify_classes_fuzzerd",
+    srcs: ["libart_verify_classes_fuzzer.cc"],
     defaults: [
-        "art_debug_defaults",
-        "libartd-runtime-for-test_static_defaults",
-        "libartd-compiler_static_defaults",
-        "libart_verify_classes_fuzzer-defaults",
+        "libart_fuzzerd-defaults",
+        "fuzzer-creating-runtime-defaults",
     ],
     // Can not be in defaults due to soong limitations.
     device_common_corpus: [
         ":art_runtest_corpus",
         "class-verifier-corpus/*",
     ],
+}
+
+// Optimizing compiler
+cc_fuzz {
+    name: "libart_optimizing_compiler_fuzzer",
+    srcs: ["libart_optimizing_compiler_fuzzer.cc"],
+    defaults: [
+        "libart_fuzzer-defaults",
+        "fuzzer-creating-runtime-defaults",
+    ],
+    // Can not be in defaults due to soong limitations.
+    device_common_corpus: [
+        ":art_runtest_corpus",
+        "class-verifier-corpus/*",
+    ],
+}
+
+cc_fuzz {
+    name: "libart_optimizing_compiler_fuzzerd",
+    srcs: ["libart_optimizing_compiler_fuzzer.cc"],
+    defaults: [
+        "libart_fuzzerd-defaults",
+        "fuzzer-creating-runtime-defaults",
+    ],
+    // Can not be in defaults due to soong limitations.
+    device_common_corpus: [
+        ":art_runtest_corpus",
+        "class-verifier-corpus/*",
+    ],
+}
+
+// Baseline compiler
+cc_fuzz {
+    name: "libart_baseline_compiler_fuzzer",
+    srcs: ["libart_baseline_compiler_fuzzer.cc"],
+    defaults: [
+        "libart_fuzzer-defaults",
+        "fuzzer-creating-runtime-defaults",
+    ],
+    // Can not be in defaults due to soong limitations.
+    device_common_corpus: [
+        ":art_runtest_corpus",
+        "class-verifier-corpus/*",
+    ],
+}
+
+cc_fuzz {
+    name: "libart_baseline_compiler_fuzzerd",
+    srcs: ["libart_baseline_compiler_fuzzer.cc"],
+    defaults: [
+        "libart_fuzzerd-defaults",
+        "fuzzer-creating-runtime-defaults",
+    ],
+    // Can not be in defaults due to soong limitations.
+    device_common_corpus: [
+        ":art_runtest_corpus",
+        "class-verifier-corpus/*",
+    ],
+}
+
+// Build an ART apex and extract the .jar from them. In particular, the core-oj and
+// core-libart jars will have hiddenapi data, which is needed for the debug+target
+// version of the fuzzer.
+// TODO(solanes): Merge with art_release_zip. We have slightly different expected
+// folder structure, but there might be a way to make it work.
+java_genrule {
+    name: "bootclasspath_jars",
+    srcs: [
+        ":com.android.art",
+    ],
+    out: [
+        "core-oj.jar",
+        "core-libart.jar",
+        "okhttp.jar",
+        "bouncycastle.jar",
+        "apache-xml.jar",
+    ],
+    tools: [
+        "deapexer",
+        "debugfs",
+        "fsck.erofs",
+    ],
+    cmd: "$(location deapexer) " +
+        "--debugfs_path $(location debugfs) " +
+        "--fsckerofs_path $(location fsck.erofs) " +
+        "extract $(location :com.android.art) $(genDir)/extracted && " +
+        "mv $(genDir)/extracted/javalib/core-oj.jar $(genDir)/core-oj.jar && " +
+        "mv $(genDir)/extracted/javalib/core-libart.jar $(genDir)/core-libart.jar && " +
+        "mv $(genDir)/extracted/javalib/okhttp.jar $(genDir)/okhttp.jar && " +
+        "mv $(genDir)/extracted/javalib/bouncycastle.jar $(genDir)/bouncycastle.jar && " +
+        "mv $(genDir)/extracted/javalib/apache-xml.jar $(genDir)/apache-xml.jar ",
 }
 
 // Use run-test dex files to bootstrap the fuzzer.
@@ -1372,5 +1513,27 @@ genrule {
         "$(location soong_zip) -j -L 0 -o $(out) -D $$(dirname $${FILES[0]})",
     srcs: ["class-verifier-corpus/*"],
     out: ["class_verification_fuzzer_corpus.zip"],
+    tools: ["soong_zip"],
+}
+
+genrule {
+    name: "art-gtest-jars-OptimizedCompilerFuzzerFolder",
+    // Zip the optimized-compiler-corpus folder. To get the folder, we grab the first file
+    // from `in` and use its directory.
+    cmd: "FILES=($(in)) &&" +
+        "$(location soong_zip) -j -L 0 -o $(out) -D $$(dirname $${FILES[0]})",
+    srcs: ["optimized-compiler-corpus/*"],
+    out: ["optimized_compiler_fuzzer_corpus.zip"],
+    tools: ["soong_zip"],
+}
+
+genrule {
+    name: "art-gtest-jars-BaselineCompilerFuzzerFolder",
+    // Zip the baseline-compiler-corpus folder. To get the folder, we grab the first file
+    // from `in` and use its directory.
+    cmd: "FILES=($(in)) &&" +
+        "$(location soong_zip) -j -L 0 -o $(out) -D $$(dirname $${FILES[0]})",
+    srcs: ["baseline-compiler-corpus/*"],
+    out: ["baseline_compiler_fuzzer_corpus.zip"],
     tools: ["soong_zip"],
 }

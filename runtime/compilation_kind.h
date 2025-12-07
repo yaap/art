@@ -25,9 +25,10 @@
 namespace art HIDDEN {
 
 enum class CompilationKind {
-  kOsr,
-  kBaseline,
-  kOptimized,
+  kOsr = 0,
+  kFast = 1,
+  kBaseline = 2,
+  kOptimized = 3,
 };
 
 std::ostream& operator<<(std::ostream& os, CompilationKind rhs);

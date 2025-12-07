@@ -147,8 +147,10 @@ This sequence:
 You first need to build the boot classpath and boot image on host:
 
 ```bash
-m art-host-tests
+SOONG_ONLY=false m art-host-tests
 ```
+
+TODO(b/431634358): Convert `art-host-tests` to work in Soong-only mode.
 
 Then you can use `atest --host` to run host gtests, e.g:
 

@@ -157,7 +157,7 @@ class CmdlineParserTest : public ::testing::Test {
       return ::testing::AssertionSuccess();
     }
 
-    return ::testing::AssertionFailure() << " expected failure " << failure_status
+    return ::testing::AssertionFailure() << "expected failure " << failure_status
         << " but got " << result.GetStatus();
   }
 
@@ -248,10 +248,10 @@ TEST_F(CmdlineParserTest, TestSimpleFailures) {
   // Test value type parsing failures
   EXPECT_SINGLE_PARSE_FAIL("-Xsswhatever", CmdlineResult::kFailure);  // invalid memory value
   EXPECT_SINGLE_PARSE_FAIL("-Xms123", CmdlineResult::kFailure);       // memory value too small
-  EXPECT_SINGLE_PARSE_FAIL("-XX:HeapTargetUtilization=0.0", CmdlineResult::kOutOfRange);  // toosmal
-  EXPECT_SINGLE_PARSE_FAIL("-XX:HeapTargetUtilization=2.0", CmdlineResult::kOutOfRange);  // toolarg
-  EXPECT_SINGLE_PARSE_FAIL("-XX:ParallelGCThreads=-5", CmdlineResult::kOutOfRange);  // too small
-  EXPECT_SINGLE_PARSE_FAIL("-Xgc:blablabla", CmdlineResult::kUsage);  // not a valid suboption
+  EXPECT_SINGLE_PARSE_FAIL("-XX:HeapTargetUtilization=0.0", CmdlineResult::kInvalid);  // toosmal
+  EXPECT_SINGLE_PARSE_FAIL("-XX:HeapTargetUtilization=2.0", CmdlineResult::kInvalid);  // toolarg
+  EXPECT_SINGLE_PARSE_FAIL("-XX:ParallelGCThreads=-5", CmdlineResult::kInvalid);  // too small
+  EXPECT_SINGLE_PARSE_FAIL("-Xgc:blablabla", CmdlineResult::kInvalid);  // not a valid suboption
 }  // TEST_F
 
 TEST_F(CmdlineParserTest, TestLogVerbosity) {
@@ -297,7 +297,7 @@ TEST_F(CmdlineParserTest, TestLogVerbosity) {
     EXPECT_SINGLE_PARSE_VALUE(log_verbosity, log_args, M::Verbose);
   }
 
-  EXPECT_SINGLE_PARSE_FAIL("-verbose:blablabla", CmdlineResult::kUsage);  // invalid verbose opt
+  EXPECT_SINGLE_PARSE_FAIL("-verbose:blablabla", CmdlineResult::kInvalid);  // invalid verbose opt
 
   {
     const char* log_args = "-verbose:deopt";
@@ -324,6 +324,13 @@ TEST_F(CmdlineParserTest, TestLogVerbosity) {
     const char* log_args = "-verbose:dex";
     LogVerbosity log_verbosity = LogVerbosity();
     log_verbosity.dex = true;
+    EXPECT_SINGLE_PARSE_VALUE(log_verbosity, log_args, M::Verbose);
+  }
+
+  {
+    const char* log_args = "-verbose:hiddenapi";
+    LogVerbosity log_verbosity = LogVerbosity();
+    log_verbosity.hiddenapi = true;
     EXPECT_SINGLE_PARSE_VALUE(log_verbosity, log_args, M::Verbose);
   }
 }  // TEST_F
@@ -374,7 +381,7 @@ TEST_F(CmdlineParserTest, TestXGcOption) {
   /*
    * Test failures
    */
-  EXPECT_SINGLE_PARSE_FAIL("-Xgc:blablabla", CmdlineResult::kUsage);  // invalid Xgc opt
+  EXPECT_SINGLE_PARSE_FAIL("-Xgc:blablabla", CmdlineResult::kInvalid);  // invalid Xgc opt
 }  // TEST_F
 
 /*
@@ -402,7 +409,7 @@ TEST_F(CmdlineParserTest, TestJdwpProviderAdbconnection) {
 }  // TEST_F
 
 TEST_F(CmdlineParserTest, TestJdwpProviderHelp) {
-  EXPECT_SINGLE_PARSE_FAIL("-XjdwpProvider:help", CmdlineResult::kUsage);
+  EXPECT_SINGLE_PARSE_FAIL("-XjdwpProvider:help", CmdlineResult::kHelp);
 }  // TEST_F
 
 TEST_F(CmdlineParserTest, TestJdwpProviderFail) {
@@ -591,7 +598,7 @@ TEST_F(CmdlineParserTest, TypesNotInRuntime) {
   EXPECT_FALSE(ct.Parse("1,").IsSuccess());
   EXPECT_FALSE(ct.Parse(",1").IsSuccess());
   EXPECT_FALSE(ct.Parse("1a2").IsSuccess());
-  EXPECT_EQ(CmdlineResult::kOutOfRange, ct.Parse("1,10000000000000").GetStatus());
-  EXPECT_EQ(CmdlineResult::kOutOfRange, ct.Parse("-10000000000000,123").GetStatus());
+  EXPECT_EQ(CmdlineResult::kInvalid, ct.Parse("1,10000000000000").GetStatus());
+  EXPECT_EQ(CmdlineResult::kInvalid, ct.Parse("-10000000000000,123").GetStatus());
 }  // TEST_F
 }  // namespace art

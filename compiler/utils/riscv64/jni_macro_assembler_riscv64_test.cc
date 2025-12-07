@@ -25,7 +25,7 @@
 
 #include "gtest/gtest.h"
 
-#include "indirect_reference_table.h"
+#include "jni/indirect_reference_table.h"
 #include "lock_word.h"
 #include "jni/quick/calling_convention.h"
 #include "utils/riscv64/jni_macro_assembler_riscv64.h"

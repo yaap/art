@@ -16,6 +16,8 @@
 
 package com.android.server.art;
 
+import android.annotation.CurrentTimeMillisLong;
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -37,6 +39,7 @@ import android.util.LruCache;
 
 import androidx.annotation.RequiresApi;
 
+import com.android.art.flags.Flags;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.Immutable;
 import com.android.internal.annotations.VisibleForTesting;
@@ -282,11 +285,11 @@ public class DexUseManagerLocal {
     }
 
     /**
-     * Returns the last time the package was used, or 0 if the package has never been used.
-     *
-     * @hide
+     * Returns the last time the package was used, or 0 if the package has never been used or is not
+     * found.
      */
-    public long getPackageLastUsedAtMs(@NonNull String packageName) {
+    @FlaggedApi(Flags.FLAG_PACKAGE_LAST_USED_API)
+    public @CurrentTimeMillisLong long getPackageLastUsedAtMillis(@NonNull String packageName) {
         synchronized (mLock) {
             PackageDexUse packageDexUse =
                     mDexUse.mPackageDexUseByOwningPackageName.get(packageName);

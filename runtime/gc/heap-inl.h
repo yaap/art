@@ -17,11 +17,10 @@
 #ifndef ART_RUNTIME_GC_HEAP_INL_H_
 #define ART_RUNTIME_GC_HEAP_INL_H_
 
-#include "heap.h"
-
 #include "allocation_listener.h"
 #include "base/quasi_atomic.h"
 #include "base/time_utils.h"
+#include "com_android_art_rw_flags.h"
 #include "gc/accounting/atomic_stack.h"
 #include "gc/accounting/card_table-inl.h"
 #include "gc/allocation_record.h"
@@ -32,6 +31,7 @@
 #include "gc/space/region_space-inl.h"
 #include "gc/space/rosalloc_space-inl.h"
 #include "handle_scope-inl.h"
+#include "heap.h"
 #include "obj_ptr-inl.h"
 #include "runtime.h"
 #include "thread-inl.h"
@@ -80,8 +80,7 @@ inline mirror::Object* Heap::AllocObjectWithAllocator(Thread* self,
   // bytes allocated for the (individual) object.
   size_t bytes_allocated;
   size_t usable_size;
-  size_t new_num_bytes_allocated = 0;
-  bool need_gc = false;
+  NeedGc need_gc = kNoNeedGc;
   uint32_t starting_gc_num;  // o.w. GC number at which we observed need for GC.
   {
     // Bytes allocated that includes bulk thread-local buffer allocations in addition to direct
@@ -193,24 +192,12 @@ inline mirror::Object* Heap::AllocObjectWithAllocator(Thread* self,
     }
     if (bytes_tl_bulk_allocated > 0) {
       starting_gc_num = GetCurrentGcNum();
-      size_t num_bytes_allocated_before = AddBytesAllocated(bytes_tl_bulk_allocated);
-      new_num_bytes_allocated = num_bytes_allocated_before + bytes_tl_bulk_allocated;
-      // Only trace when we get an increase in the number of bytes allocated. This happens when
-      // obtaining a new TLAB and isn't often enough to hurt performance according to golem.
-      if (region_space_) {
-        // With CC collector, during a GC cycle, the heap usage increases as
-        // there are two copies of evacuated objects. Therefore, add evac-bytes
-        // to the heap size. When the GC cycle is not running, evac-bytes
-        // are 0, as required.
-        TraceHeapSize(new_num_bytes_allocated + region_space_->EvacBytes());
-      } else {
-        TraceHeapSize(new_num_bytes_allocated);
-      }
+      size_t new_num_bytes_allocated = UpdateAndReportBytesAllocated(bytes_tl_bulk_allocated);
       // IsGcConcurrent() isn't known at compile time so we can optimize by not checking it for the
       // BumpPointer or TLAB allocators. This is nice since it allows the entire if statement to be
       // optimized out.
-      if (IsGcConcurrent() && UNLIKELY(ShouldConcurrentGCForJava(new_num_bytes_allocated))) {
-        need_gc = true;
+      if (IsGcConcurrent()) {
+        need_gc = ShouldConcurrentGCForJava(new_num_bytes_allocated);
       }
       GetMetrics()->TotalBytesAllocated()->Add(bytes_tl_bulk_allocated);
       GetMetrics()->TotalBytesAllocatedDelta()->Add(bytes_tl_bulk_allocated);
@@ -260,9 +247,13 @@ inline mirror::Object* Heap::AllocObjectWithAllocator(Thread* self,
   } else {
     DCHECK(!gc_stress_mode_);
   }
-  if (need_gc) {
+  if (UNLIKELY(need_gc == kNeedGc)) {
     // Do this only once thread suspension is allowed again, and we're done with kInstrumented.
     RequestConcurrentGCAndSaveObject(self, /*force_full=*/ false, starting_gc_num, &obj);
+  } else if (UNLIKELY(need_gc == kNeedGcThresholdCheck)) {
+    if (com::android::art::rw::flags::enable_time_based_gc_triggering()) {
+      RequestTimeBasedGcThresholdCheck(self);
+    }
   }
   VerifyObject(obj);
   self->VerifyStack();
@@ -472,11 +463,43 @@ inline bool Heap::IsOutOfMemoryOnAllocation([[maybe_unused]] AllocatorType alloc
   }
 }
 
-inline bool Heap::ShouldConcurrentGCForJava(size_t new_num_bytes_allocated) {
+inline Heap::NeedGc Heap::ShouldConcurrentGCForJava(size_t new_num_bytes_allocated) {
+  if (com::android::art::rw::flags::enable_time_based_gc_triggering()) {
+    if (time_based_gc_threshold_ != 0) {
+      if (new_num_bytes_allocated >= concurrent_start_bytes_) {
+        // Time based gc triggering sets concurrent_start_bytes_ for use as a
+        // last resort to ensure we start GC before running out of heap
+        // entirely.
+        return kNeedGc;
+      }
+
+      size_t bytes_allocated_since_last_gc_kb =
+          (new_num_bytes_allocated - num_bytes_alive_after_gc_) / KB;
+      uint64_t time_since_last_gc_ms = NsToMs(NanoTime() - last_gc_start_time_);
+      if (bytes_allocated_since_last_gc_kb * time_since_last_gc_ms >= time_based_gc_threshold_) {
+        return kNeedGc;
+      }
+
+      if (bytes_allocated_since_last_gc_kb > 0) {
+        // If the app stops allocating, GC will need to be triggered by the
+        // passage of time. Compute the time at which GC should be triggered
+        // in that case. We need to explicitly request a time-based GC
+        // threshold check if there isn't already one scheduled to run before
+        // then.
+        uint64_t time_delta_ms = time_based_gc_threshold_ / bytes_allocated_since_last_gc_kb;
+        uint64_t gc_trigger_time = last_gc_start_time_ + MsToNs(time_delta_ms);
+        if (gc_trigger_time < next_time_based_gc_threshold_check_) {
+          return kNeedGcThresholdCheck;
+        }
+      }
+      return kNoNeedGc;
+    }
+  }
+
   // For a Java allocation, we only check whether the number of Java allocated bytes excceeds a
   // threshold. By not considering native allocation here, we (a) ensure that Java heap bounds are
   // maintained, and (b) reduce the cost of the check here.
-  return new_num_bytes_allocated >= concurrent_start_bytes_;
+  return new_num_bytes_allocated >= concurrent_start_bytes_ ? kNeedGc : kNoNeedGc;
 }
 
 inline void Heap::ReportAllocationForJavaHeapProf(mirror::Object* obj, size_t alloc_size) {

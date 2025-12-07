@@ -795,16 +795,14 @@ extern "C" uint64_t artQuickToInterpreterBridge(ArtMethod* method, Thread* self,
     ShadowFrame* shadow_frame = shadow_frame_unique_ptr.get();
 
     // Restore the values of virtual registers if a virtual thread is unparking
-    if (kIsVirtualThreadEnabled && self->IsVirtualThreadUnparking()) {
+    if (kIsVirtualThreadEnabled && UNLIKELY(self->IsVirtualThreadUnparking())) {
       interpreter::FillVirtualThreadFrame(self, shadow_frame);
+    } else {
+      size_t first_arg_reg = accessor.RegistersSize() - accessor.InsSize();
+      BuildQuickShadowFrameVisitor shadow_frame_builder(
+          sp, method->IsStatic(), shorty, shadow_frame, first_arg_reg);
+      shadow_frame_builder.VisitArguments();
     }
-    // TODO: Consider skip the following operations, e.g. copying registers, if
-    //   a virtual thread is unparking.
-
-    size_t first_arg_reg = accessor.RegistersSize() - accessor.InsSize();
-    BuildQuickShadowFrameVisitor shadow_frame_builder(
-        sp, method->IsStatic(), shorty, shadow_frame, first_arg_reg);
-    shadow_frame_builder.VisitArguments();
     self->EndAssertNoThreadSuspension(old_cause);
 
     // Potentially run <clinit> before pushing the shadow frame. We do not want

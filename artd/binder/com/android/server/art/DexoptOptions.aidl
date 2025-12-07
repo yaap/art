@@ -41,4 +41,6 @@ parcelable DexoptOptions {
     boolean hiddenApiPolicyEnabled;
     /** --comments */
     @utf8InCpp String comments;
+    /** -verbose */
+    @utf8InCpp String verboseLogTags;
 }

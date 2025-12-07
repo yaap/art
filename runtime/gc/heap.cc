@@ -97,9 +97,10 @@
 #ifdef ART_TARGET_ANDROID
 #include "perfetto/heap_profile.h"
 #endif
+#include "javaheapprof/javaheapsampler.h"
 #include "reflection.h"
 #include "runtime.h"
-#include "javaheapprof/javaheapsampler.h"
+#include "scoped_thread_priority_change.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread-inl.h"
 #include "thread_list.h"
@@ -146,9 +147,6 @@ namespace gc {
 
 DEFINE_RUNTIME_DEBUG_FLAG(Heap, kStressCollectorTransition);
 
-// Minimum amount of remaining bytes before a concurrent GC is triggered.
-static constexpr size_t kMinConcurrentRemainingBytes = 128 * KB;
-static constexpr size_t kMaxConcurrentRemainingBytes = 512 * KB;
 // Sticky GC throughput adjustment. Increasing this causes sticky GC to occur more
 // relative to partial/full GC. This may be desirable since sticky GCs interfere less
 // with mutator threads (lower pauses, use less memory bandwidth). The value
@@ -277,6 +275,8 @@ Heap::Heap(size_t initial_size,
            size_t min_free,
            size_t max_free,
            double target_utilization,
+           bool enable_time_based_gc_trigger,
+           size_t memory_gc_cost_factor,
            double foreground_heap_growth_multiplier,
            size_t stop_for_native_allocs,
            size_t capacity,
@@ -354,10 +354,12 @@ Heap::Heap(size_t initial_size,
       process_state_update_lock_("process state update lock", kPostMonitorLock),
       min_foreground_target_footprint_(0),
       min_foreground_concurrent_start_bytes_(0),
+      min_foreground_time_based_gc_threshold_(0),
       concurrent_start_bytes_(std::numeric_limits<size_t>::max()),
       total_bytes_freed_ever_(0),
       total_objects_freed_ever_(0),
       num_bytes_allocated_(0),
+      last_reported_heap_size_(0),
       native_bytes_registered_(0),
       old_native_bytes_allocated_(0),
       native_objects_notified_(0),
@@ -390,6 +392,8 @@ Heap::Heap(size_t initial_size,
       min_free_(min_free),
       max_free_(max_free),
       target_utilization_(target_utilization),
+      enable_time_based_gc_trigger_(enable_time_based_gc_trigger),
+      memory_gc_cost_factor_(memory_gc_cost_factor),
       foreground_heap_growth_multiplier_(foreground_heap_growth_multiplier),
       stop_for_native_allocs_(stop_for_native_allocs),
       total_wait_time_(0),
@@ -409,6 +413,7 @@ Heap::Heap(size_t initial_size,
       max_gc_requested_(0u),
       pending_collector_transition_(nullptr),
       pending_heap_trim_(nullptr),
+      pending_time_based_gc_threshold_check_(nullptr),
       use_homogeneous_space_compaction_for_oom_(use_homogeneous_space_compaction_for_oom),
       use_generational_gc_(use_generational_gc),
       running_collection_is_blocking_(false),
@@ -1119,8 +1124,15 @@ void Heap::GrowHeapOnJankPerceptibleSwitch() {
                                               min_foreground_target_footprint_,
                                               std::memory_order_relaxed);
   }
-  if (IsGcConcurrent() && concurrent_start_bytes_ < min_foreground_concurrent_start_bytes_) {
-    concurrent_start_bytes_ = min_foreground_concurrent_start_bytes_;
+  if (IsGcConcurrent()) {
+    if (concurrent_start_bytes_ < min_foreground_concurrent_start_bytes_) {
+      concurrent_start_bytes_ = min_foreground_concurrent_start_bytes_;
+    }
+    if (com::android::art::rw::flags::enable_time_based_gc_triggering()) {
+      if (time_based_gc_threshold_ < min_foreground_time_based_gc_threshold_) {
+        time_based_gc_threshold_ = min_foreground_time_based_gc_threshold_;
+      }
+    }
   }
 }
 
@@ -2019,11 +2031,18 @@ mirror::Object* Heap::AllocateInternalWithGc(Thread* self,
     return free_heap_ratio >= kMinFreeHeapAfterGcForAlloc ||
            newly_freed_ratio >= kMinFreedHeapAfterGcForAlloc;
   };
-  // We perform one GC as per the next_gc_type_ (chosen in GrowForUtilization),
-  // if it's not already tried. If that doesn't succeed then go for the most
-  // exhaustive option. Perform a full-heap collection including clearing
-  // SoftReferences. In case of ConcurrentCopying, it will also ensure that
-  // all regions are evacuated. If allocation doesn't succeed even after that
+
+  // We are about to run GC(s) in the allocating thread. Whenever we do so, it is likely that
+  // other threads, including high priority ones, will be in the same boat, and will end up
+  // waiting for us. Make sure we run at a reasonable priority, so as not to make them wait
+  // unnecessarily.
+  ScopedPriorityChange spc(self);
+  spc.SetToNormalOrBetter();
+
+  // We perform one GC as per the next_gc_type_ (chosen in GrowForUtilization), if it's not
+  // already tried. If that doesn't succeed then go for the most exhaustive option. Perform a
+  // full-heap collection including clearing SoftReferences. In case of ConcurrentCopying, it will
+  // also ensure that all regions are evacuated. If allocation doesn't succeed even after that
   // then there is no hope, so we throw OOME.
   collector::GcType tried_type = next_gc_type_;
   if (last_gc < tried_type) {
@@ -2309,8 +2328,6 @@ void Heap::SetDefaultConcurrentStartBytesLocked() {
   if (IsGcConcurrent()) {
     size_t target_footprint = target_footprint_.load(std::memory_order_relaxed);
     size_t reserve_bytes = target_footprint / 4;
-    reserve_bytes = std::min(reserve_bytes, kMaxConcurrentRemainingBytes);
-    reserve_bytes = std::max(reserve_bytes, kMinConcurrentRemainingBytes);
     concurrent_start_bytes_ = UnsignedDifference(target_footprint, reserve_bytes);
   } else {
     concurrent_start_bytes_ = std::numeric_limits<size_t>::max();
@@ -2728,6 +2745,8 @@ collector::GarbageCollector* Heap::Compact(space::ContinuousMemMapAllocSpace* ta
 void Heap::TraceHeapSize(size_t heap_size) {
   ATraceIntegerValue("Heap size (KB)", heap_size / KB);
 }
+
+bool Heap::TraceEnabled() { return ATraceEnabled(); }
 
 #if defined(__GLIBC__)
 # define IF_GLIBC(x) x
@@ -3799,13 +3818,22 @@ void Heap::GrowForUtilization(collector::GarbageCollector* collector_ran,
   // We know what our utilization is at this moment.
   // This doesn't actually resize any memory. It just lets the heap grow more when necessary.
   const size_t bytes_allocated = GetBytesAllocated();
-  // Trace the new heap size after the GC is finished.
-  TraceHeapSize(bytes_allocated);
+
+  // Report the new heap size after the GC is finished and bytes_allocated has
+  // been adjusted with freed bytes.
+  if (TraceEnabled()) {
+    // Use release memory-order to ensure that the updation of num_bytes_allocated_
+    // (in RecordFree()) doesn't get reordered with this store.
+    last_reported_heap_size_.store(bytes_allocated, std::memory_order_release);
+    TraceHeapSize(bytes_allocated);
+  }
   uint64_t target_size, grow_bytes;
   collector::GcType gc_type = collector_ran->GetGcType();
   MutexLock mu(Thread::Current(), process_state_update_lock_);
   // Use the multiplier to grow more for foreground.
   const double multiplier = HeapGrowthMultiplier();
+  collector::GarbageCollector* next_collector = nullptr;
+
   if (gc_type != collector::kGcTypeSticky) {
     // Grow the heap for non sticky GC.
     uint64_t delta = bytes_allocated * (1.0 / GetTargetHeapUtilization() - 1.0);
@@ -3841,6 +3869,7 @@ void Heap::GrowForUtilization(collector::GarbageCollector* collector_ran,
       next_gc_type_ = collector::kGcTypeSticky;
     } else {
       next_gc_type_ = non_sticky_gc_type;
+      next_collector = non_sticky_collector;
     }
     // If we have freed enough memory, shrink the heap back down.
     const size_t adjusted_max_free = static_cast<size_t>(max_free_ * multiplier);
@@ -3871,6 +3900,30 @@ void Heap::GrowForUtilization(collector::GarbageCollector* collector_ran,
         : 0;
 
     if (IsGcConcurrent()) {
+      if (com::android::art::rw::flags::enable_time_based_gc_triggering() &&
+          enable_time_based_gc_trigger_) {
+        // Time based GC triggering isn't based on target footprint. Set a
+        // generous value for target footprint as a fallback to ensure we
+        // start concurrent GC before running out of heap and provide
+        // reasonable values for use in things like GetTotalMemory.
+        SetIdealFootprint(std::numeric_limits<size_t>::max());
+
+        uint64_t expected_gc_cost_ms = NsToMs(current_gc_iteration_.GetThreadCpuTimeNs());
+        uint64_t memory_gc_cost_factor_kb = memory_gc_cost_factor_ / KB;
+        time_based_gc_threshold_ = 100 * expected_gc_cost_ms * memory_gc_cost_factor_kb;
+        last_gc_start_time_ = current_gc_iteration_.GetStartTime();
+
+        // Apply growth multiplier.
+        // Store time_based_gc_threshold_ (computed with foreground heap
+        // growth multiplier) for update itself when process state switches to
+        // foreground.
+        min_foreground_time_based_gc_threshold_ =
+            (multiplier <= 1.0) ? time_based_gc_threshold_ * foreground_heap_growth_multiplier_ : 0;
+        time_based_gc_threshold_ *= multiplier;
+
+        RequestTimeBasedGcThresholdCheck(Thread::Current());
+      }
+
       const uint64_t freed_bytes = current_gc_iteration_.GetFreedBytes() +
           current_gc_iteration_.GetFreedLargeObjectBytes() +
           current_gc_iteration_.GetFreedRevokeBytes();
@@ -3885,20 +3938,30 @@ void Heap::GrowForUtilization(collector::GarbageCollector* collector_ran,
       // Calculate when to perform the next ConcurrentGC.
       // Estimate how many remaining bytes we will have when we need to start the next GC.
       size_t remaining_bytes = bytes_allocated_during_gc;
-      remaining_bytes = std::min(remaining_bytes, kMaxConcurrentRemainingBytes);
-      remaining_bytes = std::max(remaining_bytes, kMinConcurrentRemainingBytes);
-      size_t target_footprint = target_footprint_.load(std::memory_order_relaxed);
-      if (UNLIKELY(remaining_bytes > target_footprint)) {
-        // A never going to happen situation that from the estimated allocation rate we will exceed
-        // the applications entire footprint with the given estimated allocation rate. Schedule
-        // another GC nearly straight away.
-        remaining_bytes = std::min(kMinConcurrentRemainingBytes, target_footprint);
+      // If the gc-type is changing then adjust remaining_bytes such that we don't give too
+      // much/little head-room for the next background GC to finish before hitting
+      // target_footprint_.
+      if (gc_type != next_gc_type_ && use_generational_gc_) {
+        DCHECK_EQ(collector_ran, FindCollectorByGcType(gc_type));
+        if (next_collector == nullptr) {
+          DCHECK_EQ(next_gc_type_, collector::kGcTypeSticky);
+          next_collector = FindCollectorByGcType(next_gc_type_);
+          DCHECK(next_collector != nullptr);
+        }
+        double next_gc_cpu_time = next_collector->GetMeanCpuTime();
+        double cur_gc_cpu_time = collector_ran->GetMeanCpuTime();
+        DCHECK(!std::isnan(cur_gc_cpu_time));
+        if (LIKELY(!std::isnan(next_gc_cpu_time))) {
+          remaining_bytes = remaining_bytes * (next_gc_cpu_time / cur_gc_cpu_time);
+        }
       }
+      size_t target_footprint = target_footprint_.load(std::memory_order_relaxed);
       DCHECK_LE(target_footprint_.load(std::memory_order_relaxed), GetMaxMemory());
       // Start a concurrent GC when we get close to the estimated remaining bytes. When the
       // allocation rate is very high, remaining_bytes could tell us that we should start a GC
       // right away.
-      concurrent_start_bytes_ = std::max(target_footprint - remaining_bytes, bytes_allocated);
+      concurrent_start_bytes_ =
+          std::max(UnsignedDifference(target_footprint, remaining_bytes), bytes_allocated);
       // Store concurrent_start_bytes_ (computed with foreground heap growth multiplier) for update
       // itself when process state switches to foreground.
       min_foreground_concurrent_start_bytes_ =
@@ -4204,6 +4267,119 @@ void Heap::RevokeAllThreadLocalBuffers() {
   if (region_space_ != nullptr) {
     CHECK_EQ(region_space_->RevokeAllThreadLocalBuffers(), 0U);
   }
+}
+
+size_t Heap::GetDefaultMemoryGcCostFactor() {
+  if (com::android::art::rw::flags::auto_tune_time_based_gc_triggering()) {
+    // For the default value, use the ratio of total memory to compute resources
+    // on device, which should get us in a good ballpark.
+    int64_t num_cpus = sysconf(_SC_NPROCESSORS_CONF);
+    int64_t num_pages = sysconf(_SC_PHYS_PAGES);
+    int64_t page_size = sysconf(_SC_PAGESIZE);
+
+    if (num_cpus > 0 && num_pages > 0 && page_size > 0) {
+      return static_cast<size_t>(page_size * (num_pages / (100 * num_cpus)));
+    }
+  }
+
+  // We don't know how much memory or compute resources the device has. Pick
+  // something suitable for 2025 era phones and hope for the best.
+  return static_cast<size_t>(32 * MB);
+}
+
+class Heap::TimeBasedGcThresholdCheckTask : public HeapTask {
+ public:
+  explicit TimeBasedGcThresholdCheckTask(uint64_t target_time) : HeapTask(target_time) {}
+
+  void Run(Thread* self) override {
+    gc::Heap* heap = Runtime::Current()->GetHeap();
+    heap->TimeBasedGcThresholdCheck(self);
+  }
+};
+
+void Heap::RequestTimeBasedGcThresholdCheck(Thread* self) {
+  if (!CanAddHeapTask(self)) {
+    return;
+  }
+
+  uint64_t target_time = NanoTime();
+  MutexLock mu(self, *pending_task_lock_);
+
+  next_time_based_gc_threshold_check_ = target_time;
+  bytes_allocated_at_last_gc_threshold_check_ = 0;
+
+  if (pending_time_based_gc_threshold_check_ == nullptr) {
+    pending_time_based_gc_threshold_check_ = new TimeBasedGcThresholdCheckTask(target_time);
+    task_processor_->AddTask(self, pending_time_based_gc_threshold_check_);
+    return;
+  }
+
+  task_processor_->UpdateTargetRunTime(self, pending_time_based_gc_threshold_check_, target_time);
+}
+
+void Heap::TimeBasedGcThresholdCheck(Thread* self) {
+  ScopedTrace trace(__FUNCTION__);
+
+  if (time_based_gc_threshold_ == 0) {
+    // Time based GC triggering isn't enabled. Nothing to do here but remove the task.
+    MutexLock mu(self, *pending_task_lock_);
+    pending_time_based_gc_threshold_check_ = nullptr;
+    return;
+  }
+
+  size_t bytes_allocated = GetBytesAllocated();
+  size_t bytes_allocated_since_last_gc_kb = (bytes_allocated - num_bytes_alive_after_gc_) / KB;
+  uint64_t now = NanoTime();
+  uint64_t time_since_last_gc_ms = NsToMs(now - last_gc_start_time_);
+  if (bytes_allocated_since_last_gc_kb * time_since_last_gc_ms >= time_based_gc_threshold_) {
+    ScopedTrace t2("PureTimeGcTrigger");
+    RequestConcurrentGC(self, kGcCauseBackground, false, GetCurrentGcNum());
+
+    MutexLock mu(self, *pending_task_lock_);
+    pending_time_based_gc_threshold_check_ = nullptr;
+    return;
+  }
+
+  MutexLock mu(self, *pending_task_lock_);
+  if (bytes_allocated_since_last_gc_kb == 0 || !CanAddHeapTask(self) ||
+      !task_processor_->IsRunning()) {
+    // The timeout threshold will not be reached until another allocation
+    // takes place.
+    next_time_based_gc_threshold_check_ = std::numeric_limits<uint64_t>::max();
+    pending_time_based_gc_threshold_check_ = nullptr;
+    return;
+  }
+
+  uint64_t time_delta_ms = time_based_gc_threshold_ / bytes_allocated_since_last_gc_kb;
+  if (bytes_allocated > bytes_allocated_at_last_gc_threshold_check_) {
+    // There have been allocations since the last check, which suggests the
+    // application is actively allocating objects. Schedule the next check
+    // earlier than we would otherwise to avoid having to reschedule the task
+    // on every allocation.
+    //
+    // Say T time has passed and B bytes have been allocated since the last
+    // GC and our threshold is M. If we keep allocating at the same rate,
+    // we'll reach the threshold when K*T time has passed and K*B bytes have
+    // been allocated for some value K. Schedule the next check for time K*T.
+    //
+    //   (K*T) * (K*B) = M
+    //   K = sqrt(M/(T*B))
+    //   K*T = sqrt(T*M/B)
+    //
+    // Where T is time_since_last_gc_ms and M/B is what we calculated for the
+    // original time_delta_ms value.
+    time_delta_ms = static_cast<uint64_t>(std::sqrt(time_since_last_gc_ms * time_delta_ms));
+  }
+  uint64_t target_time = last_gc_start_time_ + MsToNs(time_delta_ms);
+  next_time_based_gc_threshold_check_ = target_time;
+  bytes_allocated_at_last_gc_threshold_check_ = bytes_allocated;
+
+  // Throttle threshold checks to avoid spamming them. Being within 10ms of
+  // the pure time trigger is plenty good.
+  target_time = std::max(target_time, now + MsToNs(10));
+
+  pending_time_based_gc_threshold_check_ = new TimeBasedGcThresholdCheckTask(target_time);
+  task_processor_->AddTask(self, pending_time_based_gc_threshold_check_);
 }
 
 // For GC triggering purposes, we count old (pre-last-GC) and new native allocations as
@@ -4649,6 +4825,65 @@ mirror::Object* Heap::AllocWithNewTLAB(Thread* self,
   return ret;
 }
 
+size_t Heap::UpdateAndReportBytesAllocated(size_t tl_bytes_allocated) {
+  // Partial tlab size should be very close to average value of bytes_tl_bulk_allocated.
+  constexpr size_t kMinHeapSizeToReport = kPartialTlabSize;
+  if (!TraceEnabled()) {
+    return AddBytesAllocated(tl_bytes_allocated);
+  }
+
+  /*
+   * Only trace when we get an increase in the number of bytes allocated. This
+   * happens when obtaining a new TLAB and isn't often enough to hurt performance.
+   *
+   * Load last_reported_heap_size with acquire memory order to ensure that the load of
+   * num_bytes_allocated below doesn't get reorderd. This is necessary to avoid a race
+   * condition which arises if this thread gets scheduled out at this point, and in
+   * meantime the GC thread updates last_reported_heap_size to a lower size. Eventually,
+   * when this thread resumes, an inflated (and wrong) heap size will get reported. By
+   * loading num_byes_allocated after last_reported_heap_size, we ensure that if reported,
+   * our size_to_report will be correct.
+   */
+  size_t last_reported_size = last_reported_heap_size_.load(std::memory_order_acquire);
+  size_t new_bytes_allocated = AddBytesAllocated(tl_bytes_allocated);
+  size_t size_to_report = new_bytes_allocated;
+  /*
+   * With CC collector, during a GC cycle, the heap usage increases as
+   * there are two copies of evacuated objects. Therefore, add evac-bytes
+   * to the heap size. When the GC cycle is not running, evac-bytes
+   * are 0, as required.
+   */
+  if (region_space_ != nullptr) {
+    size_to_report += region_space_->EvacBytes();
+  }
+  // Attempt to push notification as long as size to report is larger than
+  // last reported size and is bigger than the minimum heap size to report. If the GC-thread
+  // updates num_bytes_allocated_ but not last_reported_heap_size_ at this point, then we skip
+  // updating trace-point (because curr_reported_size >= size_to_report). Either the gc-thread
+  // or next allocation will eventually converge the reported heap size.
+  size_t curr_reported_size = last_reported_size;
+  while (UnsignedDifference(size_to_report, curr_reported_size) >= kMinHeapSizeToReport) {
+    // compare_exchange_strong() will update 'curr_reported_size' on failure.
+    if (last_reported_heap_size_.compare_exchange_strong(
+            curr_reported_size, size_to_report, std::memory_order_relaxed)) {
+      // Trace entries may still be written out of order. In very rare cases, this can
+      // effectively cause reports of large allocations to be delayed until a subsequent
+      // allocation is reported. But alternatives increase locking overhead. So, we
+      // settle on this eventually consistent implementation.
+      TraceHeapSize(size_to_report);
+      break;
+    } else if (curr_reported_size < last_reported_size) {
+      // The GC thread has pushed a notification of heap size lower
+      // than what we thought was the last reported size. Furthermore,
+      // that notification already took into consideration this
+      // allocation. So skip the notification.
+      break;
+    }
+    last_reported_size = curr_reported_size;
+  }
+  return new_bytes_allocated;
+}
+
 const Verification* Heap::GetVerification() const {
   return verification_.get();
 }
@@ -4729,6 +4964,13 @@ void Heap::PostForkChildAction(Thread* self) {
   // Set target_footprint_ to the largest allowed value.
   SetIdealFootprint(growth_limit_);
   SetDefaultConcurrentStartBytes();
+
+  if (com::android::art::rw::flags::enable_time_based_gc_triggering()) {
+    // Clear time_based_gc_threshold_ so we trigger the first concurrent GC
+    // based on historical concurrent_start_bytes_ rather than time based
+    // thresholding.
+    time_based_gc_threshold_ = 0;
+  }
 
   // Shrink heap after kPostForkMaxHeapDurationMS, to force a memory hog process to GC.
   // This remains high enough that many processes will continue without a GC.

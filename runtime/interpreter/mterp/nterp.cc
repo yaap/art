@@ -123,10 +123,30 @@ void CheckNterpAsmConstants() {
   }
 }
 
-inline void UpdateHotness(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_) {
+extern "C" void NterpTryFastCompile(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_) {
+  // It is important this method is not suspended because it can be called on
+  // method entry and async deoptimization does not expect runtime methods other than the
+  // suspend entrypoint before executing the first instruction of a Java
+  // method.
+  ScopedAssertNoThreadSuspension sants("In nterp");
+  jit::Jit* jit = Runtime::Current()->GetJit();
+  if (jit != nullptr && jit->UseJitCompilation()) {
+    jit->MaybeEnqueueFastCompilation(method, Thread::Current());
+  }
+}
+
+inline void UpdateHotness(Thread* self, ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_) {
   // The hotness we will add to a method when we perform a
   // field/method/class/string lookup.
-  method->UpdateCounter(0xf);
+  static constexpr int kHotnessCounter = 0xf;
+  if (com::android::art::flags::fast_baseline_compiler() && kRuntimeISA == InstructionSet::kArm64) {
+    size_t counter = method->GetCounter();
+    if (self->IsJitSensitiveThread() &&
+        (counter % jit::kFastCompilerFrequencyCheck) < kHotnessCounter) {
+      NterpTryFastCompile(method);
+    }
+  }
+  method->UpdateCounter(kHotnessCounter);
 }
 
 template<typename T>
@@ -321,28 +341,38 @@ static constexpr std::array<uint8_t, 256u> GenerateOpcodeInvokeTypes() {
 ALWAYS_INLINE FLATTEN
 inline bool IsInvokeClassMismatch(ObjPtr<mirror::Class> klass, InvokeType type, ArtMethod* caller)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  if (type == kInterface && UNLIKELY(!klass->IsInterface())) {
+  DCHECK_NE(type, kInterface) << "Fast path unsupported for invokeinterface";
+  if (LIKELY(!klass->IsInterface())) {
+    return false;
+  }
+
+  DCHECK(caller->IsDefault() || caller->IsStatic());
+  if (type == kVirtual) {
     return true;
   }
 
-  if (type == kVirtual && UNLIKELY(klass->IsInterface())) {
+  if (type == kDirect && !caller->GetDexFile()->SupportsDefaultMethods()) {
     return true;
   }
 
-  if (type == kDirect &&
-      UNLIKELY(klass->IsInterface()) &&
-      !caller->GetDexFile()->SupportsDefaultMethods()) {
-    return true;
-  }
   return false;
 }
 
 ALWAYS_INLINE FLATTEN
 static ArtMethod* FindMethodFast(ArtMethod* caller,
                                  uint16_t method_index,
-                                 InvokeType type)
+                                 uint32_t* registers,
+                                 const Instruction* inst,
+                                 InvokeType type,
+                                 Instruction::Code opcode)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   if (caller->IsObsolete()) {
+    return nullptr;
+  }
+
+  if (type == kInterface || type == kSuper) {
+    // The case of finding the method through the caller's class
+    // are too rare for super and interface invokes to be worth it.
     return nullptr;
   }
 
@@ -371,6 +401,37 @@ static ArtMethod* FindMethodFast(ArtMethod* caller,
     return nullptr;
   }
 
+  // For non-interface instance calls, check in the receiver's class.
+  if (registers != nullptr && type != kStatic) {
+    uint16_t this_reg =
+        (opcode >= Instruction::INVOKE_VIRTUAL_RANGE) ? inst->VRegC_3rc() : inst->VRegC_35c();
+    mirror::Object* obj = reinterpret_cast32<mirror::Object*>(registers[this_reg]);
+    if (obj != nullptr) {
+      mirror::Class* obj_cls = obj->GetClass();
+      if (obj_cls->GetDexTypeIndex() == method_id.class_idx_ &&
+          obj_cls->GetDexCache() == cls->GetDexCache()) {
+        // Passing `registers` is only done in nterp, which isn't used for
+        // cross-compilation.
+        DCHECK_EQ(Runtime::Current()->GetClassLinker()->GetImagePointerSize(), kRuntimePointerSize);
+        ArtMethod* method =
+            obj_cls->FindDeclaredClassMethod</* kOnlyLookAtIndex= */ false, kRuntimePointerSize>(
+                method_index);
+        if (caller->SkipAccessChecks() || method == nullptr) {
+          return method;
+        }
+        // No need to check for invoke class mismatch, as this only applies for
+        // interface class, and we know the declaring class of `method` is not
+        // an interface.
+        DCHECK(!method->GetDeclaringClass<kWithoutReadBarrier>()->IsInterface());
+        if (method->IsPublic() &&
+            method->GetDeclaringClass<kWithoutReadBarrier>()->IsPublic() &&
+            !method->CheckIncompatibleClassChange(type)) {
+          return method;
+        }
+      }
+    }
+  }
+
   if (caller->SkipAccessChecks()) {
     return caller->GetDexCache()->GetResolvedMethod(method_index);
   }
@@ -383,9 +444,10 @@ static constexpr std::array<uint8_t, 256u> kOpcodeInvokeTypes = GenerateOpcodeIn
 LIBART_PROTECTED FLATTEN
 extern "C" size_t NterpGetMethod(Thread* self,
                                  ArtMethod* caller,
-                                 const uint16_t* dex_pc_ptr)
+                                 const uint16_t* dex_pc_ptr,
+                                 uint32_t* registers)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  UpdateHotness(caller);
+  UpdateHotness(self, caller);
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   Instruction::Code opcode = inst->Opcode();
   DCHECK(IsUint<8>(static_cast<std::underlying_type_t<Instruction::Code>>(opcode)));
@@ -398,7 +460,8 @@ extern "C" size_t NterpGetMethod(Thread* self,
   uint16_t method_index =
       (opcode >= Instruction::INVOKE_VIRTUAL_RANGE) ? inst->VRegB_3rc() : inst->VRegB_35c();
 
-  ArtMethod* resolved_method = FindMethodFast(caller, method_index, invoke_type);
+  ArtMethod* resolved_method = FindMethodFast(
+      caller, method_index, registers, inst, invoke_type, opcode);
   if (resolved_method == nullptr) {
     ClassLinker* const class_linker = Runtime::Current()->GetClassLinker();
     resolved_method = caller->SkipAccessChecks()
@@ -553,7 +616,7 @@ extern "C" size_t NterpGetStaticField(Thread* self,
       return 0;
     }
     // Only update hotness for slow lookups.
-    UpdateHotness(caller);
+    UpdateHotness(self, caller);
   }
 
   if (UNLIKELY(!resolved_field->GetDeclaringClass()->IsVisiblyInitialized())) {
@@ -691,7 +754,7 @@ extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
       return 0;
     }
     // Only update hotness for slow lookups.
-    UpdateHotness(caller);
+    UpdateHotness(self, caller);
   }
 
   // For iput-object, try to resolve the field type even if we were not requested to.
@@ -723,7 +786,7 @@ extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
 
 extern "C" mirror::Object* NterpGetClass(Thread* self, ArtMethod* caller, uint16_t* dex_pc_ptr)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  UpdateHotness(caller);
+  UpdateHotness(self, caller);
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   Instruction::Code opcode = inst->Opcode();
   DCHECK(opcode == Instruction::CHECK_CAST ||
@@ -757,7 +820,7 @@ extern "C" mirror::Object* NterpAllocateObject(Thread* self,
                                                ArtMethod* caller,
                                                uint16_t* dex_pc_ptr)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  UpdateHotness(caller);
+  UpdateHotness(self, caller);
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   DCHECK_EQ(inst->Opcode(), Instruction::NEW_INSTANCE);
   dex::TypeIndex index = dex::TypeIndex(inst->VRegB_21c());
@@ -793,7 +856,7 @@ extern "C" mirror::Object* NterpLoadObject(Thread* self, ArtMethod* caller, uint
   switch (inst->Opcode()) {
     case Instruction::CONST_STRING:
     case Instruction::CONST_STRING_JUMBO: {
-      UpdateHotness(caller);
+      UpdateHotness(self, caller);
       dex::StringIndex string_index(
           (inst->Opcode() == Instruction::CONST_STRING)
               ? inst->VRegB_21c()

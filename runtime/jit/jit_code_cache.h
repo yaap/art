@@ -602,13 +602,10 @@ class JitCodeCache {
 
   // ---------------- JIT statistics -------------------------------------- //
 
-  // Number of baseline compilations done throughout the lifetime of the JIT.
+  // Number of compilations done throughout the lifetime of the JIT.
   size_t number_of_baseline_compilations_ GUARDED_BY(Locks::jit_lock_);
-
-  // Number of optimized compilations done throughout the lifetime of the JIT.
+  size_t number_of_fast_compilations_ GUARDED_BY(Locks::jit_lock_);
   size_t number_of_optimized_compilations_ GUARDED_BY(Locks::jit_lock_);
-
-  // Number of compilations for on-stack-replacement done throughout the lifetime of the JIT.
   size_t number_of_osr_compilations_ GUARDED_BY(Locks::jit_lock_);
 
   // Number of code cache collections done throughout the lifetime of the JIT.

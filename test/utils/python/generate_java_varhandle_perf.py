@@ -17,7 +17,7 @@
 """
 Generate java benchmarks for 2239-varhandle-perf
 """
-# TODO: fix constants when converting the test to a Golem benchmark
+# TODO: fix constants when converting the test to a Crystalball benchmark
 
 
 from enum import Enum
@@ -127,7 +127,7 @@ VALUES = {
 }
 
 
-# TODO: fix these numbers when converting the test to a Golem benchmark
+# TODO: fix these numbers when converting the test to a Crystalball benchmark
 ITERATIONS = 1 # 3000 for a real benchmark
 REPEAT = 2 # 30 for a real benchmark
 REPEAT_HALF = (int) (REPEAT / 2)

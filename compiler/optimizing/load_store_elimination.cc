@@ -250,8 +250,8 @@ namespace art HIDDEN {
 
 class HeapRefHolder;
 
-// Use HGraphDelegateVisitor for which all VisitInvokeXXX() delegate to VisitInvoke().
-class LSEVisitor final : private HGraphDelegateVisitor {
+// Use `CRTPGraphVisitor<>` for which all VisitInvokeXXX() delegate to VisitInvoke().
+class LSEVisitor final : public CRTPGraphVisitor<LSEVisitor> {
  public:
   LSEVisitor(HGraph* graph,
              const HeapLocationCollector& heap_location_collector,
@@ -622,7 +622,6 @@ class LSEVisitor final : private HGraphDelegateVisitor {
       // We record only conversions that define sign-/zero-extension bits to store.
       while (value.NeedsConvertedLoopPhi() &&
              DataType::Size(value.GetLoopPhiConversionLoad()->GetType()) >= store_size) {
-        HInstruction* conversion_load = value.GetLoopPhiConversionLoad();
         ValueRecord* prev_record =
             loads_requiring_loop_phi_[value.GetLoopPhiConversionLoad()->GetId()];
         DCHECK(prev_record != nullptr);
@@ -844,7 +843,7 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     field_infos_[heap_loc] = info;
   }
 
-  void VisitBasicBlock(HBasicBlock* block) override;
+  void VisitBasicBlock(HBasicBlock* block);
 
   enum class Phase {
     kLoadElimination,
@@ -923,7 +922,93 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     // eliminated either.
   }
 
-  void VisitInstanceFieldGet(HInstanceFieldGet* instruction) override {
+  // Keep `ForwardVisit()` functions from base class visible except for those we replace below.
+  using CRTPGraphVisitor::ForwardVisit;
+
+  // Forward `HReturn` and `HReturnVoid` to `HandleReturn`.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HReturn*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitReturn);
+    return &LSEVisitor::HandleReturn;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HReturnVoid*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitReturnVoid);
+    return &LSEVisitor::HandleReturn;
+  }
+
+
+  // Forward always-throwing instructions with no other processing to `HandleThrowingInstruction`.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HMethodEntryHook*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitMethodEntryHook);
+    return &LSEVisitor::HandleThrowingInstruction;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HMethodExitHook*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitMethodExitHook);
+    return &LSEVisitor::HandleThrowingInstruction;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HDivZeroCheck*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitDivZeroCheck);
+    return &LSEVisitor::HandleThrowingInstruction;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HNullCheck*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitNullCheck);
+    return &LSEVisitor::HandleThrowingInstruction;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HBoundsCheck*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitBoundsCheck);
+    return &LSEVisitor::HandleThrowingInstruction;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HLoadMethodHandle*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitLoadMethodHandle);
+    return &LSEVisitor::HandleThrowingInstruction;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HLoadMethodType*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitLoadMethodType);
+    return &LSEVisitor::HandleThrowingInstruction;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HStringBuilderAppend*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitStringBuilderAppend);
+    return &LSEVisitor::HandleThrowingInstruction;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HThrow*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitThrow);
+    return &LSEVisitor::HandleThrowingInstruction;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HCheckCast*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitCheckCast);
+    return &LSEVisitor::HandleThrowingInstruction;
+  }
+
+  // Forward invokes to `HandleInvoke()`.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HInvoke*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitInvoke);
+    return &LSEVisitor::HandleInvoke;
+  }
+  // Class initialization check can result in class initializer calling arbitrary methods.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HClinitCheck*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitClinitCheck);
+    return &LSEVisitor::HandleInvoke;
+  }
+  // Conservatively treat unresolved field getters and setters as invocations.
+  static constexpr auto ForwardVisit(
+      void (CRTPGraphVisitor::*visit)(HUnresolvedInstanceFieldGet*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitUnresolvedInstanceFieldGet);
+    return &LSEVisitor::HandleInvoke;
+  }
+  static constexpr auto ForwardVisit(
+      void (CRTPGraphVisitor::*visit)(HUnresolvedInstanceFieldSet*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitUnresolvedInstanceFieldSet);
+    return &LSEVisitor::HandleInvoke;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HUnresolvedStaticFieldGet*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitUnresolvedStaticFieldGet);
+    return &LSEVisitor::HandleInvoke;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HUnresolvedStaticFieldSet*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitUnresolvedStaticFieldSet);
+    return &LSEVisitor::HandleInvoke;
+  }
+
+  void VisitInstanceFieldGet(HInstanceFieldGet* instruction) {
     HInstruction* object = instruction->InputAt(0);
     if (instruction->IsVolatile()) {
       ReferenceInfo* ref_info = heap_location_collector_.FindReferenceInfoOf(
@@ -941,7 +1026,7 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     VisitGetLocation(instruction, idx);
   }
 
-  void VisitInstanceFieldSet(HInstanceFieldSet* instruction) override {
+  void VisitInstanceFieldSet(HInstanceFieldSet* instruction) {
     HInstruction* object = instruction->InputAt(0);
     if (instruction->IsVolatile()) {
       ReferenceInfo* ref_info = heap_location_collector_.FindReferenceInfoOf(
@@ -960,7 +1045,7 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     VisitSetLocation(instruction, idx, value);
   }
 
-  void VisitStaticFieldGet(HStaticFieldGet* instruction) override {
+  void VisitStaticFieldGet(HStaticFieldGet* instruction) {
     if (instruction->IsVolatile()) {
       HandleAcquireLoad(instruction);
       return;
@@ -973,7 +1058,7 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     VisitGetLocation(instruction, idx);
   }
 
-  void VisitStaticFieldSet(HStaticFieldSet* instruction) override {
+  void VisitStaticFieldSet(HStaticFieldSet* instruction) {
     if (instruction->IsVolatile()) {
       HandleReleaseStore(instruction);
       return;
@@ -987,7 +1072,7 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     VisitSetLocation(instruction, idx, value);
   }
 
-  void VisitMonitorOperation(HMonitorOperation* monitor_op) override {
+  void VisitMonitorOperation(HMonitorOperation* monitor_op) {
     HInstruction* object = monitor_op->InputAt(0);
     ReferenceInfo* ref_info = heap_location_collector_.FindReferenceInfoOf(
         heap_location_collector_.HuntForOriginalReference(object));
@@ -1011,27 +1096,27 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     }
   }
 
-  void VisitArrayGet(HArrayGet* instruction) override {
+  void VisitArrayGet(HArrayGet* instruction) {
     VisitGetLocation(instruction, heap_location_collector_.GetArrayHeapLocation(instruction));
   }
 
-  void VisitArraySet(HArraySet* instruction) override {
+  void VisitArraySet(HArraySet* instruction) {
     size_t idx = heap_location_collector_.GetArrayHeapLocation(instruction);
     VisitSetLocation(instruction, idx, instruction->GetValue());
   }
 
-  void VisitVecLoad(HVecLoad* instruction) override {
+  void VisitVecLoad(HVecLoad* instruction) {
     DCHECK(!instruction->IsPredicated());
     VisitGetLocation(instruction, heap_location_collector_.GetArrayHeapLocation(instruction));
   }
 
-  void VisitVecStore(HVecStore* instruction) override {
+  void VisitVecStore(HVecStore* instruction) {
     DCHECK(!instruction->IsPredicated());
     size_t idx = heap_location_collector_.GetArrayHeapLocation(instruction);
     VisitSetLocation(instruction, idx, instruction->GetValue());
   }
 
-  void VisitDeoptimize(HDeoptimize* instruction) override {
+  void VisitDeoptimize(HDeoptimize* instruction) {
     // If we are in a try, even singletons are observable.
     const bool inside_a_try = instruction->GetBlock()->IsTryBlock();
     HBasicBlock* block = instruction->GetBlock();
@@ -1081,12 +1166,8 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     }
   }
 
-  void VisitReturn(HReturn* instruction) override {
+  void HandleReturn(HInstruction* instruction) {
     HandleExit(instruction->GetBlock());
-  }
-
-  void VisitReturnVoid(HReturnVoid* return_void) override {
-    HandleExit(return_void->GetBlock());
   }
 
   void HandleThrowingInstruction(HInstruction* instruction) {
@@ -1095,56 +1176,16 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     HandleExit(instruction->GetBlock(), instruction->GetBlock()->IsTryBlock());
   }
 
-  void VisitMethodEntryHook(HMethodEntryHook* method_entry) override {
-    HandleThrowingInstruction(method_entry);
-  }
-
-  void VisitMethodExitHook(HMethodExitHook* method_exit) override {
-    HandleThrowingInstruction(method_exit);
-  }
-
-  void VisitDivZeroCheck(HDivZeroCheck* div_zero_check) override {
-    HandleThrowingInstruction(div_zero_check);
-  }
-
-  void VisitNullCheck(HNullCheck* null_check) override {
-    HandleThrowingInstruction(null_check);
-  }
-
-  void VisitBoundsCheck(HBoundsCheck* bounds_check) override {
-    HandleThrowingInstruction(bounds_check);
-  }
-
-  void VisitLoadClass(HLoadClass* load_class) override {
+  void VisitLoadClass(HLoadClass* load_class) {
     if (load_class->CanThrow()) {
       HandleThrowingInstruction(load_class);
     }
   }
 
-  void VisitLoadString(HLoadString* load_string) override {
+  void VisitLoadString(HLoadString* load_string) {
     if (load_string->CanThrow()) {
       HandleThrowingInstruction(load_string);
     }
-  }
-
-  void VisitLoadMethodHandle(HLoadMethodHandle* load_method_handle) override {
-    HandleThrowingInstruction(load_method_handle);
-  }
-
-  void VisitLoadMethodType(HLoadMethodType* load_method_type) override {
-    HandleThrowingInstruction(load_method_type);
-  }
-
-  void VisitStringBuilderAppend(HStringBuilderAppend* sb_append) override {
-    HandleThrowingInstruction(sb_append);
-  }
-
-  void VisitThrow(HThrow* throw_instruction) override {
-    HandleThrowingInstruction(throw_instruction);
-  }
-
-  void VisitCheckCast(HCheckCast* check_cast) override {
-    HandleThrowingInstruction(check_cast);
   }
 
   void HandleInvoke(HInstruction* instruction) {
@@ -1175,36 +1216,7 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     }
   }
 
-  void VisitInvoke(HInvoke* invoke) override {
-    HandleInvoke(invoke);
-  }
-
-  void VisitClinitCheck(HClinitCheck* clinit) override {
-    // Class initialization check can result in class initializer calling arbitrary methods.
-    HandleInvoke(clinit);
-  }
-
-  void VisitUnresolvedInstanceFieldGet(HUnresolvedInstanceFieldGet* instruction) override {
-    // Conservatively treat it as an invocation.
-    HandleInvoke(instruction);
-  }
-
-  void VisitUnresolvedInstanceFieldSet(HUnresolvedInstanceFieldSet* instruction) override {
-    // Conservatively treat it as an invocation.
-    HandleInvoke(instruction);
-  }
-
-  void VisitUnresolvedStaticFieldGet(HUnresolvedStaticFieldGet* instruction) override {
-    // Conservatively treat it as an invocation.
-    HandleInvoke(instruction);
-  }
-
-  void VisitUnresolvedStaticFieldSet(HUnresolvedStaticFieldSet* instruction) override {
-    // Conservatively treat it as an invocation.
-    HandleInvoke(instruction);
-  }
-
-  void VisitNewInstance(HNewInstance* new_instance) override {
+  void VisitNewInstance(HNewInstance* new_instance) {
     // If we are in a try, even singletons are observable.
     const bool inside_a_try = new_instance->GetBlock()->IsTryBlock();
     ReferenceInfo* ref_info = heap_location_collector_.FindReferenceInfoOf(new_instance);
@@ -1243,7 +1255,7 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     }
   }
 
-  void VisitNewArray(HNewArray* new_array) override {
+  void VisitNewArray(HNewArray* new_array) {
     // If we are in a try, even singletons are observable.
     const bool inside_a_try = new_array->GetBlock()->IsTryBlock();
     ReferenceInfo* ref_info = heap_location_collector_.FindReferenceInfoOf(new_array);
@@ -1278,11 +1290,12 @@ class LSEVisitor final : private HGraphDelegateVisitor {
     }
   }
 
-  void VisitInstruction(HInstruction* instruction) override {
+  void VisitInstruction(HInstruction* instruction) {
     // Throwing instructions must be handled specially.
     DCHECK(!instruction->CanThrow());
   }
 
+  OptimizingCompilerStats* const stats_;
   const HeapLocationCollector& heap_location_collector_;
 
   // Use local allocator for allocating memory.
@@ -1341,6 +1354,7 @@ class LSEVisitor final : private HGraphDelegateVisitor {
 
   Phase current_phase_;
 
+  template <typename T> friend class CRTPGraphVisitor;
   friend std::ostream& operator<<(std::ostream& os, const Value& v);
   friend std::ostream& operator<<(std::ostream& oss, const LSEVisitor::Phase& phase);
 
@@ -1431,7 +1445,8 @@ std::ostream& operator<<(std::ostream& os, const LSEVisitor::Value& v) {
 LSEVisitor::LSEVisitor(HGraph* graph,
                        const HeapLocationCollector& heap_location_collector,
                        OptimizingCompilerStats* stats)
-    : HGraphDelegateVisitor(graph, stats),
+    : CRTPGraphVisitor(graph),
+      stats_(stats),
       heap_location_collector_(heap_location_collector),
       allocator_(graph->GetArenaStack()),
       num_phi_placeholders_(GetGraph()->GetBlocks().size() *
@@ -1567,7 +1582,7 @@ LSEVisitor::Value LSEVisitor::MergePredecessorValues(HBasicBlock* block, size_t 
 }
 
 void LSEVisitor::MergePredecessorRecords(HBasicBlock* block) {
-  if (block->IsExitBlock()) {
+  if (GetGraph()->IsExitBlock(block)) {
     // Exit block doesn't really merge values since the control flow ends in
     // its predecessors. Each predecessor needs to make sure stores are kept
     // if necessary.
@@ -1578,7 +1593,7 @@ void LSEVisitor::MergePredecessorRecords(HBasicBlock* block) {
   DCHECK(heap_values.empty());
   size_t num_heap_locations = heap_location_collector_.GetNumberOfHeapLocations();
   if (block->GetPredecessors().empty() || block->IsCatchBlock()) {
-    DCHECK_IMPLIES(block->GetPredecessors().empty(), block->IsEntryBlock());
+    DCHECK_IMPLIES(block->GetPredecessors().empty(), GetGraph()->IsEntryBlock(block));
     heap_values.resize(num_heap_locations,
                        {/*value=*/Value::Unknown(), /*stored_by=*/Value::Unknown()});
     return;
@@ -1827,7 +1842,7 @@ void LSEVisitor::VisitSetLocation(HInstruction* instruction, size_t idx, HInstru
   }
 }
 
-void LSEVisitor::VisitBasicBlock(HBasicBlock* block) {
+ALWAYS_INLINE inline void LSEVisitor::VisitBasicBlock(HBasicBlock* block) {
   // Populate the heap_values array for this block.
   // TODO: try to reuse the heap_values array from one predecessor if possible.
   if (block->IsLoopHeader()) {
@@ -2538,7 +2553,7 @@ void LSEVisitor::ProcessLoopPhiWithUnknownInput(PhiPlaceholder loop_phi_with_unk
   bool replaced_heap_value_with_unknown = false;
   for (; reverse_post_order_index != reverse_post_order_size; ++reverse_post_order_index) {
     HBasicBlock* block = reverse_post_order[reverse_post_order_index];
-    if (block->IsExitBlock()) {
+    if (GetGraph()->IsExitBlock(block)) {
       continue;
     }
 
@@ -2866,9 +2881,7 @@ void LSEVisitor::Run() {
   GetGraph()->SetHasMonitorOperations(false);
 
   // 1. Process blocks and instructions in reverse post order.
-  for (HBasicBlock* block : GetGraph()->GetReversePostOrder()) {
-    VisitBasicBlock(block);
-  }
+  VisitReversePostOrder();
 
   // 2. Process loads that require loop Phis, trying to find/create replacements.
   current_phase_ = Phase::kLoadElimination;

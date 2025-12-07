@@ -178,7 +178,7 @@ class HeapLocation : public ArenaObject<kArenaAllocLSA> {
 
 // A HeapLocationCollector collects all relevant heap locations and keeps
 // an aliasing matrix for all locations.
-class HeapLocationCollector final : public HGraphVisitor {
+class HeapLocationCollector final : public CRTPGraphVisitor<HeapLocationCollector> {
  public:
   static constexpr size_t kHeapLocationNotFound = -1;
   // Start with a single uint32_t word. That's enough bits for pair-wise
@@ -186,7 +186,7 @@ class HeapLocationCollector final : public HGraphVisitor {
   static constexpr uint32_t kInitialAliasingMatrixBitVectorSize = 32;
 
   HeapLocationCollector(HGraph* graph, ScopedArenaAllocator* allocator)
-      : HGraphVisitor(graph),
+      : CRTPGraphVisitor(graph),
         allocator_(allocator),
         ref_infos_(graph->GetCurrentInstructionId(), nullptr, allocator->Adapter(kArenaAllocLSA)),
         ref_infos_created_(0u),
@@ -487,22 +487,22 @@ class HeapLocationCollector final : public HGraphVisitor {
                             is_vec_op);
   }
 
-  void VisitInstanceFieldGet(HInstanceFieldGet* instruction) override {
+  void VisitInstanceFieldGet(HInstanceFieldGet* instruction) {
     CreateReferenceInfoForReferenceType(instruction);
     HandleFieldAccess(instruction);
   }
 
-  void VisitInstanceFieldSet(HInstanceFieldSet* instruction) override {
+  void VisitInstanceFieldSet(HInstanceFieldSet* instruction) {
     has_heap_stores_ = true;
     HandleFieldAccess(instruction);
   }
 
-  void VisitStaticFieldGet(HStaticFieldGet* instruction) override {
+  void VisitStaticFieldGet(HStaticFieldGet* instruction) {
     CreateReferenceInfoForReferenceType(instruction);
     HandleFieldAccess(instruction);
   }
 
-  void VisitStaticFieldSet(HStaticFieldSet* instruction) override {
+  void VisitStaticFieldSet(HStaticFieldSet* instruction) {
     has_heap_stores_ = true;
     HandleFieldAccess(instruction);
   }
@@ -510,7 +510,7 @@ class HeapLocationCollector final : public HGraphVisitor {
   // We intentionally don't collect HUnresolvedInstanceField/HUnresolvedStaticField accesses
   // since we cannot accurately track the fields.
 
-  void VisitArrayGet(HArrayGet* instruction) override {
+  void VisitArrayGet(HArrayGet* instruction) {
     HInstruction* array = instruction->InputAt(0);
     HInstruction* index = instruction->InputAt(1);
     DataType::Type type = instruction->GetType();
@@ -518,7 +518,7 @@ class HeapLocationCollector final : public HGraphVisitor {
     CreateReferenceInfoForReferenceType(instruction);
   }
 
-  void VisitArraySet(HArraySet* instruction) override {
+  void VisitArraySet(HArraySet* instruction) {
     HInstruction* array = instruction->InputAt(0);
     HInstruction* index = instruction->InputAt(1);
     DataType::Type type = instruction->GetComponentType();
@@ -526,7 +526,7 @@ class HeapLocationCollector final : public HGraphVisitor {
     has_heap_stores_ = true;
   }
 
-  void VisitVecLoad(HVecLoad* instruction) override {
+  void VisitVecLoad(HVecLoad* instruction) {
     DCHECK(!instruction->IsPredicated());
     HInstruction* array = instruction->InputAt(0);
     HInstruction* index = instruction->InputAt(1);
@@ -535,7 +535,7 @@ class HeapLocationCollector final : public HGraphVisitor {
     CreateReferenceInfoForReferenceType(instruction);
   }
 
-  void VisitVecStore(HVecStore* instruction) override {
+  void VisitVecStore(HVecStore* instruction) {
     DCHECK(!instruction->IsPredicated());
     HInstruction* array = instruction->InputAt(0);
     HInstruction* index = instruction->InputAt(1);
@@ -544,7 +544,7 @@ class HeapLocationCollector final : public HGraphVisitor {
     has_heap_stores_ = true;
   }
 
-  void VisitInstruction(HInstruction* instruction) override {
+  void VisitInstruction(HInstruction* instruction) {
     // Any new-instance or new-array cannot alias with references that
     // pre-exist the new-instance/new-array. The entries of ref_infos_ keep track of the order of
     // creation of reference values since we visit the blocks in reverse post order.
@@ -564,6 +564,8 @@ class HeapLocationCollector final : public HGraphVisitor {
   ArenaBitVector aliasing_matrix_;    // aliasing info between each pair of locations.
   bool has_heap_stores_;    // If there is no heap stores, LSE acts as GVN with better
                             // alias analysis and won't be as effective.
+
+  template <typename T> friend class CRTPGraphVisitor;
 
   DISALLOW_COPY_AND_ASSIGN(HeapLocationCollector);
 };

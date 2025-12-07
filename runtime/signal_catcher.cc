@@ -41,7 +41,6 @@
 #include "base/time_utils.h"
 #include "base/utils.h"
 #include "class_linker.h"
-#include "com_android_art_flags.h"
 #include "gc/heap.h"
 #include "jit/profile_saver.h"
 #include "palette/palette.h"
@@ -50,9 +49,8 @@
 #include "signal_set.h"
 #include "thread.h"
 #include "thread_list.h"
+#include "trace_common.h"
 #include "trace_profile.h"
-
-namespace art_flags = com::android::art::flags;
 
 namespace art HIDDEN {
 
@@ -146,7 +144,7 @@ void SignalCatcher::HandleSigQuit() {
 
   os << "Debug Store: " << DebugStoreGetString() << "\n";
 
-  if (art_flags::always_enable_profile_code()) {
+  if (ShouldEnableProfileCode()) {
     std::string str = TraceProfiler::GetLongRunningMethodsString();
     if (!str.empty()) {
       os << "LongRunningMethods: " << str << "\n";
@@ -262,7 +260,7 @@ void* SignalCatcher::Run(void* arg) {
       signal_catcher->HandleSigQuit();
       break;
     case SIGUSR1:
-      if (kIsTargetAndroid && art_flags::always_enable_profile_code()) {
+      if (kIsTargetAndroid && ShouldEnableProfileCode()) {
         signal_catcher->HandleMultiplexedSigUsr1(&info);
       } else {
         signal_catcher->HandleSigUsr1();

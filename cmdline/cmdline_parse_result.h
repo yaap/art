@@ -22,7 +22,7 @@
 
 namespace art {
 // Result of a type-parsing attempt. If successful holds the strongly-typed value,
-// otherwise it holds either a usage or a failure string message that should be displayed back
+// otherwise it holds either a help or a failure string message that should be displayed back
 // to the user.
 //
 // CmdlineType::Parse/CmdlineType::ParseAndAppend must return this type.
@@ -30,9 +30,9 @@ template <typename T>
 struct CmdlineParseResult : CmdlineResult {
   using CmdlineResult::CmdlineResult;
 
-  // Create an error result with the usage error code and the specified message.
-  static CmdlineParseResult Usage(const std::string& message) {
-    return CmdlineParseResult(kUsage, message);
+  // Create an error result with the help error code and the specified message.
+  static CmdlineParseResult Help(const std::string& message) {
+    return CmdlineParseResult(kHelp, message);
   }
 
   // Create an error result with the failure error code and no message.
@@ -61,9 +61,9 @@ struct CmdlineParseResult : CmdlineResult {
     return CmdlineParseResult(T {});
   }
 
-  // Create an error result with the OutOfRange error and the specified message.
-  static CmdlineParseResult<T> OutOfRange(const std::string& message) {
-    return CmdlineParseResult(kOutOfRange, message);
+  // Create an error result with the Invalid error and the specified message.
+  static CmdlineParseResult<T> Invalid(const std::string& message) {
+    return CmdlineParseResult(kInvalid, message);
   }
 
   // Create an error result with the OutOfRange code and a custom message
@@ -72,10 +72,9 @@ struct CmdlineParseResult : CmdlineResult {
   static CmdlineParseResult<T> OutOfRange(const T& value,
                                           const T& min,
                                           const T& max) {
-    return CmdlineParseResult(kOutOfRange,
-                              "actual: " + art::detail::ToStringAny(value) +
-                              ", min: " + art::detail::ToStringAny(min) +
-                              ", max: " + art::detail::ToStringAny(max));
+    return CmdlineParseResult::Invalid("actual: " + art::detail::ToStringAny(value) +
+                                       ", min: " + art::detail::ToStringAny(min) +
+                                       ", max: " + art::detail::ToStringAny(max));
   }
 
   // Get a read-only reference to the underlying value.

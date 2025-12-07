@@ -59,12 +59,18 @@ EXPORT void JitCodeCache::VisitRootTables(ArtMethod* method, RootVisitorType& vi
       mirror::Object* object = roots[i].Read<kWithoutReadBarrier>();
       if (object == nullptr ||
           object == Runtime::GetWeakClassSentinel() ||
-          object->IsString<kDefaultVerifyFlags>() ||
           object->IsClass<kDefaultVerifyFlags>()) {
         continue;
       }
-      // We don't need to visit j.l.Class and j.l.String and the only remaining possible
-      // objects are MethodType-s.
+      if (object->IsString<kDefaultVerifyFlags>()) {
+        if (com::android::art::flags::weak_const_string()) {
+          // Visit the `String` to keep it alive as long as the code remains in the JIT code cache.
+          visitor.VisitRoot(roots[i].AddressWithoutBarrier());
+        }
+        continue;
+      }
+      // We don't need to visit j.l.Class and j.l.String is handled above
+      // and the only remaining possible objects are MethodType-s.
       ObjPtr<mirror::Class> method_type_class =
           WellKnownClasses::java_lang_invoke_MethodType.Get<kWithoutReadBarrier>();
       ObjPtr<mirror::Class> klass =

@@ -52,13 +52,14 @@
 #include "art_field-inl.h"
 #include "art_method-inl.h"
 #include "asm_support.h"
+#include "assume_value_signatures.h"
 #include "base/aborting.h"
 #include "base/arena_allocator.h"
 #include "base/atomic.h"
+#include "base/calloc_arena_pool.h"
 #include "base/dumpable.h"
 #include "base/file_utils.h"
 #include "base/flags.h"
-#include "base/calloc_arena_pool.h"
 #include "base/mem_map_arena_pool.h"
 #include "base/memory_tool.h"
 #include "base/mutex.h"
@@ -89,7 +90,6 @@
 #include "gc/task_processor.h"
 #include "handle_scope-inl.h"
 #include "hidden_api.h"
-#include "indirect_reference_table.h"
 #include "instrumentation.h"
 #include "intern_table-inl.h"
 #include "interpreter/interpreter.h"
@@ -145,6 +145,7 @@
 #include "native/java_lang_reflect_Proxy.h"
 #include "native/java_util_concurrent_atomic_AtomicLong.h"
 #include "native/jdk_internal_misc_Unsafe.h"
+#include "native/jdk_internal_vm_Continuation.h"
 #include "native/libcore_io_Memory.h"
 #include "native/libcore_util_CharsetUtils.h"
 #include "native/org_apache_harmony_dalvik_ddmc_DdmServer.h"
@@ -548,6 +549,7 @@ Runtime::~Runtime() {
   arena_pool_.reset();
   jit_arena_pool_.reset();
   protected_fault_page_.Reset();
+  assume_value_field_signatures_.clear();
   MemMap::Shutdown();
 
   // TODO: acquire a static mutex on Runtime to avoid racing.
@@ -1537,6 +1539,11 @@ void Runtime::InitializeApexVersions() {
       GetApexVersions(ArrayRef<const std::string>(Runtime::Current()->GetBootClassPathLocations()));
 }
 
+std::optional<AssumeValueSignature> Runtime::LookupAssumeValueSignature(ArtField* field) const {
+  auto it = assume_value_field_signatures_.find(field);
+  return it != assume_value_field_signatures_.end() ? std::optional(*it->second) : std::nullopt;
+}
+
 void Runtime::ReloadAllFlags(const std::string& caller) {
   FlagBase::ReloadAllFlags(caller);
 }
@@ -1729,13 +1736,33 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   hidden_api_policy_ = runtime_options.GetOrDefault(Opt::HiddenApiPolicy);
   DCHECK_IMPLIES(is_zygote_, hidden_api_policy_ == hiddenapi::EnforcementPolicy::kDisabled);
 
-  // Set core platform API enforcement policy. The checks are disabled by default and
-  // can be enabled with a command line flag. AndroidRuntime will pass the flag if
-  // a system property is set.
-  core_platform_api_policy_ = runtime_options.GetOrDefault(Opt::CorePlatformApiPolicy);
-  if (core_platform_api_policy_ != hiddenapi::EnforcementPolicy::kDisabled) {
-    LOG(INFO) << "Core platform API reporting enabled, enforcing="
-        << (core_platform_api_policy_ == hiddenapi::EnforcementPolicy::kEnabled ? "true" : "false");
+  // Set core platform API enforcement policy. Always enabled if the
+  // hiddenapi_platform_enforcement flag is set, otherwise the checks are
+  // disabled by default and can be enabled with a command line flag.
+  // AndroidRuntime will pass the flag if a system property is set.
+  // TODO(b/377676642): Replace flag with SDK level check when ramped.
+  {
+    bool always_enable = false;
+#ifdef ART_TARGET_ANDROID
+    if (com::android::art::flags::hiddenapi_platform_enforcement()) {
+      always_enable = true;
+    }
+#endif
+    const char* reason;
+    if (always_enable) {
+      core_platform_api_policy_ = hiddenapi::EnforcementPolicy::kEnabled;
+      reason = "from the hiddenapi_platform_enforcement flag";
+    } else {
+      core_platform_api_policy_ = runtime_options.GetOrDefault(Opt::CorePlatformApiPolicy);
+      reason = "by runtime option";
+    }
+    if (core_platform_api_policy_ != hiddenapi::EnforcementPolicy::kDisabled) {
+      LOG(INFO) << "Core platform API "
+                << (core_platform_api_policy_ == hiddenapi::EnforcementPolicy::kEnabled
+                        ? "enforcement"
+                        : "reporting")
+                << " enabled " << reason;
+    }
   }
 
   // Dex2Oat's Runtime does not need the signal chain or the fault handler
@@ -1799,6 +1826,8 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
                        runtime_options.GetOrDefault(Opt::HeapMinFree),
                        runtime_options.GetOrDefault(Opt::HeapMaxFree),
                        runtime_options.GetOrDefault(Opt::HeapTargetUtilization),
+                       runtime_options.GetOrDefault(Opt::EnableTimeBasedGcTrigger),
+                       runtime_options.GetOrDefault(Opt::HeapMemoryGcCostFactor),
                        foreground_heap_growth_multiplier,
                        runtime_options.GetOrDefault(Opt::StopForNativeAllocs),
                        runtime_options.GetOrDefault(Opt::MemoryMaximumSize),
@@ -1942,22 +1971,25 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
       // These need to be in a specific order.  The null point check handler must be
       // after the suspend check and stack overflow check handlers.
       //
-      // Note: the instances attach themselves to the fault manager and are handled by it. The
-      //       manager will delete the instance on Shutdown().
+      // Note: The manager will delete the handlers on Shutdown().
       if (implicit_suspend_checks_) {
-        new SuspensionHandler(&fault_manager);
+        fault_manager.AddHandler(new SuspensionHandler(),
+                                 SuspensionHandler::IsGeneratedCodeHandler());
       }
 
       if (implicit_so_checks_) {
-        new StackOverflowHandler(&fault_manager);
+        fault_manager.AddHandler(new StackOverflowHandler(),
+                                 StackOverflowHandler::IsGeneratedCodeHandler());
       }
 
       if (implicit_null_checks_) {
-        new NullPointerHandler(&fault_manager);
+        fault_manager.AddHandler(new NullPointerHandler(),
+                                 NullPointerHandler::IsGeneratedCodeHandler());
       }
 
       if (kEnableJavaStackTraceHandler) {
-        new JavaStackTraceHandler(&fault_manager);
+        fault_manager.AddHandler(new JavaStackTraceHandler(&fault_manager),
+                                 JavaStackTraceHandler::IsGeneratedCodeHandler());
       }
 
       if (interpreter::CanRuntimeUseNterp()) {
@@ -2221,6 +2253,17 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
     dlopen(plugin_name, RTLD_NOW | RTLD_LOCAL);
   }
 
+  for (const auto& signature : AssumeValueSignatures::kSignatures) {
+    ArtField* field = signature.LookupField();
+    if (field != nullptr) {
+      assume_value_field_signatures_.insert_or_assign(field, &signature);
+    } else {
+      // Don't treat this as an error; assumed values are purely an optimization, and we reserve
+      // the right to selectively ignore/deprecate optimizations for certain fields.
+      VLOG(compiler) << "Failed to find field corresponding to " << signature.AsKey();
+    }
+  }
+
   VLOG(startup) << "Runtime::Init exiting";
 
   return true;
@@ -2439,6 +2482,7 @@ void Runtime::RegisterRuntimeNativeMethods(JNIEnv* env) {
   register_java_lang_VMClassLoader(env);
   register_java_util_concurrent_atomic_AtomicLong(env);
   register_jdk_internal_misc_Unsafe(env);
+  register_jdk_internal_vm_Continuation(env);
   register_libcore_io_Memory(env);
   register_libcore_util_CharsetUtils(env);
   register_org_apache_harmony_dalvik_ddmc_DdmServer(env);
@@ -3380,11 +3424,12 @@ bool Runtime::GetOatFilesExecutable() const {
   return !IsAotCompiler() && !IsSystemServerProfiled();
 }
 
-void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
-                                  size_t map_size_bytes,
-                                  const uint8_t* map_begin,
-                                  const uint8_t* map_end,
-                                  const std::string& file_name) {
+size_t Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
+                                    size_t map_size_bytes,
+                                    const uint8_t* map_begin,
+                                    const uint8_t* map_end,
+                                    const std::string& file_name) {
+  // TODO(b/359932564): Fix map_size_bytes adjustment to account for map_begin alignment.
   map_begin = AlignDown(map_begin, gPageSize);
   map_size_bytes = RoundUp(map_size_bytes, gPageSize);
 #ifdef ART_TARGET_ANDROID
@@ -3398,7 +3443,7 @@ void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
   if (accurate_process_state_at_startup) {
     const Runtime* runtime = Runtime::Current();
     if (runtime != nullptr && !runtime->InJankPerceptibleProcessState()) {
-      return;
+      return 0;
     }
   }
 #endif  // ART_TARGET_ANDROID
@@ -3406,13 +3451,10 @@ void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
   // Ideal blockTransferSize for madvising files (128KiB)
   static constexpr size_t kIdealIoTransferSizeBytes = 128*1024;
 
+  size_t madvised_bytes = 0;
   size_t target_size_bytes = std::min<size_t>(map_size_bytes, madvise_size_limit_bytes);
-
   if (target_size_bytes > 0) {
-    ScopedTrace madvising_trace("madvising "
-                                + file_name
-                                + " size="
-                                + std::to_string(target_size_bytes));
+    SCOPED_TRACE << "madvising " << file_name << " size=" << target_size_bytes;
 
     // Based on requested size (target_size_bytes)
     const uint8_t* target_pos = map_begin + target_size_bytes;
@@ -3442,8 +3484,13 @@ void Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
                    << ": " << strerror(errno);
         break;
       }
+      madvised_bytes += madvise_length;
     }
   }
+
+  DCHECK_LE(madvised_bytes, madvise_size_limit_bytes)
+      << "Madvise should not have advised more than the requested size.";
+  return madvised_bytes;
 }
 
 // Return whether a boot image has a profile. This means we'll need to pre-JIT

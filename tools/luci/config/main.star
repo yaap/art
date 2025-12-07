@@ -102,6 +102,7 @@ luci.binding(
 
 luci.realm(name = "pools/ci")
 luci.bucket(name = "ci")
+luci.bucket(name = "try")
 
 # Shadow bucket is needed for LED.
 luci.bucket(
@@ -176,11 +177,32 @@ luci.gitiles_poller(
     refs = ["refs/heads/master-art"],
 )
 
+# Note this still uses "art-ci-builder@" service account (which has GoB access).
+# It would be more idiomatic to use separate "art-try-builder@" service account,
+# (but that would require more work and ongoing maintenance due to GoB access).
+luci.cq_group(
+    name = "manifest-presubmit",
+    watch = cq.refset(
+        repo = REPO_ROOT + "/platform/manifest",
+        refs = ["refs/heads/master-art"],
+    ),
+    acls = [
+        acl.entry(
+            roles = [
+                acl.CQ_COMMITTER,
+            ],
+            groups = "googlers",
+        ),
+    ],
+)
+
 def ci_builder(name, category, short_name, dimensions, properties={},
-               experiments={}, hidden=False):
+               experiments={}, hidden=False, presubmit=False):
+    bucket = "try" if presubmit else "ci"
+    service_account = "art-ci-builder@chops-service-accounts.iam.gserviceaccount.com"
     luci.builder(
         name = name,
-        bucket = "ci",
+        bucket = bucket,
         executable = luci.recipe(
             cipd_package = "infra/recipe_bundles/chromium.googlesource.com/chromium/tools/build",
             cipd_version = "refs/heads/main",
@@ -189,7 +211,7 @@ def ci_builder(name, category, short_name, dimensions, properties={},
         dimensions = dimensions | {
             "pool": "luci.art.ci",
         },
-        service_account = "art-ci-builder@chops-service-accounts.iam.gserviceaccount.com",
+        service_account = service_account,
 
         # Maximum delay between scheduling a build and the build actually starting.
         # In a healthy state (enough free/idle devices), the delay is fairly small,
@@ -221,6 +243,11 @@ def ci_builder(name, category, short_name, dimensions, properties={},
             category = category,
             short_name = short_name,
         )
+    if presubmit:
+        luci.cq_tryjob_verifier(
+            cq_group = "manifest-presubmit",
+            builder = name,
+        )
 
 def add_builder(mode,
                 arch,
@@ -230,7 +257,9 @@ def add_builder(mode,
                 cmc=False,
                 gcstress=False,
                 poison=False,
-                hidden=False):
+                hidden=False,
+                build_only=False,
+                presubmit=False):
     def check_arg(value, valid_values):
       if value not in valid_values:
         fail("Argument '{}' was expected to be on of {}".format(value, valid_values))
@@ -245,6 +274,7 @@ def add_builder(mode,
     name += '.ngen' if ngen else ''
     name += '.cmc' if cmc else ''
     name += '.ndebug' if ndebug else ''
+    name += '.build_only' if build_only else ''
     name += '.' + str(bitness)
     name = name.replace("ngen.cmc", "ngen-cmc")
 
@@ -289,7 +319,7 @@ def add_builder(mode,
     properties = {
         "builder_group": "client.art",
         "bitness": bitness,
-        "build_only": ("build_only" in name),
+        "build_only": build_only,
         "debug": not ndebug,
         "device": None if mode == "host" else "-".join(name.split("-")[:2]),
         "on_virtual_machine": mode == "qemu",
@@ -310,7 +340,8 @@ def add_builder(mode,
                dimensions=dimensions,
                properties={k:v for k, v in properties.items() if v},
                experiments=experiments,
-               hidden=hidden)
+               hidden=hidden,
+               presubmit=presubmit)
 
 def add_builders():
   for mode, arch in [("target", "arm"), ("host", "x86")]:
@@ -325,6 +356,7 @@ def add_builders():
       add_builder(mode, arch, bitness, poison=True)
       add_builder(mode, arch, bitness, gcstress=True)
       add_builder(mode, arch, bitness, cmc=True, gcstress=True)
+      add_builder(mode, arch, bitness, build_only=True, hidden=True, presubmit=True)
   add_builder('qemu', 'arm', bitness=64)
   add_builder('qemu', 'riscv', bitness=64)
 

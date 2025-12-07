@@ -127,6 +127,12 @@ enum ThreadPriority {
   kMaxThreadPriority = 10,
 };
 
+// Posix "niceness" values.
+enum ThreadNiceness {
+  kMinNiceness = -20,
+  kMaxNiceness = 19,
+};
+
 enum class ThreadFlag : uint32_t {
   // If set, implies that suspend_count_ > 0 and the Thread should enter the safepoint handler.
   kSuspendRequest = 1u << 0,
@@ -207,10 +213,14 @@ enum class WeakRefAccessState : int32_t {
 enum VirtualThreadFlag : uint8_t {
   // This flag is set only when a virtual thread is running on the given carrier thread.
   kIsVirtual = 1u,
+  // This flag is set only when carrier thread enters a jdk.internal.vm.Continuation.
+  // In this case, the Continuation is the internal implementation details of virtual thread.
+  // Importantly, virtual thread frames are on top of the carrier thread frames.
+  kContinuation = 1u << 1,
   // The flag is set when a virtual thread is being parked and unmounted from the carrier thread.
-  kParking = 1u << 1,
+  kParking = 1u << 2,
   // The flag is set when a virtual thread is being unparked and mounted from the carrier thread.
-  kUnparking = 1u << 2,
+  kUnparking = 1u << 3,
 };
 
 // ART uses two types of ABI/code: quick and native.
@@ -627,10 +637,13 @@ class EXPORT Thread {
    *
    * We map a priority value from 1-10 to Linux "nice" values, where lower
    * numbers indicate higher priority.
-   *
-   * Return the niceness value corresponding to the priority.
    */
-  int SetNativePriority(int newPriority) REQUIRES_SHARED(Locks::mutator_lock_);
+  void SetNativePriority(int newPriority) REQUIRES_SHARED(Locks::mutator_lock_);
+
+  /*
+   * And a version that explicitly supplies the corresponding niceness value as well.
+   */
+  void SetNativePriority(int newPriority, int newNiceness) REQUIRES_SHARED(Locks::mutator_lock_);
 
   /*
    * Same thing, but niceness is supplied directly.
@@ -642,7 +655,11 @@ class EXPORT Thread {
   /*
    * Convert Java priority to Posix niceness using palette information.
    */
-  static int PriorityToNiceness(int priority) { return GetPriorityMap()[priority]; }
+  static int PriorityToNiceness(int priority) {
+    DCHECK_GE(priority, kMinThreadPriority);
+    DCHECK_LE(priority, kMaxThreadPriority);
+    return GetPriorityMap()[priority];
+  }
 
   /*
    * Convert Posix niceness to the closest Java priority using palette information.
@@ -663,6 +680,12 @@ class EXPORT Thread {
    * priorities.
    */
   int GetNativeNiceness() const;
+
+  /*
+   * Return the niceness value for this thread, as cached by the Java layer, or zero if there is
+   * no Java peer. Assumes self == this.
+   */
+  int GetCachedNiceness() const REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Guaranteed to be non-zero.
   uint32_t GetThreadId() const {
@@ -726,6 +749,18 @@ class EXPORT Thread {
 
   bool HasPeer() const {
     return tlsPtr_.jpeer != nullptr || tlsPtr_.opeer != nullptr;
+  }
+
+  // Set the current Thread object returned by Thread.currentThread().
+  void SetCurrentPeer(mirror::Object* peer) REQUIRES_SHARED(Locks::mutator_lock_) {
+    DCHECK(Thread::Current() == this) << "Don't call this from another thread.";
+    tlsPtr_.current_peer = peer;
+  }
+
+  // Get the current Thread object returned by Thread.currentThread().
+  mirror::Object* GetCurrentPeer() REQUIRES_SHARED(Locks::mutator_lock_) {
+    DCHECK(Thread::Current() == this) << "Don't call this from another thread.";
+    return tlsPtr_.current_peer;
   }
 
   RuntimeStats* GetStats() {
@@ -1157,6 +1192,11 @@ class EXPORT Thread {
     return ThreadOffsetFromTlsPtr<pointer_size>(OFFSETOF_MEMBER(tls_ptr_sized_values, opeer));
   }
 
+  template <PointerSize pointer_size>
+  static constexpr ThreadOffset<pointer_size> CurrentPeerOffset() {
+    return ThreadOffsetFromTlsPtr<pointer_size>(
+        OFFSETOF_MEMBER(tls_ptr_sized_values, current_peer));
+  }
 
   template<PointerSize pointer_size>
   static constexpr ThreadOffset<pointer_size> CardTableOffset() {
@@ -1802,13 +1842,13 @@ class EXPORT Thread {
 
   void CreatePeer(const char* name, bool as_daemon, jobject thread_group);
 
-  template<bool kTransactionActive>
+  template <bool kTransactionActive>
   static void InitPeer(ObjPtr<mirror::Object> peer,
                        bool as_daemon,
                        ObjPtr<mirror::Object> thread_group,
                        ObjPtr<mirror::String> thread_name,
-                       jint thread_priority)
-      REQUIRES_SHARED(Locks::mutator_lock_);
+                       jint thread_priority,
+                       jint thread_niceness) REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Avoid use, callers should use SetState.
   // Used only by `Thread` destructor and stack trace collection in semi-space GC (currently
@@ -2124,7 +2164,7 @@ class EXPORT Thread {
   // when StrictMode events are traced for the current thread.
   static bool (*is_sensitive_thread_hook_)();
   // Stores the jit sensitive thread (which for now is the UI thread).
-  static Thread* jit_sensitive_thread_;
+  LIBART_PROTECTED static Thread* jit_sensitive_thread_;
 
   static constexpr uint32_t kMakeVisiblyInitializedCounterTriggerCount = 128;
 
@@ -2315,7 +2355,8 @@ class EXPORT Thread {
           method_trace_buffer_curr_entry(nullptr),
           thread_exit_flags(nullptr),
           last_no_thread_suspension_cause(nullptr),
-          last_no_transaction_checks_cause(nullptr) {
+          last_no_transaction_checks_cause(nullptr),
+          current_peer(nullptr) {
       std::fill(held_mutexes, held_mutexes + kLockLevelCount, nullptr);
     }
 
@@ -2499,6 +2540,10 @@ class EXPORT Thread {
     // If the thread is asserting that there should be no transaction checks,
     // what is causing that assertion (debug builds only).
     const char* last_no_transaction_checks_cause;
+
+    // Hold either the same reference as opeer or a VirtualThread instance. Mainly used for the
+    // java.lang.Thread.currentThread() API.
+    mirror::Object* current_peer;
   } tlsPtr_;
 
   // Small thread-local cache to be used from the interpreter.

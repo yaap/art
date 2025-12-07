@@ -724,7 +724,6 @@ Class #4            -
         0x0000 line=27
         0x0004 line=28
       locals        :
-        0x0000 - 0x0000 reg=5 (null) Ljava/lang/Class;
         0x0004 - 0x000a reg=0 mh Ljava/lang/invoke/MethodHandle;
         0x0000 - 0x000a reg=2 lookup Ljava/lang/invoke/MethodHandles$Lookup;
         0x0000 - 0x000a reg=3 name Ljava/lang/String;
@@ -4147,7 +4146,6 @@ Class #11            -
         0x006b line=105
         0x0071 line=106
       locals        :
-        0x0000 - 0x0000 reg=28 (null) Ljava/lang/Class;
         0x0071 - 0x0077 reg=13 mh_add Ljava/lang/invoke/MethodHandle;
         0x0000 - 0x0077 reg=16 caller Ljava/lang/invoke/MethodHandles$Lookup;
         0x0000 - 0x0077 reg=17 name Ljava/lang/String;
@@ -4552,7 +4550,6 @@ Class #13            -
         0x0017 line=296
         0x001f line=297
       locals        :
-        0x0000 - 0x0000 reg=6 (null) Ljava/lang/Class;
         0x001f - 0x0025 reg=0 mh Ljava/lang/invoke/MethodHandle;
         0x0000 - 0x0025 reg=3 lookup Ljava/lang/invoke/MethodHandles$Lookup;
         0x0000 - 0x0025 reg=4 methodName Ljava/lang/String;

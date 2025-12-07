@@ -157,6 +157,10 @@ func globalFlags(ctx android.LoadHookContext) ([]string, []string) {
 		cflags = append(cflags, "-DUSE_D8_DESUGAR=1")
 	}
 
+	if ctx.Config().IsEnvTrue("ART_TEST_ON_SBC_RISCV64_V_ADRALN_WORKAROUND") {
+		cflags = append(cflags, "-DART_TEST_ON_SBC_RISCV64_V_ADRALN_WORKAROUND=1")
+	}
+
 	return cflags, asflags
 }
 
@@ -208,7 +212,7 @@ func hostFlags(ctx android.LoadHookContext) []string {
 		cflags = append(cflags, "-DART_ENABLE_ADDRESS_SANITIZER=1")
 	}
 
-	clang_path := filepath.Join(config.ClangDefaultBase, ctx.Config().PrebuiltOS(), config.ClangDefaultVersion)
+	clang_path := filepath.Join(config.ClangDefaultBase, ctx.Config().PrebuiltOS(), config.ClangVersion(ctx))
 	cflags = append(cflags, fmt.Sprintf("-DART_CLANG_PATH=\"%s\"", clang_path))
 
 	return cflags

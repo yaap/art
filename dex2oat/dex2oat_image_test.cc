@@ -42,6 +42,7 @@
 #include "dex/method_reference.h"
 #include "dex/type_reference.h"
 #include "gc/space/image_space.h"
+#include "intern_table-inl.h"
 #include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread-current-inl.h"
@@ -257,8 +258,8 @@ TEST_F(Dex2oatImageTest, TestModesAndFilters) {
           WriteLine(files[idx].GetFile(), ref.dex_file->PrettyType(ref.TypeIndex()));
           idx = (idx + 1) % files.size();
         },
-        /*method_frequency=*/1u,
-        /*class_frequency=*/1u);
+        /*method_frequency=*/ 1u,
+        /*class_frequency=*/ 1u);
     ImageSizes image_classes_sizes =
         CompileImageAndGetSizes(dex_files,
                                 {"--dirty-image-objects=" + files[0].GetFilename(),
@@ -272,9 +273,8 @@ TEST_F(Dex2oatImageTest, TestModesAndFilters) {
 
 TEST_F(Dex2oatImageTest, TestExtension) {
   // TODO(b/376621099): investigate LUCI failures (timeouts?) and re-enable this test.
-  // This is probably not related to riscv64 arch, but a combination of riscv64 and running
-  // on VM, but we don't use TEST_DISABLED_ON_VM to keep running it on other VM builders.
-  TEST_DISABLED_FOR_RISCV64();
+  // This is not related to riscv64 arch, but a combination of riscv64 and running on VM.
+  TEST_DISABLED_ON_RISCV64_VM();
 
   std::string error_msg;
   MemMap reservation = ReserveCoreImageAddressSpace(&error_msg);
@@ -447,18 +447,18 @@ TEST_F(Dex2oatImageTest, TestExtension) {
     extra_reservation = MemMap::Invalid();
     ScopedObjectAccess soa(Thread::Current());
     return gc::space::ImageSpace::LoadBootImage(
-        /*boot_class_path=*/boot_class_path,
-        /*boot_class_path_locations=*/libcore_dex_files,
-        /*boot_class_path_files=*/{},
-        /*boot_class_path_image_files=*/{},
-        /*boot_class_path_vdex_files=*/{},
-        /*boot_class_path_oat_files=*/{},
+        /*boot_class_path=*/ boot_class_path,
+        /*boot_class_path_locations=*/ libcore_dex_files,
+        /*boot_class_path_files=*/ {},
+        /*boot_class_path_image_files=*/ {},
+        /*boot_class_path_vdex_files=*/ {},
+        /*boot_class_path_oat_files=*/ {},
         android::base::Split(image_location, ":"),
         kRuntimeISA,
         relocate,
-        /*executable=*/true,
-        /*extra_reservation_size=*/0u,
-        /*allow_in_memory_compilation=*/true,
+        /*executable=*/ true,
+        /*extra_reservation_size=*/ 0u,
+        /*allow_in_memory_compilation=*/ true,
         Runtime::GetApexVersions(ArrayRef<const std::string>(libcore_dex_files)),
         &boot_image_spaces,
         &extra_reservation);
@@ -699,6 +699,140 @@ TEST_F(Dex2oatImageTest, TestExtension) {
     ASSERT_EQ(head_dex_files.size(), boot_image_spaces.size());
 
     DisableImageDex2Oat();
+  }
+}
+
+TEST_F(Dex2oatImageTest, InlinedString) {
+  ScratchDir scratch;
+  const std::string& scratch_dir = scratch.GetPath();
+  std::string image_dir = scratch_dir + GetInstructionSetString(kRuntimeISA);
+  int mkdir_result = mkdir(image_dir.c_str(), 0700);
+  ASSERT_EQ(0, mkdir_result);
+  std::string filename_prefix = image_dir + "/boot";
+
+  // The primary image must contain at least core-oj and core-libart to initialize the runtime.
+  std::vector<std::string> bcp = GetLibCoreDexFileNames();
+  ASSERT_GE(bcp.size(), 2u);
+  ASSERT_NE(std::string::npos, bcp[0].find("core-oj"));
+  ASSERT_NE(std::string::npos, bcp[1].find("core-libart"));
+  bcp.resize(2u);
+
+  // Add `StringLiterals` and `InlinedString` to the boot class path.
+  // When compiling `InlinedString.getUniqueStringFromStringLiterals()`, we shall inline
+  // `HLoadString` from `StringLiterals.getUniqueString()`. That string does not have
+  // a `StringId` in the `InlinedString` dex file but we want to include it in the boot
+  // image extension anyway and that requires special handling in `ImageWriter`.
+  // Otherwise, `dex2oat` would crash when trying to determine the string's image
+  // address when processing the method's `LinkerPatch` for that string.
+  bcp.push_back(GetTestDexFileName("StringLiterals"));
+  bcp.push_back(GetTestDexFileName("InlinedString"));
+
+  // Copy the dex files to a custom dir inside `scratch_dir` so that we do not accidentally
+  // try to load pre-compiled core images from their original directory based on BCP paths.
+  std::string jar_dir = scratch_dir + "jars";
+  mkdir_result = mkdir(jar_dir.c_str(), 0700);
+  ASSERT_EQ(0, mkdir_result);
+  jar_dir += '/';
+  CopyDexFiles(jar_dir, &bcp);
+
+  // Split the BCP to primary and extension (just the last dex file).
+  ArrayRef<const std::string> primary_dex_files =
+      ArrayRef<const std::string>(bcp).SubArray(/*pos=*/ 0u, /*length=*/ bcp.size() - 1u);
+  ArrayRef<const std::string> extension_dex_files =
+      ArrayRef<const std::string>(bcp).SubArray(/*pos=*/ bcp.size() - 1u, /*length=*/ 1u);
+
+  // Prepare the primary and extension locations.
+  std::string base_name = "boot.art";
+  std::string base_location = scratch_dir + base_name;
+  CHECK_EQ(1u, extension_dex_files.size());
+  std::vector<std::string> expanded_extension = gc::space::ImageSpace::ExpandMultiImageLocations(
+      extension_dex_files, base_location, /*boot_image_extension=*/ true);
+  CHECK_EQ(1u, expanded_extension.size());
+  std::string extension_location = expanded_extension[0];
+
+  // Create profiles for primary boot image and extension. We want all classes from
+  // `StringLiterals`, so we split the primary boot image profile into two files.
+  ScratchFile primary_profile_file1, primary_profile_file2;
+  GenerateBootProfile(
+      primary_dex_files.SubArray(/*pos=*/ 0u, /*length=*/ primary_dex_files.size() - 1u),
+      primary_profile_file1.GetFile(),
+      /*method_frequency=*/ 100u,
+      /*type_frequency=*/ 100u);
+  GenerateBootProfile(
+      primary_dex_files.SubArray(/*pos=*/ primary_dex_files.size() - 1u),
+      primary_profile_file2.GetFile(),
+      /*method_frequency=*/ std::numeric_limits<size_t>::max(),
+      /*type_frequency=*/ 1u);
+  ScratchFile extension_profile_file;
+  GenerateBootProfile(extension_dex_files,
+                      extension_profile_file.GetFile(),
+                      /*method_frequency=*/ 1u,
+                      /*type_frequency=*/ 1u);
+
+  // Compile the primary boot image.
+  std::string error_msg;
+  std::vector<std::string> extra_args;
+  extra_args.push_back("--profile-file=" + primary_profile_file1.GetFilename());
+  extra_args.push_back("--profile-file=" + primary_profile_file2.GetFilename());
+  extra_args.push_back(android::base::StringPrintf("--base=0x%08x", kBaseAddress));
+  bool primary_ok = CompileBootImage(extra_args, filename_prefix, primary_dex_files, &error_msg);
+  ASSERT_TRUE(primary_ok) << error_msg;
+
+  // Compile the extension.
+  std::string extension_bcp_string = android::base::Join(bcp, ':');
+  extra_args.clear();
+  extra_args.push_back("--profile-file=" + extension_profile_file.GetFilename());
+  AddRuntimeArg(extra_args, "-Xbootclasspath:" + extension_bcp_string);
+  AddRuntimeArg(extra_args, "-Xbootclasspath-locations:" + extension_bcp_string);
+  extra_args.push_back("--boot-image=" + base_location);
+  bool ext_ok = CompileBootImage(extra_args, filename_prefix, extension_dex_files, &error_msg);
+  ASSERT_TRUE(ext_ok) << error_msg;
+
+  // Load the three-component primary boot image and single-component extension.
+  std::vector<std::unique_ptr<gc::space::ImageSpace>> boot_image_spaces;
+  MemMap extra_reservation = MemMap::Invalid();
+  ScopedObjectAccess soa(Thread::Current());
+  bool load_ok = gc::space::ImageSpace::LoadBootImage(
+      /*boot_class_path=*/ bcp,
+      /*boot_class_path_locations=*/ bcp,
+      /*boot_class_path_files=*/ {},
+      /*boot_class_path_image_files=*/ {},
+      /*boot_class_path_vdex_files=*/ {},
+      /*boot_class_path_oat_files=*/ {},
+      {base_location, extension_location},
+      kRuntimeISA,
+      /*relocate=*/ false,
+      /*executable=*/ true,
+      /*extra_reservation_size=*/ 0u,
+      /*allow_in_memory_compilation=*/ true,
+      Runtime::GetApexVersions(ArrayRef<const std::string>(bcp)),
+      &boot_image_spaces,
+      &extra_reservation);
+  ASSERT_TRUE(load_ok);
+  ASSERT_EQ(4u, boot_image_spaces.size());
+
+  // Check that there is no String .bss entry in any boot image oat file.
+  for (const std::unique_ptr<gc::space::ImageSpace>& space : boot_image_spaces) {
+    const OatFile* oat_file = space->GetOatFile();
+    ASSERT_TRUE(oat_file != nullptr);
+    for (const auto& info : oat_file->GetBcpBssInfo()) {
+      ASSERT_TRUE(info.string_bss_mapping == nullptr);
+    }
+  }
+
+  // Check the presence of the inlined string in the boot image extension.
+  if (com::android::art::flags::weak_const_string()) {
+    const char kStringToFind[] = "Unique string for gtests from StringLiterals";
+    const size_t kStringToFindUtf16Length = /* Same as ASCII length. */ strlen(kStringToFind);
+    gc::space::ImageSpace* extension_space = boot_image_spaces.back().get();
+    const ImageSection& extension_interns =
+        extension_space->GetImageHeader().GetInternedStringsSection();
+    ASSERT_NE(extension_interns.Size(), 0u);
+    const uint8_t* intern_data = extension_space->Begin() + extension_interns.Offset();
+    size_t read_count;
+    InternTable::UnorderedSet intern_set(intern_data, /*make_copy_of_data=*/ false, &read_count);
+    auto it = intern_set.find(InternTable::Utf8String(kStringToFindUtf16Length, kStringToFind));
+    ASSERT_TRUE(it != intern_set.end());
   }
 }
 

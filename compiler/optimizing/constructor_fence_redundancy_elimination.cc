@@ -28,16 +28,17 @@ namespace art HIDDEN {
 static constexpr bool kCfreLogFenceInputCount = false;
 
 // TODO: refactor this code by reusing escape analysis.
-class CFREVisitor final : public HGraphVisitor {
+class CFREVisitor final : public CRTPGraphVisitor<CFREVisitor> {
  public:
   CFREVisitor(HGraph* graph, OptimizingCompilerStats* stats)
-      : HGraphVisitor(graph),
+      : CRTPGraphVisitor(graph),
         scoped_allocator_(graph->GetArenaStack()),
         candidate_fences_(scoped_allocator_.Adapter(kArenaAllocCFRE)),
         candidate_fence_targets_(),
         stats_(stats) {}
 
-  void VisitBasicBlock(HBasicBlock* block) override {
+ private:
+  void VisitBasicBlock(HBasicBlock* block) {
     // Visit all non-Phi instructions in the block.
     VisitNonPhiInstructions(block);
 
@@ -46,7 +47,54 @@ class CFREVisitor final : public HGraphVisitor {
     MergeCandidateFences();
   }
 
-  void VisitConstructorFence(HConstructorFence* constructor_fence) override {
+  // Keep `ForwardVisit()` functions from base class visible except for those we replace below.
+  using CRTPGraphVisitor::ForwardVisit;
+
+  // Forward all invokes to `HandleInvoke()`.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HInvoke*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitInvoke);
+    return &CFREVisitor::HandleInvoke;
+  }
+  // Class initialization check can result in class initializer calling arbitrary methods.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HClinitCheck*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitClinitCheck);
+    return &CFREVisitor::HandleInvoke;
+  }
+  // Conservatively treat unresolved field getters and setters as invocations.
+  static constexpr auto ForwardVisit(
+      void (CRTPGraphVisitor::*visit)(HUnresolvedInstanceFieldGet*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitUnresolvedInstanceFieldGet);
+    return &CFREVisitor::HandleInvoke;
+  }
+  static constexpr auto ForwardVisit(
+      void (CRTPGraphVisitor::*visit)(HUnresolvedInstanceFieldSet*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitUnresolvedInstanceFieldSet);
+    return &CFREVisitor::HandleInvoke;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HUnresolvedStaticFieldGet*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitUnresolvedStaticFieldGet);
+    return &CFREVisitor::HandleInvoke;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HUnresolvedStaticFieldSet*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitUnresolvedStaticFieldSet);
+    return &CFREVisitor::HandleInvoke;
+  }
+
+  // Forward `BoundType`, `NullCheck` and `Select` to `HandleAlias()`.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HBoundType*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitBoundType);
+    return &CFREVisitor::HandleAlias;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HNullCheck*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitNullCheck);
+    return &CFREVisitor::HandleAlias;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HSelect*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitSelect);
+    return &CFREVisitor::HandleAlias;
+  }
+
+  void VisitConstructorFence(HConstructorFence* constructor_fence) {
     candidate_fences_.push_back(constructor_fence);
 
     if (candidate_fence_targets_.SizeInBits() == 0u) {
@@ -63,91 +111,34 @@ class CFREVisitor final : public HGraphVisitor {
     }
   }
 
-  void VisitBoundType(HBoundType* bound_type) override {
-    VisitAlias(bound_type);
-  }
-
-  void VisitNullCheck(HNullCheck* null_check) override {
-    VisitAlias(null_check);
-  }
-
-  void VisitSelect(HSelect* select) override {
-    VisitAlias(select);
-  }
-
-  void VisitInstanceFieldSet(HInstanceFieldSet* instruction) override {
+  void VisitInstanceFieldSet(HInstanceFieldSet* instruction) {
     HInstruction* value = instruction->InputAt(1);
     VisitSetLocation(instruction, value);
   }
 
-  void VisitStaticFieldSet(HStaticFieldSet* instruction) override {
+  void VisitStaticFieldSet(HStaticFieldSet* instruction) {
     HInstruction* value = instruction->InputAt(1);
     VisitSetLocation(instruction, value);
   }
 
-  void VisitArraySet(HArraySet* instruction) override {
+  void VisitArraySet(HArraySet* instruction) {
     HInstruction* value = instruction->InputAt(2);
     VisitSetLocation(instruction, value);
   }
 
-  void VisitDeoptimize([[maybe_unused]] HDeoptimize* instruction) override {
+  void VisitDeoptimize([[maybe_unused]] HDeoptimize* instruction) {
     // Pessimize: Merge all fences.
     MergeCandidateFences();
   }
 
-  void VisitInvokeStaticOrDirect(HInvokeStaticOrDirect* invoke) override {
-    HandleInvoke(invoke);
-  }
-
-  void VisitInvokeVirtual(HInvokeVirtual* invoke) override {
-    HandleInvoke(invoke);
-  }
-
-  void VisitInvokeInterface(HInvokeInterface* invoke) override {
-    HandleInvoke(invoke);
-  }
-
-  void VisitInvokeUnresolved(HInvokeUnresolved* invoke) override {
-    HandleInvoke(invoke);
-  }
-
-  void VisitInvokePolymorphic(HInvokePolymorphic* invoke) override {
-    HandleInvoke(invoke);
-  }
-
-  void VisitClinitCheck(HClinitCheck* clinit) override {
-    HandleInvoke(clinit);
-  }
-
-  void VisitUnresolvedInstanceFieldGet(HUnresolvedInstanceFieldGet* instruction) override {
-    // Conservatively treat it as an invocation.
-    HandleInvoke(instruction);
-  }
-
-  void VisitUnresolvedInstanceFieldSet(HUnresolvedInstanceFieldSet* instruction) override {
-    // Conservatively treat it as an invocation.
-    HandleInvoke(instruction);
-  }
-
-  void VisitUnresolvedStaticFieldGet(HUnresolvedStaticFieldGet* instruction) override {
-    // Conservatively treat it as an invocation.
-    HandleInvoke(instruction);
-  }
-
-  void VisitUnresolvedStaticFieldSet(HUnresolvedStaticFieldSet* instruction) override {
-    // Conservatively treat it as an invocation.
-    HandleInvoke(instruction);
-  }
-
- private:
   void HandleInvoke(HInstruction* invoke) {
     // An object is considered "published" if it escapes into an invoke as any of the parameters.
     if (HasInterestingPublishTargetAsInput(invoke)) {
-        MergeCandidateFences();
+      MergeCandidateFences();
     }
   }
 
-  // Called by any instruction visitor that may create an alias.
+  // Called for any instruction visitor that may create an alias.
   // These instructions may create an alias:
   // - BoundType
   // - NullCheck
@@ -156,7 +147,7 @@ class CFREVisitor final : public HGraphVisitor {
   // These also create an alias, but are not handled by this function:
   // - Phi: propagates values across blocks, but we always merge at the end of a block.
   // - Invoke: this is handled by HandleInvoke.
-  void VisitAlias(HInstruction* aliasing_inst) {
+  void HandleAlias(HInstruction* aliasing_inst) {
     // An object is considered "published" if it becomes aliased by other instructions.
     if (HasInterestingPublishTargetAsInput(aliasing_inst))  {
       MergeCandidateFences();
@@ -253,6 +244,8 @@ class CFREVisitor final : public HGraphVisitor {
 
   // Used to record stats about the optimization.
   OptimizingCompilerStats* const stats_;
+
+  template <typename T> friend class CRTPGraphVisitor;
 
   DISALLOW_COPY_AND_ASSIGN(CFREVisitor);
 };

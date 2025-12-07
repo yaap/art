@@ -139,13 +139,13 @@ class EntrypointsOrderTest : public CommonArtTest {
         Thread, tlsPtr_, thread_exit_flags, last_no_thread_suspension_cause, sizeof(void*));
     EXPECT_OFFSET_DIFFP(Thread, tlsPtr_, last_no_thread_suspension_cause,
                         last_no_transaction_checks_cause, sizeof(void*));
+    EXPECT_OFFSET_DIFFP(
+        Thread, tlsPtr_, last_no_transaction_checks_cause, current_peer, sizeof(void*));
     // The first field after tlsPtr_ is forced to a 16 byte alignment so it might have some space.
     auto offset_tlsptr_end = OFFSETOF_MEMBER(Thread, tlsPtr_) +
         sizeof(decltype(reinterpret_cast<Thread*>(16)->tlsPtr_));
-    CHECKED(
-        offset_tlsptr_end - OFFSETOF_MEMBER(Thread, tlsPtr_.last_no_transaction_checks_cause) ==
-            sizeof(void*),
-        "last_no_transaction_checks_cause last field");
+    CHECKED(offset_tlsptr_end - OFFSETOF_MEMBER(Thread, tlsPtr_.current_peer) == sizeof(void*),
+            "current_peer last field");
   }
 
   void CheckJniEntryPoints() {
@@ -347,7 +347,9 @@ class EntrypointsOrderTest : public CommonArtTest {
                          sizeof(void*));
     EXPECT_OFFSET_DIFFNP(QuickEntryPoints, pUpdateInlineCache, pCompileOptimized,
                          sizeof(void*));
-    EXPECT_OFFSET_DIFFNP(QuickEntryPoints, pCompileOptimized, pJniReadBarrier,
+    EXPECT_OFFSET_DIFFNP(QuickEntryPoints, pCompileOptimized, pCompileBaseline,
+                         sizeof(void*));
+    EXPECT_OFFSET_DIFFNP(QuickEntryPoints, pCompileBaseline, pJniReadBarrier,
                          sizeof(void*));
     EXPECT_OFFSET_DIFFNP(QuickEntryPoints, pJniReadBarrier, pReadBarrierMarkReg00,
                          sizeof(void*));

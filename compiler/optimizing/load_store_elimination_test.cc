@@ -95,7 +95,6 @@ class LoadStoreEliminationTestBase : public SuperTest, public OptimizingUnitTest
     HInstruction* c4 = graph_->GetIntConstant(4);
     i_add1_ = MakeBinOp<HAdd>(entry_block_, DataType::Type::kInt32, i_, c1);
     i_add4_ = MakeBinOp<HAdd>(entry_block_, DataType::Type::kInt32, i_, c4);
-    MakeGoto(entry_block_);
   }
 
   // Create suspend check, linear loop variable and loop condition.
@@ -925,7 +924,7 @@ TEST_F(LoadStoreEliminationTest, VLoadDefaultValueAndVLoad) {
 TEST_F(LoadStoreEliminationTest, DefaultShadowClass) {
   HBasicBlock* main = InitEntryMainExitGraph();
 
-  HInstruction* suspend_check = MakeSuspendCheck(entry_block_);
+  MakeSuspendCheck(entry_block_);
 
   HInstruction* cls = MakeLoadClass(main);
   HInstruction* new_inst = MakeNewInstance(main, cls);
@@ -957,7 +956,7 @@ TEST_F(LoadStoreEliminationTest, DefaultShadowClass) {
 TEST_F(LoadStoreEliminationTest, DefaultShadowMonitor) {
   HBasicBlock* main = InitEntryMainExitGraph();
 
-  HInstruction* suspend_check = MakeSuspendCheck(entry_block_);
+  MakeSuspendCheck(entry_block_);
 
   HInstruction* cls = MakeLoadClass(main);
   HInstruction* new_inst = MakeNewInstance(main, cls);
@@ -1007,7 +1006,7 @@ TEST_F(LoadStoreEliminationTest, ArrayLoopOverlap) {
   auto [i_phi, i_add] = MakeLinearLoopVar(loop, body, one_const, one_const);
   HPhi* t_phi = MakePhi(loop, {zero_const, /* placeholder */ zero_const});
   std::initializer_list<HInstruction*> common_env{alloc_w, i_phi, t_phi};
-  HInstruction* suspend = MakeSuspendCheck(loop, common_env);
+  MakeSuspendCheck(loop, common_env);
   HInstruction* i_cmp_top = MakeCondition(loop, kCondGE, i_phi, eighty_const);
   HIf* loop_if = MakeIf(loop, i_cmp_top);
   CHECK(loop_if->IfTrueSuccessor() == ret);
@@ -1076,7 +1075,7 @@ TEST_F(LoadStoreEliminationTest, ArrayLoopOverlap2) {
   auto [i_phi, i_add] = MakeLinearLoopVar(loop, body, one_const, one_const);
   HPhi* t_phi = MakePhi(loop, {zero_const, /* placeholder */ zero_const});
   std::initializer_list<HInstruction*> common_env{alloc_w, i_phi, t_phi};
-  HInstruction* suspend = MakeSuspendCheck(loop, common_env);
+  MakeSuspendCheck(loop, common_env);
   HInstruction* i_cmp_top = MakeCondition(loop, kCondGE, i_phi, eighty_const);
   HIf* loop_if = MakeIf(loop, i_cmp_top);
   CHECK(loop_if->IfTrueSuccessor() == ret);
@@ -1247,7 +1246,7 @@ TEST_F(LoadStoreEliminationTest, ArrayLoopAliasing1) {
 
   // loop
   auto [i_phi, i_add] = MakeLinearLoopVar(loop, body, c0, c1);
-  HInstruction* loop_suspend_check = MakeSuspendCheck(loop);
+  MakeSuspendCheck(loop);
   HInstruction* loop_cond = MakeCondition(loop, kCondLT, i_phi, n);
   HIf* loop_if = MakeIf(loop, loop_cond);
   CHECK(loop_if->IfTrueSuccessor() == body);
@@ -1292,7 +1291,7 @@ TEST_F(LoadStoreEliminationTest, ArrayLoopAliasing2) {
 
   // loop
   auto [i_phi, i_add] = MakeLinearLoopVar(loop, body, c0, c1);
-  HInstruction* loop_suspend_check = MakeSuspendCheck(loop);
+  MakeSuspendCheck(loop);
   HInstruction* loop_cond = MakeCondition(loop, kCondLT, i_phi, n);
   HIf* loop_if = MakeIf(loop, loop_cond);
   CHECK(loop_if->IfTrueSuccessor() == body);
@@ -1411,7 +1410,7 @@ TEST_P(TwoTypesConversionsTestGroup, DefaultValueStores_LoadAfterLoop) {
       MakeIFieldGet(pre_header, default_object, default_field_type, MemberOffset(40));
   default_value->SetType(default_load_type);
   // Make the `default_object` escape to avoid write elimination (test only load elimination).
-  HInstruction* invoke = MakeInvokeStatic(return_block, DataType::Type::kVoid, {default_object});
+  MakeInvokeStatic(return_block, DataType::Type::kVoid, {default_object});
 
   HInstruction* write =
       MakeIFieldSet(return_block, object, default_value, field_type, MemberOffset(32));
@@ -1737,7 +1736,7 @@ TEST_P(TwoTypesConversionsTestGroup, UnreplacedConversionLoadDuringStoreEliminat
   HInstruction* body2_right_write2 =
       MakeIFieldSet(body2_right, object, param, field_type2, MemberOffset(40));
 
-  HInstruction* ret = MakeReturn(return_block, param);
+  MakeReturn(return_block, param);
   PerformLSE();
 
   EXPECT_INS_RETAINED(pre_header1_write1);
@@ -1954,7 +1953,7 @@ TEST_F(LoadStoreEliminationTest, PartialUnknownMerge) {
 
   MakeGoto(loop_pre_header);
 
-  HInstruction* suspend_check_header = MakeSuspendCheck(loop_header);
+  MakeSuspendCheck(loop_header);
   HInstruction* call_loop_header = MakeInvokeStatic(loop_header, DataType::Type::kBool, {});
   MakeIf(loop_header, call_loop_header);
 
@@ -1978,7 +1977,9 @@ TEST_F(LoadStoreEliminationTest, PartialUnknownMerge) {
 
   EXPECT_INS_RETAINED(read_bottom);
   EXPECT_INS_RETAINED(write_c1);
+  EXPECT_INS_RETAINED(call_c1);
   EXPECT_INS_RETAINED(write_c2);
+  EXPECT_INS_RETAINED(call_c2);
   EXPECT_INS_RETAINED(write_c3);
   EXPECT_INS_RETAINED(write_loop_right);
 }
@@ -2024,6 +2025,8 @@ TEST_F(LoadStoreEliminationTest, PartialLoadPreserved) {
   PerformLSE();
 
   EXPECT_INS_RETAINED(read_bottom) << *read_bottom;
+  EXPECT_INS_RETAINED(write_left) << *write_left;
+  EXPECT_INS_RETAINED(call_left) << *call_left;
   EXPECT_INS_RETAINED(write_right) << *write_right;
 }
 
@@ -2077,6 +2080,8 @@ TEST_F(LoadStoreEliminationTest, PartialLoadPreserved2) {
   PerformLSE();
 
   EXPECT_INS_RETAINED(read_bottom);
+  EXPECT_INS_RETAINED(write_left);
+  EXPECT_INS_RETAINED(call_left);
   EXPECT_INS_RETAINED(write_right_first);
   EXPECT_INS_RETAINED(write_right_second);
 }
@@ -2144,7 +2149,7 @@ TEST_F(LoadStoreEliminationTest, PartialLoadPreserved3) {
   HInstruction* write_left_pre = MakeIFieldSet(left_pre, new_inst, c1, MemberOffset(32));
   MakeGoto(left_pre);
 
-  HInstruction* suspend_left_loop = MakeSuspendCheck(left_loop);
+  MakeSuspendCheck(left_loop);
   HInstruction* call_left_loop = MakeInvokeStatic(left_loop, DataType::Type::kBool, {new_inst});
   MakeIf(left_loop, call_left_loop);
 
@@ -2232,7 +2237,7 @@ TEST_F(LoadStoreEliminationTest, DISABLED_PartialLoadPreserved4) {
   HInstruction* write_left_pre = MakeIFieldSet(left_pre, new_inst, c1, MemberOffset(32));
   MakeGoto(left_pre);
 
-  HInstruction* suspend_left_loop = MakeSuspendCheck(left_loop);
+  MakeSuspendCheck(left_loop);
   HInstruction* call_left_loop = MakeInvokeStatic(left_loop, DataType::Type::kBool, {});
   HInstruction* write_left_loop = MakeIFieldSet(left_loop, new_inst, c3, MemberOffset(32));
   MakeIf(left_loop, call_left_loop);
@@ -2306,8 +2311,9 @@ TEST_F(LoadStoreEliminationTest, PartialLoadPreserved5) {
 
   EXPECT_INS_RETAINED(read_bottom);
   EXPECT_INS_RETAINED(write_right);
-  EXPECT_INS_RETAINED(write_left);
   EXPECT_INS_RETAINED(call_left);
+  EXPECT_INS_RETAINED(write_left);
+  EXPECT_INS_RETAINED(call2_left);
   EXPECT_INS_RETAINED(call_right);
 }
 

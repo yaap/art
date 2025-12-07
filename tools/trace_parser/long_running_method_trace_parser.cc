@@ -29,7 +29,6 @@ namespace art {
 //
 // - art/runtime/trace.h
 // - art/runtime/trace_profile.cc
-static const int kThreadInfoHeaderV2 = 0;
 static const int kMethodInfoHeaderV2 = 1;
 static const int kEntryHeaderV2 = 2;
 static const int kMethodEntry = 0;

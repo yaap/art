@@ -37,7 +37,7 @@ class InternTableTest : public CommonRuntimeTest {
 TEST_F(InternTableTest, Intern) {
   ScopedObjectAccess soa(Thread::Current());
   InternTable intern_table;
-  StackHandleScope<4> hs(soa.Self());
+  StackHandleScope<10> hs(soa.Self());
   Handle<mirror::String> foo_1(hs.NewHandle(intern_table.InternStrong(3, "foo")));
   Handle<mirror::String> foo_2(hs.NewHandle(intern_table.InternStrong(3, "foo")));
   Handle<mirror::String> foo_3(
@@ -48,12 +48,40 @@ TEST_F(InternTableTest, Intern) {
   ASSERT_TRUE(foo_3 != nullptr);
   ASSERT_TRUE(bar != nullptr);
   EXPECT_EQ(foo_1.Get(), foo_2.Get());
+  EXPECT_NE(foo_1.Get(), foo_3.Get());
   EXPECT_TRUE(foo_1->Equals("foo"));
   EXPECT_TRUE(foo_2->Equals("foo"));
   EXPECT_TRUE(foo_3->Equals("foo"));
   EXPECT_NE(foo_1.Get(), bar.Get());
   EXPECT_NE(foo_2.Get(), bar.Get());
   EXPECT_NE(foo_3.Get(), bar.Get());
+
+  Handle<mirror::String> wfoo(hs.NewHandle(intern_table.InternWeak(3, "foo")));
+  Handle<mirror::String> wbar(hs.NewHandle(intern_table.InternWeak(3, "bar")));
+  ASSERT_TRUE(wfoo != nullptr);
+  ASSERT_TRUE(wbar != nullptr);
+  EXPECT_EQ(foo_1.Get(), wfoo.Get());
+  EXPECT_EQ(bar.Get(), wbar.Get());
+
+  Handle<mirror::String> wfoo2_1(hs.NewHandle(intern_table.InternWeak(4, "foo2")));
+  Handle<mirror::String> wfoo2_2(hs.NewHandle(intern_table.InternWeak(4, "foo2")));
+  Handle<mirror::String> wfoo2_3(
+      hs.NewHandle(mirror::String::AllocFromModifiedUtf8(soa.Self(), "foo2")));
+  Handle<mirror::String> wbar2(hs.NewHandle(intern_table.InternWeak(4, "bar2")));
+  ASSERT_TRUE(wfoo2_1 != nullptr);
+  ASSERT_TRUE(wfoo2_2 != nullptr);
+  ASSERT_TRUE(wfoo2_3 != nullptr);
+  ASSERT_TRUE(wbar2 != nullptr);
+  EXPECT_EQ(wfoo2_1.Get(), wfoo2_2.Get());
+  EXPECT_NE(wfoo2_1.Get(), wfoo2_3.Get());
+  EXPECT_TRUE(wfoo2_1->Equals("foo2"));
+  EXPECT_TRUE(wfoo2_2->Equals("foo2"));
+  EXPECT_TRUE(wfoo2_3->Equals("foo2"));
+  EXPECT_NE(wfoo2_1.Get(), wbar2.Get());
+  EXPECT_NE(wfoo2_2.Get(), wbar2.Get());
+  EXPECT_NE(wfoo2_3.Get(), wbar2.Get());
+  EXPECT_NE(wfoo2_1.Get(), wfoo.Get());
+  EXPECT_NE(wbar2.Get(), wbar.Get());
 }
 
 TEST_F(InternTableTest, Size) {

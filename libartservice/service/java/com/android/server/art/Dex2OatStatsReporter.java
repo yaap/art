@@ -25,9 +25,11 @@ import androidx.annotation.RequiresApi;
 
 import com.android.server.art.model.DetailedDexInfo;
 import com.android.server.art.model.DexMetadata;
-import com.android.server.art.model.DexoptParams;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * A class to report dex2oat metrics to StatsD.
@@ -36,35 +38,6 @@ import java.util.List;
  */
 @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 public class Dex2OatStatsReporter {
-    public static void report(int appId, @NonNull String compilerFilter,
-            @NonNull String compilationReason, @DexMetadata.Type int dexMetadataType,
-            @NonNull DetailedDexInfo dexInfo, @NonNull String isa, @NonNull Dex2OatResult result,
-            long artifactsSize, long compilationTime) {
-        ArtStatsLog.write(ArtStatsLog.ART_DEX2OAT_REPORTED, appId,
-                translateCompilerFilter(compilerFilter),
-                translateCompilationReason(compilationReason),
-                translateDexMetadataType(dexMetadataType), getApkType(dexInfo), translateIsa(isa),
-                result.status, result.exitCode, result.signal, (int) (artifactsSize / 1024),
-                (int) compilationTime);
-    }
-
-    public static void reportSkipped(int appId, @NonNull String compilationReason,
-            @DexMetadata.Type int dexMetadataType, @NonNull DetailedDexInfo dexInfo,
-            @NonNull List<Abi> abis) {
-        Dex2OatResult skipped = Dex2OatResult.notRun();
-
-        for (Abi abi : abis) {
-            ArtStatsLog.write(ArtStatsLog.ART_DEX2OAT_REPORTED, appId,
-                    translateCompilerFilter(DexoptParams.COMPILER_FILTER_NOOP),
-                    translateCompilationReason(compilationReason), dexMetadataType,
-                    getApkType(dexInfo), translateIsa(abi.isa()), skipped.status, skipped.exitCode,
-                    skipped.signal,
-                    0, // artifacts size
-                    0 // compilation time
-            );
-        }
-    }
-
     private static int translateCompilerFilter(String compilerFilter) {
         return switch (compilerFilter) {
             case "assume-verified" ->
@@ -182,6 +155,78 @@ public class Dex2OatStatsReporter {
             return ArtStatsLog.ART_DEX2_OAT_REPORTED__APK_TYPE__ART_APK_TYPE_SECONDARY;
         }
         return ArtStatsLog.ART_DEX2_OAT_REPORTED__APK_TYPE__ART_APK_TYPE_UNKNOWN;
+    }
+
+    public static class Session {
+        private final int mAppId;
+        private final DexMetadataHelper.DexMetadataInfo mDmInfo;
+        private final DetailedDexInfo mDexInfo;
+        private String mCompilerFilter;
+        private final String mCompilationReason;
+        private final List<Abi> mAbis;
+
+        private boolean mIsEnabled = true;
+        private final Map<Abi, Result> mResultsToRecord = new HashMap<>();
+
+        public Session(int appId, @NonNull DexMetadataHelper.DexMetadataInfo dmInfo,
+                @NonNull DetailedDexInfo dexInfo, @NonNull String compilerFilter,
+                @NonNull String compilationReason, @NonNull List<Abi> abis) {
+            mAppId = appId;
+            mDmInfo = dmInfo;
+            mDexInfo = dexInfo;
+            mCompilerFilter = compilerFilter;
+            mCompilationReason = compilationReason;
+            mAbis = new ArrayList<>(abis);
+
+            // By default, set the results for all ABIs to "Not Run"
+            for (Abi abi : abis) {
+                mResultsToRecord.put(abi,
+                        new Result(
+                                Dex2OatResult.notRun(), 0L /* sizeBytes */, 0L /* wallTimeMs */));
+            }
+        }
+
+        public void disable() {
+            mIsEnabled = false;
+        }
+
+        public void setCompilerFilter(@NonNull String compilerFilter) {
+            mCompilerFilter = compilerFilter;
+        }
+
+        public void recordResultForAbi(
+                @NonNull Abi abi, @NonNull Dex2OatResult result, long sizeBytes, long wallTimeMs) {
+            mResultsToRecord.replace(abi, new Result(result, sizeBytes, wallTimeMs));
+            mAbis.remove(abi);
+        }
+
+        public void recordResultForRemainingAbis(@NonNull Dex2OatResult result) {
+            for (Abi abi : mAbis) {
+                mResultsToRecord.replace(
+                        abi, new Result(result, 0L /* sizeBytes */, 0L /* wallTimeMs */));
+            }
+            mAbis.clear();
+        }
+
+        public void report() {
+            if (!mIsEnabled) {
+                return;
+            }
+
+            for (Map.Entry<Abi, Result> entry : mResultsToRecord.entrySet()) {
+                Abi abi = entry.getKey();
+                Result result = entry.getValue();
+                ArtStatsLog.write(ArtStatsLog.ART_DEX2OAT_REPORTED, mAppId,
+                        translateCompilerFilter(mCompilerFilter),
+                        translateCompilationReason(mCompilationReason),
+                        translateDexMetadataType(mDmInfo.type()), getApkType(mDexInfo),
+                        translateIsa(abi.isa()), result.dex2OatResult.status,
+                        result.dex2OatResult.exitCode, result.dex2OatResult.signal,
+                        (int) (result.sizeBytes / 1024), (int) result.wallTimeMs);
+            }
+        }
+
+        public record Result(Dex2OatResult dex2OatResult, long sizeBytes, long wallTimeMs) {}
     }
 
     public record Dex2OatResult(int status, int exitCode, int signal) {

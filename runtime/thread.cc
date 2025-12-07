@@ -71,12 +71,12 @@
 #include "gc_root.h"
 #include "handle_scope-inl.h"
 #include "handle_scope.h"
-#include "indirect_reference_table-inl.h"
 #include "instrumentation.h"
 #include "intern_table.h"
 #include "interpreter/interpreter.h"
 #include "interpreter/shadow_frame-inl.h"
 #include "java_frame_root_info.h"
+#include "jni/indirect_reference_table-inl.h"
 #include "jni/java_vm_ext.h"
 #include "jni/jni_internal.h"
 #include "mirror/class-alloc-inl.h"
@@ -113,6 +113,7 @@
 #include "thread-inl.h"
 #include "thread_list.h"
 #include "trace.h"
+#include "trace_common.h"
 #include "trace_profile.h"
 #include "unwindstack/AndroidUnwinder.h"
 #include "verify_object.h"
@@ -649,13 +650,18 @@ void* Thread::CreateCallback(void* arg) {
     // Copy peer into self, deleting global reference when done.
     CHECK(self->tlsPtr_.jpeer != nullptr);
     self->tlsPtr_.opeer = soa.Decode<mirror::Object>(self->tlsPtr_.jpeer).Ptr();
+    self->tlsPtr_.current_peer = self->tlsPtr_.opeer;
     // Make sure nothing can observe both opeer and jpeer set at the same time.
     self->DeleteJPeer(self->GetJniEnv());
     self->SetThreadName(self->GetThreadName()->ToModifiedUtf8().c_str());
 
-    // Use priority rather than niceness field to enable Android S workaround.
-    ArtField* priorityField = WellKnownClasses::java_lang_Thread_priority;
-    self->SetNativePriority(priorityField->GetInt(self->tlsPtr_.opeer));
+    // Java priority is inherited at the point at which the Java thread is
+    // created. That uses the stored `priority` value. However niceness can be changed before
+    // starting the thread. So use the niceness value to set the actual OS priority.
+    // The priority value stored in the peer is needed to set the priority of children of self,
+    // but does not determine our own priority (though this distinction very rarely matters).
+    int niceness = self->GetCachedNiceness();
+    self->SetNativePriority(NicenessToPriority(niceness), niceness);
 
     runtime->GetRuntimeCallbacks()->ThreadStart(self);
 
@@ -1104,7 +1110,7 @@ bool Thread::Init(ThreadList* thread_list, JavaVMExt* java_vm, JNIEnvExt* jni_en
 
   ScopedTrace trace3("ThreadList::Register");
   thread_list->Register(this);
-  if (art_flags::always_enable_profile_code()) {
+  if (ShouldEnableProfileCode()) {
     UpdateTlsLowOverheadTraceEntrypoints(TraceProfiler::GetTraceType());
   }
   return true;
@@ -1220,6 +1226,7 @@ Thread* Thread::Attach(const char* thread_name, bool as_daemon, jobject thread_p
     ScopedObjectAccess soa(self);
     ObjPtr<mirror::Object> peer = soa.Decode<mirror::Object>(thread_peer);
     self->tlsPtr_.opeer = peer.Ptr();
+    self->tlsPtr_.current_peer = peer.Ptr();
     SetNativePeer</*kSupportTransaction=*/ false>(peer, self);
     return true;
   };
@@ -1245,6 +1252,8 @@ void Thread::CreatePeer(const char* name, bool as_daemon, jobject thread_group) 
     return;
   }
   jint thread_niceness = GetNativeNiceness();
+  jint thread_priority = NicenessToPriority(thread_niceness);
+  DCHECK(thread_priority >= 1 && thread_priority <= 10);
 
   DCHECK(WellKnownClasses::java_lang_Thread->IsInitialized());
   Handle<mirror::Object> peer =
@@ -1254,8 +1263,9 @@ void Thread::CreatePeer(const char* name, bool as_daemon, jobject thread_group) 
     return;
   }
   tlsPtr_.opeer = peer.Get();
+  tlsPtr_.current_peer = peer.Get();
   WellKnownClasses::java_lang_Thread_init->InvokeInstance<'V', 'L', 'L', 'I', 'Z'>(
-      self, peer.Get(), thr_group.Get(), thread_name.Get(), thread_niceness, as_daemon);
+      self, peer.Get(), thr_group.Get(), thread_name.Get(), thread_priority, as_daemon);
   if (self->IsExceptionPending()) {
     return;
   }
@@ -1269,10 +1279,19 @@ void Thread::CreatePeer(const char* name, bool as_daemon, jobject thread_group) 
     // available (in the compiler, in tests), we manually assign the
     // fields the constructor should have set.
     if (runtime->IsActiveTransaction()) {
-      InitPeer<true>(tlsPtr_.opeer, as_daemon, thr_group.Get(), thread_name.Get(), thread_niceness);
+      InitPeer<true>(tlsPtr_.opeer,
+                     as_daemon,
+                     thr_group.Get(),
+                     thread_name.Get(),
+                     thread_priority,
+                     thread_niceness);
     } else {
-      InitPeer<false>(
-          tlsPtr_.opeer, as_daemon, thr_group.Get(), thread_name.Get(), thread_niceness);
+      InitPeer<false>(tlsPtr_.opeer,
+                      as_daemon,
+                      thr_group.Get(),
+                      thread_name.Get(),
+                      thread_priority,
+                      thread_niceness);
     }
     peer_thread_name.Assign(GetThreadName());
   }
@@ -1320,9 +1339,19 @@ ObjPtr<mirror::Object> Thread::CreateCompileTimePeer(const char* name,
   // available (in the compiler, in tests), we manually assign the
   // fields the constructor should have set.
   if (runtime->IsActiveTransaction()) {
-    InitPeer<true>(peer.Get(), as_daemon, thr_group.Get(), thread_name.Get(), thread_niceness);
+    InitPeer<true>(peer.Get(),
+                   as_daemon,
+                   thr_group.Get(),
+                   thread_name.Get(),
+                   kNormThreadPriority,
+                   thread_niceness);
   } else {
-    InitPeer<false>(peer.Get(), as_daemon, thr_group.Get(), thread_name.Get(), thread_niceness);
+    InitPeer<false>(peer.Get(),
+                    as_daemon,
+                    thr_group.Get(),
+                    thread_name.Get(),
+                    kNormThreadPriority,
+                    thread_niceness);
   }
 
   return peer.Get();
@@ -1333,14 +1362,20 @@ void Thread::InitPeer(ObjPtr<mirror::Object> peer,
                       bool as_daemon,
                       ObjPtr<mirror::Object> thread_group,
                       ObjPtr<mirror::String> thread_name,
+                      jint thread_priority,
                       jint thread_niceness) {
   WellKnownClasses::java_lang_Thread_daemon->SetBoolean<kTransactionActive>(peer,
       static_cast<uint8_t>(as_daemon ? 1u : 0u));
   WellKnownClasses::java_lang_Thread_group->SetObject<kTransactionActive>(peer, thread_group);
   WellKnownClasses::java_lang_Thread_name->SetObject<kTransactionActive>(peer, thread_name);
+  // Setting niceness and priority here is partially redundant. But this is unlikely to be a hot
+  // path.
+  DCHECK_GE(thread_priority, kMinThreadPriority);
+  DCHECK_LE(thread_priority, kMaxThreadPriority);
+  DCHECK_GE(thread_niceness, kMinNiceness);
+  DCHECK_LE(thread_niceness, kMaxNiceness);
+  WellKnownClasses::java_lang_Thread_priority->SetInt<kTransactionActive>(peer, thread_priority);
   WellKnownClasses::java_lang_Thread_niceness->SetInt<kTransactionActive>(peer, thread_niceness);
-  WellKnownClasses::java_lang_Thread_priority->SetInt<kTransactionActive>(
-      peer, NicenessToPriority(thread_niceness));
 }
 
 void Thread::SetCachedThreadName(const char* name) {
@@ -2061,25 +2096,36 @@ void Thread::DumpState(std::ostream& os, const Thread* thread, pid_t tid) {
   std::string group_name;
   int priority;
   bool is_daemon = false;
+  bool is_flipping = false;
   Thread* self = Thread::Current();
+
+  mirror::Object* peer = nullptr;
 
   // Don't do this if we are aborting since the GC may have all the threads suspended. This will
   // cause ScopedObjectAccessUnchecked to deadlock.
-  if (gAborting == 0 && self != nullptr && thread != nullptr && thread->tlsPtr_.opeer != nullptr) {
+  if (gAborting == 0 && self != nullptr && thread != nullptr) {
     ScopedObjectAccessUnchecked soa(self);
-    priority = NicenessToPriority(
-        WellKnownClasses::java_lang_Thread_niceness->GetInt(thread->tlsPtr_.opeer));
-    is_daemon = WellKnownClasses::java_lang_Thread_daemon->GetBoolean(thread->tlsPtr_.opeer);
+    if (thread->GetStateAndFlags(std::memory_order_relaxed).IsAnyOfFlagsSet(FlipFunctionFlags())) {
+      is_flipping = true;
+      priority = thread->GetNativePriority();  // See below for disclaimer.
+    } else if ((peer = thread->tlsPtr_.opeer) != nullptr) {
+      // Flip is initiated with all threads suspended, and we're not suspended.
+      // So no flip can be requested while we hold the mutator lock.
+      priority = NicenessToPriority(WellKnownClasses::java_lang_Thread_niceness->GetInt(peer));
+      is_daemon = WellKnownClasses::java_lang_Thread_daemon->GetBoolean(peer);
 
-    ObjPtr<mirror::Object> thread_group =
-        WellKnownClasses::java_lang_Thread_group->GetObject(thread->tlsPtr_.opeer);
+      ObjPtr<mirror::Object> thread_group =
+          WellKnownClasses::java_lang_Thread_group->GetObject(peer);
 
-    if (thread_group != nullptr) {
-      ObjPtr<mirror::Object> group_name_object =
-          WellKnownClasses::java_lang_ThreadGroup_name->GetObject(thread_group);
-      group_name = (group_name_object != nullptr)
-          ? group_name_object->AsString()->ToModifiedUtf8()
-          : "<null>";
+      if (thread_group != nullptr) {
+        ObjPtr<mirror::Object> group_name_object =
+            WellKnownClasses::java_lang_ThreadGroup_name->GetObject(thread_group);
+        group_name = (group_name_object != nullptr)
+                         ? group_name_object->AsString()->ToModifiedUtf8()
+                         : "<null>";
+      }
+    } else {
+      priority = thread->GetNativePriority();  // See below for disclaimer.
     }
   } else if (thread != nullptr) {
     // This produces niceness translated to a Java priority, which may not match the cached Java
@@ -2097,6 +2143,14 @@ void Thread::DumpState(std::ostream& os, const Thread* thread, pid_t tid) {
     }
   }
 
+  int scheduler = sched_getscheduler(tid);
+  const char* sched_name = nullptr;
+  if (scheduler == SCHED_FIFO) {
+    sched_name = " SCHED_FIFO!";
+  } else if (scheduler == SCHED_RR) {
+    sched_name = " SCHED_RR!";
+  }
+
   std::string scheduler_group_name(GetSchedulerGroupName(tid));
   if (scheduler_group_name.empty()) {
     scheduler_group_name = "default";
@@ -2109,9 +2163,15 @@ void Thread::DumpState(std::ostream& os, const Thread* thread, pid_t tid) {
     if (is_daemon) {
       os << " daemon";
     }
+    if (is_flipping) {
+      os << " in thread flip";
+    }
     os << " prio=" << priority
        << " tid=" << thread->GetThreadId()
        << " " << thread->GetState();
+    if (sched_name != nullptr) {
+      os << sched_name;
+    }
     if (thread->IsStillStarting()) {
       os << " (still starting up)";
     }
@@ -2135,7 +2195,7 @@ void Thread::DumpState(std::ostream& os, const Thread* thread, pid_t tid) {
          << " sCount=" << thread->tls32_.suspend_count
          << " ucsCount=" << thread->tls32_.user_code_suspend_count
          << " flags=" << state_and_flags.GetValue()
-         << " obj=" << reinterpret_cast<void*>(thread->tlsPtr_.opeer)
+         << " obj=" << reinterpret_cast<void*>(peer)
          << " self=" << reinterpret_cast<const void*>(thread) << "\n";
     };
     if (Locks::thread_suspend_count_lock_->IsExclusiveHeld(self)) {
@@ -2438,6 +2498,7 @@ Thread::DumpOrder Thread::DumpStack(std::ostream& os,
                                     bool dump_native_stack,
                                     bool force_dump_stack) const {
   unwindstack::AndroidLocalUnwinder unwinder;
+  unwinder.set_check_global_elf_cache(true);
   return DumpStack(os, unwinder, dump_native_stack, force_dump_stack);
 }
 
@@ -2731,6 +2792,7 @@ void Thread::Destroy(bool should_run_callbacks) {
     }
 
     tlsPtr_.opeer = nullptr;
+    tlsPtr_.current_peer = nullptr;
   }
 
   {
@@ -4555,6 +4617,7 @@ template <bool kPrecise>
 void Thread::VisitRoots(RootVisitor* visitor) {
   const uint32_t thread_id = GetThreadId();
   visitor->VisitRootIfNonNull(&tlsPtr_.opeer, RootInfo(kRootThreadObject, thread_id));
+  visitor->VisitRootIfNonNull(&tlsPtr_.current_peer, RootInfo(kRootThreadObject, thread_id));
   if (tlsPtr_.exception != nullptr && tlsPtr_.exception != GetDeoptimizationException()) {
     visitor->VisitRoot(reinterpret_cast<mirror::Object**>(&tlsPtr_.exception),
                        RootInfo(kRootNativeStack, thread_id));
@@ -4724,7 +4787,6 @@ void Thread::SetTlab(uint8_t* start, uint8_t* end, uint8_t* limit) {
 }
 
 void Thread::ResetTlab() {
-  gc::Heap* const heap = Runtime::Current()->GetHeap();
   SetTlab(nullptr, nullptr, nullptr);
 }
 
@@ -5072,6 +5134,8 @@ int* Thread::GetPriorityMap() {
 
 // Many niceness values don't correspond to a priority. Find and return a close one.
 int Thread::NicenessToPriority(int niceness) {
+  DCHECK_GE(niceness, kMinNiceness);
+  DCHECK_LE(niceness, kMaxNiceness);
   int* pm = GetPriorityMap();
   int* bound = std::lower_bound(pm + kMinThreadPriority,
                                 pm + kMaxThreadPriority + 1,
@@ -5105,21 +5169,30 @@ int Thread::SetNativeNiceness(int niceness) {
 int Thread::GetNativeNiceness() const {
   errno = 0;
   int niceness = getpriority(PRIO_PROCESS, static_cast<id_t>(GetTid()));
-  CHECK(niceness != -1 || errno == 0);
+  CHECK(niceness != -1 || errno == 0) << " " << strerror(errno);
   return niceness;
 }
 
-int Thread::SetNativePriority(int new_priority) {
-  int n = PriorityToNiceness(new_priority);
+void Thread::SetNativePriority(int new_priority, int new_niceness) {
+  if (kIsDebugBuild && Thread::Current() == this && GetPeer() != nullptr &&
+      GetCachedNiceness() != new_niceness) {
+    // We do this in some tests, but it should not normally happen.
+    // We test only for self == this, to avoid middle-of-thread-flip issues.
+    LOG(VERBOSE) << "Setting priority to unexpected value " << new_niceness;
+  }
   if (canSetPriority) {
     if (UNLIKELY(NeedSWorkaround())) {
       palette_status_t status = PaletteSchedSetPriority(GetTid(), new_priority);
       CHECK(status == PALETTE_STATUS_OK || status == PALETTE_STATUS_CHECK_ERRNO);
     } else {
-      SetNativeNiceness(n);
+      SetNativeNiceness(new_niceness);
     }
   }
-  return n;
+}
+
+void Thread::SetNativePriority(int new_priority) {
+  int n = PriorityToNiceness(new_priority);
+  SetNativePriority(new_priority, n);
 }
 
 void Thread::AbortInThis(const std::string& message) {
@@ -5154,6 +5227,19 @@ std::string Thread::StateAndFlagsAsHexString() const {
   std::stringstream result_stream;
   result_stream << std::hex << GetStateAndFlags(std::memory_order_relaxed).GetValue();
   return result_stream.str();
+}
+
+int Thread::GetCachedNiceness() const {
+  // TODO: Possibly consider inlining again. A straightforward move to thread-inl.h requires
+  // additional includes there to get GetInt() defined, which then result in build failures for
+  // other uses of that file.
+  DCHECK_EQ(this, Thread::Current());
+  mirror::Object* peer = GetPeer();
+  if (peer == nullptr) {
+    return 0;
+  }
+  // Respects the fact that the `niceness` field is volatile.
+  return WellKnownClasses::java_lang_Thread_niceness->GetInt(peer);
 }
 
 ScopedExceptionStorage::ScopedExceptionStorage(art::Thread* self)

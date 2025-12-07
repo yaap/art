@@ -20,6 +20,7 @@ import static com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
 import static com.android.server.art.DexUseManagerLocal.DexLoader;
 import static com.android.server.art.DexUseManagerLocal.SecondaryDexInfo;
 import static com.android.server.art.model.DexoptStatus.DexContainerFileDexoptStatus;
+import static com.android.server.art.testing.TestDataHelper.newPackageState;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -151,39 +152,37 @@ public class DumpHelperTest {
         assertThat(stringWriter.toString()).isEqualTo(expected);
     }
 
-    private PackageState createPackageState(@NonNull String packageName, int appId, boolean isApex,
-            boolean hasPackage, @NonNull String primaryAbi, @NonNull String secondaryAbi) {
-        var pkgState = mock(PackageState.class);
-        lenient().when(pkgState.getPackageName()).thenReturn(packageName);
-        lenient().when(pkgState.getAppId()).thenReturn(appId);
-        lenient().when(pkgState.isApex()).thenReturn(isApex);
-        lenient()
-                .when(pkgState.getAndroidPackage())
-                .thenReturn(hasPackage ? mock(AndroidPackage.class) : null);
-        lenient().when(pkgState.getPrimaryCpuAbi()).thenReturn(primaryAbi);
-        lenient().when(pkgState.getSecondaryCpuAbi()).thenReturn(secondaryAbi);
-        return pkgState;
-    }
-
     private Map<String, PackageState> createPackageStates() {
         var pkgStates = new HashMap<String, PackageState>();
         pkgStates.put(PKG_NAME_FOO,
-                createPackageState(PKG_NAME_FOO, 10001 /* appId */, false /* isApex */,
-                        true /* hasPackage */, "arm64-v8a", "armeabi-v7a"));
+                newPackageState(PKG_NAME_FOO)
+                        .setAppId(10001)
+                        .setAbis("arm64-v8a", "armeabi-v7a")
+                        .build());
         pkgStates.put(PKG_NAME_BAR,
-                createPackageState(PKG_NAME_BAR, 10003 /* appId */, false /* isApex */,
-                        true /* hasPackage */, "armeabi-v7a", "arm64-v8a"));
+                newPackageState(PKG_NAME_BAR)
+                        .setAppId(10003)
+                        .setAbis("armeabi-v7a", "arm64-v8a")
+                        .build());
         pkgStates.put(PKG_NAME_SDK,
-                createPackageState(PKG_NAME_SDK, -1 /* appId */, false /* isApex */,
-                        true /* hasPackage */, "armeabi-v7a", "arm64-v8a"));
+                newPackageState(PKG_NAME_SDK)
+                        .setAppId(-1)
+                        .setAbis("armeabi-v7a", "arm64-v8a")
+                        .build());
         // This should not be included in the output because it is APEX.
         pkgStates.put("com.android.art",
-                createPackageState("com.android.art", -1 /* appId */, true /* isApex */,
-                        true /* hasPackage */, "arm64-v8a", "armeabi-v7a"));
+                newPackageState("com.android.art")
+                        .setAppId(-1)
+                        .setAbis("arm64-v8a", "armeabi-v7a")
+                        .setApex(true)
+                        .build());
         // This should not be included in the output because it does't have AndroidPackage.
         pkgStates.put("com.example.null",
-                createPackageState("com.example.null", 10010 /* appId */, false /* isApex */,
-                        false /* hasPackage */, "arm64-v8a", "armeabi-v7a"));
+                newPackageState("com.example.null")
+                        .setAppId(10010)
+                        .setAbis("arm64-v8a", "armeabi-v7a")
+                        .clearAndroidPackage()
+                        .build());
         return pkgStates;
     }
 

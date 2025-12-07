@@ -20,6 +20,7 @@ bootstrap_go_package {
         "soong-android",
         "soong-apex",
         "soong-cc",
+        "soong-cc-config",
     ],
     srcs: [
         "art.go",
@@ -321,30 +322,28 @@ cc_defaults {
     },
 }
 
+// Add a dependency on libz suitable for use in binaries/libraries that transitively depends on
+// "art_libz_static_defaults" through some static_libs.
+cc_defaults {
+    name: "art_libz_static_transitive_defaults",
+    shared_libs: select((os(), soong_config_variable("ANDROID", "HAS_SANITIZE_HOST")), {
+        ("android", default): ["libz"],
+        (default, true): ["libz"],
+        (default, default): [],
+    }),
+}
+
 // Add a dependency on libz suitable for use in *_static_defaults.
 cc_defaults {
     name: "art_libz_static_defaults",
-    target: {
-        android: {
-            shared_libs: ["libz"],
-        },
-        // Link libz dynamically on host to avoid odr-violation errors in ASAN
-        // builds, because the LLVM runtime may load libz-host.so dynamically.
-        not_windows: {
-            shared_libs: ["libz"],
-        },
-        windows: {
-            whole_static_libs: ["libz"],
-        },
-        // art/tools/build-linux-x86-host-tools.sh uses BUILD_HOST_static=true
-        // to build static binaries, which means we need to use static libz
-        // there. We cannot target static binaries here, so let's target musl
-        // instead, because that script uses musl and we don't use it anywhere
-        // else.
-        linux_musl: {
-            whole_static_libs: ["libz"],
-        },
-    },
+    defaults: ["art_libz_static_transitive_defaults"],
+    // TODO(b/438495566): Link libz statically on host, except for ASAN builds because the LLVM
+    // runtime may load libz-host.so dynamically.
+    whole_static_libs: select((os(), soong_config_variable("ANDROID", "HAS_SANITIZE_HOST")), {
+        ("android", default): [],
+        (default, true): [],
+        (default, default): ["libz"],
+    }),
 }
 
 // A version of conscrypt only for enabling the "-hostdex" version to test ART on host.

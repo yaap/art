@@ -18,12 +18,18 @@
 
 #include "constant_folding.h"
 
+#include "art_field-inl.h"
+#include "class_linker.h"
 #include "base/macros.h"
 #include "dead_code_elimination.h"
 #include "driver/compiler_options.h"
 #include "graph_checker.h"
+#include "handle_scope-inl.h"
+#include "mirror/class-inl.h"
 #include "optimizing_unit_test.h"
 #include "pretty_printer.h"
+#include "scoped_thread_state_change.h"
+#include "thread.h"
 
 #include "gtest/gtest.h"
 
@@ -60,7 +66,7 @@ class ConstantFoldingTest : public CommonCompilerTest, public OptimizingUnitTest
     std::string actual_before = printer_before.str();
     EXPECT_EQ(expected_before, actual_before);
 
-    HConstantFolding(graph_, /* stats= */ nullptr, "constant_folding").Run();
+    HConstantFolding(graph_, *compiler_options_, /* stats= */ nullptr, "constant_folding").Run();
     GraphChecker graph_checker_cf(graph_);
     graph_checker_cf.Run();
     ASSERT_TRUE(graph_checker_cf.IsValid());
@@ -828,6 +834,70 @@ TEST_F(ConstantFoldingTest, UnsignedComparisonsWithZero) {
                        expected_after_cf,
                        expected_after_dce,
                        check_after_cf);
+}
+
+/**
+ * Simple program with an integer static field get that has an assumed value override.
+ */
+TEST_F(ConstantFoldingTest, AssumeValueStaticFieldGetKnownValue) {
+  ScopedObjectAccess soa(Thread::Current());
+  VariableSizedHandleScope handles(soa.Self());
+
+  // Fetch an arbitrary, known ArtField (java.lang.Integer.MAX_VALUE).
+  ObjPtr<mirror::Class> integer_class =
+      class_linker_->FindSystemClass(soa.Self(), "Ljava/lang/Integer;");
+  ASSERT_FALSE(integer_class.IsNull());
+  ASSERT_TRUE(integer_class->IsInitialized() || integer_class->IsInitializing());
+  ArtField* field = integer_class->FindDeclaredStaticField("MAX_VALUE", "I");
+  ASSERT_NE(field, nullptr) << "Could not find java.lang.Integer.MAX_VALUE";
+  ASSERT_EQ(field->GetTypeAsPrimitiveType(), Primitive::kPrimInt);
+
+  // Setup graph: Entry -> Main -> Exit
+  // Main block will contain: LoadClass -> StaticFieldGet -> Return
+  HBasicBlock* main_block = InitEntryMainExitGraph(&handles);
+  HLoadClass* load_class = MakeLoadClass(main_block,
+                                         integer_class->GetDexTypeIndex(),
+                                         handles.NewHandle<mirror::Class>(integer_class));
+  HStaticFieldGet* sget = MakeSFieldGet(main_block, load_class, field, DataType::Type::kInt32);
+  MakeReturn(main_block, sget);
+  graph_->BuildDominatorTree();
+
+  // Override the assumed value for the ArtField, referenced during compilation.
+  static constexpr int32_t kAssumedValueOverride = 12345;
+  OverrideAssumedValue(field, kAssumedValueOverride);
+
+  std::string expected_before =
+      "BasicBlock 0, succ: 1\n"
+      "  2: CurrentMethod [3]\n"
+      "  0: Goto 1\n"
+      "BasicBlock 1, pred: 0, succ: 2\n"
+      "  3: LoadClass(2) [4]\n"
+      "  4: StaticFieldGet(3) [5]\n"
+      "  5: Return(4)\n"
+      "BasicBlock 2, pred: 1\n"
+      "  1: Exit\n";
+
+  // Expected difference after constant folding.
+  diff_t expected_cf_diff = {
+      {"  2: CurrentMethod [3]\n",     "  2: CurrentMethod [3]\n"
+                                       "  6: IntConstant [5]\n"},
+      {"  3: LoadClass(2) [4]\n",      "  3: LoadClass(2)\n"},
+      {"  4: StaticFieldGet(3) [5]\n", removed },
+      {"  5: Return(4)\n",             "  5: Return(6)\n"},
+  };
+  std::string expected_after_cf = Patch(expected_before, expected_cf_diff);
+
+  // Ensure the IntConstant reflects the override value.
+  auto check_after_cf = [](HGraph* graph) {
+    HInstruction* inst = graph->GetBlocks()[1]->GetLastInstruction()->InputAt(0);
+    ASSERT_TRUE(inst->IsIntConstant());
+    ASSERT_EQ(inst->AsIntConstant()->GetValue(), kAssumedValueOverride);
+  };
+
+  // We don't expect any meaningful differences after dead code elimination.
+  std::string expected_after_dce = expected_after_cf;
+
+  TestCodeOnReadyGraph(expected_before, expected_after_cf, expected_after_dce, check_after_cf);
 }
 
 }  // namespace art

@@ -52,6 +52,4 @@ public class Main {
         }
         System.out.println("Done");
     }
-
-    private static native int getThreadPlatformPriority();
 }

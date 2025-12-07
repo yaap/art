@@ -236,15 +236,6 @@ public class Test924 {
     Thread[] threads = getAllThreads();
     List<Thread> threadList = new ArrayList<>(Arrays.asList(threads));
 
-    // Filter out JIT thread. It may or may not be there depending on configuration.
-    Iterator<Thread> it = threadList.iterator();
-    while (it.hasNext()) {
-      Thread t = it.next();
-      if (t.getName().startsWith("Jit thread pool worker")) {
-        it.remove();
-        break;
-      }
-    }
 
     Collections.sort(threadList, THREAD_COMP);
 

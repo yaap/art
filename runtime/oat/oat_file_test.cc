@@ -226,6 +226,7 @@ TEST_F(OatFileTest, RejectsCdex) {
                                                              std::move(vdex_file),
                                                              vdex_location,
                                                              /*context=*/nullptr,
+                                                             kReasonVdex,
                                                              &error_msg));
     EXPECT_EQ(odex_file, nullptr) << "Cdex accepted unexpectedly";
     EXPECT_THAT(error_msg, HasSubstr("found dex file with invalid dex file version"));

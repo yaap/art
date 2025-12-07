@@ -248,7 +248,6 @@ cc_defaults {
                 "liblz4", // libart(d)-dex2oat dependency; must be repeated here since it's a static lib.
                 "liblog",
                 "libsigchain",
-                "libz",
             ],
         },
     },
@@ -258,6 +257,8 @@ art_cc_binary {
     name: "dex2oat",
     defaults: [
         "dex2oat-defaults",
+        // Needed by "libart-dex2oat" on Android and "libdex2oat_static" on host.
+        "art_libz_static_transitive_defaults",
     ],
     // Modules that do dexpreopting, e.g. android_app, depend implicitly on
     // either dex2oat or dex2oatd in ART source builds.
@@ -304,9 +305,6 @@ art_cc_binary {
             // it'd get overridden by the load hook even when it uses
             // PrependProperties.
             compile_multilib: "64",
-            // libz is a libdex2oat_static transitive dependency from art_libz_static_defaults,
-            // duplicated here because we cannot import *_static_defaults only for host.
-            shared_libs: ["libz"],
         },
     },
 
@@ -322,6 +320,8 @@ art_cc_binary {
     defaults: [
         "art_debug_defaults",
         "dex2oat-defaults",
+        // Needed by "libartd-dex2oat" on Android and "libdex2oatd_static" on host.
+        "art_libz_static_transitive_defaults",
     ],
     // Modules that do dexpreopting, e.g. android_app, depend implicitly on
     // either dex2oat or dex2oatd in ART source builds.
@@ -357,7 +357,6 @@ art_cc_binary {
             ],
             stl: "c++_static",
             compile_multilib: "64",
-            shared_libs: ["libz"],
         },
     },
 
@@ -426,6 +425,7 @@ art_cc_defaults {
         ":art-gtest-jars-Dex2oatVdexTestDex",
         ":art-gtest-jars-ImageLayoutA",
         ":art-gtest-jars-ImageLayoutB",
+        ":art-gtest-jars-InlinedString",
         ":art-gtest-jars-Interfaces",
         ":art-gtest-jars-LinkageTest",
         ":art-gtest-jars-Main",

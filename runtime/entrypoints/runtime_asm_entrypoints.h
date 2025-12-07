@@ -84,6 +84,7 @@ extern "C" void art_quick_deoptimize_from_compiled_code(DeoptimizationKind);
 
 extern "C" void* art_quick_string_builder_append(uint32_t format);
 extern "C" void art_quick_compile_optimized(ArtMethod*, Thread*);
+extern "C" void art_quick_compile_baseline(ArtMethod*, Thread*);
 extern "C" void art_quick_method_entry_hook(ArtMethod*, Thread*);
 extern "C" int32_t art_quick_method_exit_hook(Thread*, ArtMethod*, uint64_t*, uint64_t*);
 

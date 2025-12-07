@@ -17,8 +17,6 @@
 package com.android.server.art.prereboot;
 
 import static com.android.server.art.IDexoptChrootSetup.CHROOT_DIR;
-import static com.android.server.art.prereboot.PreRebootManagerInterface.SystemRequirementException;
-import static com.android.server.art.proto.PreRebootStats.Status;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -47,6 +45,9 @@ import com.android.server.art.PreRebootDexoptJob;
 import com.android.server.art.ReasonMapping;
 import com.android.server.art.Utils;
 import com.android.server.art.model.BatchDexoptParams;
+import com.android.server.art.prereboot.PreRebootManagerInterface.SystemRequirementException;
+import com.android.server.art.proto.PreRebootStats.FailureReason;
+import com.android.server.art.proto.PreRebootStats.Status;
 import com.android.server.pm.PackageManagerLocal;
 
 import dalvik.system.DelegateLastClassLoader;
@@ -94,7 +95,6 @@ public class PreRebootDriver {
      */
     public @NonNull PreRebootResult run(@Nullable String otaSlot, boolean mapSnapshotsForOta,
             @NonNull CancellationSignal cancellationSignal) {
-        boolean systemRequirementCheckFailed = false;
         try {
             try (var snapshot = mInjector.getPackageManagerLocal().withFilteredSnapshot()) {
                 BatchDexoptParams params = mInjector.getArtManagerLocal().getBatchDexoptParams(
@@ -104,27 +104,31 @@ public class PreRebootDriver {
                     runFromChroot(cancellationSignal, snapshot, params);
                 }
             }
-            return new PreRebootResult(true /* success */);
+            return new PreRebootResult(Status.STATUS_FINISHED);
         } catch (RemoteException e) {
             Utils.logArtdException(e);
+            return new PreRebootResult(Status.STATUS_FAILED);
         } catch (ServiceSpecificException e) {
             AsLog.e("Failed to set up chroot", e);
+            return new PreRebootResult(Status.STATUS_FAILED, FailureReason.FAILURE_CHROOT_SETUP);
         } catch (SystemRequirementException e) {
-            systemRequirementCheckFailed = true;
             AsLog.e("System requirement check failed", e);
+            return new PreRebootResult(Status.STATUS_ABORTED_SYSTEM_REQUIREMENTS);
         } catch (ReflectiveOperationException e) {
             Throwable cause = e.getCause();
             if (cause != null
                     && cause.getClass().getName().equals(
                             SystemRequirementException.class.getName())) {
                 // For future use only. Can't happen for now.
-                systemRequirementCheckFailed = true;
                 AsLog.e("System requirement check failed in chroot", cause);
+                return new PreRebootResult(Status.STATUS_ABORTED_SYSTEM_REQUIREMENTS);
             } else {
                 AsLog.wtf("Failed to run Pre-reboot Dexopt", e);
+                return new PreRebootResult(Status.STATUS_FAILED);
             }
         } catch (IOException | ErrnoException e) {
-            AsLog.e("Failed to run Pre-reboot Dexopt", e);
+            AsLog.e("Failed to create a class loader for the new service-art.jar", e);
+            return new PreRebootResult(Status.STATUS_FAILED, FailureReason.FAILURE_CLASS_LOADER);
         } finally {
             try {
                 // No need to pass `mapSnapshotsForOta` because `setUp` stores this information in a
@@ -136,7 +140,6 @@ public class PreRebootDriver {
                 AsLog.e("Failed to tear down chroot", e);
             }
         }
-        return new PreRebootResult(false /* success */, systemRequirementCheckFailed);
     }
 
     public void test() {
@@ -250,12 +253,16 @@ public class PreRebootDriver {
     }
 
     /**
-     * @param success whether Pre-reboot Dexopt is successful. False if Pre-reboot dexopt failed,
-     *         the system requirement check failed, or system requirements are not met.
+     * @param success {@link Status.STATUS_FINISHED} if successful, {@link Status.STATUS_FAILED} if
+     *         Pre-reboot dexopt failed (including failed to perform the system requirement check)
+     *         or {@link Status.STATUS_ABORTED_SYSTEM_REQUIREMENTS} if system requirements are not
+     *         met.
+     * @param failureStatus A value indicating the failure reason, if {@code status} is {@link
+     *         Status.STATUS_FAILED}. Ignored otherwise.
      */
-    public record PreRebootResult(boolean success, boolean systemRequirementCheckFailed) {
-        public PreRebootResult(boolean success) {
-            this(success, false /* systemRequirementCheckFailed */);
+    public record PreRebootResult(@NonNull Status status, @NonNull FailureReason failureReason) {
+        public PreRebootResult(@NonNull Status status) {
+            this(status, FailureReason.FAILURE_UNSPECIFIED);
         }
     }
 

@@ -2279,19 +2279,23 @@ class CheckJNI {
   }
 
   static jmethodID GetMethodID(JNIEnv* env, jclass c, const char* name, const char* sig) {
-    return GetMethodIDInternal(__FUNCTION__, env, c, name, sig, false);
+    void* caller_address = __builtin_return_address(0);
+    return GetMethodIDInternal(__FUNCTION__, env, c, name, sig, false, caller_address);
   }
 
   static jmethodID GetStaticMethodID(JNIEnv* env, jclass c, const char* name, const char* sig) {
-    return GetMethodIDInternal(__FUNCTION__, env, c, name, sig, true);
+    void* caller_address = __builtin_return_address(0);
+    return GetMethodIDInternal(__FUNCTION__, env, c, name, sig, true, caller_address);
   }
 
   static jfieldID GetFieldID(JNIEnv* env, jclass c, const char* name, const char* sig) {
-    return GetFieldIDInternal(__FUNCTION__, env, c, name, sig, false);
+    void* caller_address = __builtin_return_address(0);
+    return GetFieldIDInternal(__FUNCTION__, env, c, name, sig, false, caller_address);
   }
 
   static jfieldID GetStaticFieldID(JNIEnv* env, jclass c, const char* name, const char* sig) {
-    return GetFieldIDInternal(__FUNCTION__, env, c, name, sig, true);
+    void* caller_address = __builtin_return_address(0);
+    return GetFieldIDInternal(__FUNCTION__, env, c, name, sig, true, caller_address);
   }
 
 #define FIELD_ACCESSORS(jtype, name, ptype, shorty, slot_sized_shorty)  \
@@ -2879,19 +2883,21 @@ class CheckJNI {
     }
   }
 
-  static jmethodID GetMethodIDInternal(const char* function_name, JNIEnv* env, jclass c,
-                                       const char* name, const char* sig, bool is_static) {
+  static jmethodID GetMethodIDInternal(const char* function_name,
+                                       JNIEnv* env,
+                                       jclass c,
+                                       const char* name,
+                                       const char* sig,
+                                       bool is_static,
+                                       void* caller_address) {
     CHECK_ATTACHED_THREAD(function_name, nullptr);
     ScopedObjectAccess soa(env);
     ScopedCheck sc(kFlag_Default, function_name);
     JniValueType args[4] = {{.E = env}, {.c = c}, {.u = name}, {.u = sig}};
     if (sc.Check(soa, true, "Ecuu", args)) {
       JniValueType result;
-      if (is_static) {
-        result.m = baseEnv(env)->GetStaticMethodID(env, c, name, sig);
-      } else {
-        result.m = baseEnv(env)->GetMethodID(env, c, name, sig);
-      }
+      result.m =
+          FindMethodID</*kEnableIndexIds=*/true>(soa, c, name, sig, is_static, caller_address);
       if (sc.Check(soa, false, "m", &result)) {
         return result.m;
       }
@@ -2899,19 +2905,21 @@ class CheckJNI {
     return nullptr;
   }
 
-  static jfieldID GetFieldIDInternal(const char* function_name, JNIEnv* env, jclass c,
-                                     const char* name, const char* sig, bool is_static) {
+  static jfieldID GetFieldIDInternal(const char* function_name,
+                                     JNIEnv* env,
+                                     jclass c,
+                                     const char* name,
+                                     const char* sig,
+                                     bool is_static,
+                                     void* caller_address) {
     CHECK_ATTACHED_THREAD(function_name, nullptr);
     ScopedObjectAccess soa(env);
     ScopedCheck sc(kFlag_Default, function_name);
     JniValueType args[4] = {{.E = env}, {.c = c}, {.u = name}, {.u = sig}};
     if (sc.Check(soa, true, "Ecuu", args)) {
       JniValueType result;
-      if (is_static) {
-        result.f = baseEnv(env)->GetStaticFieldID(env, c, name, sig);
-      } else {
-        result.f = baseEnv(env)->GetFieldID(env, c, name, sig);
-      }
+      result.f =
+          FindFieldID</*kEnableIndexIds=*/true>(soa, c, name, sig, is_static, caller_address);
       if (sc.Check(soa, false, "f", &result)) {
         return result.f;
       }

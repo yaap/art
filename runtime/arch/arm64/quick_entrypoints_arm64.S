@@ -2551,6 +2551,18 @@ ENTRY art_quick_compile_optimized
     ret
 END art_quick_compile_optimized
 
+// On entry, method is at the bottom of the stack.
+ENTRY art_quick_compile_baseline
+    SETUP_SAVE_EVERYTHING_FRAME
+    ldr x0, [sp, #FRAME_SIZE_SAVE_EVERYTHING] // pass ArtMethod
+    mov x1, xSELF                             // pass Thread::Current
+    CALL_SYMBOL artCompileBaseline            // (ArtMethod*, Thread*)
+    RESTORE_SAVE_EVERYTHING_FRAME
+    // We don't need to restore the marking register here, as
+    // artCompileBaseline doesn't allow thread suspension.
+    ret
+END art_quick_compile_baseline
+
 ENTRY art_quick_record_entry_trace_event
     ldr xIP1, [xSELF, #TRACE_BUFFER_CURRENT_OFFSET]
     // xIP0 has the trace buffer pointer. This is loaded on the fast path before
@@ -2628,9 +2640,8 @@ ENTRY art_quick_record_long_running_exit_trace_event
     tst xIP1, 1
     bne .Lrecord_exit_event
     // The previous event was an entry event. This exit corresponds to the previous method entry.
-    // Check if the method is long running by getting the current timestamp and comparing with the
-    // previous event's timestamp.
-    mrs xIP0, cntvct_el0
+    // Check if the method is long running by comparing the current timestamp with the previous
+    // event's timestamp.
     sub xIP1, xIP0, xIP1
     cmp xIP1, #LONG_RUNNING_METHOD_THRESHOLD
     bhs .Lrecord_exit_event

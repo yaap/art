@@ -692,7 +692,7 @@ void ClassLoaderContext::EncodeContextInternal(const ClassLoaderInfo& info,
   if (stored_info != nullptr) {
     for (size_t k = 0; k < info.original_classpath.size(); ++k) {
       // Note that we don't care if the same name appears twice.
-      remap.Put(info.original_classpath[k], stored_info->classpath[k]);
+      remap.Overwrite(info.original_classpath[k], stored_info->classpath[k]);
     }
   }
 

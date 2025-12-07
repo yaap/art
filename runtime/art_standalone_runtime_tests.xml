@@ -46,6 +46,7 @@
         <option name="push" value="art-gtest-jars-MainUncompressedAligned.jar->/data/local/tmp/art_standalone_runtime_tests/art-gtest-jars-MainUncompressedAligned.jar" />
         <option name="push" value="art-gtest-jars-MethodTypes.jar->/data/local/tmp/art_standalone_runtime_tests/art-gtest-jars-MethodTypes.jar" />
         <option name="push" value="art-gtest-jars-MultiDex.jar->/data/local/tmp/art_standalone_runtime_tests/art-gtest-jars-MultiDex.jar" />
+        <option name="push" value="art-gtest-jars-MultiDexContainer.jar->/data/local/tmp/art_standalone_runtime_tests/art-gtest-jars-MultiDexContainer.jar" />
         <option name="push" value="art-gtest-jars-MultiDexModifiedSecondary.jar->/data/local/tmp/art_standalone_runtime_tests/art-gtest-jars-MultiDexModifiedSecondary.jar" />
         <option name="push" value="art-gtest-jars-MultiDexUncompressedAligned.jar->/data/local/tmp/art_standalone_runtime_tests/art-gtest-jars-MultiDexUncompressedAligned.jar" />
         <option name="push" value="art-gtest-jars-MyClass.jar->/data/local/tmp/art_standalone_runtime_tests/art-gtest-jars-MyClass.jar" />
@@ -64,6 +65,8 @@
         <option name="push" value="art-gtest-jars-XandY.jar->/data/local/tmp/art_standalone_runtime_tests/art-gtest-jars-XandY.jar" />
         <option name="push" value="dex_verification_fuzzer_corpus.zip->/data/local/tmp/art_standalone_runtime_tests/dex_verification_fuzzer_corpus.zip" />
         <option name="push" value="class_verification_fuzzer_corpus.zip->/data/local/tmp/art_standalone_runtime_tests/class_verification_fuzzer_corpus.zip" />
+        <option name="push" value="optimized_compiler_fuzzer_corpus.zip->/data/local/tmp/art_standalone_runtime_tests/optimized_compiler_fuzzer_corpus.zip" />
+        <option name="push" value="baseline_compiler_fuzzer_corpus.zip->/data/local/tmp/art_standalone_runtime_tests/baseline_compiler_fuzzer_corpus.zip" />
     </target_preparer>
 
     <target_preparer class="com.android.compatibility.common.tradefed.targetprep.FilePusher">

@@ -22,7 +22,6 @@
 #include "dex/code_item_accessors-inl.h"
 #include "inliner.h"
 #include "jit/profiling_info.h"
-#include "optimizing_compiler_stats.h"
 #include "scoped_thread_state_change-inl.h"
 
 namespace art HIDDEN {
@@ -89,14 +88,6 @@ void ProfilingInfoBuilder::HandleInvoke(HInvoke* invoke) {
                    << invoke->GetResolvedMethod()->PrettyMethod();
     }
   }
-}
-
-void ProfilingInfoBuilder::VisitInvokeInterface(HInvokeInterface* invoke) {
-  HandleInvoke(invoke);
-}
-
-void ProfilingInfoBuilder::VisitInvokeVirtual(HInvokeVirtual* invoke) {
-  HandleInvoke(invoke);
 }
 
 bool ProfilingInfoBuilder::IsInlineCacheUseful(HInvoke* invoke, CodeGenerator* codegen) {

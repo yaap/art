@@ -135,13 +135,13 @@ class MANAGED MethodHandleImpl : public MethodHandle {
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!Roles::uninterruptible_);
 
   static MemberOffset TargetOffset() {
-    return MemberOffset(OFFSETOF_MEMBER(MethodHandleImpl, target_method_entry_));
+    return MemberOffset(OFFSETOF_MEMBER(MethodHandleImpl, target_));
   }
 
  private:
   HeapReference<mirror::Field> field_;
   HeapReference<mirror::Object> target_class_or_info_;  // Unused by the runtime.
-  uint64_t target_method_entry_;
+  uint64_t target_;
 
   friend struct art::MethodHandleImplOffsets;  // for verifying offset information
   DISALLOW_IMPLICIT_CONSTRUCTORS(MethodHandleImpl);

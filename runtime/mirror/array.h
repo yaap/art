@@ -90,11 +90,12 @@ class MANAGED Array : public Object {
         << "Array data offset isn't aligned with component size";
     return MemberOffset(data_offset);
   }
-  template <size_t kComponentSize>
+  template <typename T>
   static constexpr MemberOffset DataOffset() {
-    static_assert(IsPowerOfTwo(kComponentSize), "Invalid component size");
-    constexpr size_t data_offset = RoundUp(kFirstElementOffset, kComponentSize);
-    static_assert(RoundUp(data_offset, kComponentSize) == data_offset, "RoundUp fail");
+    constexpr size_t component_size = sizeof(T);
+    static_assert(IsPowerOfTwo(component_size), "Invalid component size");
+    constexpr size_t data_offset = RoundUp(kFirstElementOffset, component_size);
+    static_assert(RoundUp(data_offset, component_size) == data_offset, "RoundUp fail");
     return MemberOffset(data_offset);
   }
 
@@ -170,12 +171,12 @@ class MANAGED PrimitiveArray : public Array {
   T* GetData() ALWAYS_INLINE REQUIRES_SHARED(Locks::mutator_lock_) { return GetData(0); }
 
   const T* GetData(int32_t index) const ALWAYS_INLINE REQUIRES_SHARED(Locks::mutator_lock_) {
-    intptr_t data = reinterpret_cast<intptr_t>(this) + DataOffset<sizeof(T)>().Int32Value();
+    intptr_t data = reinterpret_cast<intptr_t>(this) + DataOffset<T>().Int32Value();
     return reinterpret_cast<T*>(data) + index;
   }
 
   T* GetData(int32_t index) ALWAYS_INLINE REQUIRES_SHARED(Locks::mutator_lock_) {
-    intptr_t data = reinterpret_cast<intptr_t>(this) + DataOffset<sizeof(T)>().Int32Value();
+    intptr_t data = reinterpret_cast<intptr_t>(this) + DataOffset<T>().Int32Value();
     return reinterpret_cast<T*>(data) + index;
   }
 

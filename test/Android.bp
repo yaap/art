@@ -935,8 +935,9 @@ cc_defaults {
         "661-oat-writer-layout/oat_writer_layout.cc",
         "664-aget-verifier/aget-verifier.cc",
         "667-jit-jni-stub/jit_jni_stub_test.cc",
-        "674-hiddenapi/hiddenapi.cc",
+        "674-hiddenapi/core.cc",
         "692-vdex-inmem-loader/vdex_inmem_loader.cc",
+        "712-varhandle-invocations/jni_direct_buffer.cc",
         "720-thread-priority/thread_priority.cc",
         "800-smali/jni.cc",
         "817-hiddenapi/libarttest_api.cc",
@@ -1012,6 +1013,7 @@ cc_defaults {
     name: "libarttest_external-defaults",
     defaults: ["art_test_defaults"],
     srcs: [
+        "674-hiddenapi/app.cc",
         "817-hiddenapi/test_native.cc",
         "common/libarttest_external.cc",
     ],
@@ -1415,11 +1417,35 @@ art_cc_test {
     test_config: "art-gtests-target-chroot.xml",
 }
 
+// Convert ART apex to zip format so that it can be easily consumed in tradefed.
+// TODO: We should create the zip directly from the needed files and remove testing apex.
+cc_genrule {
+    name: "art-test-target-apex",
+    srcs: [
+        ":com.android.art.testing",
+    ],
+    tools: [
+        "deapexer",
+        "debugfs_static",
+        "fsck.erofs",
+        "soong_zip",
+    ],
+    cmd: "OUTPUT_DIR=$(genDir)/extracted && " +
+        "mkdir -p $$OUTPUT_DIR && " +
+        "$(location deapexer) " +
+        "  --debugfs_path $(location debugfs_static) " +
+        "  --fsckerofs_path $(location fsck.erofs) " +
+        "  extract $(in) $$OUTPUT_DIR && " +
+        "$(location soong_zip) -o $(out) -P apex/com.android.art -C $$OUTPUT_DIR -D $$OUTPUT_DIR",
+    out: ["art-test-target-apex.zip"],
+}
+
 art_cc_test {
     name: "ArtTest",
     data: [
         // We need the ART testing apex, which contains debug binaries and other utilities.
         ":com.android.art.testing",
+        ":art-test-target-apex",
         // Archive which contains all run-test data and test-specific bash scripts to run them.
         ":art-test-target-fg",
     ],
@@ -1457,6 +1483,7 @@ filegroup {
         ":art-gtest-jars-ImageLayoutB",
         ":art-gtest-jars-IMTA",
         ":art-gtest-jars-IMTB",
+        ":art-gtest-jars-InlinedString",
         ":art-gtest-jars-Instrumentation",
         ":art-gtest-jars-Interfaces",
         ":art-gtest-jars-Lookup",
@@ -1464,6 +1491,7 @@ filegroup {
         ":art-gtest-jars-ManyMethods",
         ":art-gtest-jars-MethodTypes",
         ":art-gtest-jars-MultiDex",
+        ":art-gtest-jars-MultiDexContainer",
         ":art-gtest-jars-MultiDexModifiedSecondary",
         ":art-gtest-jars-MyClass",
         ":art-gtest-jars-MyClassNatives",
@@ -1632,6 +1660,13 @@ java_library {
 java_library {
     name: "art-gtest-jars-Instrumentation",
     srcs: ["Instrumentation/**/*.java"],
+    defaults: ["art-gtest-jars-defaults"],
+}
+
+java_library {
+    name: "art-gtest-jars-InlinedString",
+    srcs: ["InlinedString/**/*.java"],
+    libs: ["art-gtest-jars-StringLiterals"],
     defaults: ["art-gtest-jars-defaults"],
 }
 
@@ -1841,6 +1876,22 @@ java_genrule {
     out: ["art-gtest-jars-MultiDexUncompressedAligned.jar"],
 }
 
+// A copy of MultiDex with a single, containerized classes.dex.
+java_library {
+    name: "art-gtest-jars-MultiDexContainer",
+    srcs: ["MultiDex/**/*.java"],
+    defaults: ["art-gtest-jars-defaults"],
+    min_sdk_version: "19",
+    dxflags: [
+        // Container usage is the default for minSdkVersion >= 36, but
+        // `--main-dex-list` is only supported for earlier SDK versions. For
+        // now, simply force container usage for testing purposes.
+        "-JDcom.android.tools.r8.dexContainerExperiment",
+        "--main-dex-list",
+        "art/test/MultiDexModifiedSecondary/main.list",
+    ],
+}
+
 java_library {
     name: "art-gtest-jars-MultiDexModifiedSecondary",
     srcs: ["MultiDexModifiedSecondary/**/*.java"],
@@ -1920,3 +1971,113 @@ genrule {
 build = [
     "Android.run-test.bp",
 ]
+
+art_common_gtests = [
+    "art_cmdline_tests",
+    "art_compiler_host_tests",
+    "art_compiler_tests",
+    "art_dexanalyze_tests",
+    "art_dexdump_tests",
+    "art_dexlist_tests",
+    "art_dexoptanalyzer_tests",
+    "art_disassembler_tests",
+    "art_hiddenapi_tests",
+    "art_imgdiag_tests",
+    "art_libartbase_tests",
+    "art_libdexfile_external_tests",
+    "art_libdexfile_support_static_tests",
+    "art_libdexfile_support_tests",
+    "art_libdexfile_tests",
+    "art_libprofile_tests",
+    "art_oatdump_tests",
+    "art_profman_tests",
+    "art_runtime_tests",
+]
+
+// Phony module for use by art/tools/art_build.py
+phony {
+    name: "art_test_target_gtest_dependencies",
+    required: [
+        // TESTING_ART_APEX
+        "com.android.art.testing",
+        // ART_TEST_TARGET_GTEST_DEPENDENCIES defaults
+        "com.android.i18n",
+        "libjavacore.com.android.art.testing",
+        "libopenjdkd.com.android.art.testing",
+        "com.android.conscrypt",
+        // ART_TEST_MODULES_TARGET
+        "art_odrefresh_tests",
+        // ART_TEST_MODULES_COMMON
+    ] + art_common_gtests +
+    // b/258770641 Temporarily disable sigchain and dex2oat tests on ASAN
+    // configuration while we investigate the failures.
+    select(soong_config_variable("ANDROID", "HAS_SANITIZE_HOST"), {
+        true: [],
+        default: [
+            "art_sigchain_tests",
+            "art_dex2oat_tests",
+        ],
+    }),
+}
+
+phony {
+    name: "art_run_test_dependencies",
+    host_supported: true,
+    device_supported: true,
+    required: [
+        // Host tools required by run-tests
+        "d8",
+        "hiddenapi",
+        "jasmin",
+        "android-smali",
+
+        // Native libraries required by run-tests
+        "libartagent",
+        "libartagentd",
+        "libtiagent",
+        "libtiagentd",
+        "libtistress",
+        "libtistressd",
+        "libarttest",
+        "libarttestd",
+        "libarttest_external",
+        "libarttestd_external",
+        "libnativebridgetest",
+        "libnativebridgetestd",
+        "signal_dumper",
+    ],
+}
+
+// This phony module lists the dependencies required by art/tools/art_build.py
+// to build build-art-host-run-tests. It excludes dependencies that require
+// special handling, such as ART_HOST_DEX_DEPENDENCIES, HOST_I18N_DATA,
+// and hprof-conv.
+phony {
+    name: "art_test_host_run_test_dependencies",
+    host_supported: true,
+    required: [
+        "art_run_test_dependencies",
+        // in ART_HOST_OUT_SHARED_LIBRARIES/
+        "libicu_jni",
+        "libjavacore",
+        "libopenjdk",
+        "libopenjdkd",
+        "libopenjdkjvmti",
+        "libopenjdkjvmtid",
+        // Other dependencies
+        "art_boot_images",
+    ],
+}
+
+// Phony module that lists key dependencies for building the target run-tests.
+// Note: This list is intentionally incomplete, as most dependencies are pulled
+// in transitively. It serves as a build trigger for art/tools/art_build.py.
+phony {
+    name: "art_test_target_run_test_dependencies",
+    device_supported: true,
+    required: [
+        "art_run_test_dependencies",
+        // TESTING_ART_APEX
+        "com.android.art.testing",
+    ],
+}

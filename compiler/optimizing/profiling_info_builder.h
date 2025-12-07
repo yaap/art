@@ -28,20 +28,16 @@ class HInliner;
 class InlineCache;
 class ProfilingInfo;
 
-class ProfilingInfoBuilder final : public HGraphDelegateVisitor {
+class ProfilingInfoBuilder final : public CRTPGraphVisitor<ProfilingInfoBuilder> {
  public:
   ProfilingInfoBuilder(HGraph* graph,
                        const CompilerOptions& compiler_options,
-                       CodeGenerator* codegen,
-                       OptimizingCompilerStats* stats = nullptr)
-      : HGraphDelegateVisitor(graph, stats),
+                       CodeGenerator* codegen)
+      : CRTPGraphVisitor(graph),
         codegen_(codegen),
         compiler_options_(compiler_options) {}
 
   void Run();
-
-  static constexpr const char* kProfilingInfoBuilderPassName =
-      "profiling_info_builder";
 
   static InlineCache* GetInlineCache(ProfilingInfo* info,
                                      const CompilerOptions& compiler_options,
@@ -52,14 +48,26 @@ class ProfilingInfoBuilder final : public HGraphDelegateVisitor {
       REQUIRES_SHARED(Locks::mutator_lock_);
 
  private:
-  void VisitInvokeVirtual(HInvokeVirtual* invoke) override;
-  void VisitInvokeInterface(HInvokeInterface* invoke) override;
+  // Keep `ForwardVisit()` functions from base class visible except for those we replace below.
+  using CRTPGraphVisitor::ForwardVisit;
+
+  // Forward `InvokeVirtual` and `InvokeInterface` to `HandleInvoke()`.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HInvokeVirtual*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitInvokeVirtual);
+    return &ProfilingInfoBuilder::HandleInvoke;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HInvokeInterface*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitInvokeInterface);
+    return &ProfilingInfoBuilder::HandleInvoke;
+  }
 
   void HandleInvoke(HInvoke* invoke);
 
   CodeGenerator* codegen_;
   const CompilerOptions& compiler_options_;
   std::vector<uint32_t> inline_caches_;
+
+  template <typename T> friend class CRTPGraphVisitor;
 
   DISALLOW_COPY_AND_ASSIGN(ProfilingInfoBuilder);
 };

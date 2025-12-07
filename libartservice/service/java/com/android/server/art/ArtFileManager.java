@@ -33,10 +33,12 @@ import android.util.Pair;
 
 import androidx.annotation.RequiresApi;
 
+import com.android.art.flags.Flags;
 import com.android.internal.annotations.Immutable;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalManagerRegistry;
 import com.android.server.art.model.DetailedDexInfo;
+import com.android.server.pm.PackageManagerLocal.FilteredSnapshot;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.PackageState;
 
@@ -67,13 +69,20 @@ public class ArtFileManager {
     }
 
     @NonNull
-    public List<Pair<DetailedDexInfo, Abi>> getDexAndAbis(
+    public List<Pair<DetailedDexInfo, Abi>> getDexAndAbis(@NonNull FilteredSnapshot snapshot,
             @NonNull PackageState pkgState, @NonNull AndroidPackage pkg, @NonNull Options options) {
         List<Pair<DetailedDexInfo, Abi>> dexAndAbis = new ArrayList<>();
         if (options.forPrimaryDex()) {
             for (DetailedPrimaryDexInfo dexInfo :
                     PrimaryDexUtils.getDetailedDexInfo(pkgState, pkg)) {
-                for (Abi abi : Utils.getAllAbis(pkgState)) {
+                List<Abi> abis;
+                if (Flags.dexoptSecondaryIsaOnlyWhenNeeded()) {
+                    abis = Utils.getUsedPrimaryDexAbis(
+                            mInjector.getDexUseManager(), snapshot, pkgState, dexInfo.dexPath());
+                } else {
+                    abis = Utils.getAllPrimaryDexAbis(pkgState);
+                }
+                for (Abi abi : abis) {
                     dexAndAbis.add(Pair.create(dexInfo, abi));
                 }
             }
@@ -107,7 +116,7 @@ public class ArtFileManager {
         if (options.forPrimaryDex()) {
             boolean isInDalvikCache = Utils.isInDalvikCache(pkgState, mInjector.getArtd());
             for (PrimaryDexInfo dexInfo : PrimaryDexUtils.getDexInfo(pkg)) {
-                for (Abi abi : Utils.getAllAbis(pkgState)) {
+                for (Abi abi : Utils.getAllPrimaryDexAbis(pkgState)) {
                     artifacts.add(AidlUtils.buildArtifactsPathAsInput(
                             dexInfo.dexPath(), abi.isa(), isInDalvikCache));
                     // SDM files are only for primary dex files.
@@ -134,7 +143,7 @@ public class ArtFileManager {
 
     /** Returns artifacts that are usable, regardless of whether they are writable. */
     @NonNull
-    public UsableArtifactLists getUsableArtifacts(
+    public UsableArtifactLists getUsableArtifacts(@NonNull FilteredSnapshot snapshot,
             @NonNull PackageState pkgState, @NonNull AndroidPackage pkg) throws RemoteException {
         List<ArtifactsPath> artifacts = new ArrayList<>();
         List<VdexPath> vdexFiles = new ArrayList<>();
@@ -146,7 +155,7 @@ public class ArtFileManager {
                               .setForSecondaryDex(true)
                               .setExcludeForObsoleteDexesAndLoaders(true)
                               .build();
-        for (Pair<DetailedDexInfo, Abi> pair : getDexAndAbis(pkgState, pkg, options)) {
+        for (Pair<DetailedDexInfo, Abi> pair : getDexAndAbis(snapshot, pkgState, pkg, options)) {
             DetailedDexInfo dexInfo = pair.first;
             Abi abi = pair.second;
             try {
@@ -157,7 +166,7 @@ public class ArtFileManager {
                     ArtifactsPath thisArtifacts =
                             AidlUtils.buildArtifactsPathAsInput(dexInfo.dexPath(), abi.isa(),
                                     result.artifactsLocation == ArtifactsLocation.DALVIK_CACHE);
-                    if (result.compilationReason.equals(ArtConstants.REASON_VDEX)) {
+                    if (result.isBackedByVdexOnly) {
                         // Only the VDEX file is usable.
                         vdexFiles.add(VdexPath.artifactsPath(thisArtifacts));
                     } else {

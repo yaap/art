@@ -173,6 +173,7 @@
 \
   V(UpdateInlineCache, void, void) \
   V(CompileOptimized, void, ArtMethod*, Thread*) \
+  V(CompileBaseline, void, ArtMethod*, Thread*) \
 \
   V(JniReadBarrier, void, ArtMethod*) \
   V(ReadBarrierMarkReg00, mirror::Object*, mirror::Object*) \

@@ -24,7 +24,7 @@
 #include "base/utils.h"
 // TODO(b/350967139): Remove #ifndef when aconfig supports windows.
 #ifndef _WIN32
-#include "com_android_art_native_flags.h"
+#include "com_android_art_rw_flags.h"
 #endif
 
 #pragma clang diagnostic push
@@ -181,7 +181,7 @@ template class Flag<std::string>;
 
 // TODO(b/350967139): Remove #ifndef when aconfig supports windows.
 #ifndef _WIN32
-bool is_test_rw_flag_enabled() { return com_android_art_native_flags_test_rw(); }
+bool is_test_rw_flag_enabled() { return com_android_art_rw_flags_test_rw_flag(); }
 #endif
 }  // namespace art
 

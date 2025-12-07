@@ -1187,6 +1187,12 @@ DISASSEMBLER_ENTRY(cmp,
         has_modrm = true;
         load = true;
         break;
+      case 0xB0:
+        opcode1 = "cmpxchg";
+        has_modrm = true;
+        store = true;
+        byte_operand = true;
+        break;
       case 0xB1:
         opcode1 = "cmpxchg";
         has_modrm = true;
@@ -1229,6 +1235,17 @@ DISASSEMBLER_ENTRY(cmp,
         opcode1 = "movsxw";
         has_modrm = true;
         load = true;
+        break;
+      case 0xC0:
+        opcode1 = "xadd";
+        store = true;
+        has_modrm = true;
+        byte_operand = true;
+        break;
+      case 0xC1:
+        opcode1 = "xadd";
+        store = true;
+        has_modrm = true;
         break;
       case 0xC3:
         opcode1 = "movnti";

@@ -734,8 +734,9 @@ void IntrinsicLocationsBuilderARM64::VisitThreadCurrentThread(HInvoke* invoke) {
 }
 
 void IntrinsicCodeGeneratorARM64::VisitThreadCurrentThread(HInvoke* invoke) {
-  codegen_->Load(DataType::Type::kReference, WRegisterFrom(invoke->GetLocations()->Out()),
-                 MemOperand(tr, Thread::PeerOffset<kArm64PointerSize>().Int32Value()));
+  codegen_->Load(DataType::Type::kReference,
+                 WRegisterFrom(invoke->GetLocations()->Out()),
+                 MemOperand(tr, Thread::CurrentPeerOffset<kArm64PointerSize>().Int32Value()));
 }
 
 static bool ReadBarrierNeedsTemp(bool is_volatile, HInvoke* invoke) {

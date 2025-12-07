@@ -19,7 +19,10 @@ package {
 java_test_host {
     name: "art-apex-update-rollback",
     srcs: ["src/**/*.java"],
-    libs: ["tradefed"],
+    libs: [
+        "tradefed",
+        "loganalysis",
+    ],
     static_libs: ["cts-install-lib-host"],
     device_common_data: [":test_broken_com.android.art"],
     // Add this test to `device-tests` rather than `general-tests` to ensure

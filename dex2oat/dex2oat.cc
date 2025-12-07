@@ -985,6 +985,8 @@ class Dex2Oat final {
       key_value_store_->Put(OatHeader::kAssumeValueSdkIntKey,
                             std::to_string(compiler_options_->GetAssumeValueOptions().SdkInt()));
     }
+    key_value_store_->Put(OatHeader::kEnableProfileCodeKey,
+                          compiler_options_->enable_profile_code_);
     if (invocation_file_.get() != -1) {
       std::ostringstream oss;
       for (int i = 0; i < argc; ++i) {
@@ -1436,7 +1438,8 @@ class Dex2Oat final {
           compiler_options_->dex_files_for_oat_file_);
       VLOG(compiler) << "Loaded " << image_classes.size()
                      << " image class descriptors from profile";
-    } else if (compiler_options_->IsBootImage() || compiler_options_->IsBootImageExtension()) {
+    } else if (!com::android::art::flags::ignore_boot_image_extension_class_resolution()
+               && (compiler_options_->IsBootImage() || compiler_options_->IsBootImageExtension())) {
       // If we are compiling a boot image but no profile is provided, include all classes in the
       // image. This is to match pre-boot image extension work where we would load all boot image
       // extension classes at startup.
@@ -1479,6 +1482,8 @@ class Dex2Oat final {
     if (!PrepareRuntimeOptions(&runtime_options, callbacks_.get())) {
       return dex2oat::ReturnCode::kOther;
     }
+
+    callbacks_->SetShouldEnableProfileCode(compiler_options_->EnableProfileCode());
 
     CreateOatWriters();
     if (!AddDexFileSources()) {
@@ -1999,6 +2004,7 @@ class Dex2Oat final {
                         timings_,
                         &compiler_options_->image_classes_);
     driver_->CompileAll(class_loader, dex_files, timings_);
+    driver_->PostCompile(dex_files, timings_);
     driver_->FreeThreadPools();
     return class_loader;
   }

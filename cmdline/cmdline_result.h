@@ -27,10 +27,11 @@ namespace art {
 struct CmdlineResult {
   enum Status {
     kSuccess,
+    // Not treated as an error but do not continue i.e. return status 0.
+    kHelp,
     // Error codes:
-    kUsage,
     kFailure,
-    kOutOfRange,
+    kInvalid,
     kUnknown,
   };
 
@@ -80,14 +81,14 @@ static inline std::ostream& operator<<(std::ostream& stream, CmdlineResult::Stat
     case CmdlineResult::kSuccess:
       stream << "kSuccess";
       break;
-    case CmdlineResult::kUsage:
-      stream << "kUsage";
+    case CmdlineResult::kHelp:
+      stream << "kHelp";
       break;
     case CmdlineResult::kFailure:
       stream << "kFailure";
       break;
-    case CmdlineResult::kOutOfRange:
-      stream << "kOutOfRange";
+    case CmdlineResult::kInvalid:
+      stream << "kInvalid";
       break;
     case CmdlineResult::kUnknown:
       stream << "kUnknown";

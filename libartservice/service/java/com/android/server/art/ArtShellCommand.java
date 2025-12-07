@@ -18,6 +18,7 @@ package com.android.server.art;
 
 import static android.os.ParcelFileDescriptor.AutoCloseInputStream;
 
+import static com.android.art.rw.flags.Flags.pmCompileVerboseLogging;
 import static com.android.server.art.ArtManagerLocal.SnapshotProfileException;
 import static com.android.server.art.PrimaryDexUtils.PrimaryDexInfo;
 import static com.android.server.art.ReasonMapping.BatchDexoptReason;
@@ -38,6 +39,8 @@ import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.system.OsConstants;
+import android.system.StructPollfd;
 import android.system.StructStat;
 
 import androidx.annotation.RequiresApi;
@@ -59,7 +62,9 @@ import com.android.server.pm.pkg.PackageState;
 
 import libcore.io.Streams;
 
+import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -217,6 +222,7 @@ public final class ArtShellCommand extends BasicShellCommandHandler {
         boolean verbose = false;
         boolean forceMergeProfile = false;
         boolean forceCompilerFilter = false;
+        String verboseLogTags = null;
 
         String opt;
         while ((opt = getNextOption()) != null) {
@@ -281,6 +287,9 @@ public final class ArtShellCommand extends BasicShellCommandHandler {
                     break;
                 case "-v":
                     verbose = true;
+                    if (peekNextArg().startsWith(":")) {
+                        verboseLogTags = getNextArg().substring(1);
+                    }
                     break;
                 case "--force-merge-profile":
                     forceMergeProfile = true;
@@ -352,6 +361,9 @@ public final class ArtShellCommand extends BasicShellCommandHandler {
         if (forAllPackages) {
             // We'll iterate over all packages anyway.
             paramsBuilder.setFlags(0, ArtFlags.FLAG_SHOULD_INCLUDE_DEPENDENCIES);
+        }
+        if (verboseLogTags != null) {
+            paramsBuilder.setVerboseLogTags(verboseLogTags);
         }
 
         if (reset) {
@@ -653,7 +665,7 @@ public final class ArtShellCommand extends BasicShellCommandHandler {
                     if (results.containsKey(pass)) {
                         pw.println("Result of "
                                 + getProgressMessageForBatchDexoptPass(pass, finalReason)
-                                          .toLowerCase(Locale.US)
+                                        .toLowerCase(Locale.US)
                                 + ":");
                         printDexoptResult(
                                 pw, results.get(pass), true /* verbose */, true /* multiPackage */);
@@ -944,7 +956,8 @@ public final class ArtShellCommand extends BasicShellCommandHandler {
     public static void printHelp(@NonNull PrintWriter pw) {
         pw.println("compile [-r COMPILATION_REASON] [-m COMPILER_FILTER] [-p PRIORITY] [-f]");
         pw.println("    [--primary-dex] [--secondary-dex] [--include-dependencies] [--full]");
-        pw.println("    [--split SPLIT_NAME] [--reset] [-a | PACKAGE_NAME]");
+        pw.println("    [--split SPLIT_NAME] [--reset] [--force-merge-profile] [-v[:LOG_TAGS]]");
+        pw.println("    [-a | PACKAGE_NAME]");
         pw.println("  Dexopt a package or all packages.");
         pw.println("  Options:");
         pw.println("    -a Dexopt all packages");
@@ -980,7 +993,10 @@ public final class ArtShellCommand extends BasicShellCommandHandler {
         pw.println("       When this flag is set, all the other flags are ignored.");
         pw.println("       One of the use cases of this command is for app developers to get a");
         pw.println("       baseline for measuring performance improvements from compilation.");
-        pw.println("    -v Verbose mode. This mode prints detailed results.");
+        pw.println("    -v Verbose mode. This mode prints detailed results. If followed by");
+        pw.println("       ':LOG_TAGS', it also sets the switches for advanced logging.");
+        pw.println("       LOG_TAGS is a comma-separated list, where available options are in:");
+        pw.println("       https://cs.android.com/search?q=s:^art::LogVerbosity$%20f:^art/libartbase/base/logging.h");
         pw.println("    --force-merge-profile Force merge profiles even if the difference between");
         pw.println("       before and after the merge is not significant.");
         pw.println("  Scope options:");
@@ -1227,8 +1243,16 @@ public final class ArtShellCommand extends BasicShellCommandHandler {
             @NonNull List<String> packageNames, @NonNull DexoptParams params, boolean verbose) {
         try (var signal = new WithCancellationSignal(pw, verbose)) {
             for (String packageName : packageNames) {
-                DexoptResult result = mInjector.getArtManagerLocal().dexoptPackage(
-                        snapshot, packageName, params, signal.get());
+                DexoptResult result;
+                try (var loggingFd = verbose && allowLogRedirection()
+                                ? BufferedOutputFileDescriptor.wrap(getErrFileDescriptor())
+                                : null) {
+                    DexoptParams localParams = loggingFd != null
+                            ? params.toBuilder().setLoggingFd(loggingFd.getFd()).build()
+                            : params;
+                    result = mInjector.getArtManagerLocal().dexoptPackage(
+                            snapshot, packageName, localParams, signal.get());
+                }
                 printDexoptResult(pw, result, verbose, packageNames.size() > 1);
             }
         }
@@ -1312,6 +1336,11 @@ public final class ArtShellCommand extends BasicShellCommandHandler {
         throw new IllegalArgumentException("Unknown batch dexopt pass " + pass);
     }
 
+    private boolean allowLogRedirection() {
+        return Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1
+                && pmCompileVerboseLogging();
+    }
+
     private static class WithCancellationSignal implements AutoCloseable {
         @NonNull private final CancellationSignal mSignal = new CancellationSignal();
         @NonNull private final String mJobId;
@@ -1335,9 +1364,78 @@ public final class ArtShellCommand extends BasicShellCommandHandler {
             return mSignal;
         }
 
+        @Override
         public void close() {
             synchronized (sCancellationSignalMap) {
                 sCancellationSignalMap.remove(mJobId);
+            }
+        }
+    }
+
+    /**
+     * A wrapper of {@link ParcelFileDescriptor} that buffers the output in a pipe and reads from
+     * it occasionally, for more efficient, less frequent reads.
+     */
+    private static class BufferedOutputFileDescriptor implements AutoCloseable {
+        private final int BUFFER_SIZE = 200 * 1024 * 1024;
+        private final int SYNC_INTERVAL_MILLIS = 10;
+
+        private final FileDescriptor mOriginalFd;
+        private final ParcelFileDescriptor[] mPipe;
+        private final int mActualBufferSize;
+        private final Thread mSyncThread;
+
+        public static @Nullable BufferedOutputFileDescriptor wrap(FileDescriptor originalFd) {
+            try {
+                return new BufferedOutputFileDescriptor(originalFd);
+            } catch (ErrnoException | IOException e) {
+                AsLog.w("Failed to wrap FD " + originalFd.getInt$(), e);
+                return null;
+            }
+        }
+
+        public ParcelFileDescriptor getFd() {
+            return mPipe[1];
+        }
+
+        private BufferedOutputFileDescriptor(FileDescriptor originalFd)
+                throws ErrnoException, IOException {
+            mOriginalFd = originalFd;
+            mPipe = ParcelFileDescriptor.createPipe();
+            mActualBufferSize = ArtJni.setPipeSize(mPipe[0].getFileDescriptor(), BUFFER_SIZE);
+            mSyncThread = new Thread(this::sync);
+            mSyncThread.start();
+        }
+
+        private void sync() {
+            byte[] buf = new byte[mActualBufferSize];
+            int n;
+
+            try (var in = new FileInputStream(mPipe[0].getFileDescriptor());
+                    var out = new FileOutputStream(mOriginalFd)) {
+                while ((n = in.read(buf)) != -1) {
+                    out.write(buf, 0, n);
+                    try {
+                        Thread.sleep(SYNC_INTERVAL_MILLIS);
+                    } catch (InterruptedException e) {
+                        // Expected.
+                    }
+                }
+                out.flush();
+            } catch (IOException e) {
+                AsLog.e("Failed to sync", e);
+            }
+        }
+
+        @Override
+        public void close() {
+            try {
+                mPipe[1].close();
+                mSyncThread.interrupt();
+                mSyncThread.join();
+                mPipe[0].close();
+            } catch (IOException | InterruptedException e) {
+                AsLog.w("Failed to close", e);
             }
         }
     }

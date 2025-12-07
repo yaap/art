@@ -14,14 +14,13 @@
  * limitations under the License.
  */
 
-#include <stdio.h>
-#include <unistd.h>
-#include <sys/mman.h>
-
 #include "garbage_collector.h"
 
-#include "android-base/stringprintf.h"
+#include <stdio.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
+#include "android-base/stringprintf.h"
 #include "base/dumpable.h"
 #include "base/histogram-inl.h"
 #include "base/logging.h"  // For VLOG_IS_ON.
@@ -105,6 +104,7 @@ void Iteration::Reset(GcCause gc_cause, bool clear_soft_references) {
   freed_ = ObjectBytePair();
   freed_los_ = ObjectBytePair();
   freed_bytes_revoke_ = 0;
+  start_time_ = 0;
 }
 
 uint64_t Iteration::GetEstimatedThroughput() const {
@@ -224,6 +224,7 @@ void GarbageCollector::Run(GcCause gc_cause, bool clear_soft_references) {
   uint64_t thread_cpu_time = thread_cpu_end_time - thread_cpu_start_time;
   uint64_t duration_ns = end_time - start_time;
   total_thread_cpu_time_ns_ += thread_cpu_time;
+  current_iteration->start_time_ = start_time;
   current_iteration->SetDurationNs(duration_ns);
   current_iteration->SetThreadCpuTimeNs(thread_cpu_time);
   if (Locks::mutator_lock_->IsExclusiveHeld(self)) {
@@ -395,6 +396,12 @@ void GarbageCollector::SweepArray(accounting::ObjectStack* allocations,
     t2.NewTiming("ResetStack");
     allocations->Reset();
   }
+}
+
+double GarbageCollector::GetMeanCpuTime() const {
+  size_t iters = NumberOfIterations();
+  DCHECK_IMPLIES(iters == 0, GetTotalCpuTime() == 0);
+  return GetTotalCpuTime() / static_cast<double>(iters);
 }
 
 uint64_t GarbageCollector::GetEstimatedMeanThroughput() const {

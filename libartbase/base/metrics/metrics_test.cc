@@ -657,7 +657,7 @@ TEST(XmlFormatterTest, GetAndResetBuffer_ActuallyResetsBuffer) {
 }
 
 TEST(CompilerFilterReportingTest, FromName) {
-  ASSERT_EQ(CompilerFilterReportingFromName("error"), CompilerFilterReporting::kError);
+  ASSERT_EQ(CompilerFilterReportingFromName("absent"), CompilerFilterReporting::kAbsent);
   ASSERT_EQ(CompilerFilterReportingFromName("unknown"), CompilerFilterReporting::kUnknown);
   ASSERT_EQ(CompilerFilterReportingFromName("assume-verified"),
             CompilerFilterReporting::kAssumeVerified);
@@ -675,10 +675,11 @@ TEST(CompilerFilterReportingTest, FromName) {
   ASSERT_EQ(CompilerFilterReportingFromName("run-from-apk"), CompilerFilterReporting::kRunFromApk);
   ASSERT_EQ(CompilerFilterReportingFromName("run-from-apk-fallback"),
             CompilerFilterReporting::kRunFromApkFallback);
+  ASSERT_EQ(CompilerFilterReportingFromName("other"), CompilerFilterReporting::kOther);
 }
 
 TEST(CompilerFilterReportingTest, Name) {
-  ASSERT_EQ(CompilerFilterReportingName(CompilerFilterReporting::kError), "error");
+  ASSERT_EQ(CompilerFilterReportingName(CompilerFilterReporting::kAbsent), "absent");
   ASSERT_EQ(CompilerFilterReportingName(CompilerFilterReporting::kUnknown), "unknown");
   ASSERT_EQ(CompilerFilterReportingName(CompilerFilterReporting::kAssumeVerified),
             "assume-verified");
@@ -694,6 +695,7 @@ TEST(CompilerFilterReportingTest, Name) {
   ASSERT_EQ(CompilerFilterReportingName(CompilerFilterReporting::kRunFromApk), "run-from-apk");
   ASSERT_EQ(CompilerFilterReportingName(CompilerFilterReporting::kRunFromApkFallback),
             "run-from-apk-fallback");
+  ASSERT_EQ(CompilerFilterReportingName(CompilerFilterReporting::kOther), "other");
 }
 
 TEST(CompilerReason, FromName) {
@@ -718,10 +720,15 @@ TEST(CompilerReason, FromName) {
             CompilationReason::kInstallWithDexMetadata);
   ASSERT_EQ(CompilationReasonFromName("prebuilt"), CompilationReason::kPrebuilt);
   ASSERT_EQ(CompilationReasonFromName("cmdline"), CompilationReason::kCmdLine);
-  ASSERT_EQ(CompilationReasonFromName("error"), CompilationReason::kError);
+  ASSERT_EQ(CompilationReasonFromName("absent"), CompilationReason::kAbsent);
   ASSERT_EQ(CompilationReasonFromName("vdex"), CompilationReason::kVdex);
   ASSERT_EQ(CompilationReasonFromName("boot-after-mainline-update"),
             CompilationReason::kBootAfterMainlineUpdate);
+  ASSERT_EQ(CompilationReasonFromName("other"), CompilationReason::kOther);
+  ASSERT_EQ(CompilationReasonFromName("cloud"), CompilationReason::kCloud);
+  ASSERT_EQ(CompilationReasonFromName("vdex-dm"), CompilationReason::kVdexDm);
+  ASSERT_EQ(CompilationReasonFromName("def-dexopt"), CompilationReason::kDefDexopt);
+  ASSERT_EQ(CompilationReasonFromName("post-ur"), CompilationReason::kPostUr);
 }
 
 TEST(CompilerReason, Name) {
@@ -746,10 +753,15 @@ TEST(CompilerReason, Name) {
             "install-with-dex-metadata");
   ASSERT_EQ(CompilationReasonName(CompilationReason::kPrebuilt), "prebuilt");
   ASSERT_EQ(CompilationReasonName(CompilationReason::kCmdLine), "cmdline");
-  ASSERT_EQ(CompilationReasonName(CompilationReason::kError), "error");
+  ASSERT_EQ(CompilationReasonName(CompilationReason::kAbsent), "absent");
   ASSERT_EQ(CompilationReasonName(CompilationReason::kVdex), "vdex");
   ASSERT_EQ(CompilationReasonName(CompilationReason::kBootAfterMainlineUpdate),
             "boot-after-mainline-update");
+  ASSERT_EQ(CompilationReasonName(CompilationReason::kOther), "other");
+  ASSERT_EQ(CompilationReasonName(CompilationReason::kCloud), "cloud");
+  ASSERT_EQ(CompilationReasonName(CompilationReason::kVdexDm), "vdex-dm");
+  ASSERT_EQ(CompilationReasonName(CompilationReason::kDefDexopt), "def-dexopt");
+  ASSERT_EQ(CompilationReasonName(CompilationReason::kPostUr), "post-ur");
 }
 }  // namespace metrics
 }  // namespace art

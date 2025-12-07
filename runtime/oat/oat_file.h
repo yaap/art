@@ -64,9 +64,10 @@ class FakeOatFile;
 }  // namespace collector
 }  // namespace gc
 
-// A special compilation reason to indicate that only the VDEX file is usable. Keep in sync with
-// `ArtConstants::REASON_VDEX` in artd/binder/com/android/server/art/ArtConstants.aidl.
+// A special compilation reason to indicate that only the VDEX file is usable.
 static constexpr const char* kReasonVdex = "vdex";
+// A special compilation reason to indicate that only the VDEX file in the DM file is usable.
+static constexpr const char* kReasonVdexDm = "vdex-dm";
 
 // OatMethodOffsets are currently 5x32-bits=160-bits long, so if we can
 // save even one OatMethodOffsets struct, the more complicated encoding
@@ -185,6 +186,7 @@ class OatFile {
                                std::unique_ptr<VdexFile>&& vdex_file,
                                const std::string& location,
                                ClassLoaderContext* context,
+                               const char* reason,
                                std::string* error_msg);
 
   static OatFile* OpenFromSdm(const std::string& sdm_filename,

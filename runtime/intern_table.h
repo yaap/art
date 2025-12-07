@@ -124,20 +124,16 @@ class InternTable {
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!Roles::uninterruptible_);
 
   // Interns a potentially new string in the 'strong' table. May cause thread suspension.
-  EXPORT ObjPtr<mirror::String> InternStrong(const char* utf8_data)
-      REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!Roles::uninterruptible_);
-
-  // Interns a potentially new string in the 'strong' table. May cause thread suspension.
-  EXPORT ObjPtr<mirror::String> InternStrong(ObjPtr<mirror::String> s)
+  ObjPtr<mirror::String> InternStrong(ObjPtr<mirror::String> s)
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!Roles::uninterruptible_);
 
   // Interns a potentially new string in the 'weak' table. May cause thread suspension.
-  ObjPtr<mirror::String> InternWeak(const char* utf8_data) REQUIRES_SHARED(Locks::mutator_lock_)
-      REQUIRES(!Roles::uninterruptible_);
+  ObjPtr<mirror::String> InternWeak(uint32_t utf16_length, const char* utf8_data)
+      REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!Roles::uninterruptible_);
 
   // Interns a potentially new string in the 'weak' table. May cause thread suspension.
-  ObjPtr<mirror::String> InternWeak(ObjPtr<mirror::String> s) REQUIRES_SHARED(Locks::mutator_lock_)
-      REQUIRES(!Roles::uninterruptible_);
+  EXPORT ObjPtr<mirror::String> InternWeak(ObjPtr<mirror::String> s)
+      REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!Roles::uninterruptible_);
 
   void SweepInternTableWeaks(IsMarkedVisitor* visitor) REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::intern_table_lock_);
@@ -291,6 +287,10 @@ class InternTable {
   size_t AddTableFromMemory(const uint8_t* ptr, const Visitor& visitor, bool is_boot_image)
       REQUIRES(!Locks::intern_table_lock_) REQUIRES_SHARED(Locks::mutator_lock_);
 
+  // Helper function for `InternStrong()` and `InternWeak()` with `utf16_length` and `utf8_data`.
+  ObjPtr<mirror::String> Intern(uint32_t utf16_length, const char* utf8_data, bool is_strong)
+      REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!Roles::uninterruptible_);
+
   // Note: Transaction rollback calls these helper functions directly.
   EXPORT ObjPtr<mirror::String> InsertStrong(ObjPtr<mirror::String> s, uint32_t hash)
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(Locks::intern_table_lock_);
@@ -308,6 +308,8 @@ class InternTable {
   // Wait until we can read weak roots.
   void WaitUntilAccessible(Thread* self)
       REQUIRES(Locks::intern_table_lock_) REQUIRES_SHARED(Locks::mutator_lock_);
+
+  bool WeakAccessEnabled(Thread* self) REQUIRES(Locks::intern_table_lock_);
 
   bool log_new_roots_ GUARDED_BY(Locks::intern_table_lock_);
   ConditionVariable weak_intern_condition_ GUARDED_BY(Locks::intern_table_lock_);

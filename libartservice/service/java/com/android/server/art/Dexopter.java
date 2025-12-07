@@ -108,22 +108,22 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
             ProfilePath profile = null;
             boolean succeeded = true;
             List<String> externalProfileErrors = List.of();
+            DexMetadataInfo dmInfo =
+                    mInjector.getDexMetadataHelper().getDexMetadataInfo(buildDmPath(dexInfo));
+            List<Abi> allAbis = getAllAbis(dexInfo);
+            var session = new Dex2OatStatsReporter.Session(mPkgState.getAppId(), dmInfo, dexInfo,
+                    mParams.getCompilerFilter(), mParams.getReason(), allAbis);
             try {
                 if (!isDexoptable(dexInfo)) {
+                    session.disable();
                     continue;
                 }
 
                 onDexoptStart(dexInfo);
 
                 String compilerFilter = adjustCompilerFilter(mParams.getCompilerFilter(), dexInfo);
-                DexMetadataInfo dmInfo =
-                        mInjector.getDexMetadataHelper().getDexMetadataInfo(buildDmPath(dexInfo));
+                session.setCompilerFilter(compilerFilter);
                 if (compilerFilter.equals(DexoptParams.COMPILER_FILTER_NOOP)) {
-                    mInjector.getReporterExecutor().execute(
-                            ()
-                                    -> Dex2OatStatsReporter.reportSkipped(mPkgState.getAppId(),
-                                            mParams.getReason(), dmInfo.type(), dexInfo,
-                                            getAllAbis(dexInfo)));
                     continue;
                 }
 
@@ -179,6 +179,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                                 "there is no valid profile"
                                         + (needsToBeShared ? " and the package needs to be shared"
                                                            : ""));
+                        session.setCompilerFilter(compilerFilter);
                     }
                 }
                 boolean isProfileGuidedCompilerFilter =
@@ -193,13 +194,13 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                 DexoptOptions dexoptOptions =
                         getDexoptOptions(dexInfo, isProfileGuidedCompilerFilter);
 
-                for (Abi abi : getAllAbis(dexInfo)) {
+                for (Abi abi : allAbis) {
                     @DexoptResult.DexoptResultStatus int status = DexoptResult.DEXOPT_SKIPPED;
                     long wallTimeMs = 0;
                     long cpuTimeMs = 0;
                     long sizeBytes = 0;
                     long sizeBeforeBytes = 0;
-                    Dex2OatResult dex2OatResult = Dex2OatResult.notRun();
+                    Dex2OatResult dex2OatResult;
                     @DexoptResult.DexoptResultExtendedStatusFlags int extendedStatusFlags = 0;
                     DexoptTarget<DexInfoType> target = null;
                     try {
@@ -286,8 +287,10 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                         sizeBeforeBytes = dexoptResult.sizeBeforeBytes;
                         dex2OatResult = dexoptResult.cancelled ? Dex2OatResult.cancelled()
                                                                : Dex2OatResult.exited(0);
+                        session.recordResultForAbi(abi, dex2OatResult, sizeBytes, wallTimeMs);
 
                         if (status == DexoptResult.DEXOPT_CANCELLED) {
+                            session.recordResultForRemainingAbis(dex2OatResult);
                             return results;
                         }
                     } catch (ServiceSpecificException e) {
@@ -310,6 +313,8 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                         } else {
                             dex2OatResult = Dex2OatResult.failedToStart();
                         }
+                        session.recordResultForAbi(
+                                abi, dex2OatResult, 0 /* sizeBytes */, 0 /* wallTimeMs */);
                     } finally {
                         if (!externalProfileErrors.isEmpty()) {
                             extendedStatusFlags |= DexoptResult.EXTENDED_BAD_EXTERNAL_PROFILE;
@@ -331,17 +336,6 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                         // Make sure artd does not leak even if the caller holds
                         // `mCancellationSignal` forever.
                         mCancellationSignal.setOnCancelListener(null);
-
-                        // Variables used in lambda needs to be effectively final.
-                        Dex2OatResult finalDex2OatResult = dex2OatResult;
-                        mInjector.getReporterExecutor().execute(
-                                ()
-                                        -> Dex2OatStatsReporter.report(mPkgState.getAppId(),
-                                                result.getActualCompilerFilter(),
-                                                mParams.getReason(), dmInfo.type(), dexInfo,
-                                                abi.isa(), finalDex2OatResult,
-                                                result.getSizeBytes(),
-                                                result.getDex2oatWallTimeMillis()));
                     }
                 }
 
@@ -367,7 +361,11 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                         cleanupCurProfiles(dexInfo);
                     }
                 }
+            } catch (RemoteException | RuntimeException e) {
+                session.recordResultForRemainingAbis(Dex2OatResult.failedToStart());
+                throw e;
             } finally {
+                mInjector.getReporterExecutor().execute(session::report);
                 if (profile != null && profile.getTag() == ProfilePath.tmpProfilePath) {
                     mInjector.getArtd().deleteProfile(profile);
                 }
@@ -502,6 +500,8 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                 String.format("app-name:%s,app-version-name:%s,app-version-code:%d,art-version:%d",
                         mPkgState.getPackageName(), mPkg.getVersionName(),
                         mPkg.getLongVersionCode(), mInjector.getArtVersion());
+        dexoptOptions.verboseLogTags =
+                mParams.getVerboseLogTags() != null ? mParams.getVerboseLogTags() : "";
         return dexoptOptions;
     }
 
@@ -600,7 +600,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
         ArtdDexoptResult result = mInjector.getArtd().dexopt(outputArtifacts,
                 target.dexInfo().dexPath(), target.isa(), target.dexInfo().classLoaderContext(),
                 target.compilerFilter(), profile, inputVdex, target.dmPath(), priorityClass,
-                dexoptOptions, artdCancellationSignal);
+                dexoptOptions, artdCancellationSignal, mParams.getLoggingFd());
 
         // Delete the existing runtime images after the dexopt is performed, even if they are still
         // usable (e.g., the compiler filter is "verify"). This is to make sure the dexopt puts the

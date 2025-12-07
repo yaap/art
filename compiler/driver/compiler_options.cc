@@ -79,8 +79,8 @@ CompilerOptions::CompilerOptions()
       initialize_app_image_classes_(false),
       check_profiled_methods_(ProfileMethodsCheck::kNone),
       max_image_block_size_(std::numeric_limits<uint32_t>::max()),
-      passes_to_run_(nullptr) {
-}
+      passes_to_run_(nullptr),
+      enable_profile_code_(false) {}
 
 CompilerOptions::~CompilerOptions() {
   // Everything done by member destructors.

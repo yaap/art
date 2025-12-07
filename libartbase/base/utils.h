@@ -132,6 +132,9 @@ WARN_UNUSED bool CacheOperationsMaySegFault();
 // Is the execution environment on a virtual machine? See ART_TEST_ON_VM.
 WARN_UNUSED bool RunningOnVM();
 
+// Is the execution environment on a single-board computer? See ART_TEST_ON_SBC.
+WARN_UNUSED bool RunningOnSBC();
+
 template <typename Func, typename... Args>
 static inline void CheckedCall(const Func& function, const char* what, Args... args) {
   int rc = function(args...);
@@ -168,6 +171,49 @@ char GetStateFromStatString(const std::string& stat_output);
 // Less robust against concurrent change, but individual stat strings should still always
 // be consistent. Called only when we are nearly certain to crash anyway.
 std::string GetOtherThreadOsStats();
+
+// Retrieve the first 3 fields of each of the sum and full lines in /proc/pressure/io, and
+// combine them into a string. Returns an empty string if something goes wrong, including the
+// common case in which we don't have permission to read /proc/pressure/io.
+std::string GetOSPressureIOSummary();
+
+// Retrieve the first line from /proc/diskstats whose device name starts with disk_name, and copy
+// the result, except for major and minor device number, into buf. If the fields in the result are
+// numbered starting with 0, reulting field numbers match those in the kernel iostats.rst file.
+// Return the number of characters in the resulting buffer.
+// Note: Likely to fail and return 0 for normal unprivileged Android processes.
+size_t GetOSDiskStats(const char* disk_name, char* buf, size_t len);
+
+// Encapulates the /proc/diskstats fields we currently consider the most interesting:
+// See iostats.rst for field descriptions.
+// Field 8: milliseconds spent writing.
+// Field 10: milliseconds spent doing IO.
+// Field 17: milliseconds spent flushing.
+// Field 9: IOs in progress.
+//
+// Note that the first 3 really require two observations to be meaningful.
+// We assign only those values we actually find.
+//
+// These fields are written by the kernel as unsigned int's, and could theoretically wrap.
+struct ConciseDiskStats {
+  unsigned int write_millis_;
+  unsigned int io_millis_;
+  unsigned int flush_millis_;
+  unsigned int in_progress_;
+
+  // Construct ConciseDiskStats representing the current statistics for disk_name.
+  // If this fails. e.g. because /proc/diskstats is not readable (likely on Android), then all
+  // fields are zero. It's possible flush_millis_ is not supported, and will always be zero, even
+  // if the other fields are nonzero. If disk_name is nullptr, leave all fields zeroed.
+  explicit ConciseDiskStats(const char* disk_name);
+
+  // Return a string representing the evolution of 'this' from 'earlier'. These should correspond
+  // to the same disk. This is arguably the ony meanigful way to print results.
+  // Returns an empty string if the information is unavailable.
+  std::string SummarizeDiff(ConciseDiskStats earlier);
+
+  bool IsEmpty() { return io_millis_ == 0; }
+};
 
 }  // namespace art
 

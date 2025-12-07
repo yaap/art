@@ -55,6 +55,7 @@
 #include "oat_file_assistant_context.h"
 #include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
+#include "trace_common.h"
 #include "vdex_file.h"
 #include "zlib.h"
 
@@ -531,6 +532,13 @@ OatFileAssistant::OatStatus OatFileAssistant::GivenOatFileStatus(const OatFile& 
                             file.GetOatHeader().GetAssumeValueSdkInt(),
                             GetRuntimeOptions().sdk_version);
     return kOatAssumedValuesOutOfDate;
+  }
+
+  if (file.GetOatHeader().IsProfileCodeEnabled() != ShouldEnableProfileCode()) {
+    *error_msg = ART_FORMAT("Profile code Enabled mismatch (compiled='{}', runtime='{}')",
+                            file.GetOatHeader().IsProfileCodeEnabled(),
+                            ShouldEnableProfileCode());
+    return kOatCannotOpen;
   }
 
   return kOatUpToDate;
@@ -1091,6 +1099,7 @@ std::unique_ptr<OatFile> OatFileAssistant::OatFileInfoBackedByVdex::LoadFile(
                                                         std::move(vdex),
                                                         oat_file_assistant_->dex_location_,
                                                         oat_file_assistant_->context_,
+                                                        kReasonVdex,
                                                         error_msg));
 }
 
@@ -1109,6 +1118,7 @@ std::unique_ptr<OatFile> OatFileAssistant::OatFileInfoBackedByDm::LoadFile(
                                                         std::move(vdex),
                                                         oat_file_assistant_->dex_location_,
                                                         oat_file_assistant_->context_,
+                                                        kReasonVdexDm,
                                                         error_msg));
 }
 
@@ -1240,57 +1250,62 @@ void OatFileAssistant::GetOptimizationStatus(const std::string& filename,
                                       /*load_executable=*/false,
                                       /*only_load_trusted_executable=*/false,
                                       ofa_context);
-  std::string out_odex_location;  // unused
-  std::string out_odex_status;    // unused
-  Location out_location;          // unused
-  oat_file_assistant.GetOptimizationStatus(&out_odex_location,
+  std::string odex_location;    // unused
+  std::string odex_status;      // unused
+  Location location;            // unused
+  bool is_backed_by_vdex_only;  // unused
+  oat_file_assistant.GetOptimizationStatus(&odex_location,
                                            out_compilation_filter,
                                            out_compilation_reason,
-                                           &out_odex_status,
-                                           &out_location);
+                                           &odex_status,
+                                           &location,
+                                           &is_backed_by_vdex_only);
 }
 
-void OatFileAssistant::GetOptimizationStatus(std::string* out_odex_location,
-                                             std::string* out_compilation_filter,
-                                             std::string* out_compilation_reason,
-                                             std::string* out_odex_status,
-                                             Location* out_location) {
+void OatFileAssistant::GetOptimizationStatus(std::string* odex_location,
+                                             std::string* compilation_filter,
+                                             std::string* compilation_reason,
+                                             std::string* odex_status,
+                                             Location* location,
+                                             bool* is_backed_by_vdex_only) {
   OatFileInfo& oat_file_info = GetBestInfo();
   const OatFile* oat_file = oat_file_info.GetFile();
-  *out_location = GetLocation(oat_file_info);
+  *location = GetLocation(oat_file_info);
 
   if (oat_file == nullptr) {
+    *is_backed_by_vdex_only = false;
     std::string error_msg;
     std::optional<bool> has_dex_files = HasDexFiles(&error_msg);
     if (!has_dex_files.has_value()) {
-      *out_odex_location = "error";
-      *out_compilation_filter = "unknown";
-      *out_compilation_reason = "unknown";
+      *odex_location = "error";
+      *compilation_filter = "unknown";
+      *compilation_reason = "unknown";
       // This happens when we cannot open the APK/JAR.
-      *out_odex_status = "io-error-no-apk";
+      *odex_status = "io-error-no-apk";
     } else if (!has_dex_files.value()) {
-      *out_odex_location = "none";
-      *out_compilation_filter = "unknown";
-      *out_compilation_reason = "unknown";
+      *odex_location = "none";
+      *compilation_filter = "unknown";
+      *compilation_reason = "unknown";
       // This happens when the APK/JAR doesn't contain any DEX file.
-      *out_odex_status = "no-dex-code";
+      *odex_status = "no-dex-code";
     } else {
-      *out_odex_location = "error";
-      *out_compilation_filter = "run-from-apk";
-      *out_compilation_reason = "unknown";
+      *odex_location = "error";
+      *compilation_filter = "run-from-apk";
+      *compilation_reason = "unknown";
       // This mostly happens when we cannot open the oat file.
       // Note that it's different than kOatCannotOpen.
       // TODO: The design of getting the BestInfo is not ideal, as it's not very clear what's the
       // difference between a nullptr and kOatcannotOpen. The logic should be revised and improved.
-      *out_odex_status = "io-error-no-oat";
+      *odex_status = "io-error-no-oat";
     }
     return;
   }
 
-  *out_odex_location = oat_file->GetLocation();
+  *odex_location = oat_file->GetLocation();
   OatStatus status = oat_file_info.Status();
   const char* reason = oat_file->GetCompilationReason();
-  *out_compilation_reason = reason == nullptr ? "unknown" : reason;
+  *compilation_reason = reason == nullptr ? "unknown" : reason;
+  *is_backed_by_vdex_only = oat_file->IsBackedByVdexOnly();
 
   // If the oat file is invalid, the vdex file will be picked, so the status is `kOatUpToDate`. If
   // the vdex file is also invalid, then either `oat_file` is nullptr, or `status` is
@@ -1299,8 +1314,8 @@ void OatFileAssistant::GetOptimizationStatus(std::string* out_odex_location,
 
   switch (status) {
     case kOatUpToDate:
-      *out_compilation_filter = CompilerFilter::NameOfFilter(oat_file->GetCompilerFilter());
-      *out_odex_status = "up-to-date";
+      *compilation_filter = CompilerFilter::NameOfFilter(oat_file->GetCompilerFilter());
+      *odex_status = "up-to-date";
       return;
 
     case kOatCannotOpen:
@@ -1308,14 +1323,14 @@ void OatFileAssistant::GetOptimizationStatus(std::string* out_odex_location,
     case kOatContextOutOfDate:
     case kOatAssumedValuesOutOfDate:
       // These should never happen, but be robust.
-      *out_compilation_filter = "unexpected";
-      *out_compilation_reason = "unexpected";
-      *out_odex_status = "unexpected";
+      *compilation_filter = "unexpected";
+      *compilation_reason = "unexpected";
+      *odex_status = "unexpected";
       return;
 
     case kOatDexOutOfDate:
-      *out_compilation_filter = "run-from-apk-fallback";
-      *out_odex_status = "apk-more-recent";
+      *compilation_filter = "run-from-apk-fallback";
+      *odex_status = "apk-more-recent";
       return;
   }
   LOG(FATAL) << "Unreachable";

@@ -168,8 +168,8 @@ class MetricsReporterTest : public CommonRuntimeTest {
   void VerifyReports(
         uint32_t size,
         bool with_metrics,
-        CompilerFilterReporting filter = CompilerFilterReporting::kUnknown,
-        CompilationReason reason = CompilationReason::kUnknown) {
+        CompilerFilterReporting filter = CompilerFilterReporting::kAbsent,
+        CompilationReason reason = CompilationReason::kAbsent) {
     // TODO: we should iterate through all the other metrics to make sure they were not
     // reported. However, we don't have an easy to use iteration mechanism over metrics yet.
     // We should add one

@@ -300,23 +300,9 @@ END_FUNCTION \name
     leal    (rPC, rINST, 2), rPC
     // Update method counter and do a suspend check if the branch is negative or zero.
     testl rINST, rINST
-    jle 3f
-2:
+    jle NterpHotnessCheck
     FETCH_INST
     GOTO_NEXT
-3:
-    movl (%esp), %eax
-    movzwl ART_METHOD_HOTNESS_COUNT_OFFSET(%eax), %ecx
-#if (NTERP_HOTNESS_VALUE != 0)
-#error Expected 0 for hotness value
-#endif
-    // If the counter is at zero, handle this in the runtime.
-    testw %cx, %cx
-    je NterpHandleHotnessOverflow
-    // Update counter.
-    addl $$-1, %ecx
-    movw %cx, ART_METHOD_HOTNESS_COUNT_OFFSET(%eax)
-    DO_SUSPEND_CHECK continue_label=2b
 .endm
 
 // Expects:
@@ -2273,22 +2259,36 @@ NterpCallSuspendAndGotoNext:
     FETCH_INST
     GOTO_NEXT
 
-NterpHandleHotnessOverflow:
-    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=1f, if_not_hot=4f
+NterpHotnessCheck:
+    movl (%esp), %eax
+    movzwl ART_METHOD_HOTNESS_COUNT_OFFSET(%eax), %ecx
+#if (NTERP_HOTNESS_VALUE != 0)
+#error Expected 0 for hotness value
+#endif
+    // If the counter is at zero, handle this in the runtime.
+    testw %cx, %cx
+    je 3f
+    // Update counter.
+    addl $$-1, %ecx
+    movw %cx, ART_METHOD_HOTNESS_COUNT_OFFSET(%eax)
 1:
-    movl rPC, %ecx
-    movl rFP, ARG2
-    // Save next PC.
-    movl %ecx, LOCAL0(%esp)
-    call nterp_hot_method
-    testl %eax, %eax
-    jne 3f
-    // Fetch next PC.
-    mov LOCAL0(%esp), rPC
+    DO_SUSPEND_CHECK continue_label=2f
 2:
     FETCH_INST
     GOTO_NEXT
+
 3:
+    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=4f, if_not_hot=1b
+4:
+    movl rPC, %ecx
+    movl rFP, ARG2
+    // Save next PC around the call.
+    movl %ecx, LOCAL0(%esp)
+    call nterp_hot_method
+    mov LOCAL0(%esp), rPC
+    testl %eax, %eax
+    je 2b
+
     // Drop the current frame.
     movl -4(rREFS), %esp
     CFI_DEF_CFA(esp, PARAMETERS_SAVES_SIZE+CALLEE_SAVES_SIZE)
@@ -2324,9 +2324,6 @@ NterpHandleHotnessOverflow:
 
     // Jump to the compiled code.
     ret
-4:
-    DO_SUSPEND_CHECK continue_label=2b
-
 
 NterpHandleInvokeInterfaceOnObjectMethodRange:
    shrl $$16, %eax

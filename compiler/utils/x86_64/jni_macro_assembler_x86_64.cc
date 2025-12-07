@@ -19,7 +19,7 @@
 #include "base/casts.h"
 #include "base/memory_region.h"
 #include "entrypoints/quick/quick_entrypoints.h"
-#include "indirect_reference_table.h"
+#include "jni/indirect_reference_table.h"
 #include "lock_word.h"
 #include "thread.h"
 

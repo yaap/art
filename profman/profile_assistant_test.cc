@@ -281,7 +281,6 @@ class ProfileAssistantTest : public CommonRuntimeTest, public ProfileTestHelper 
   ObjPtr<mirror::Class> GetClass(ScopedObjectAccess& soa,
                                  jobject class_loader,
                                  const std::string& clazz) REQUIRES_SHARED(Locks::mutator_lock_) {
-    ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
     StackHandleScope<1> hs(soa.Self());
     Handle<mirror::ClassLoader> h_loader(hs.NewHandle(
         ObjPtr<mirror::ClassLoader>::DownCast(soa.Self()->DecodeJObject(class_loader))));

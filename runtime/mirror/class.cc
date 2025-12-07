@@ -25,6 +25,7 @@
 #include "array-inl.h"
 #include "art_field-inl.h"
 #include "art_method-inl.h"
+#include "base/inlined_vector.h"
 #include "base/logging.h"  // For VLOG.
 #include "base/pointer_size.h"
 #include "base/sdk_version.h"
@@ -861,8 +862,8 @@ ArtMethod* Class::FindClassMethod(ObjPtr<DexCache> dex_cache,
     } else {
       constexpr PointerSize kOtherPointerSize =
           (kRuntimePointerSize == PointerSize::k64) ? PointerSize::k32 : PointerSize::k64;
-      method = FindDeclaredClassMethod</* kOnlyLookAtIndex */ false, kOtherPointerSize>(
-          dex_method_idx);
+      method =
+          FindDeclaredClassMethod</* kOnlyLookAtIndex= */ false, kOtherPointerSize>(dex_method_idx);
     }
     if (method != nullptr) {
       return method;
@@ -1215,41 +1216,38 @@ ObjPtr<mirror::ObjectArray<mirror::Field>> Class::GetDeclaredFields(
     ThrowRuntimeException("Obsolete Object!");
     return nullptr;
   }
-  StackHandleScope<1> hs(self);
-  IterationRange<StrideIterator<ArtField>> fields = GetFields();
-  size_t array_size = NumFields();
+  // Collect all discoverable fields.
   auto hiddenapi_context = hiddenapi::GetReflectionCallerAccessContext(self);
-  // Lets go subtract all the non discoverable fields.
-  for (ArtField& field : fields) {
-    if (!IsDiscoverable(public_only, hiddenapi_context, &field)) {
-      --array_size;
+  static constexpr size_t kMaxStackEntries = 8u;
+  InlinedVector<ArtField*, kMaxStackEntries> fields;
+  for (ArtField& field : GetFields()) {
+    if (IsDiscoverable(public_only, hiddenapi_context, &field)) {
+      fields.push_back(&field);
     }
   }
-  size_t array_idx = 0;
+  StackHandleScope<1> hs(self);
   auto object_array = hs.NewHandle(mirror::ObjectArray<mirror::Field>::Alloc(
-      self, GetClassRoot<mirror::ObjectArray<mirror::Field>>(), array_size));
+      self, GetClassRoot<mirror::ObjectArray<mirror::Field>>(), fields.size()));
   if (object_array == nullptr) {
     return nullptr;
   }
-  for (ArtField& field : fields) {
-    if (IsDiscoverable(public_only, hiddenapi_context, &field)) {
-      ObjPtr<mirror::Field> reflect_field =
-          mirror::Field::CreateFromArtField(self, &field, force_resolve);
-      if (reflect_field == nullptr) {
-        if (kIsDebugBuild) {
-          self->AssertPendingException();
-        }
-        // Maybe null due to OOME or type resolving exception.
-        return nullptr;
+  size_t array_idx = 0;
+  for (ArtField* field : fields.GetArray()) {
+    ObjPtr<mirror::Field> reflect_field =
+        mirror::Field::CreateFromArtField(self, field, force_resolve);
+    if (reflect_field == nullptr) {
+      if (kIsDebugBuild) {
+        self->AssertPendingException();
       }
-      // We're initializing a newly allocated object, so we do not need to record that under
-      // a transaction. If the transaction is aborted, the whole object shall be unreachable.
-      object_array->SetWithoutChecks</*kTransactionActive=*/ false,
-                                     /*kCheckTransaction=*/ false>(
-                                         array_idx++, reflect_field);
+      // Maybe null due to OOME or type resolving exception.
+      return nullptr;
     }
+    // We're initializing a newly allocated object, so we do not need to record that under
+    // a transaction. If the transaction is aborted, the whole object shall be unreachable.
+    object_array->SetWithoutChecks<
+        /*kTransactionActive=*/ false, /*kCheckTransaction=*/ false>(array_idx++, reflect_field);
   }
-  DCHECK_EQ(array_idx, array_size);
+  DCHECK_EQ(array_idx, fields.size());
   return object_array.Get();
 }
 
@@ -2376,6 +2374,16 @@ size_t Class::GetProxyThrowsIndex(ArtMethod* method) REQUIRES_SHARED(Locks::muta
     }
   }
   return static_cast<size_t>(-1);
+}
+
+template <PointerSize kPointerSize>
+ArtMethod* Class::FindDeclaredClassMethodSlow(uint32_t dex_method_idx) {
+  for (ArtMethod& m : GetDeclaredMethods(kPointerSize)) {
+    if (m.GetDexMethodIndex() == dex_method_idx) {
+      return &m;
+    }
+  }
+  return nullptr;
 }
 
 

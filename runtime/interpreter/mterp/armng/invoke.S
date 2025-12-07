@@ -26,6 +26,7 @@
    mov r0, rSELF
    ldr r1, [sp]
    mov r2, rPC
+   mov r3, rFP
    bl nterp_get_method
    .if $is_super
    b 1b
@@ -123,6 +124,7 @@
    mov r0, rSELF
    ldr r1, [sp]
    mov r2, rPC
+   mov r3, rFP
    bl nterp_get_method
    mov r4, r0
    b .L${opcode}_resume
@@ -142,6 +144,7 @@
    mov r0, rSELF
    ldr r1, [sp]
    mov r2, rPC
+   mov r3, rFP
    bl nterp_get_method
    b $helper
 
@@ -171,6 +174,7 @@
    mov r0, rSELF
    ldr r1, [sp]
    mov r2, rPC
+   mov r3, rFP
    bl nterp_get_method
    mov r2, r0
    b 1b

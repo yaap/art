@@ -34,6 +34,7 @@
 #include <limits>
 #include <optional>
 #include <type_traits>
+#include <unordered_set>
 
 #include "android-base/file.h"
 #include "android-base/logging.h"
@@ -780,6 +781,8 @@ class HeapGraphDumper {
 
     FillReferences(obj, klass, object_proto);
 
+    FillRuntimeInternalObjects(obj, klass, object_proto);
+
     FillFieldValues(obj, klass, object_proto);
   }
 
@@ -864,6 +867,74 @@ class HeapGraphDumper {
     }
     object_proto->set_reference_object_id(*reference_object_ids_);
     reference_object_ids_->Reset();
+  }
+
+  static bool ShouldDumpRuntimeInternalObjects(art::mirror::Class* klass)
+      REQUIRES_SHARED(art::Locks::mutator_lock_) {
+    do {
+      if (klass->IsDexCacheClass()) {
+        return true;
+      }
+      if (klass->IsClassLoaderClass() && klass->GetSuperClass()->IsObjectClass()) {
+        return true;
+      }
+      klass = klass->GetSuperClass().Ptr();
+    } while (klass != nullptr);
+    return false;
+  }
+
+  // Fills `*object_proto` with all the native references held by `*obj` (an object of type
+  // `*klass`).
+  void FillRuntimeInternalObjects(art::mirror::Object* obj,
+                                  art::mirror::Class* klass,
+                                  perfetto::protos::pbzero::HeapGraphObject* object_proto)
+      REQUIRES_SHARED(art::Locks::mutator_lock_) {
+    if (obj->IsClass()) {
+      return;
+    }
+    if (!ShouldDumpRuntimeInternalObjects(klass)) {
+      return;
+    }
+    std::unordered_set<art::mirror::Object*> runtime_internal_objects;
+
+    class RuntimeInternalObjectsFinder {
+     public:
+      explicit RuntimeInternalObjectsFinder(std::unordered_set<art::mirror::Object*>* objects)
+          : objects_(objects) {}
+
+      void operator()([[maybe_unused]] art::ObjPtr<art::mirror::Object> obj,
+                      [[maybe_unused]] art::MemberOffset offset,
+                      [[maybe_unused]] bool is_static) const {}
+
+      void VisitRootIfNonNull(art::mirror::CompressedReference<art::mirror::Object>* root) const
+          REQUIRES_SHARED(art::Locks::mutator_lock_) {
+        if (!root->IsNull()) {
+          VisitRoot(root);
+        }
+      }
+
+      void VisitRoot(art::mirror::CompressedReference<art::mirror::Object>* root) const
+          REQUIRES_SHARED(art::Locks::mutator_lock_) {
+        objects_->insert(root->AsMirrorPtr());
+      }
+
+     private:
+      // We can use a raw Object* pointer here, because there are no concurrent GC threads after the
+      // fork.
+      std::unordered_set<art::mirror::Object*>* objects_;
+    };
+    RuntimeInternalObjectsFinder objf(&runtime_internal_objects);
+
+    obj->VisitReferences(objf, art::VoidFunctor());
+
+    if (!runtime_internal_objects.empty()) {
+      for (art::mirror::Object* referred_obj : runtime_internal_objects) {
+        uint64_t referred_obj_id = GetObjectId(referred_obj);
+        reference_object_ids_->Append(referred_obj_id);
+      }
+      object_proto->set_runtime_internal_object_id(*reference_object_ids_);
+      reference_object_ids_->Reset();
+    }
   }
 
   // Iterates all the `referred_objects` and sets all the objects that are supposed to be ignored

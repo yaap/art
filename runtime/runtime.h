@@ -96,6 +96,8 @@ class MethodVerifier;
 enum class VerifyMode : int8_t;
 }  // namespace verifier
 class ArenaPool;
+class AssumeValueSignature;
+class ArtField;
 class ArtMethod;
 enum class CalleeSaveType: uint32_t;
 class ClassLinker;
@@ -1088,11 +1090,17 @@ class Runtime {
 
   void RequestMetricsReport(bool synchronous = true);
 
-  static void MadviseFileForRange(size_t madvise_size_limit_bytes,
-                                  size_t map_size_bytes,
-                                  const uint8_t* map_begin,
-                                  const uint8_t* map_end,
-                                  const std::string& file_name);
+  // Requests madvise `WILLNEED` for the given file mapping range.
+  //
+  // Returns the actual number of bytes that were madvise'd. This is determined
+  // not only by the provided limit, but also the map region and the current
+  // process state (e.g., madvise may be short-circuited for low-pri processes).
+  // This will always be `<= madvise_size_limit_bytes`.
+  static size_t MadviseFileForRange(size_t madvise_size_limit_bytes,
+                                    size_t map_size_bytes,
+                                    const uint8_t* map_begin,
+                                    const uint8_t* map_end,
+                                    const std::string& file_name);
 
   const std::string& GetApexVersions() const {
     return apex_versions_;
@@ -1141,6 +1149,8 @@ class Runtime {
   }
 
   bool AreMetricsInitialized() const { return metrics_reporter_ != nullptr; }
+
+  std::optional<AssumeValueSignature> LookupAssumeValueSignature(ArtField* field) const;
 
  private:
   static void InitPlatformSignalHandlers();
@@ -1581,6 +1591,8 @@ class Runtime {
 
   // The info about the application code paths.
   AppInfo app_info_;
+
+  std::map<ArtField*, const AssumeValueSignature*> assume_value_field_signatures_;
 
   // Note: See comments on GetFaultMessage.
   friend std::string GetFaultMessageForAbortLogging();

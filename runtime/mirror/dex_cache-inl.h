@@ -264,9 +264,8 @@ inline void VisitDexCachePairs(T* array,
                                size_t num_pairs,
                                const Visitor& visitor)
     REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(Locks::heap_bitmap_lock_) {
-  // Check both the data pointer and count since the array might be initialized
-  // concurrently on other thread, and we might observe just one of the values.
-  for (size_t i = 0; array != nullptr && i < num_pairs; ++i) {
+  DCHECK_NE(array, nullptr);
+  for (size_t i = 0; i < num_pairs; ++i) {
     auto source = array->GetPair(i);
     // NOTE: We need the "template" keyword here to avoid a compilation
     // failure. GcRoot<T> is a template argument-dependent type and we need to
@@ -299,49 +298,69 @@ inline void DexCache::VisitReferences(ObjPtr<Class> klass, const Visitor& visito
   VisitInstanceFieldsReferences<kVerifyFlags>(klass, visitor);
   // Visit arrays after.
   if (kVisitNativeRoots) {
-    VisitNativeRoots<kVerifyFlags, kReadBarrierOption>(visitor);
+    auto should_visit = [](void* ptr) { return ptr != nullptr; };
+    VisitNativeRoots<kVerifyFlags, kReadBarrierOption>(visitor, should_visit);
   }
 }
 
 template <VerifyObjectFlags kVerifyFlags,
           ReadBarrierOption kReadBarrierOption,
-          typename Visitor>
-inline void DexCache::VisitNativeRoots(const Visitor& visitor) {
-  VisitDexCachePairs<kReadBarrierOption, Visitor>(
-      GetStrings<kVerifyFlags>(), NumStrings<kVerifyFlags>(), visitor);
+          typename Visitor,
+          typename ShouldVisitVisitor>
+inline void DexCache::VisitNativeRoots(const Visitor& visitor,
+                                       const ShouldVisitVisitor& should_visit) {
+  auto* strings = GetStrings<kVerifyFlags>();
+  if (should_visit(strings)) {
+    VisitDexCachePairs<kReadBarrierOption, Visitor>(strings, NumStrings<kVerifyFlags>(), visitor);
+  }
 
-  VisitDexCachePairs<kReadBarrierOption, Visitor>(
-      GetResolvedTypes<kVerifyFlags>(), NumResolvedTypes<kVerifyFlags>(), visitor);
+  auto* resolved_types = GetResolvedTypes<kVerifyFlags>();
+  if (should_visit(resolved_types)) {
+    VisitDexCachePairs<kReadBarrierOption, Visitor>(
+        resolved_types, NumResolvedTypes<kVerifyFlags>(), visitor);
+  }
 
-  VisitDexCachePairs<kReadBarrierOption, Visitor>(
-      GetResolvedMethodTypes<kVerifyFlags>(), NumResolvedMethodTypes<kVerifyFlags>(), visitor);
+  auto* resolved_method_types = GetResolvedMethodTypes<kVerifyFlags>();
+  if (should_visit(resolved_method_types)) {
+    VisitDexCachePairs<kReadBarrierOption, Visitor>(
+        resolved_method_types, NumResolvedMethodTypes<kVerifyFlags>(), visitor);
+  }
 
   GcRootArray<mirror::CallSite>* resolved_call_sites = GetResolvedCallSites<kVerifyFlags>();
-  size_t num_call_sites = NumResolvedCallSites<kVerifyFlags>();
-  for (size_t i = 0; resolved_call_sites != nullptr && i != num_call_sites; ++i) {
-    visitor.VisitRootIfNonNull(resolved_call_sites->GetGcRootAddress(i)->AddressWithoutBarrier());
+  if (should_visit(resolved_call_sites)) {
+    size_t num_call_sites = NumResolvedCallSites<kVerifyFlags>();
+    for (size_t i = 0; i != num_call_sites; ++i) {
+      visitor.VisitRootIfNonNull(resolved_call_sites->GetGcRootAddress(i)->AddressWithoutBarrier());
+    }
   }
 
   // Dex cache arrays can be reset and cleared during app startup. Assert we do not get
   // suspended to ensure the arrays are not deallocated.
   ScopedAssertNoThreadSuspension soants("dex caches");
-  GcRootArray<mirror::Class>* resolved_types = GetResolvedTypesArray<kVerifyFlags>();
-  size_t num_resolved_types = NumResolvedTypesArray<kVerifyFlags>();
-  for (size_t i = 0; resolved_types != nullptr && i != num_resolved_types; ++i) {
-    visitor.VisitRootIfNonNull(resolved_types->GetGcRootAddress(i)->AddressWithoutBarrier());
+  GcRootArray<mirror::Class>* resolved_types_arr = GetResolvedTypesArray<kVerifyFlags>();
+  if (should_visit(resolved_types_arr)) {
+    size_t num_resolved_types = NumResolvedTypesArray<kVerifyFlags>();
+    for (size_t i = 0; i != num_resolved_types; ++i) {
+      visitor.VisitRootIfNonNull(resolved_types_arr->GetGcRootAddress(i)->AddressWithoutBarrier());
+    }
   }
 
   GcRootArray<mirror::String>* resolved_strings = GetStringsArray<kVerifyFlags>();
-  size_t num_resolved_strings = NumStringsArray<kVerifyFlags>();
-  for (size_t i = 0; resolved_strings != nullptr && i != num_resolved_strings; ++i) {
-    visitor.VisitRootIfNonNull(resolved_strings->GetGcRootAddress(i)->AddressWithoutBarrier());
+  if (should_visit(resolved_strings)) {
+    size_t num_resolved_strings = NumStringsArray<kVerifyFlags>();
+    for (size_t i = 0; i != num_resolved_strings; ++i) {
+      visitor.VisitRootIfNonNull(resolved_strings->GetGcRootAddress(i)->AddressWithoutBarrier());
+    }
   }
 
-  GcRootArray<mirror::MethodType>* resolved_method_types =
+  GcRootArray<mirror::MethodType>* resolved_method_types_arr =
       GetResolvedMethodTypesArray<kVerifyFlags>();
-  size_t num_resolved_method_types = NumResolvedMethodTypesArray<kVerifyFlags>();
-  for (size_t i = 0; resolved_method_types != nullptr && i != num_resolved_method_types; ++i) {
-    visitor.VisitRootIfNonNull(resolved_method_types->GetGcRootAddress(i)->AddressWithoutBarrier());
+  if (should_visit(resolved_method_types_arr)) {
+    size_t num_resolved_method_types = NumResolvedMethodTypesArray<kVerifyFlags>();
+    for (size_t i = 0; i != num_resolved_method_types; ++i) {
+      visitor.VisitRootIfNonNull(
+          resolved_method_types_arr->GetGcRootAddress(i)->AddressWithoutBarrier());
+    }
   }
 }
 

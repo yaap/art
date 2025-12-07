@@ -17,9 +17,10 @@
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Method;
-import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
 public class Main {
     private static final String TEMP_FILE_NAME_PREFIX = "test";
@@ -64,6 +65,16 @@ public class Main {
                 tempFile.delete();
             }
         }
+    }
+
+    private static int doSomeCpuWork(int n) {
+        int numFactors = 0;
+        for (long i = 2; i * i <= n; i++) {
+            if (n % i == 0) {
+                numFactors++;
+            }
+        }
+        return numFactors;
     }
 
     private static void testMethodTracingToFile(File tempFile) throws Exception {
@@ -297,6 +308,7 @@ public class Main {
     }
 
     private static void testDebuggerDetails() throws Exception {
+        long start_cpu_time = VMDebug.threadCpuTimeNanos();
         boolean debugger_connected = VMDebug.isDebuggerConnected();
         boolean debugging_enabled = VMDebug.isDebuggingEnabled();
         long last_activity = VMDebug.lastDebuggerActivity();
@@ -306,11 +318,32 @@ public class Main {
         if (!debugger_connected && last_activity != -1) {
             System.out.println("Found unexpected last activity");
         }
-        if (VMDebug.threadCpuTimeNanos() <= 0) {
-            System.out.println("Could not get CPU thread time");
-        }
         VMDebug.dumpHprofDataDdms();
         VMDebug.dumpReferenceTables();
+        // According to the spec the returned value is only meaningful when compared with a previous
+        // value. So make sure there is some work done between the two calls.
+        for (int i = 0; i < 1000; i++) {
+          int n = ThreadLocalRandom.current().nextInt(10000, 1000000);
+          int num_factors = doSomeCpuWork(n);
+          // A check so compiler doesn't optimize away the cpu work as dead code.
+          if (num_factors > n/2) {
+            System.out.println("Should never happen!");
+            break;
+          }
+        }
+        long end_cpu_time = VMDebug.threadCpuTimeNanos();
+        // The threadCpuTimeNanos is allowed to return negative values. According to the spec -1 is
+        // a special value to indicate a failure. While we don't have explicit checks for this it
+        // should be usually valid. We shouldn't return negative values from our implementation.
+        if (end_cpu_time == -1 && start_cpu_time == -1) {
+            System.out.println("CPU time is not supported "
+                    + "start_time: " + start_cpu_time + "end_time: " + end_cpu_time);
+        }
+        long cpu_time = end_cpu_time - start_cpu_time;
+        if (cpu_time <= 0) {
+            System.out.println("Incorrect CPU thread time " + cpu_time + "start_time: "
+                    + start_cpu_time + "end_time: " + end_cpu_time);
+        }
     }
 
     static class ClassA { }

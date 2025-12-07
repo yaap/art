@@ -90,6 +90,8 @@ static constexpr uint32_t kClassFlagReference =
 static constexpr uint32_t kClassFlagStaticRefInfo =
     kClassFlagHasStaticRefs | kClassFlagHasEmbeddedVTable;
 
+static constexpr uint32_t kClassFlagArray = kClassFlagObjectArray | kClassFlagPrimitiveArray;
+
 }  // namespace mirror
 }  // namespace art
 

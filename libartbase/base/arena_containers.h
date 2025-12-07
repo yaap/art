@@ -256,11 +256,11 @@ class ArenaDelete {
   // Used for variable sized objects such as RegisterLine.
   ALWAYS_INLINE void ProtectMemory(T* ptr, size_t size) const {
     if (kRunningOnMemoryTool) {
-      memset(ptr, kMagicFill, size);
+      memset(static_cast<void*>(ptr), kMagicFill, size);
       MEMORY_TOOL_MAKE_NOACCESS(ptr, size);
     } else if (kIsDebugBuild) {
       // Write a magic value to try and catch use after free errors.
-      memset(ptr, kMagicFill, size);
+      memset(static_cast<void*>(ptr), kMagicFill, size);
     }
   }
 

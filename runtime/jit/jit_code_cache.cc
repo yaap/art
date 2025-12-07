@@ -266,6 +266,7 @@ JitCodeCache::JitCodeCache()
       collection_in_progress_(false),
       garbage_collect_code_(true),
       number_of_baseline_compilations_(0),
+      number_of_fast_compilations_(0),
       number_of_optimized_compilations_(0),
       number_of_osr_compilations_(0),
       number_of_collections_(0),
@@ -389,13 +390,19 @@ static void DCheckRootsAreValid(const std::vector<Handle<mirror::Object>>& roots
   }
   // Put all roots in `roots_data`.
   for (Handle<mirror::Object> object : roots) {
-    // Ensure the string is strongly interned. b/32995596
+    // Check that the string is interned. b/32995596
     if (object->IsString()) {
       ObjPtr<mirror::String> str = object->AsString();
       ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
-      CHECK(class_linker->GetInternTable()->LookupStrong(Thread::Current(), str) != nullptr);
+      ObjPtr<mirror::String> interned = com::android::art::flags::weak_const_string()
+          ? class_linker->GetInternTable()->LookupWeak(Thread::Current(), str)
+          : nullptr;
+      if (interned == nullptr) {
+        interned = class_linker->GetInternTable()->LookupStrong(Thread::Current(), str);
+      }
+      CHECK(str == interned);
     }
-    // Ensure that we don't put movable objects in the shared region.
+    // Check that we don't put movable objects in the shared region.
     if (is_shared_region) {
       CHECK(!Runtime::Current()->GetHeap()->IsMovableObject(object.Get()));
     }
@@ -407,9 +414,13 @@ void JitCodeCache::SweepRootTables(IsMarkedVisitor* visitor) {
   ScopedDebugDisallowReadBarriers sddrb(self);
   {
     ReaderMutexLock mu(self, *Locks::jit_mutator_lock_);
-    for (const auto& entry : method_code_map_) {
+    for (auto [code, method] : method_code_map_) {
+      if (com::android::art::flags::weak_const_string() &&
+          visitor->IsMarked(method->GetDeclaringClass<kWithoutReadBarrier>().Ptr()) == nullptr) {
+        continue;  // Do not process the root table for a method of a dead class.
+      }
       uint32_t number_of_roots = 0;
-      const uint8_t* root_table = GetRootTable(entry.first, &number_of_roots);
+      const uint8_t* root_table = GetRootTable(code, &number_of_roots);
       uint8_t* roots_data = private_region_.IsInDataSpace(root_table)
           ? private_region_.GetWritableDataAddress(root_table)
           : shared_region_.GetWritableDataAddress(root_table);
@@ -421,15 +432,16 @@ void JitCodeCache::SweepRootTables(IsMarkedVisitor* visitor) {
           // entry got deleted in a previous sweep.
         } else if (object->IsString<kDefaultVerifyFlags>()) {
           mirror::Object* new_object = visitor->IsMarked(object);
-          // We know the string is marked because it's a strongly-interned string that
-          // is always alive.
-          // TODO: Do not use IsMarked for j.l.Class, and adjust once we move this method
-          // out of the weak access/creation pause. b/32167580
+          // We know the string is marked because it's a strongly-interned string that is
+          // always alive (with the `weak_const_string` flag disabled) or because it's
+          // marked by `VisitRootTables()` (with the `weak_const_string` flag enabled).
           DCHECK_NE(new_object, nullptr) << "old-string:" << object;
           if (new_object != object) {
             roots[i] = GcRoot<mirror::Object>(new_object);
           }
         } else if (object->IsClass<kDefaultVerifyFlags>()) {
+          // TODO: Do not use IsMarked for j.l.Class, and adjust once we move this method
+          // out of the weak access/creation pause. b/32167580
           mirror::Object* new_klass = visitor->IsMarked(object);
           if (new_klass == nullptr) {
             roots[i] = GcRoot<mirror::Object>(Runtime::GetWeakClassSentinel());
@@ -724,6 +736,9 @@ bool JitCodeCache::Commit(Thread* self,
       case CompilationKind::kOsr:
         number_of_osr_compilations_++;
         break;
+      case CompilationKind::kFast:
+        number_of_fast_compilations_++;
+        break;
       case CompilationKind::kBaseline:
         number_of_baseline_compilations_++;
         break;
@@ -798,7 +813,8 @@ bool JitCodeCache::Commit(Thread* self,
 
         for (const Handle<mirror::Object>& root : roots) {
           ObjPtr<mirror::Class> klass = root->GetClass<kDefaultVerifyFlags, kWithoutReadBarrier>();
-          if (klass == method_type_class ||
+          if ((com::android::art::flags::weak_const_string() && klass->IsStringClass()) ||
+              klass == method_type_class ||
               klass == ReadBarrier::IsMarked(method_type_class.Ptr()) ||
               ReadBarrier::IsMarked(klass.Ptr()) == method_type_class) {
             auto it = method_code_map_reversed_.FindOrAdd(method, std::vector<const void*>());
@@ -807,7 +823,8 @@ bool JitCodeCache::Commit(Thread* self,
             DCHECK(std::find(code_ptrs.begin(), code_ptrs.end(), code_ptr) == code_ptrs.end());
             it->second.emplace_back(code_ptr);
 
-            // `MethodType`s are strong GC roots and need write barrier.
+            // `String`s (with `weak_const_string` enabled) and `MethodType`s are strong
+            // GC roots and need a write barrier.
             WriteBarrier::ForEveryFieldWrite(method->GetDeclaringClass<kWithoutReadBarrier>());
             break;
           }
@@ -1176,17 +1193,17 @@ void JitCodeCache::RemoveUnmarkedCode(Thread* self) {
       {
         WriterMutexLock mu2(self, *Locks::jit_mutator_lock_);
         auto method_it = method_code_map_.find(header->GetCode());
-
         if (method_it != method_code_map_.end()) {
           ArtMethod* method = method_it->second;
-          auto code_ptrs_it = method_code_map_reversed_.find(method);
-
-          if (code_ptrs_it != method_code_map_reversed_.end()) {
-            std::vector<const void*>& code_ptrs = code_ptrs_it->second;
-            RemoveElement(code_ptrs, code_ptr);
-
-            if (code_ptrs.empty()) {
-              method_code_map_reversed_.erase(code_ptrs_it);
+          auto reversed_it = method_code_map_reversed_.find(method);
+          if (reversed_it != method_code_map_reversed_.end()) {
+            std::vector<const void*>& code_ptrs = reversed_it->second;
+            auto code_ptr_it = std::find(code_ptrs.begin(), code_ptrs.end(), code_ptr);
+            if (code_ptr_it != code_ptrs.end()) {
+              code_ptrs.erase(code_ptr_it);
+              if (code_ptrs.empty()) {
+                method_code_map_reversed_.erase(reversed_it);
+              }
             }
           }
         }
@@ -1647,14 +1664,20 @@ bool JitCodeCache::NotifyCompilationOf(ArtMethod* method,
                                        Thread* self,
                                        CompilationKind compilation_kind,
                                        bool prejit) {
-  const void* existing_entry_point = method->GetEntryPointFromQuickCompiledCode();
-  if (compilation_kind == CompilationKind::kBaseline && ContainsPc(existing_entry_point)) {
-    // The existing entry point is either already baseline, or optimized. No
-    // need to compile.
-    VLOG(jit) << "Not compiling "
-              << method->PrettyMethod()
-              << " baseline, because it has already been compiled";
-    return false;
+  if (compilation_kind != CompilationKind::kOsr) {
+    const void* existing_entry_point = method->GetEntryPointFromQuickCompiledCode();
+    if (ContainsPc(existing_entry_point)) {
+      CompilationKind existing_kind = CodeInfo::GetCompilationKind(
+          OatQuickMethodHeader::FromEntryPoint(existing_entry_point)->GetOptimizedCodeInfoPtr());
+      if (static_cast<size_t>(existing_kind >= compilation_kind)) {
+        // The existing entry point is either already baseline, or optimized. No
+        // need to compile.
+        VLOG(jit) << "Not compiling "
+                  << method->PrettyMethod() << " " << compilation_kind
+                  << " because it has already been compiled " << existing_kind;
+        return false;
+      }
+    }
   }
 
   if (method->NeedsClinitCheckBeforeCall() && !prejit) {
@@ -1858,6 +1881,7 @@ void JitCodeCache::Dump(std::ostream& os) {
      << "Current number of JIT JNI stub entries: " << jni_stubs_map_.size() << "\n"
      << "Current number of JIT code cache entries: " << method_code_map_.size() << "\n"
      << "Total number of JIT baseline compilations: " << number_of_baseline_compilations_ << "\n"
+     << "Total number of JIT fast compilations: " << number_of_fast_compilations_ << "\n"
      << "Total number of JIT optimized compilations: " << number_of_optimized_compilations_ << "\n"
      << "Total number of JIT compilations for on stack replacement: "
         << number_of_osr_compilations_ << "\n"
@@ -1917,6 +1941,7 @@ void JitCodeCache::PostForkChildAction(bool is_system_server, bool is_zygote) {
 
   // Reset all statistics to be specific to this process.
   number_of_baseline_compilations_ = 0;
+  number_of_fast_compilations_ = 0;
   number_of_optimized_compilations_ = 0;
   number_of_osr_compilations_ = 0;
   number_of_collections_ = 0;

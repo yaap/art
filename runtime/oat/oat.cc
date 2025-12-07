@@ -481,6 +481,8 @@ uint32_t OatHeader::GetAssumeValueSdkInt() const {
   return atoi(key_value);
 }
 
+bool OatHeader::IsProfileCodeEnabled() const { return IsKeyEnabled(kEnableProfileCodeKey); }
+
 CompilerFilter::Filter OatHeader::GetCompilerFilter() const {
   CompilerFilter::Filter filter;
   const char* key_value = GetStoreValueByKey(kCompilerFilter);

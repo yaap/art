@@ -303,23 +303,10 @@ END \name
     add     xPC, xPC, wINST, sxtw #1    // update xPC
     // Update method counter and do a suspend check if the branch is negative or zero.
     cmp wINST, #0
-    b.le 2f
-1:
+    b.le NterpHotnessCheck
     FETCH wINST, 0                      // load wINST
     GET_INST_OPCODE ip                  // extract opcode from wINST
     GOTO_OPCODE ip                      // jump to next instruction
-2:
-    ldr x0, [sp]
-    ldrh w2, [x0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
-#if (NTERP_HOTNESS_VALUE != 0)
-#error Expected 0 for hotness value
-#endif
-    // If the counter is at zero, handle this in the runtime.
-    cbz w2, NterpHandleHotnessOverflow
-    add x2, x2, #-1
-    strh w2, [x0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
-    DO_SUSPEND_CHECK continue_label=1b
-    b 1b
 .endm
 
 // Uses x12, x13, and x14 as temporaries.
@@ -399,6 +386,10 @@ END \name
     cbz w2, 3f
     add x2, x2, #-1
     strh w2, [x0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
+#if FAST_COMPILER_SUPPORTED
+    tst w2, #(FAST_COMPILER_FREQUENCY_CHECK - 1)
+    b.eq 5f
+#endif
 1:
     DO_SUSPEND_CHECK continue_label=2f
 2:
@@ -412,6 +403,20 @@ END \name
     mov x2, xFP
     bl nterp_hot_method
     b 2b
+#if FAST_COMPILER_SUPPORTED
+5:
+#if __has_feature(hwaddress_sanitizer)
+    adrp x1, :pg_hi21_nc:_ZN3art6Thread21jit_sensitive_thread_E
+#else
+    adrp x1, _ZN3art6Thread21jit_sensitive_thread_E
+#endif
+    // We quickly want compiled code for the sensitive thread.
+    ldr x1, [x1, #:lo12:_ZN3art6Thread21jit_sensitive_thread_E]
+    cmp x1, x19
+    b.ne 1b
+    bl nterp_try_fast_compile
+    b 1b
+#endif
 .endm
 
 .macro SPILL_ALL_CALLEE_SAVES
@@ -1769,18 +1774,31 @@ NterpHandleStringInit:
 NterpHandleStringInitRange:
    COMMON_INVOKE_RANGE is_string_init=1, suffix="stringInit"
 
-NterpHandleHotnessOverflow:
-    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=1f, if_not_hot=5f
+NterpHotnessCheck:
+    ldr x0, [sp]
+    ldrh w2, [x0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
+#if (NTERP_HOTNESS_VALUE != 0)
+#error Expected 0 for hotness value
+#endif
+    // If the counter is at zero, handle this in the runtime.
+    cbz w2, 3f
+    add x2, x2, #-1
+    strh w2, [x0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
 1:
-    mov x1, xPC
-    mov x2, xFP
-    bl nterp_hot_method
-    cbnz x0, 3f
+    DO_SUSPEND_CHECK continue_label=2f
 2:
     FETCH wINST, 0                      // load wINST
     GET_INST_OPCODE ip                  // extract opcode from wINST
     GOTO_OPCODE ip                      // jump to next instruction
+
 3:
+    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=4f, if_not_hot=1b
+4:
+    mov x1, xPC
+    mov x2, xFP
+    bl nterp_hot_method
+    cbz x0, 2b
+
     // Drop the current frame.
     ldr ip, [xREFS, #-8]
     mov sp, ip
@@ -1820,11 +1838,11 @@ NterpHandleHotnessOverflow:
     sub sp, sp, x1
 
     add x2, x0, #OSR_DATA_MEMORY
-4:
+5:
     sub x1, x1, #8
     ldr ip, [x2, x1]
     str ip, [sp, x1]
-    cbnz x1, 4b
+    cbnz x1, 5b
 
     // Fetch the native PC to jump to and save it in a callee-save register.
     ldr xFP, [x0, #OSR_DATA_NATIVE_PC]
@@ -1834,9 +1852,6 @@ NterpHandleHotnessOverflow:
 
     // Jump to the compiled code.
     br xFP
-5:
-    DO_SUSPEND_CHECK continue_label=2b
-    b 2b
 
 // This is the logical end of ExecuteNterpImpl, where the frame info applies.
 // EndExecuteNterpImpl includes the methods below as we want the runtime to
@@ -1897,6 +1912,7 @@ NTERP_TRAMPOLINE nterp_get_class, NterpGetClass
 NTERP_TRAMPOLINE nterp_allocate_object, NterpAllocateObject
 NTERP_TRAMPOLINE nterp_get_method, NterpGetMethod
 NTERP_TRAMPOLINE nterp_hot_method, NterpHotMethod
+NTERP_TRAMPOLINE nterp_try_fast_compile, NterpTryFastCompile
 NTERP_TRAMPOLINE nterp_load_object, NterpLoadObject
 
 ENTRY nterp_deliver_pending_exception

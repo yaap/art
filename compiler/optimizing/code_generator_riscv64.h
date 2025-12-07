@@ -255,6 +255,7 @@ class LocationsBuilderRISCV64 : public HGraphVisitor {
   void HandleShift(HBinaryOperation* operation);
   void HandleFieldSet(HInstruction* instruction);
   void HandleFieldGet(HInstruction* instruction);
+  void HandleBitManipulations(HBinaryOperation* instruction);
 
   CodeGeneratorRISCV64* const codegen_;
   ArenaAllocator* const allocator_;
@@ -312,6 +313,7 @@ class InstructionCodeGeneratorRISCV64 : public InstructionCodeGenerator {
                       bool value_can_be_null,
                       WriteBarrierKind write_barrier_kind);
   void HandleFieldGet(HInstruction* instruction, const FieldInfo& field_info);
+  void HandleBitManipulations(HBinaryOperation* instruction);
 
   // Generate a heap reference load using one register `out`:
   //
@@ -481,8 +483,6 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
 
   void MaybeGenerateInlineCacheCheck(HInstruction* instruction, XRegister klass);
 
-  void SetupBlockedRegisters() const override;
-
   size_t SaveCoreRegister(size_t stack_index, uint32_t reg_id) override;
   size_t RestoreCoreRegister(size_t stack_index, uint32_t reg_id) override;
   size_t SaveFloatingPointRegister(size_t stack_index, uint32_t reg_id) override;
@@ -513,8 +513,6 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
                                            SlowPathCode* slow_path);
 
   ParallelMoveResolver* GetMoveResolver() override { return &move_resolver_; }
-
-  bool NeedsTwoRegisters([[maybe_unused]] DataType::Type type) const override { return false; }
 
   void IncreaseFrame(size_t adjustment) override;
   void DecreaseFrame(size_t adjustment) override;
@@ -618,7 +616,8 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
   Literal* DeduplicateJitClassLiteral(const DexFile& dex_file,
                                       dex::TypeIndex type_index,
                                       Handle<mirror::Class> handle);
-  void EmitJitRootPatches(uint8_t* code, const uint8_t* roots_data) override;
+  void EmitJitRootPatches(
+      uint8_t* buffer, const uint8_t* code_address, const uint8_t* roots_data) override;
 
   void LoadTypeForBootImageIntrinsic(XRegister dest, TypeReference target_type);
   void LoadBootImageRelRoEntry(XRegister dest, uint32_t boot_image_offset);
@@ -781,6 +780,9 @@ class CodeGeneratorRISCV64 : public CodeGenerator {
   void SwapLocations(Location loc1, Location loc2, DataType::Type type);
 
  private:
+  static RegisterSet ComputeCalleeSaves();
+  static RegisterSet ComputeBlockedRegisters(HGraph* graph);
+
   using Uint32ToLiteralMap = ArenaSafeMap<uint32_t, Literal*>;
   using Uint64ToLiteralMap = ArenaSafeMap<uint64_t, Literal*>;
   using StringToLiteralMap =

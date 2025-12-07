@@ -252,24 +252,26 @@ class OatFileAssistant {
   // the OatFileAssistant object.
   std::unique_ptr<OatFile> GetBestOatFile();
 
-  // Computes the optimization status of the given dex file. The result is
-  // returned via the two output parameters.
-  //   - out_odex_location: the location of the (best) odex that will be used
-  //        for loading. See GetBestInfo().
-  //   - out_compilation_filter: the level of optimizations (compiler filter)
-  //   - out_compilation_reason: the optimization reason. The reason might
-  //        be "unknown" if the compiler artifacts were not annotated during optimizations.
-  //   - out_odex_status: a human readable refined status of the validity of the odex file.
-  //        Possible values are: "up-to-date", "apk-more-recent", and "io-error-no-oat".
+  // Computes the optimization status of the given dex file. The result is returned via output
+  // parameters.
+  //   - odex_location: the location of the best oat file that will be used for loading. See
+  //        GetBestInfo().
+  //   - compilation_filter: the level of optimizations (compiler filter)
+  //   - compilation_reason: the optimization reason. The reason might be "unknown" if the compiler
+  //        artifacts were not annotated during optimizations.
+  //   - odex_status: a human readable refined status of the validity of the odex file. Possible
+  //        values are: "up-to-date", "apk-more-recent", and "io-error-no-oat".
+  //   - location: an enum indicating the location of the best oat file.
+  //   - is_backed_by_vdex_only: true if the best oat file is backed by vdex file only.
   //
-  // This method will try to mimic the runtime effect of loading the dex file.
-  // For example, if there is no usable oat file, the compiler filter will be set
-  // to "run-from-apk".
-  EXPORT void GetOptimizationStatus(std::string* out_odex_location,
-                                    std::string* out_compilation_filter,
-                                    std::string* out_compilation_reason,
-                                    std::string* out_odex_status,
-                                    Location* out_location);
+  // This method will try to mimic the runtime effect of loading the dex file. For example, if there
+  // is no usable oat file, the compiler filter will be set to "run-from-apk".
+  EXPORT void GetOptimizationStatus(/*out*/ std::string* odex_location,
+                                    /*out*/ std::string* compilation_filter,
+                                    /*out*/ std::string* compilation_reason,
+                                    /*out*/ std::string* odex_status,
+                                    /*out*/ Location* location,
+                                    /*out*/ bool* is_backed_by_vdex_only);
 
   static void GetOptimizationStatus(const std::string& filename,
                                     InstructionSet isa,

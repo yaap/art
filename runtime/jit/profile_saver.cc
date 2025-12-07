@@ -23,6 +23,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <string>
 #include <utility>
 
@@ -108,7 +109,8 @@ ProfileSaver::ProfileSaver(const ProfileSaverOptions& options, jit::JitCodeCache
       total_number_of_hot_spikes_(0),
       total_number_of_wake_ups_(0),
       options_(options),
-      notify_delay_time_(0) {
+      notify_delay_time_(0),
+      startup_classes_methods_fully_fetched_(false) {
   DCHECK(options_.IsEnabled());
 }
 
@@ -161,6 +163,7 @@ void ProfileSaver::Run() {
 
   // Mark collected classes/methods as startup.
   FetchAndCacheResolvedClassesAndMethods(/*startup=*/ true);
+  startup_classes_methods_fully_fetched_.store(true, std::memory_order_relaxed);
 
   bool is_min_first_save_set =
       options_.GetMinFirstSaveMs() != ProfileSaverOptions::kMinFirstSaveMsNotSet;
@@ -828,7 +831,11 @@ bool ProfileSaver::ProcessProfilingInfo(bool force_save, /*out*/uint16_t* number
     *number_of_new_methods = 0;
   }
 
-  FetchAndCacheResolvedClassesAndMethods(/*startup=*/ false);
+  // On a force save (SIGUSR1), if the startup hasn't completed, fetch the startup class/methods
+  // that we have so far.
+  bool startup =
+      force_save && !startup_classes_methods_fully_fetched_.load(std::memory_order_relaxed);
+  FetchAndCacheResolvedClassesAndMethods(startup);
 
   for (const auto& it : tracked_locations) {
     if (!force_save && ShuttingDown(Thread::Current())) {

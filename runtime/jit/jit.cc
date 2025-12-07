@@ -140,7 +140,8 @@ bool Jit::TryPatternMatch(ArtMethod* method_to_compile, CompilationKind compilat
   // sufficiently similar calling convention between C++ and managed code.
   if (kRuntimeISA == InstructionSet::kArm || kRuntimeISA == InstructionSet::kArm64) {
     if (!Runtime::Current()->IsJavaDebuggable() &&
-        compilation_kind == CompilationKind::kBaseline &&
+        (compilation_kind == CompilationKind::kBaseline ||
+         compilation_kind == CompilationKind::kFast) &&
         !method_to_compile->StillNeedsClinitCheck()) {
       const void* pattern = SmallPatternMatcher::TryMatch(method_to_compile);
       if (pattern != nullptr) {
@@ -668,11 +669,20 @@ class JitCompileTask final : public Task {
       switch (kind_) {
         case TaskKind::kCompile:
         case TaskKind::kPreCompile: {
-          Runtime::Current()->GetJit()->CompileMethodInternal(
+          bool success = Runtime::Current()->GetJit()->CompileMethodInternal(
               method_,
               self,
               compilation_kind_,
               /* prejit= */ (kind_ == TaskKind::kPreCompile));
+          if (!success && compilation_kind_ == CompilationKind::kFast) {
+            // Currently, the fast compiler doesn't support some methods, so
+            // fallback to baseline compilation.
+            Runtime::Current()->GetJit()->CompileMethodInternal(
+              method_,
+              self,
+              CompilationKind::kBaseline,
+              /* prejit= */ (kind_ == TaskKind::kPreCompile));
+          }
           break;
         }
       }
@@ -1405,7 +1415,7 @@ void Jit::EnqueueOptimizedCompilation(ArtMethod* method, Thread* self) {
   // Check if we already have optimized code. We might still be executing baseline code even
   // when we have optimized code.
   if (GetCodeCache()->ContainsPc(entry_point) &&
-      !CodeInfo::IsBaseline(
+      CodeInfo::IsOptimized(
           OatQuickMethodHeader::FromEntryPoint(entry_point)->GetOptimizedCodeInfoPtr())) {
     return;
   }
@@ -1414,6 +1424,40 @@ void Jit::EnqueueOptimizedCompilation(ArtMethod* method, Thread* self) {
   // hotness threshold. If we're not only using the baseline compiler, enqueue a compilation
   // task that will compile optimize the method.
   if (!options_->UseBaselineCompiler()) {
+    AddCompileTask(self, method, CompilationKind::kOptimized);
+  }
+}
+
+void Jit::EnqueueBaselineCompilation(ArtMethod* method, Thread* self) {
+  // We arrive here after a fast compiled code has reached its
+  // hotness threshold.
+  method->ResetCounter(Runtime::Current()->GetJITOptions()->GetWarmupThreshold());
+  method->SetPreviouslyWarm();
+
+  if (thread_pool_ == nullptr) {
+    return;
+  }
+
+  const void* entry_point = method->GetEntryPointFromQuickCompiledCode();
+  // Check if we already have non-fast code. We might still be executing fast code even
+  // when we have optimized code.
+  if (GetCodeCache()->ContainsPc(entry_point) &&
+      !CodeInfo::IsFast(
+          OatQuickMethodHeader::FromEntryPoint(entry_point)->GetOptimizedCodeInfoPtr())) {
+    if (VLOG_IS_ON(jit)) {
+      VLOG(jit)
+          << "Not adding " << method->PrettyMethod()
+          << " to JIT queue as it is already compiled "
+          << CodeInfo::GetCompilationKind(
+                 OatQuickMethodHeader::FromEntryPoint(entry_point)->GetOptimizedCodeInfoPtr());
+    }
+    return;
+  }
+
+  VLOG(jit) << "Method " << method->PrettyMethod() << " reached threadshold from fast to baseline";
+  if (GetCodeCache()->CanAllocateProfilingInfo()) {
+    AddCompileTask(self, method, CompilationKind::kBaseline);
+  } else {
     AddCompileTask(self, method, CompilationKind::kOptimized);
   }
 }
@@ -1439,7 +1483,9 @@ void Jit::MethodEntered(Thread* self, ArtMethod* method) {
   if (UNLIKELY(runtime->UseJitCompilation() && JitAtFirstUse())) {
     ArtMethod* np_method = method->GetInterfaceMethodIfProxy(kRuntimePointerSize);
     if (np_method->IsCompilable()) {
-      CompileMethod(method, self, CompilationKind::kOptimized, /* prejit= */ false);
+      if (!CompileMethod(method, self, CompilationKind::kFast, /* prejit= */ false)) {
+        CompileMethod(method, self, CompilationKind::kBaseline, /* prejit= */ false);
+      }
     }
     return;
   }
@@ -1713,6 +1759,52 @@ void Jit::MaybeEnqueueCompilation(ArtMethod* method, Thread* self) {
   }
 }
 
+void Jit::MaybeEnqueueFastCompilation(ArtMethod* method, Thread* self) {
+  if (thread_pool_ == nullptr) {
+    return;
+  }
+
+  if (!Runtime::Current()->GetStartupCompleted()) {
+    return;
+  }
+
+  if (!self->IsJitSensitiveThread()) {
+    return;
+  }
+
+  if (JitAtFirstUse()) {
+    // Tests might request JIT on first use (compiled synchronously in the interpreter).
+    return;
+  }
+
+  if (!UseJitCompilation()) {
+    return;
+  }
+
+  if (IgnoreSamplesForMethod(method)) {
+    return;
+  }
+
+  if (GetCodeCache()->ContainsPc(method->GetEntryPointFromQuickCompiledCode())) {
+    return;
+  }
+
+  // Check if we have precompiled this method.
+  if (UNLIKELY(method->IsPreCompiled())) {
+    if (!method->StillNeedsClinitCheck()) {
+      const void* entry_point = code_cache_->GetSavedEntryPointOfPreCompiledMethod(method);
+      if (entry_point != nullptr) {
+        Runtime::Current()->GetInstrumentation()->UpdateMethodsCode(method, entry_point);
+      }
+    }
+    return;
+  }
+
+  DCHECK(!method->IsMemorySharedMethod());
+  DCHECK(!method->IsNative());
+  AddCompileTask(self, method, CompilationKind::kFast);
+}
+
 bool Jit::CompileMethod(ArtMethod* method,
                         Thread* self,
                         CompilationKind compilation_kind,
@@ -1729,7 +1821,8 @@ size_t JitThreadPool::GetTaskCount(Thread* self) {
   return generic_queue_.size() +
       baseline_queue_.size() +
       optimized_queue_.size() +
-      osr_queue_.size();
+      osr_queue_.size() +
+      fast_queue_.size();
 }
 
 void JitThreadPool::RemoveAllTasks(Thread* self) {
@@ -1752,6 +1845,7 @@ void JitThreadPool::RemoveAllTasks(Thread* self) {
   baseline_queue_.clear();
   optimized_queue_.clear();
   osr_queue_.clear();
+  fast_queue_.clear();
 }
 
 JitThreadPool::~JitThreadPool() {
@@ -1789,6 +1883,13 @@ void JitThreadPool::AddTask(Thread* self, ArtMethod* method, CompilationKind kin
       osr_enqueued_methods_.insert(method);
       osr_queue_.push_back(method);
       break;
+    case CompilationKind::kFast:
+      if (ContainsElement(fast_enqueued_methods_, method)) {
+        return;
+      }
+      fast_enqueued_methods_.insert(method);
+      fast_queue_.push_back(method);
+      break;
     case CompilationKind::kBaseline:
       if (ContainsElement(baseline_enqueued_methods_, method)) {
         return;
@@ -1822,12 +1923,15 @@ Task* JitThreadPool::TryGetTaskLocked() {
     return task;
   }
 
-  // OSR requests second, then baseline and finally optimized.
+  // OSR requests second, then fast, then baseline and finally optimized.
   Task* task = FetchFrom(osr_queue_, CompilationKind::kOsr);
   if (task == nullptr) {
-    task = FetchFrom(baseline_queue_, CompilationKind::kBaseline);
+    task = FetchFrom(fast_queue_, CompilationKind::kFast);
     if (task == nullptr) {
-      task = FetchFrom(optimized_queue_, CompilationKind::kOptimized);
+      task = FetchFrom(baseline_queue_, CompilationKind::kBaseline);
+      if (task == nullptr) {
+        task = FetchFrom(optimized_queue_, CompilationKind::kOptimized);
+      }
     }
   }
   return task;
@@ -1854,6 +1958,10 @@ void JitThreadPool::Remove(JitCompileTask* task) {
     }
     case CompilationKind::kBaseline: {
       baseline_enqueued_methods_.erase(task->GetArtMethod());
+      break;
+    }
+    case CompilationKind::kFast: {
+      fast_enqueued_methods_.erase(task->GetArtMethod());
       break;
     }
     case CompilationKind::kOptimized: {
@@ -1884,6 +1992,7 @@ void JitThreadPool::VisitRoots(RootVisitor* visitor) {
     // - Generic tasks like `ZygoteVerificationTask` which don't hold any root.
     // - `JitCompileTask` for precompiled methods, which we know are live, being
     //   part of the boot classpath or system server classpath.
+    methods.insert(methods.end(), fast_queue_.begin(), fast_queue_.end());
     methods.insert(methods.end(), osr_queue_.begin(), osr_queue_.end());
     methods.insert(methods.end(), baseline_queue_.begin(), baseline_queue_.end());
     methods.insert(methods.end(), optimized_queue_.begin(), optimized_queue_.end());

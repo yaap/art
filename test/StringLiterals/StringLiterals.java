@@ -44,4 +44,8 @@ class StringLiterals {
         System.out.println("Unexpected error");
         System.out.println("Shutting down!");
     }
+
+    public static String getUniqueString() {
+      return "Unique string for gtests from StringLiterals";
+    }
 }

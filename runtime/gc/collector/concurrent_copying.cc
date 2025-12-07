@@ -42,6 +42,7 @@
 #include "mirror/object-refvisitor-inl.h"
 #include "mirror/object_reference.h"
 #include "oat/image-inl.h"
+#include "scoped_thread_priority_change.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread-inl.h"
 #include "thread_list.h"
@@ -226,6 +227,7 @@ void ConcurrentCopying::RunPhases() {
       MarkingPhase();
     }
   }
+  ScopedPriorityChange spc(self);
   if (kUseBakerReadBarrier && kGrayDirtyImmuneObjects) {
     // Switch to read barrier mark entrypoints before we gray the objects. This is required in case
     // a mutator sees a gray bit and dispatches on the entrypoint. (b/37876887).
@@ -234,10 +236,12 @@ void ConcurrentCopying::RunPhases() {
     // the pause.
     ReaderMutexLock mu(self, *Locks::mutator_lock_);
     GrayAllDirtyImmuneObjects();
+    spc.SetToNormalOrBetter();
   }
   FlipThreadRoots();
   {
     ReaderMutexLock mu(self, *Locks::mutator_lock_);
+    spc.Reset();
     CopyingPhase();
   }
   // Verify no from space refs. This causes a pause.
@@ -1622,6 +1626,10 @@ void ConcurrentCopying::CopyingPhase() {
       // Forward as many SoftReferences as possible before inhibiting reference access.
       rp->ForwardSoftReferences(GetTimings());
     }
+
+    ScopedPriorityChange spc(self);
+    // Make sure we are at a reasonable priority before blocking weak reference access.
+    spc.SetToNormalOrBetter();
 
     // We transition through three mark stack modes (thread-local, shared, GC-exclusive). The
     // primary reasons are that we need to use a checkpoint to process thread-local mark

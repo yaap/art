@@ -1737,13 +1737,14 @@ static bool PatchDexCacheLocations(Handle<mirror::ObjectArray<mirror::DexCache>>
         dex_cache->GetLocation(/*allow_location_mismatch=*/true)->ToModifiedUtf8();
     const DexFile* dex_file = dex_cache->GetDexFile();
     if (dex_file_location != dex_file->GetLocation()) {
-      ObjPtr<mirror::String> location = intern_table->InternWeak(dex_file->GetLocation().c_str());
+      ObjPtr<mirror::String> location =
+          mirror::String::AllocFromModifiedUtf8(self, dex_file->GetLocation().c_str());
       if (location == nullptr) {
         self->AssertPendingOOMException();
-        *error_msg = "Failed to intern string for dex cache location";
+        *error_msg = "Failed to allocate string for dex cache location";
         return false;
       }
-      dex_cache->SetLocation(location);
+      dex_cache->SetLocation(intern_table->InternWeak(location));
     }
   }
   return true;
@@ -2801,14 +2802,15 @@ ObjPtr<mirror::DexCache> ClassLinker::AllocDexCache(Thread* self, const DexFile&
     self->AssertPendingOOMException();
     return nullptr;
   }
-  // Use InternWeak() so that the location String can be collected when the ClassLoader
-  // with this DexCache is collected.
-  ObjPtr<mirror::String> location = intern_table_->InternWeak(dex_file.GetLocation().c_str());
+  ObjPtr<mirror::String> location =
+      mirror::String::AllocFromModifiedUtf8(self, dex_file.GetLocation().c_str());
   if (location == nullptr) {
     self->AssertPendingOOMException();
     return nullptr;
   }
-  dex_cache->SetLocation(location);
+  // Use InternWeak() so that the location String can be collected when the ClassLoader
+  // with this DexCache is collected.
+  dex_cache->SetLocation(intern_table_->InternWeak(location));
   return dex_cache.Get();
 }
 
@@ -2956,67 +2958,74 @@ ObjPtr<mirror::Class> ClassLinker::EnsureResolved(Thread* self,
     Thread::PoisonObjectPointersIfDebug();
   }
 
-  // For temporary classes we must wait for them to be retired.
+  // Helper lambda to make sure we wait for a particular status (i.e. retired or resolved) while
+  // checking for circular dependencies.
+  auto wait_for_status =
+      [this, self, &klass](auto&& is_done) REQUIRES_SHARED(Locks::mutator_lock_) {
+    size_t index = 0;
+    // Maximum number of yield iterations until we start sleeping.
+    static constexpr size_t kNumYieldIterations = 1000;
+    // How long each sleep is in us.
+    static constexpr size_t kSleepDurationUS = 1000;  // 1 ms.
+    while (!is_done(klass) && !klass->IsErroneousUnresolved()) {
+      StackHandleScope<1> hs(self);
+      HandleWrapperObjPtr<mirror::Class> h_class(hs.NewHandleWrapper(&klass));
+      {
+        ObjectTryLock<mirror::Class> lock(self, h_class);
+        // Can not use a monitor wait here since it may block when returning and deadlock if another
+        // thread has locked klass.
+        if (lock.Acquired()) {
+          // Check for circular dependencies between classes, the lock is required for SetStatus.
+          if (!is_done(h_class.Get()) && h_class->GetClinitThreadId() == self->GetTid()) {
+            ThrowClassCircularityError(h_class.Get());
+            mirror::Class::SetStatus(h_class, ClassStatus::kErrorUnresolved, self);
+            return false;
+          }
+        }
+      }
+      {
+        // Handle wrapper deals with klass moving.
+        ScopedThreadSuspension sts(self, ThreadState::kSuspended);
+        if (index < kNumYieldIterations) {
+          sched_yield();
+        } else {
+          usleep(kSleepDurationUS);
+        }
+      }
+      ++index;
+    }
+
+    if (klass->IsErroneousUnresolved()) {
+      ThrowEarlierClassFailure(klass);
+      return false;
+    }
+    return true;
+  };
+
   if (init_done_ && klass->IsTemp()) {
     CHECK(!klass->IsResolved());
     if (klass->IsErroneousUnresolved()) {
       ThrowEarlierClassFailure(klass);
       return nullptr;
     }
-    StackHandleScope<1> hs(self);
-    Handle<mirror::Class> h_class(hs.NewHandle(klass));
-    ObjectLock<mirror::Class> lock(self, h_class);
-    // Loop and wait for the resolving thread to retire this class.
-    while (!h_class->IsRetired() && !h_class->IsErroneousUnresolved()) {
-      lock.WaitIgnoringInterrupts();
-    }
-    if (h_class->IsErroneousUnresolved()) {
-      ThrowEarlierClassFailure(h_class.Get());
+
+    // For temporary classes we must wait for them to be retired.
+    if (!wait_for_status([](ObjPtr<mirror::Class> k)
+                             REQUIRES_SHARED(Locks::mutator_lock_) { return k->IsRetired(); })) {
       return nullptr;
     }
-    CHECK(h_class->IsRetired());
+
+    CHECK(klass->IsRetired());
     // Get the updated class from class table.
-    klass = LookupClass(self, descriptor, h_class.Get()->GetClassLoader());
+    klass = LookupClass(self, descriptor, klass->GetClassLoader());
   }
 
   // Wait for the class if it has not already been linked.
-  size_t index = 0;
-  // Maximum number of yield iterations until we start sleeping.
-  static const size_t kNumYieldIterations = 1000;
-  // How long each sleep is in us.
-  static const size_t kSleepDurationUS = 1000;  // 1 ms.
-  while (!klass->IsResolved() && !klass->IsErroneousUnresolved()) {
-    StackHandleScope<1> hs(self);
-    HandleWrapperObjPtr<mirror::Class> h_class(hs.NewHandleWrapper(&klass));
-    {
-      ObjectTryLock<mirror::Class> lock(self, h_class);
-      // Can not use a monitor wait here since it may block when returning and deadlock if another
-      // thread has locked klass.
-      if (lock.Acquired()) {
-        // Check for circular dependencies between classes, the lock is required for SetStatus.
-        if (!h_class->IsResolved() && h_class->GetClinitThreadId() == self->GetTid()) {
-          ThrowClassCircularityError(h_class.Get());
-          mirror::Class::SetStatus(h_class, ClassStatus::kErrorUnresolved, self);
-          return nullptr;
-        }
-      }
-    }
-    {
-      // Handle wrapper deals with klass moving.
-      ScopedThreadSuspension sts(self, ThreadState::kSuspended);
-      if (index < kNumYieldIterations) {
-        sched_yield();
-      } else {
-        usleep(kSleepDurationUS);
-      }
-    }
-    ++index;
-  }
-
-  if (klass->IsErroneousUnresolved()) {
-    ThrowEarlierClassFailure(klass);
+  if (!wait_for_status([](ObjPtr<mirror::Class> k)
+                           REQUIRES_SHARED(Locks::mutator_lock_) { return k->IsResolved(); })) {
     return nullptr;
   }
+
   // Return the loaded class.  No exceptions should be pending.
   CHECK(klass->IsResolved()) << klass->PrettyClass();
   self->AssertNoPendingException();
@@ -4029,7 +4038,8 @@ class ClassLinker::LoadClassHelper {
         stack_(runtime->GetArenaPool()),
         allocator_(&stack_),
         num_direct_methods_(0u),
-        has_finalizer_(false) {}
+        has_finalizer_(false),
+        has_duplicate_methods_(false) {}
 
   // Note: This function can take a long time and therefore it should not be called while holding
   // the mutator lock. Otherwise we can experience an occasional suspend request timeout.
@@ -4101,6 +4111,7 @@ class ClassLinker::LoadClassHelper {
   ArrayRef<ArtMethodData> methods_;
   uint32_t num_direct_methods_;
   bool has_finalizer_;
+  bool has_duplicate_methods_;
 };
 
 inline void ClassLinker::LoadClassHelper::LoadField(const ClassAccessor::Field& field,
@@ -4304,6 +4315,7 @@ void ClassLinker::LoadClassHelper::Load(const ClassAccessor& accessor,
         uint32_t it_method_index = method.GetIndex();
         if (last_dex_method_index == it_method_index) {
           // duplicate case
+          has_duplicate_methods_ = true;
           method_data->method_index = last_class_def_method_index;
         } else {
           method_data->method_index = class_def_method_index;
@@ -4315,6 +4327,13 @@ void ClassLinker::LoadClassHelper::Load(const ClassAccessor& accessor,
         ArtMethodData* method_data = &methods[class_def_method_index];
         LoadMethod(method, &mai_virtual, method_data);
         LinkCode(method_data, class_def_method_index, &occi);
+        uint32_t it_method_index = method.GetIndex();
+        if (last_dex_method_index == it_method_index) {
+          // duplicate case
+          has_duplicate_methods_ = true;
+        } else {
+          last_dex_method_index = it_method_index;
+        }
         DCHECK_EQ(method_data->method_index, 0u);  // Shall be updated in `LinkMethods()`.
         ++class_def_method_index;
       });
@@ -4336,12 +4355,14 @@ void ClassLinker::LoadClassHelper::Load(const ClassAccessor& accessor,
               return lhs.dex_field_index < rhs.dex_field_index;
             });
 
-  // Sort the methods by dex methods index to facilitate fast lookups.
-  std::sort(methods.begin(),
-            methods.end(),
-            [](ArtMethodData& lhs, ArtMethodData& rhs) {
-              return lhs.dex_method_index < rhs.dex_method_index;
-            });
+  // Sort the methods by dex methods index to facilitate fast lookups. The array might contain more
+  // than one method with the same dex_method_index, where the subsequent methods are "duplicates"
+  // and should be ignored. Therefore we need to use stable_sort to preserve the original order
+  // amongst them.
+  std::stable_sort(
+      methods.begin(), methods.end(), [](const ArtMethodData& lhs, const ArtMethodData& rhs) {
+        return lhs.dex_method_index < rhs.dex_method_index;
+      });
 
   fields_ = fields;
   methods_ = methods;
@@ -4424,6 +4445,9 @@ void ClassLinker::LoadClassHelper::Commit(Handle<mirror::Class> klass,
   klass->SetMethodsPtr(methods, num_direct_methods_, methods_.size() - num_direct_methods_);
   if (has_finalizer_) {
     klass->SetFinalizable();
+  }
+  if (has_duplicate_methods_) {
+    klass->SetHasDuplicateMethods();
   }
 }
 
@@ -4908,6 +4932,20 @@ ObjPtr<mirror::Class> ClassLinker::CreateArrayClass(Thread* self,
     component_type.Assign(
         LookupClass(self, component_descriptor, component_hash, class_loader.Get()));
     if (component_type == nullptr || Runtime::Current()->IsAotCompiler()) {
+      DCHECK(self->IsExceptionPending());
+      return nullptr;
+    } else if (!component_type->IsErroneousUnresolved()) {
+      // FindClass failed, but subsequent LookupClass returned a class that is not erroneous and
+      // unresolved. This might happen in few cases when classes are loaded by multiple threads:
+      // * if current thread is a runtime thread and there is a custom class loader in the chain
+      // * if there is a custom class loader that fails to load a class but succeeds later
+      // * if more dex files are registered in between FindClass and LookupClass calls
+      // In any of those cases the class returned from LookupClass might be temporary and should
+      // not be used as component class without waiting for resolution, which might fail and
+      // require further checks.
+      //
+      // The initial call to FindClass failed for a reason other than loading an erroneous class,
+      // it is ok to fail array class creation.
       DCHECK(self->IsExceptionPending());
       return nullptr;
     } else {
@@ -6706,19 +6744,6 @@ bool ClassLinker::LoadSuperAndInterfaces(Handle<mirror::Class> klass, const DexF
   const dex::ClassDef& class_def = dex_file.GetClassDef(klass->GetDexClassDefIndex());
   dex::TypeIndex super_class_idx = class_def.superclass_idx_;
   if (super_class_idx.IsValid()) {
-    // Check that a class does not inherit from itself directly.
-    //
-    // TODO: This is a cheap check to detect the straightforward case
-    // of a class extending itself (b/28685551), but we should do a
-    // proper cycle detection on loaded classes, to detect all cases
-    // of class circularity errors (b/28830038).
-    if (super_class_idx == class_def.class_idx_) {
-      ThrowClassCircularityError(klass.Get(),
-                                 "Class %s extends itself",
-                                 klass->PrettyDescriptor().c_str());
-      return false;
-    }
-
     ObjPtr<mirror::Class> super_class = ResolveType(super_class_idx, klass.Get());
     if (super_class == nullptr) {
       DCHECK(Thread::Current()->IsExceptionPending());
@@ -6738,24 +6763,14 @@ bool ClassLinker::LoadSuperAndInterfaces(Handle<mirror::Class> klass, const DexF
   if (interfaces != nullptr) {
     for (size_t i = 0; i < interfaces->Size(); i++) {
       dex::TypeIndex idx = interfaces->GetTypeItem(i).type_idx_;
-      if (idx.IsValid()) {
-        // Check that a class does not implement itself directly.
-        //
-        // TODO: This is a cheap check to detect the straightforward case of a class implementing
-        // itself, but we should do a proper cycle detection on loaded classes, to detect all cases
-        // of class circularity errors. See b/28685551, b/28830038, and b/301108855
-        if (idx == class_def.class_idx_) {
-          ThrowClassCircularityError(
-              klass.Get(), "Class %s implements itself", klass->PrettyDescriptor().c_str());
-          return false;
-        }
-      }
+      DCHECK(idx.IsValid());
 
       ObjPtr<mirror::Class> interface = ResolveType(idx, klass.Get());
       if (interface == nullptr) {
         DCHECK(Thread::Current()->IsExceptionPending());
         return false;
       }
+
       // Verify
       if (!klass->CanAccess(interface)) {
         // TODO: the RI seemed to ignore this in my testing.
@@ -8634,7 +8649,6 @@ bool ClassLinker::LinkMethodsHelper<kPointerSize>::FinalizeIfTable(
     if (method_array == nullptr) {
       continue;
     }
-    size_t num_methods = method_array->GetLength();
     ObjPtr<mirror::Class> iface = iftable->GetInterface(i);
     for (ArtMethod& interface_method : iface->GetDeclaredMethods(kPointerSize)) {
       if (!interface_method.IsVirtual()) {
@@ -8772,6 +8786,8 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
                                 Allocator::GetNoopAllocator(),
                                 bit_vector_size,
                                 bit_vector_buffer_ptr);
+  // Clear the bit vector since bit_vector_buffer_ptr may not be zeroed.
+  initialized_methods.SetInitialBits(0);
 
   // Note: our sets hash on the method name, and therefore we pay a high
   // performance price when a class has many overloads.
@@ -8780,17 +8796,20 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
   // super vtable (which is only lazy populated in case of interface overriding,
   // see below). This makes sure that we pay the performance price only on that
   // class, and not on its subclasses (except in the case of interface overriding, see below).
-  size_t index = 0;
-  for (ArtMethod& method : klass->GetMethods(kPointerSize)) {
-    DCHECK(!method.IsCopied());
-    if (method.IsVirtual()) {
-      ArtMethod* signature_method = UNLIKELY(is_proxy_class)
-          ? method.GetInterfaceMethodForProxyUnchecked(kPointerSize)
-          : &method;
-      size_t hash = ComputeMethodHash(signature_method);
-      declared_virtual_signatures.PutWithHash(index, hash);
+  {
+    size_t index = 0;
+    for (ArtMethod& method : klass->GetMethods(kPointerSize)) {
+      DCHECK(!method.IsCopied());
+      if (method.IsVirtual()) {
+        ArtMethod* signature_method = UNLIKELY(is_proxy_class)
+            ? method.GetInterfaceMethodForProxyUnchecked(kPointerSize)
+            : &method;
+        size_t hash = ComputeMethodHash(signature_method);
+        // InsertWithHash won't insert duplicate methods.
+        declared_virtual_signatures.InsertWithHash(index, hash);
+      }
+      ++index;
     }
-    ++index;
   }
 
   // Loop through each super vtable method and see if they are overridden by a method we added to
@@ -8843,14 +8862,16 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
   }
 
   // Add the non-overridden methods at the end.
-  index = 0;
-  for (ArtMethod& m : klass->GetMethods(kPointerSize)) {
-    DCHECK(!m.IsCopied());
-    if (m.IsVirtual() && !initialized_methods.IsBitSet(index)) {
-      m.SetMethodIndex(vtable_length);
-      ++vtable_length;
+  {
+    size_t index = 0;
+    for (ArtMethod& m : klass->GetMethods(kPointerSize)) {
+      DCHECK(!m.IsCopied());
+      if (m.IsVirtual() && !initialized_methods.IsBitSet(index)) {
+        m.SetMethodIndex(vtable_length);
+        ++vtable_length;
+      }
+      ++index;
     }
-    ++index;
   }
 
   // A lazily constructed super vtable set, which we only populate in the less
@@ -8901,6 +8922,7 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
         // declared in an interface this class is inheriting). Only in this case
         // do we lazily populate the super_vtable_signatures.
         if (super_vtable_signatures.empty()) {
+          HashSet<uint32_t> seen_method_indices;
           for (size_t k = 0; k < super_vtable_length; ++k) {
             ArtMethod* super_method = super_vtable_accessor.GetVTableEntry(k);
             if (!super_method->IsPublic()) {
@@ -8911,7 +8933,13 @@ size_t ClassLinker::LinkMethodsHelper<kPointerSize>::AssignVTableIndexes(
                 ? class_linker_->object_virtual_method_hashes_[k]
                 : ComputeMethodHash(super_method);
             auto [it, inserted] = super_vtable_signatures.InsertWithHash(k, super_hash);
-            DCHECK(inserted || super_vtable_accessor.GetVTableEntry(*it) == super_method);
+            if (kIsDebugBuild) {
+              CHECK(inserted ||
+                    super_vtable_accessor.GetVTableEntry(*it) == super_method ||
+                    seen_method_indices.find(super_method->GetDexMethodIndex()) !=
+                        seen_method_indices.end());
+              seen_method_indices.insert(super_method->GetDexMethodIndex());
+            }
           }
         }
         auto it2 = super_vtable_signatures.FindWithHash(&interface_method, hash);
@@ -10207,7 +10235,9 @@ ObjPtr<mirror::String> ClassLinker::DoResolveString(dex::StringIndex string_idx,
   const DexFile& dex_file = *dex_cache->GetDexFile();
   uint32_t utf16_length;
   const char* utf8_data = dex_file.GetStringDataAndUtf16Length(string_idx, &utf16_length);
-  ObjPtr<mirror::String> string = intern_table_->InternStrong(utf16_length, utf8_data);
+  ObjPtr<mirror::String> string = com::android::art::flags::weak_const_string()
+      ? intern_table_->InternWeak(utf16_length, utf8_data)
+      : intern_table_->InternStrong(utf16_length, utf8_data);
   if (string != nullptr) {
     dex_cache->SetResolvedString(string_idx, string);
   }
@@ -10670,7 +10700,6 @@ ObjPtr<mirror::MethodHandle> ClassLinker::ResolveMethodHandleForField(
     return nullptr;
   }
 
-  Handle<mirror::Class> constructor_class;
   Handle<mirror::Class> return_type;
   switch (handle_type) {
     case DexFile::MethodHandleType::kStaticPut: {

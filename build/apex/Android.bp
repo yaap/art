@@ -83,12 +83,6 @@ apex_defaults {
 
     compile_multilib: "both",
 
-    // Note: ART Golem benchmarking does not use the ART APEX, meaning that
-    // copies of some of these libraries have to be installed in `/system` for
-    // the setup to work properly. This is done by the `standalone-apex-files`
-    // Make phony target (see `art/Android.mk`). If you add libraries to this
-    // list, you may have to also add them to `PRIVATE_ART_APEX_DEPENDENCY_LIBS`
-    // in `art/Android.mk`.
     native_shared_libs: [
         // ART
         // External API (having APEX stubs).
@@ -253,6 +247,7 @@ apex {
 
     visibility: [
         "//art/build/sdk",
+        "//art/tools/fuzzer",
         "//packages/modules/common/build",
     ],
 }

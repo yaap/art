@@ -84,5 +84,24 @@ TEST_F(InstructionSimplifierRiscv64Test, SimplifyShiftAddReusedShift) {
   EXPECT_TRUE(add3->GetBlock() == nullptr);
 }
 
+// Regression test for crash in bit manipulation simplification where a zero constant
+// passed a `IsPowerOfTwo()` test but crashed afterwards in `WhichPowerof2()`.
+// The simplification is not applicable in this case.
+TEST_F(InstructionSimplifierRiscv64Test, BitSetCrashRegressionTest) {
+  HBasicBlock* block = InitEntryMainExitGraph();
+  graph_->BuildDominatorTree();
+
+  HInstruction* param0 = MakeParam(DataType::Type::kInt64);
+  HInstruction* const0l = graph_->GetLongConstant(0);
+
+  HOr* or_ = MakeBinOp<HOr>(block, DataType::Type::kInt64, param0, const0l);
+  MakeReturn(block, or_);
+
+  InstructionSimplifierRiscv64 simplifier(graph_, /*stats=*/ nullptr);
+  simplifier.Run();
+
+  EXPECT_TRUE(or_->IsInBlock());
+}
+
 }  // namespace riscv64
 }  // namespace art

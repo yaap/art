@@ -211,7 +211,7 @@ TEST_F(ExceptionTest, StackTraceElement) {
   // this to create a fake stack. See OatQuickMethodHeader::Contains where we untag code pointers
   // before comparing it with the PC from the stack.
   uintptr_t native_pc = header->ToNativeQuickPc(method_g_, kDexPc);
-  if (running_with_hwasan()) {
+  if (android::base::running_with_hwasan()) {
     // TODO(228989263): Use HWASanUntag once we have a hwasan target for tests too. HWASanUntag
     // uses static checks which won't work if we don't have a dedicated target.
     native_pc = (native_pc & ((1ULL << 56) - 1));

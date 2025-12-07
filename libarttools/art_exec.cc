@@ -71,6 +71,9 @@ Supported options:
       multiple environment variables.
   --process-name-suffix=SUFFIX: Add a suffix in parentheses to argv[0] when calling `execv`. This
       suffix will show up as part of the process name in tombstone when the process crashes.
+  --redirect-stderr-to-fd=FILE_DESCRIPTOR: Redirect stderr to the specified file descriptor. This
+      descriptor is dup'ed to stderr and should be closed after then, so it should not be included
+      in --keep-fds.
 )";
 
 constexpr int kErrorUsage = 100;
@@ -85,6 +88,7 @@ struct Options {
   std::unordered_map<std::string, std::string> envs;
   std::string chroot;
   std::string process_name_suffix;
+  int redirect_stderr_to_fd = -1;
 };
 
 [[noreturn]] void Usage(const std::string& error_msg) {
@@ -132,6 +136,13 @@ Options ParseOptions(int argc, char** argv) {
       options.chroot = arg;
     } else if (ConsumePrefix(&arg, "--process-name-suffix=")) {
       options.process_name_suffix = arg;
+    } else if (ConsumePrefix(&arg, "--redirect-stderr-to-fd=")) {
+      auto fd_str = std::string(arg);
+      int fd;
+      if (!ParseInt(fd_str, &fd)) {
+        Usage("Invalid fd " + fd_str);
+      }
+      options.redirect_stderr_to_fd = fd;
     } else if (arg == "--") {
       if (i + 1 >= argc) {
         Usage("Missing command after '--'");
@@ -192,6 +203,12 @@ int main(int argc, char** argv) {
   android::base::InitLogging(argv);
 
   Options options = ParseOptions(argc, argv);
+
+  if (options.redirect_stderr_to_fd >= 0) {
+    if (dup2(options.redirect_stderr_to_fd, fileno(stderr)) < 0) {
+      PLOG(ERROR) << "Failed to redirect stderr to FD " << options.redirect_stderr_to_fd;
+    }
+  }
 
   if (auto result = CloseFds(options.keep_fds); !result.ok()) {
     LOG(ERROR) << "Failed to close open FDs: " << result.error();

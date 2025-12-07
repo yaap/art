@@ -23,6 +23,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.os.Build;
+import android.os.ParcelFileDescriptor;
 
 import androidx.annotation.RequiresApi;
 
@@ -116,6 +117,20 @@ public class DexoptParams {
             return this;
         }
 
+        /** @hide */
+        @NonNull
+        public Builder setLoggingFd(@Nullable ParcelFileDescriptor value) {
+            mParams.mLoggingFd = value;
+            return this;
+        }
+
+        /** @hide */
+        @NonNull
+        public Builder setVerboseLogTags(@Nullable String value) {
+            mParams.mVerboseLogTags = value;
+            return this;
+        }
+
         /**
          * Returns the built object.
          *
@@ -125,10 +140,6 @@ public class DexoptParams {
         public DexoptParams build() {
             if (mParams.mReason.isEmpty()) {
                 throw new IllegalArgumentException("Reason must not be empty");
-            }
-            if (mParams.mReason.equals(ArtConstants.REASON_VDEX)) {
-                throw new IllegalArgumentException(
-                        "Reason must not be '" + ArtConstants.REASON_VDEX + "'");
             }
 
             if (mParams.mCompilerFilter.isEmpty()) {
@@ -192,6 +203,8 @@ public class DexoptParams {
     private @PriorityClassApi int mPriorityClass = ArtFlags.PRIORITY_NONE;
     private @NonNull String mReason = "";
     private @Nullable String mSplitName = null;
+    private @Nullable ParcelFileDescriptor mLoggingFd = null;
+    private @Nullable String mVerboseLogTags = null;
 
     private DexoptParams() {}
 
@@ -226,11 +239,23 @@ public class DexoptParams {
     }
 
     /** @hide */
+    public @Nullable ParcelFileDescriptor getLoggingFd() {
+        return mLoggingFd;
+    }
+
+    /** @hide */
+    public @Nullable String getVerboseLogTags() {
+        return mVerboseLogTags;
+    }
+
+    /** @hide */
     public @NonNull Builder toBuilder() {
         return new Builder(mReason, mFlags)
                 .setCompilerFilter(mCompilerFilter)
                 .setPriorityClass(mPriorityClass)
-                .setSplitName(mSplitName);
+                .setSplitName(mSplitName)
+                .setLoggingFd(mLoggingFd)
+                .setVerboseLogTags(mVerboseLogTags);
     }
 
     /** @hide */

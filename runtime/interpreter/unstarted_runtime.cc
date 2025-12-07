@@ -1187,27 +1187,54 @@ void UnstartedRuntime::UnstartedThreadCurrentThread(Thread* self,
   }
 }
 
-void UnstartedRuntime::UnstartedThreadGetNativeState(Thread* self,
+void UnstartedRuntime::UnstartedThreadNativeGetStatus(Thread* self,
                                                      ShadowFrame* shadow_frame,
                                                      JValue* result,
                                                      [[maybe_unused]] size_t arg_offset) {
   if (CheckCallers(shadow_frame,
-                   { "java.lang.Thread$State java.lang.Thread.getState()",
-                     "java.lang.ThreadGroup java.lang.Thread.getThreadGroup()",
-                     "void java.lang.Thread.<init>(java.lang.ThreadGroup, java.lang.Runnable, "
-                         "java.lang.String, long, java.security.AccessControlContext, boolean)",
-                     "void java.lang.Thread.<init>(java.lang.ThreadGroup, java.lang.Runnable, "
-                         "java.lang.String, long)",
-                     "void java.lang.Thread.<init>()",
-                     "void java.util.logging.LogManager$Cleaner.<init>("
-                         "java.util.logging.LogManager)" })) {
+                   {"java.lang.Thread$State java.lang.Thread.threadState()",
+                    "java.lang.Thread$State java.lang.Thread.getState()",
+                    "java.lang.ThreadGroup java.lang.Thread.getThreadGroup()",
+                    "void java.lang.Thread.<init>(java.lang.ThreadGroup, java.lang.Runnable, "
+                        "java.lang.String, long, java.security.AccessControlContext, boolean)",
+                    "void java.lang.Thread.<init>(java.lang.ThreadGroup, java.lang.Runnable, "
+                        "java.lang.String, long)",
+                    "void java.lang.Thread.<init>()",
+                    "void java.util.logging.LogManager$Cleaner.<init>("
+                        "java.util.logging.LogManager)"})) {
     // Allow list reading the state of the "main" thread when creating another (unstarted) thread
     // for LogManager. Report the thread as "new" (it really only counts that it isn't terminated).
     constexpr int32_t kJavaRunnable = 1;
     result->SetI(kJavaRunnable);
   } else {
     AbortTransactionOrFail(self,
-                           "Thread.getNativeState() does not support %s",
+                           "Thread.nativeGetStatus() does not support %s",
+                           GetImmediateCaller(shadow_frame).c_str());
+  }
+}
+
+void UnstartedRuntime::UnstartedThreadNicenessForPriority(Thread* self,
+                                                          ShadowFrame* shadow_frame,
+                                                          JValue* result,
+                                                          size_t arg_offset) {
+  if (CheckCallers(shadow_frame,
+                   {"void java.lang.Thread.<init>(java.lang.ThreadGroup, java.lang.Runnable, "
+                        "java.lang.String, long, java.security.AccessControlContext, boolean)",
+                    "void java.lang.Thread.<init>(java.lang.ThreadGroup, java.lang.Runnable, "
+                        "java.lang.String, long)",
+                    "void java.lang.Thread.<init>()",
+                    "void java.util.logging.LogManager$Cleaner.<init>("
+                        "java.util.logging.LogManager)"})) {
+    // Allow niceness of newly created (unstarted) thread to be computed for LogManager.
+    // Only used for a shutdown hook, so report as something reasonable without bothering with
+    // the actual mapping.
+    int32_t pri = shadow_frame->GetVReg(arg_offset);
+    CHECK_GE(pri, kMinThreadPriority);
+    CHECK_LE(pri, kMaxThreadPriority);
+    result->SetI(10 - 2 * pri /* Posix normal niceness */);
+  } else {
+    AbortTransactionOrFail(self,
+                           "Thread.nicenessForPriority() does not support %s",
                            GetImmediateCaller(shadow_frame).c_str());
   }
 }

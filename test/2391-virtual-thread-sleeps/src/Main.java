@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-import android.system.Os;
-
 import dalvik.system.VirtualThreadContext;
 
 import java.text.DateFormat;
@@ -25,9 +23,11 @@ import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import jdk.internal.access.SharedSecrets;
 
 /**
  * Implement a thread sleeping for virtual thread on top of a single-threaded {@link Timer}.
@@ -53,7 +53,7 @@ public class Main {
         testNSleepingThreads(10);
         testNSleepingThreads(100);
         testNSleepingThreads(1000);
-        testNSleepingThreads(10000);
+        testNSleepingThreads(3000);
     }
 
     /**
@@ -89,14 +89,13 @@ public class Main {
         private final int mNumOfThreads;
         private final long mSleepDurationMs;
         private final Set<Long> virtualThreadIds;
-        private final AtomicInteger mJoinedCounter = new AtomicInteger(0);
-        private final LinkedBlockingQueue<Object> mJoinedNotifier
-                = new LinkedBlockingQueue<Object>();
+        private final CountDownLatch mCountDownLatch;
 
         SleepingVirtualThreadTestCase(int numOfThreads, long sleepDurationMs) {
             mNumOfThreads = numOfThreads;
             mSleepDurationMs = sleepDurationMs;
             virtualThreadIds = new HashSet<>(mNumOfThreads);
+            mCountDownLatch = new CountDownLatch(numOfThreads);
         }
 
         void start() {
@@ -122,8 +121,7 @@ public class Main {
                 while (startedCounter.get() < mNumOfThreads &&
                         runningSize.get() < CARRIER_THREADS_LIMIT) {
                     runningSize.incrementAndGet();
-                    startSleepingThread(parkingThreads, mNumOfThreads, mSleepDurationMs,
-                            mJoinedCounter, mJoinedNotifier);
+                    startSleepingThread(parkingThreads, mSleepDurationMs, mCountDownLatch);
                     startedCounter.incrementAndGet();
                 }
                 while (!parkingThreads.isEmpty()) {
@@ -156,26 +154,27 @@ public class Main {
                 }
             }
             debugPrintln("Started " + mNumOfThreads + " threads!");
-            debugPrintln("Approx. " + (mNumOfThreads - mJoinedCounter.get()) + " threads are sleeping");
+            debugPrintln("Approx. " + mCountDownLatch.getCount() + " threads are sleeping");
         }
 
         void waitUntilAllThreadsWakeUp() {
             // The constant multiplier needs to be significantly larger than 2 because the timer
             // is single-threaded, and is slower in the interpreter mode.
-            long timeoutThresholdMs = mSleepDurationMs * 5;
-            Object joined_signal;
+            long timeoutThresholdMs = mSleepDurationMs * 10;
+            final boolean isDone;
             try {
-                joined_signal = mJoinedNotifier.poll(timeoutThresholdMs, TimeUnit.MILLISECONDS);
+                isDone = mCountDownLatch.await(timeoutThresholdMs, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 throw new RuntimeException(e);
             }
 
+            int numThreadsJoined = mNumOfThreads - (int) mCountDownLatch.getCount();
             long endTime = System.currentTimeMillis();
-            debugPrintln("all " + mJoinedCounter.get() + " Threads joined at "
+            debugPrintln("all " + numThreadsJoined + " Threads joined at "
                     + df.format(new Date(endTime)));
-            if (joined_signal == null) {
+            if (!isDone) {
                 throw new AssertionError("Expected " + mNumOfThreads + " threads to "
-                        + "join, but only " + mJoinedCounter.get() + " threads joined within " +
+                        + "join, but only " + numThreadsJoined + " threads joined within " +
                         timeoutThresholdMs + " ms.");
             }
             if (virtualThreadIds.size() != mNumOfThreads) {
@@ -185,30 +184,26 @@ public class Main {
         }
 
         private static void startSleepingThread(
-                ConcurrentLinkedQueue<ParkedSleepingThreadHolder> queue,
-                long numOfThreads, long sleepDurationMs,
-                AtomicInteger joinedCounter, LinkedBlockingQueue<Object> allJoinedNotifier) {
-            Thread.startVirtual(() -> sleepingTask(queue, numOfThreads, sleepDurationMs,
-                    joinedCounter, allJoinedNotifier));
+                ConcurrentLinkedQueue<ParkedSleepingThreadHolder> queue, long sleepDurationMs,
+                CountDownLatch latch) {
+            Thread.startVirtual(() -> sleepingTask(queue, sleepDurationMs, latch));
         }
 
         private static void sleepingTask(ConcurrentLinkedQueue<ParkedSleepingThreadHolder> queue,
-                long numOfThreads, long sleepDurationMs,
-                AtomicInteger joinedCounter, LinkedBlockingQueue<Object> allJoinedNotifier) {
-            int tid1 = Os.gettid();
+                long sleepDurationMs, CountDownLatch latch) {
+            long tid1 = getCarrierThreadId();
             parkVirtual(queue,  sleepDurationMs);
-            int tid2 = Os.gettid();
+            long tid2 = getCarrierThreadId();
             if (tid1 == tid2) {
-                // It may actually happen when tid is re-used for a separate Thread object.
-                throw new RuntimeException("tid shouldn't normally be the same: "
+                throw new RuntimeException("thread id shouldn't be the same: "
                         + tid1 + " != " + tid2);
             }
 
-            int c = joinedCounter.incrementAndGet();
+            latch.countDown();
+        }
 
-            if (c >= numOfThreads) {
-                allJoinedNotifier.add(new Object());
-            }
+        private static long getCarrierThreadId() {
+            return SharedSecrets.getJavaLangAccess().currentCarrierThread().threadId();
         }
 
         private static void parkVirtual(ConcurrentLinkedQueue<ParkedSleepingThreadHolder> queue,

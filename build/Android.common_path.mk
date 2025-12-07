@@ -121,18 +121,13 @@ ifneq ($(ART_BUILD_HOST_DEBUG),false)
 ART_HOST_EXECUTABLES += $(foreach name,$(ART_CORE_DEBUGGABLE_EXECUTABLES_HOST),$(name)d-host)
 endif
 
-# Release ART APEX, included by default in "user" builds.
-RELEASE_ART_APEX := com.android.art
 # Debug ART APEX, included by default in "userdebug" and "eng"
 # builds and used in ART device benchmarking.
 DEBUG_ART_APEX := com.android.art.debug
 # Testing ART APEX, used in ART device testing.
 TESTING_ART_APEX := com.android.art.testing
 
-RUNTIME_APEX := com.android.runtime
-CONSCRYPT_APEX := com.android.conscrypt
 I18N_APEX := com.android.i18n
-STATSD_APEX := art_fake_com.android.os.statsd
 TZDATA_APEX := com.android.tzdata
 
 # A phony file to create the ICU data file for host.

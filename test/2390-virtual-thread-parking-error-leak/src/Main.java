@@ -14,20 +14,7 @@
  * limitations under the License.
  */
 
-import android.system.Os;
-
-import dalvik.system.VirtualThreadContext;
 import dalvik.system.VirtualThreadParkingError;
-
-import java.lang.ref.ReferenceQueue;
-import java.lang.ref.WeakReference;
-import java.text.DateFormat;
-import java.util.Date;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Verify that app code can't catch VirtualThreadParkingError which should only used

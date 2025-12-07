@@ -228,8 +228,8 @@ constexpr int32_t EncodeCompileFilter(CompilerFilterReporting filter) {
       return statsd::ART_DATUM_REPORTED__COMPILE_FILTER__ART_COMPILATION_FILTER_EVERYTHING_PROFILE;
     case CompilerFilterReporting::kEverything:
       return statsd::ART_DATUM_REPORTED__COMPILE_FILTER__ART_COMPILATION_FILTER_EVERYTHING;
-    case CompilerFilterReporting::kError:
-      return statsd::ART_DATUM_REPORTED__COMPILE_FILTER__ART_COMPILATION_FILTER_ERROR;
+    case CompilerFilterReporting::kAbsent:
+      return statsd::ART_DATUM_REPORTED__COMPILE_FILTER__ART_COMPILATION_FILTER_ABSENT;
     case CompilerFilterReporting::kUnknown:
       return statsd::ART_DATUM_REPORTED__COMPILE_FILTER__ART_COMPILATION_FILTER_UNKNOWN;
     case CompilerFilterReporting::kRunFromApk:
@@ -237,6 +237,8 @@ constexpr int32_t EncodeCompileFilter(CompilerFilterReporting filter) {
     case CompilerFilterReporting::kRunFromApkFallback:
       return statsd::
           ART_DATUM_REPORTED__COMPILE_FILTER__ART_COMPILATION_FILTER_FAKE_RUN_FROM_APK_FALLBACK;
+    case CompilerFilterReporting::kOther:
+      return statsd::ART_DATUM_REPORTED__COMPILE_FILTER__ART_COMPILATION_FILTER_OTHER;
   }
 }
 
@@ -248,8 +250,8 @@ constexpr int32_t EncodeCompilationReason(CompilationReason reason) {
       return statsd::ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_AB_OTA;
     case CompilationReason::kBgDexopt:
       return statsd::ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_BG_DEXOPT;
-    case CompilationReason::kError:
-      return statsd::ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_ERROR;
+    case CompilationReason::kAbsent:
+      return statsd::ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_ABSENT;
     case CompilationReason::kFirstBoot:
       return statsd::ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_FIRST_BOOT;
     case CompilationReason::kInactive:
@@ -287,6 +289,16 @@ constexpr int32_t EncodeCompilationReason(CompilationReason reason) {
     case CompilationReason::kBootAfterMainlineUpdate:
       return statsd::
           ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_BOOT_AFTER_MAINLINE_UPDATE;
+    case CompilationReason::kOther:
+      return statsd::ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_OTHER;
+    case CompilationReason::kCloud:
+      return statsd::ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_CLOUD;
+    case CompilationReason::kVdexDm:
+      return statsd::ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_VDEX_DM;
+    case CompilationReason::kDefDexopt:
+      return statsd::ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_DEF_DEXOPT;
+    case CompilationReason::kPostUr:
+      return statsd::ART_DATUM_REPORTED__COMPILATION_REASON__ART_COMPILATION_REASON_POST_UR;
   }
 }
 

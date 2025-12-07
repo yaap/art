@@ -67,10 +67,10 @@ def print_separator() -> None:
 # --- Configuration ---
 # Pattern to look for in logcat to indicate the device is ready for profiling.
 # Set to None to skip the logcat check and only wait for ADB device.
-# LOGCAT_READY_PATTERN: Optional[str] = (
-#     "Displayed com.android.car.carlauncher/.CarLauncher"
-# )
-LOGCAT_READY_PATTERN = None  # Example: Disable logcat check
+LOGCAT_READY_PATTERN: Optional[str] = (
+    "Displayed com.android.car.carlauncher/.CarLauncher"
+)
+# LOGCAT_READY_PATTERN = None  # Example: Disable logcat check
 
 # Logcat filters to apply when monitoring for the ready pattern.
 LOGCAT_FILTER_SPECS: List[str] = [

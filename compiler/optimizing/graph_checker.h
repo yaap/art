@@ -30,12 +30,12 @@ namespace art HIDDEN {
 class CodeGenerator;
 
 // A control-flow graph visitor performing various checks.
-class GraphChecker final : public HGraphDelegateVisitor {
+class GraphChecker final : public CRTPGraphVisitor<GraphChecker> {
  public:
   explicit GraphChecker(HGraph* graph,
                         CodeGenerator* codegen = nullptr,
                         const char* dump_prefix = "art::GraphChecker: ")
-      : HGraphDelegateVisitor(graph),
+      : CRTPGraphVisitor(graph),
         errors_(graph->GetAllocator()->Adapter(kArenaAllocGraphChecker)),
         dump_prefix_(dump_prefix),
         allocator_(graph->GetArenaStack()),
@@ -51,38 +51,38 @@ class GraphChecker final : public HGraphDelegateVisitor {
   // and return value pass along the observed graph sizes.
   size_t Run(bool pass_change = true, size_t last_size = 0);
 
-  void VisitBasicBlock(HBasicBlock* block) override;
+  void VisitBasicBlock(HBasicBlock* block);
 
-  void VisitInstruction(HInstruction* instruction) override;
-  void VisitPhi(HPhi* phi) override;
+  void VisitInstruction(HInstruction* instruction);
+  void VisitPhi(HPhi* phi);
 
-  void VisitArraySet(HArraySet* instruction) override;
-  void VisitInstanceFieldSet(HInstanceFieldSet* instruction) override;
-  void VisitStaticFieldSet(HStaticFieldSet* instruction) override;
-  void VisitBinaryOperation(HBinaryOperation* op) override;
-  void VisitBooleanNot(HBooleanNot* instruction) override;
-  void VisitBoundType(HBoundType* instruction) override;
-  void VisitBoundsCheck(HBoundsCheck* check) override;
-  void VisitCheckCast(HCheckCast* check) override;
-  void VisitCondition(HCondition* op) override;
-  void VisitConstant(HConstant* instruction) override;
-  void VisitDeoptimize(HDeoptimize* instruction) override;
-  void VisitIf(HIf* instruction) override;
-  void VisitInstanceOf(HInstanceOf* check) override;
-  void VisitInvoke(HInvoke* invoke) override;
-  void VisitInvokeStaticOrDirect(HInvokeStaticOrDirect* invoke) override;
-  void VisitLoadClass(HLoadClass* load) override;
-  void VisitLoadException(HLoadException* load) override;
-  void VisitMonitorOperation(HMonitorOperation* monitor_operation) override;
-  void VisitNeg(HNeg* instruction) override;
-  void VisitPackedSwitch(HPackedSwitch* instruction) override;
-  void VisitReturn(HReturn* ret) override;
-  void VisitReturnVoid(HReturnVoid* ret) override;
-  void VisitSelect(HSelect* instruction) override;
-  void VisitTryBoundary(HTryBoundary* try_boundary) override;
-  void VisitTypeConversion(HTypeConversion* instruction) override;
+  void VisitArraySet(HArraySet* instruction);
+  void VisitInstanceFieldSet(HInstanceFieldSet* instruction);
+  void VisitStaticFieldSet(HStaticFieldSet* instruction);
+  void VisitBinaryOperation(HBinaryOperation* op);
+  void VisitBooleanNot(HBooleanNot* instruction);
+  void VisitBoundType(HBoundType* instruction);
+  void VisitBoundsCheck(HBoundsCheck* check);
+  void VisitCheckCast(HCheckCast* check);
+  void VisitCondition(HCondition* op);
+  void VisitConstant(HConstant* instruction);
+  void VisitDeoptimize(HDeoptimize* instruction);
+  void VisitIf(HIf* instruction);
+  void VisitInstanceOf(HInstanceOf* check);
+  void VisitInvoke(HInvoke* invoke);
+  void VisitInvokeStaticOrDirect(HInvokeStaticOrDirect* invoke);
+  void VisitLoadClass(HLoadClass* load);
+  void VisitLoadException(HLoadException* load);
+  void VisitMonitorOperation(HMonitorOperation* monitor_operation);
+  void VisitNeg(HNeg* instruction);
+  void VisitPackedSwitch(HPackedSwitch* instruction);
+  void VisitReturn(HReturn* ret);
+  void VisitReturnVoid(HReturnVoid* ret);
+  void VisitSelect(HSelect* instruction);
+  void VisitTryBoundary(HTryBoundary* try_boundary);
+  void VisitTypeConversion(HTypeConversion* instruction);
 
-  void VisitVecOperation(HVecOperation* instruction) override;
+  void VisitVecOperation(HVecOperation* instruction);
 
   void CheckTypeCheckBitstringInput(HTypeCheckInstruction* check,
                                     size_t input_pos,
@@ -118,6 +118,8 @@ class GraphChecker final : public HGraphDelegateVisitor {
   void AddError(const std::string& error) {
     errors_.push_back(error);
   }
+
+  bool IsExitTryBoundaryIntoExitBlock(HBasicBlock* block);
 
   // The block currently visited.
   HBasicBlock* current_block_ = nullptr;

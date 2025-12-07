@@ -815,8 +815,10 @@ class RuntimeImageHelper {
   }
 
   void RelocateNativePointers() {
+    // Fake the mutator lock as we are dealing with pointers in a buffer, not
+    // the heap.
+    FakeMutexLock mu(*Locks::mutator_lock_);
     ScopedTrace relocate_native_pointers("Relocate native pointers");
-    ScopedObjectAccess soa(Thread::Current());
     NativePointerVisitor visitor(this);
     for (auto&& entry : classes_) {
       mirror::Class* cls = reinterpret_cast<mirror::Class*>(&objects_[entry.second]);
@@ -1128,6 +1130,8 @@ class RuntimeImageHelper {
     // Create the fake OatHeader to store the dependencies of the image.
     SafeMap<std::string, std::string> key_value_store;
     Runtime* runtime = Runtime::Current();
+    // For runtime images, there is no oat code so we don't need to add
+    // kEnableProfileCode here. We also omit the check when loading the images.
     key_value_store.Put(OatHeader::kApexVersionsKey, runtime->GetApexVersions());
     key_value_store.Put(OatHeader::kBootClassPathKey,
                         android::base::Join(runtime->GetBootClassPathLocations(), ':'));

@@ -183,6 +183,7 @@ class SchedulerTest : public CommonCompilerTest, public OptimizingUnitTestHelper
     HBasicBlock* entry = AddNewBlock();
     HBasicBlock* block1 = AddNewBlock();
     graph_->SetEntryBlock(entry);
+    MakeGoto(entry);
 
     HInstruction* arr = MakeParam(DataType::Type::kReference);
     HInstruction* i = MakeParam(DataType::Type::kInt32);
@@ -204,6 +205,7 @@ class SchedulerTest : public CommonCompilerTest, public OptimizingUnitTestHelper
     HInstruction* arr_set_sub1 = MakeArraySet(block1, arr, sub1, c0, DataType::Type::kInt32);
     HInstruction* arr_set_j = MakeArraySet(block1, arr, j, c0, DataType::Type::kInt32);
     HInstanceFieldSet* set_field10 = MakeIFieldSet(block1, object, c1, MemberOffset(10));
+    MakeReturnVoid(block1);
 
     HeapLocationCollector heap_location_collector(graph_, GetScopedAllocator());
     heap_location_collector.VisitBasicBlock(block1);

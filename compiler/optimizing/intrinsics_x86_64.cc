@@ -1843,8 +1843,9 @@ void IntrinsicLocationsBuilderX86_64::VisitThreadCurrentThread(HInvoke* invoke) 
 
 void IntrinsicCodeGeneratorX86_64::VisitThreadCurrentThread(HInvoke* invoke) {
   CpuRegister out = invoke->GetLocations()->Out().AsRegister<CpuRegister>();
-  GetAssembler()->gs()->movl(out, Address::Absolute(Thread::PeerOffset<kX86_64PointerSize>(),
-                                                    /* no_rip= */ true));
+  GetAssembler()->gs()->movl(out,
+                             Address::Absolute(Thread::CurrentPeerOffset<kX86_64PointerSize>(),
+                                               /* no_rip= */ true));
 }
 
 static void GenUnsafeGet(HInvoke* invoke,

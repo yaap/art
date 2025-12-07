@@ -2063,6 +2063,16 @@ DEFINE_FUNCTION art_quick_compile_optimized
 END_FUNCTION art_quick_compile_optimized
 
 // On entry, method is at the bottom of the stack.
+DEFINE_FUNCTION art_quick_compile_baseline
+    SETUP_SAVE_EVERYTHING_FRAME
+    movq FRAME_SIZE_SAVE_EVERYTHING(%rsp), %rdi // pass ArtMethod
+    movq %gs:THREAD_SELF_OFFSET, %rsi           // pass Thread::Current()
+    call SYMBOL(artCompileBaseline)             // (ArtMethod*, Thread*)
+    RESTORE_SAVE_EVERYTHING_FRAME               // restore frame up to return address
+    ret
+END_FUNCTION art_quick_compile_baseline
+
+// On entry, method is at the bottom of the stack.
 DEFINE_FUNCTION art_quick_method_entry_hook
     SETUP_SAVE_EVERYTHING_FRAME
 

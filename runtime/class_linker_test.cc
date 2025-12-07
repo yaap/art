@@ -775,12 +775,10 @@ struct MethodHandleOffsets : public CheckOffsets<mirror::MethodHandle> {
 struct MethodHandleImplOffsets : public CheckOffsets<mirror::MethodHandleImpl> {
   MethodHandleImplOffsets() : CheckOffsets<mirror::MethodHandleImpl>(
       false, "Ljava/lang/invoke/MethodHandleImpl;") {
-    // Beware: changing offsets of field and targetClassOrMethodHandleInfo might lead to compat
-    // issues.
     addOffset(OFFSETOF_MEMBER(mirror::MethodHandleImpl, field_), "field");
+    addOffset(OFFSETOF_MEMBER(mirror::MethodHandleImpl, target_), "target");
     addOffset(OFFSETOF_MEMBER(mirror::MethodHandleImpl, target_class_or_info_),
               "targetClassOrMethodHandleInfo");
-    addOffset(OFFSETOF_MEMBER(mirror::MethodHandleImpl, target_method_entry_), "targetMethodEntry");
   }
 };
 
@@ -905,6 +903,15 @@ TEST_F(ClassLinkerTest, GetDexFiles) {
   std::vector<const DexFile*> dex_files2(GetDexFiles(jclass_loader2));
   ASSERT_EQ(dex_files2.size(), 2U);
   EXPECT_TRUE(dex_files2[0]->GetLocation().ends_with("MultiDex.jar"));
+}
+
+TEST_F(ClassLinkerTest, GetDexFilesFromMultiDexContainer) {
+  ScopedObjectAccess soa(Thread::Current());
+
+  jobject jclass_loader = LoadDex("MultiDexContainer");
+  std::vector<const DexFile*> dex_files(GetDexFiles(jclass_loader));
+  ASSERT_EQ(dex_files.size(), 2U);
+  EXPECT_TRUE(dex_files[0]->GetLocation().ends_with("MultiDexContainer.jar"));
 }
 
 TEST_F(ClassLinkerTest, FindClassNested) {

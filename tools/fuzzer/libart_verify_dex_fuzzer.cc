@@ -14,8 +14,11 @@
  * limitations under the License.
  */
 
-#include "dex/dex_file_verifier.h"
-#include "dex/standard_dex_file.h"
+#include "android-base/logging.h"
+#include "fuzzer_common.h"
+
+namespace art {
+namespace fuzzer {
 
 extern "C" int LLVMFuzzerInitialize([[maybe_unused]] int* argc, [[maybe_unused]] char*** argv) {
   // Set logging to error and above to avoid warnings about unexpected checksums.
@@ -24,19 +27,9 @@ extern "C" int LLVMFuzzerInitialize([[maybe_unused]] int* argc, [[maybe_unused]]
 }
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
-  // Do not verify the checksum as we only care about the DEX file contents,
-  // and know that the checksum would probably be erroneous (i.e. random).
-  constexpr bool kVerify = false;
-
-  auto container = std::make_shared<art::MemoryDexFileContainer>(data, size);
-  art::StandardDexFile dex_file(data,
-                                /*location=*/"fuzz.dex",
-                                /*location_checksum=*/0,
-                                /*oat_dex_file=*/nullptr,
-                                container);
-
-  std::string error_msg;
-  art::dex::Verify(&dex_file, dex_file.GetLocation().c_str(), kVerify, &error_msg);
-
+  VerifyDexFile(data, size, "fuzz.dex");
   return 0;
 }
+
+}  // namespace fuzzer
+}  // namespace art

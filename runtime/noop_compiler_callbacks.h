@@ -24,7 +24,7 @@
 namespace art HIDDEN {
 
 // Used for tests and some tools that pretend to be a compiler (say, oatdump).
-class NoopCompilerCallbacks final : public CompilerCallbacks {
+class NoopCompilerCallbacks : public CompilerCallbacks {
  public:
   NoopCompilerCallbacks() : CompilerCallbacks(CompilerCallbacks::CallbackMode::kCompileApp) {}
   ~NoopCompilerCallbacks() {}

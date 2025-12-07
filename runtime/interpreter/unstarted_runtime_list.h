@@ -74,7 +74,8 @@
   V(StringFastSubstring, "Ljava/lang/String;", "fastSubstring", "(II)Ljava/lang/String;") \
   V(StringToCharArray, "Ljava/lang/String;", "toCharArray", "()[C") \
   V(ThreadCurrentThread, "Ljava/lang/Thread;", "currentThread", "()Ljava/lang/Thread;") \
-  V(ThreadGetNativeState, "Ljava/lang/Thread;", "nativeGetStatus", "(Z)I") \
+  V(ThreadNativeGetStatus, "Ljava/lang/Thread;", "nativeGetStatus", "(Z)I") \
+  V(ThreadNicenessForPriority, "Ljava/lang/Thread;", "nicenessForPriority", "(I)I") \
   V(UnsafeCompareAndSwapLong, "Lsun/misc/Unsafe;", "compareAndSwapLong", "(Ljava/lang/Object;JJJ)Z") \
   V(UnsafeCompareAndSwapObject, "Lsun/misc/Unsafe;", "compareAndSwapObject", "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Z") \
   V(UnsafeGetObjectVolatile, "Lsun/misc/Unsafe;", "getObjectVolatile", "(Ljava/lang/Object;J)Ljava/lang/Object;") \

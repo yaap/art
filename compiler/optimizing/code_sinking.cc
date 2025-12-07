@@ -128,6 +128,16 @@ static bool IsInterestingInstruction(HInstruction* instruction) {
     if (!instruction->InputAt(0)->IsNewArray()) {
       return false;
     }
+
+    // It's fine if the ArraySet is in a loop when the index is not e.g. setting the same value
+    // multiple times in the same index in the array.
+    // It's fine if the ArraySet is not in a loop when the index is in a loop e.g. a loop calculates
+    // the index and then sets a value.
+    // However, if both of them are in a loop we can miss setting the value for some index in the
+    // array and that would be wrong.
+    if (instruction->IsInLoop() && instruction->AsArraySet()->GetIndex()->IsInLoop()) {
+      return false;
+    }
   }
 
   // Heap accesses cannot go past instructions that have memory side effects, which

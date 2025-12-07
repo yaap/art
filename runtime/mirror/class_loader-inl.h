@@ -29,19 +29,11 @@ inline ObjPtr<ClassLoader> ClassLoader::GetParent() {
   return GetFieldObject<ClassLoader>(OFFSET_OF_OBJECT_MEMBER(ClassLoader, parent_));
 }
 
-template <bool kVisitClasses,
-          VerifyObjectFlags kVerifyFlags,
-          ReadBarrierOption kReadBarrierOption,
-          typename Visitor>
-inline void ClassLoader::VisitReferences(ObjPtr<mirror::Class> klass, const Visitor& visitor) {
-  // Visit instance fields first.
-  VisitInstanceFieldsReferences<kVerifyFlags, kReadBarrierOption>(klass, visitor);
-  if (kVisitClasses) {
-    // Visit classes loaded after.
-    ClassTable* const class_table = GetClassTable<kVerifyFlags>();
-    if (class_table != nullptr) {
-      class_table->VisitRoots(visitor);
-    }
+template <VerifyObjectFlags kVerifyFlags, typename Visitor>
+inline void ClassLoader::VisitNativeRoots(const Visitor& visitor) {
+  ClassTable* const class_table = GetClassTable<kVerifyFlags>();
+  if (class_table != nullptr) {
+    class_table->VisitRoots(visitor);
   }
 }
 

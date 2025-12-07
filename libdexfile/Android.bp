@@ -563,21 +563,17 @@ cc_library_static {
 
 cc_defaults {
     name: "libdexfile_static_transitive_defaults",
+    defaults: [
+        "art_libz_static_transitive_defaults",
+    ],
     defaults_visibility: [
         "//system/extras/simpleperf",
     ],
-    // Take the relevant bits from art_liblog_static_defaults and
-    // art_libz_static_defaults.
+    // Take the relevant bits from art_liblog_static_defaults.
     target: {
         android: {
             shared_libs: [
                 "liblog",
-                "libz",
-            ],
-        },
-        not_windows: {
-            shared_libs: [
-                "libz",
             ],
         },
     },

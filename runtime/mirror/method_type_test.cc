@@ -55,7 +55,6 @@ std::string ExpandShortHand(const std::string& shorthand) {
 ObjPtr<mirror::MethodType> MethodTypeTest::CreateMethodType(
     const std::string& return_type,
     const std::vector<std::string>& param_types) {
-  Runtime* const runtime = Runtime::Current();
   Thread* const self = Thread::Current();
 
   ScopedObjectAccess soa(self);

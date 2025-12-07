@@ -17,8 +17,6 @@
 #ifndef ART_DEX2OAT_LINKER_IMAGE_TEST_H_
 #define ART_DEX2OAT_LINKER_IMAGE_TEST_H_
 
-#include "oat/image.h"
-
 #include <memory>
 #include <string>
 #include <string_view>
@@ -26,7 +24,6 @@
 
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
-
 #include "art_method-inl.h"
 #include "base/file_utils.h"
 #include "base/hash_set.h"
@@ -34,6 +31,7 @@
 #include "base/unix_file/fd_file.h"
 #include "base/utils.h"
 #include "class_linker-inl.h"
+#include "com_android_art_rw_flags.h"
 #include "common_compiler_driver_test.h"
 #include "compiler_callbacks.h"
 #include "debug/method_debug_info.h"
@@ -48,6 +46,7 @@
 #include "linker/multi_oat_relative_patcher.h"
 #include "lock_word.h"
 #include "mirror/object-inl.h"
+#include "oat/image.h"
 #include "oat/oat.h"
 #include "oat_writer.h"
 #include "read_barrier_config.h"
@@ -55,6 +54,8 @@
 #include "signal_catcher.h"
 #include "stream/buffered_output_stream.h"
 #include "stream/file_output_stream.h"
+
+using ::android::base::GetBoolProperty;
 
 namespace art {
 namespace linker {
@@ -104,6 +105,9 @@ class ImageTest : public CommonCompilerDriverTest {
     QuickCompilerCallbacks* new_callbacks =
         new QuickCompilerCallbacks(CompilerCallbacks::CallbackMode::kCompileBootImage);
     new_callbacks->SetVerificationResults(verification_results_.get());
+    bool build_enabled = GetBoolProperty("dalvik.vm.allow_profile_code", false);
+    new_callbacks->SetShouldEnableProfileCode(
+        build_enabled && com::android::art::rw::flags::enable_profile_code_rw());
     callbacks_.reset(new_callbacks);
     options->push_back(std::make_pair("compilercallbacks", callbacks_.get()));
   }
@@ -237,6 +241,7 @@ inline void ImageTest::DoCompile(ImageHeader::StorageMode storage_mode,
       key_value_store.PutNonDeterministic(OatHeader::kApexVersionsKey,
                                           Runtime::Current()->GetApexVersions());
       key_value_store.Put(OatHeader::kConcurrentCopying, compiler_options_->EmitReadBarrier());
+      key_value_store.Put(OatHeader::kEnableProfileCodeKey, compiler_options_->EnableProfileCode());
 
       std::vector<std::unique_ptr<ElfWriter>> elf_writers;
       std::vector<std::unique_ptr<OatWriter>> oat_writers;

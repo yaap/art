@@ -301,20 +301,10 @@ END \name
     add rPC, rPC, rINST, lsl #1
     // Update method counter and do a suspend check if the branch is negative or zero.
     cmp rINST, #0
-    ble 2f
-1:
+    ble NterpHotnessCheck
     FETCH_INST                          // load rINST
     GET_INST_OPCODE ip                  // extract opcode from rINST
     GOTO_OPCODE ip                      // jump to next instruction
-2:
-    ldr r0, [sp]
-    ldrh r2, [r0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
-    cmp r2, #NTERP_HOTNESS_VALUE
-    beq NterpHandleHotnessOverflow
-    add r2, r2, #-1
-    strh r2, [r0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
-    DO_SUSPEND_CHECK continue_label=1b
-    b 1b
 .endm
 
 .macro TEST_IF_MARKING label
@@ -1768,19 +1758,29 @@ NterpHandleStringInitRange:
    COMMON_INVOKE_RANGE is_string_init=1, suffix="stringInit"
 
 
-NterpHandleHotnessOverflow:
-    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=1f, if_not_hot=5f
+NterpHotnessCheck:
+    ldr r0, [sp]
+    ldrh r2, [r0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
+    cmp r2, #NTERP_HOTNESS_VALUE
+    beq 3f
+    add r2, r2, #-1
+    strh r2, [r0, #ART_METHOD_HOTNESS_COUNT_OFFSET]
 1:
-    mov r1, rPC
-    mov r2, rFP
-    bl nterp_hot_method
-    cmp r0, #0
-    bne 3f
+    DO_SUSPEND_CHECK continue_label=2f
 2:
     FETCH_INST                          // load rINST
     GET_INST_OPCODE ip                  // extract opcode from rINST
     GOTO_OPCODE ip                      // jump to next instruction
+
 3:
+    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=4f, if_not_hot=1b
+4:
+    mov r1, rPC
+    mov r2, rFP
+    bl nterp_hot_method
+    cmp r0, #0
+    beq 2b
+
     // Drop the current frame.
     ldr ip, [rREFS, #-4]
     mov sp, ip
@@ -1817,12 +1817,12 @@ NterpHandleHotnessOverflow:
     sub sp, sp, r1
 
     add r2, r0, #OSR_DATA_MEMORY
-4:
+5:
     sub r1, r1, #4
     ldr ip, [r2, r1]
     str ip, [sp, r1]
     cmp r1, #0
-    bne 4b
+    bne 5b
 
     // Fetch the native PC to jump to and save it in a callee-save register.
     ldr rFP, [r0, #OSR_DATA_NATIVE_PC]
@@ -1832,9 +1832,6 @@ NterpHandleHotnessOverflow:
 
     // Jump to the compiled code.
     bx rFP
-5:
-    DO_SUSPEND_CHECK continue_label=2b
-    b 2b
 
 // This is the logical end of ExecuteNterpImpl, where the frame info applies.
 // EndExecuteNterpImpl includes the methods below as we want the runtime to

@@ -377,10 +377,12 @@ class MANAGED DexCache final : public Object {
 
   EXPORT ObjPtr<ClassLoader> GetClassLoader() REQUIRES_SHARED(Locks::mutator_lock_);
 
+  // Visit native gc-roots in the arrays for which 'should_visit' returns true
   template <VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags,
             ReadBarrierOption kReadBarrierOption = kWithReadBarrier,
-            typename Visitor>
-  void VisitNativeRoots(const Visitor& visitor)
+            typename Visitor,
+            typename ShouldVisitVisitor>
+  void VisitNativeRoots(const Visitor& visitor, const ShouldVisitVisitor& should_visit)
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(Locks::heap_bitmap_lock_);
 
   // Sets null to dex cache array fields which were allocated with the startup

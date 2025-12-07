@@ -18,6 +18,9 @@ package com.android.server.art;
 
 import static com.android.server.art.PrimaryDexUtils.DetailedPrimaryDexInfo;
 import static com.android.server.art.PrimaryDexUtils.PrimaryDexInfo;
+import static com.android.server.art.testing.TestDataHelper.newLibrary;
+import static com.android.server.art.testing.TestDataHelper.newPackageState;
+import static com.android.server.art.testing.TestDataHelper.newSplit;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -55,15 +58,16 @@ public class PrimaryDexUtilsTest {
 
     @Test
     public void testGetDexInfo() {
-        List<PrimaryDexInfo> infos =
-                PrimaryDexUtils.getDexInfo(createPackage(false /* isIsolatedSplitLoading */));
+        PackageState pkgState = createPackageState(false /* isIsolatedSplitLoading */);
+        List<PrimaryDexInfo> infos = PrimaryDexUtils.getDexInfo(pkgState.getAndroidPackage());
         checkBasicInfo(infos);
     }
 
     @Test
     public void testGetDetailedDexInfo() {
-        List<DetailedPrimaryDexInfo> infos = PrimaryDexUtils.getDetailedDexInfo(
-                createPackageState(), createPackage(false /* isIsolatedSplitLoading */));
+        PackageState pkgState = createPackageState(false /* isIsolatedSplitLoading */);
+        List<DetailedPrimaryDexInfo> infos =
+                PrimaryDexUtils.getDetailedDexInfo(pkgState, pkgState.getAndroidPackage());
         checkBasicInfo(infos);
 
         String sharedLibrariesContext = "{"
@@ -91,8 +95,9 @@ public class PrimaryDexUtilsTest {
 
     @Test
     public void testGetDetailedDexInfoIsolated() {
-        List<DetailedPrimaryDexInfo> infos = PrimaryDexUtils.getDetailedDexInfo(
-                createPackageState(), createPackage(true /* isIsolatedSplitLoading */));
+        PackageState pkgState = createPackageState(true /* isIsolatedSplitLoading */);
+        List<DetailedPrimaryDexInfo> infos =
+                PrimaryDexUtils.getDetailedDexInfo(pkgState, pkgState.getAndroidPackage());
         checkBasicInfo(infos);
 
         String sharedLibrariesContext = "{"
@@ -138,41 +143,31 @@ public class PrimaryDexUtilsTest {
         assertThat(infos.get(4).splitName()).isEqualTo("split_4");
     }
 
-    private AndroidPackage createPackage(boolean isIsolatedSplitLoading) {
-        AndroidPackage pkg = mock(AndroidPackage.class);
+    private PackageState createPackageState(boolean isIsolatedSplitLoading) {
+        // Base depends on library 2, 3, 4.
+        // Library 2, 4 depends on library 1.
+        // The native library should not be added to the CLC.
+        SharedLibrary libraryNative =
+                newLibrary().addCodePaths("library_native.so").setNative(true).build();
+        SharedLibrary library1 =
+                newLibrary().addCodePaths("library_1_dex_1.jar", "library_1_dex_2.jar").build();
+        SharedLibrary library2 =
+                newLibrary().addCodePaths("library_2.jar").addDeps(library1, libraryNative).build();
+        SharedLibrary library3 = newLibrary().addCodePaths("library_3.jar").build();
+        SharedLibrary library4 =
+                newLibrary().addCodePaths("library_4.jar").addDeps(library1).build();
 
-        var baseSplit = mock(AndroidPackageSplit.class);
-        lenient().when(baseSplit.getPath()).thenReturn("/somewhere/app/foo/base.apk");
-        lenient().when(baseSplit.isHasCode()).thenReturn(true);
-        lenient().when(baseSplit.getClassLoaderName()).thenReturn(PathClassLoader.class.getName());
-
-        var split0 = mock(AndroidPackageSplit.class);
-        lenient().when(split0.getName()).thenReturn("split_0");
-        lenient().when(split0.getPath()).thenReturn("/somewhere/app/foo/split_0.apk");
-        lenient().when(split0.isHasCode()).thenReturn(true);
-
-        var split1 = mock(AndroidPackageSplit.class);
-        lenient().when(split1.getName()).thenReturn("split_1");
-        lenient().when(split1.getPath()).thenReturn("/somewhere/app/foo/split_1.apk");
-        lenient().when(split1.isHasCode()).thenReturn(false);
-
-        var split2 = mock(AndroidPackageSplit.class);
-        lenient().when(split2.getName()).thenReturn("split_2");
-        lenient().when(split2.getPath()).thenReturn("/somewhere/app/foo/split_2.apk");
-        lenient().when(split2.isHasCode()).thenReturn(true);
-
-        var split3 = mock(AndroidPackageSplit.class);
-        lenient().when(split3.getName()).thenReturn("split_3");
-        lenient().when(split3.getPath()).thenReturn("/somewhere/app/foo/split_3.apk");
-        lenient().when(split3.isHasCode()).thenReturn(true);
-
-        var split4 = mock(AndroidPackageSplit.class);
-        lenient().when(split4.getName()).thenReturn("split_4");
-        lenient().when(split4.getPath()).thenReturn("/somewhere/app/foo/split_4.apk");
-        lenient().when(split4.isHasCode()).thenReturn(true);
-
-        var splits = List.of(baseSplit, split0, split1, split2, split3, split4);
-        lenient().when(pkg.getSplits()).thenReturn(splits);
+        var baseSplit = newSplit()
+                                .setPath("/somewhere/app/foo/base.apk")
+                                .setClassLoaderName(PathClassLoader.class.getName());
+        var split0 = newSplit().setName("split_0").setPath("/somewhere/app/foo/split_0.apk");
+        var split1 = newSplit()
+                             .setName("split_1")
+                             .setPath("/somewhere/app/foo/split_1.apk")
+                             .setHasCode(false);
+        var split2 = newSplit().setName("split_2").setPath("/somewhere/app/foo/split_2.apk");
+        var split3 = newSplit().setName("split_3").setPath("/somewhere/app/foo/split_3.apk");
+        var split4 = newSplit().setName("split_4").setPath("/somewhere/app/foo/split_4.apk");
 
         if (isIsolatedSplitLoading) {
             // split_0: PCL(PathClassLoader), depends on split_2.
@@ -180,68 +175,23 @@ public class PrimaryDexUtilsTest {
             // split_2: DLC(DelegateLastClassLoader), depends on base.
             // split_3: PCL(DexClassLoader), no dependency.
             // split_4: PCL(null), depends on split_3.
-            lenient().when(split0.getClassLoaderName()).thenReturn(PathClassLoader.class.getName());
-            lenient().when(split1.getClassLoaderName()).thenReturn(null);
-            lenient()
-                    .when(split2.getClassLoaderName())
-                    .thenReturn(DelegateLastClassLoader.class.getName());
-            lenient().when(split3.getClassLoaderName()).thenReturn(DexClassLoader.class.getName());
-            lenient().when(split4.getClassLoaderName()).thenReturn(null);
-
-            lenient().when(split0.getDependencies()).thenReturn(List.of(split2));
-            lenient().when(split2.getDependencies()).thenReturn(List.of(baseSplit));
-            lenient().when(split4.getDependencies()).thenReturn(List.of(split3));
-            lenient().when(pkg.isIsolatedSplitLoading()).thenReturn(true);
-        } else {
-            lenient().when(pkg.isIsolatedSplitLoading()).thenReturn(false);
+            split0.setClassLoaderName(PathClassLoader.class.getName()).addDeps(split2.build());
+            split1.setClassLoaderName(null);
+            split2.setClassLoaderName(DelegateLastClassLoader.class.getName())
+                    .addDeps(baseSplit.build());
+            split3.setClassLoaderName(DexClassLoader.class.getName());
+            split4.setClassLoaderName(null).addDeps(split3.build());
         }
 
-        return pkg;
-    }
-
-    private PackageState createPackageState() {
-        PackageState pkgState = mock(PackageState.class);
-
-        lenient().when(pkgState.getPackageName()).thenReturn("com.example.foo");
-
-        // Base depends on library 2, 3, 4.
-        // Library 2, 4 depends on library 1.
-        List<SharedLibrary> usesLibraryInfos = new ArrayList<>();
-
-        // The native library should not be added to the CLC.
-        SharedLibrary libraryNative = mock(SharedLibrary.class);
-        lenient().when(libraryNative.getAllCodePaths()).thenReturn(List.of("library_native.so"));
-        lenient().when(libraryNative.getDependencies()).thenReturn(null);
-        lenient().when(libraryNative.isNative()).thenReturn(true);
-        usesLibraryInfos.add(libraryNative);
-
-        SharedLibrary library1 = mock(SharedLibrary.class);
-        lenient()
-                .when(library1.getAllCodePaths())
-                .thenReturn(List.of("library_1_dex_1.jar", "library_1_dex_2.jar"));
-        lenient().when(library1.getDependencies()).thenReturn(null);
-        lenient().when(library1.isNative()).thenReturn(false);
-
-        SharedLibrary library2 = mock(SharedLibrary.class);
-        lenient().when(library2.getAllCodePaths()).thenReturn(List.of("library_2.jar"));
-        lenient().when(library2.getDependencies()).thenReturn(List.of(library1, libraryNative));
-        lenient().when(library2.isNative()).thenReturn(false);
-        usesLibraryInfos.add(library2);
-
-        SharedLibrary library3 = mock(SharedLibrary.class);
-        lenient().when(library3.getAllCodePaths()).thenReturn(List.of("library_3.jar"));
-        lenient().when(library3.getDependencies()).thenReturn(null);
-        lenient().when(library3.isNative()).thenReturn(false);
-        usesLibraryInfos.add(library3);
-
-        SharedLibrary library4 = mock(SharedLibrary.class);
-        lenient().when(library4.getAllCodePaths()).thenReturn(List.of("library_4.jar"));
-        lenient().when(library4.getDependencies()).thenReturn(List.of(library1));
-        lenient().when(library4.isNative()).thenReturn(false);
-        usesLibraryInfos.add(library4);
-
-        lenient().when(pkgState.getSharedLibraryDependencies()).thenReturn(usesLibraryInfos);
-
-        return pkgState;
+        return newPackageState("com.example.foo")
+                .addSharedLibraryDeps(libraryNative, library2, library3, library4)
+                .addSplit(baseSplit.build())
+                .addSplit(split0.build())
+                .addSplit(split1.build())
+                .addSplit(split2.build())
+                .addSplit(split3.build())
+                .addSplit(split4.build())
+                .setIsolatedSplitLoading(isIsolatedSplitLoading)
+                .build();
     }
 }

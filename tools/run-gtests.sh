@@ -62,7 +62,7 @@ done
 options="$@"
 
 run_in_chroot() {
-  if [ -n "$ART_TEST_ON_VM" ]; then
+  if [ -n "$ART_TEST_ON_VM" ] || [ -n "$ART_TEST_ON_SBC" ]; then
     $ART_SSH_CMD $ART_CHROOT_CMD env ANDROID_ROOT=/system $@
   else
     "$adb" shell chroot "$ART_TEST_CHROOT" $@
@@ -76,7 +76,7 @@ if [[ ${#tests[@]} -eq 0 ]]; then
 fi
 
 maybe_get_fake_dex2oatbootclasspath() {
-  if [ -n "$ART_TEST_ON_VM" ]; then
+  if [ -n "$ART_TEST_ON_VM" ] || [ -n "$ART_TEST_ON_SBC" ]; then
     return
   fi
   dex2oatbootclasspath=$("$adb" shell echo \$DEX2OATBOOTCLASSPATH)
@@ -102,6 +102,7 @@ for t in ${tests[@]}; do
         ANDROID_I18N_ROOT="$android_i18n_root" \
         ANDROID_TZDATA_ROOT="$android_tzdata_root" \
         ART_TEST_ON_VM="$ART_TEST_ON_VM" \
+        ART_TEST_ON_SBC="$ART_TEST_ON_SBC" \
         $(maybe_get_fake_dex2oatbootclasspath) \
         $t $options \
     || failing_tests+=("$t")

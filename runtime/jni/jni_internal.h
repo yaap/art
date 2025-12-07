@@ -45,13 +45,32 @@ void JniInitializeNativeCallerCheck();
 // Removes native stack checking state.
 void JniShutdownNativeCallerCheck();
 
+// Finds the method using JNI semantics and initializes any classes.
+template <bool kEnableIndexIds>
+jmethodID FindMethodID(const ScopedObjectAccess& soa,
+                       jclass jni_class,
+                       const char* name,
+                       const char* sig,
+                       bool is_static,
+                       void* caller_address) REQUIRES_SHARED(Locks::mutator_lock_);
+
+// Finds the field using JNI semantics and initializes any classes.
+template <bool kEnableIndexIds>
+jfieldID FindFieldID(const ScopedObjectAccess& soa,
+                     jclass jni_class,
+                     const char* name,
+                     const char* sig,
+                     bool is_static,
+                     void* caller_address) REQUIRES_SHARED(Locks::mutator_lock_);
+
 // Finds the method using JNI semantics and initializes any classes. Does not encode the method in a
 // JNI id
 ArtMethod* FindMethodJNI(const ScopedObjectAccess& soa,
                          jclass java_class,
                          const char* name,
                          const char* sig,
-                         bool is_static) REQUIRES_SHARED(Locks::mutator_lock_);
+                         bool is_static,
+                         void* caller_address) REQUIRES_SHARED(Locks::mutator_lock_);
 
 // Finds the field using JNI semantics and initializes any classes. Does not encode the method in a
 // JNI id.
@@ -59,7 +78,8 @@ ArtField* FindFieldJNI(const ScopedObjectAccess& soa,
                        jclass java_class,
                        const char* name,
                        const char* sig,
-                       bool is_static) REQUIRES_SHARED(Locks::mutator_lock_);
+                       bool is_static,
+                       void* caller_address) REQUIRES_SHARED(Locks::mutator_lock_);
 
 namespace jni {
 

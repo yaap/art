@@ -38,9 +38,11 @@ void CodeGenerationData::EmitJitRoots(
     DCHECK(roots->back() != nullptr);
     DCHECK(roots->back()->IsString());
     entry.second = index;
-    // Ensure the string is strongly interned. This is a requirement on how the JIT
-    // handles strings. b/32995596
-    class_linker->GetInternTable()->InternStrong(roots->back()->AsString());
+    if (!com::android::art::flags::weak_const_string()) {
+      // Ensure the string is strongly interned. This is a requirement on how the JIT
+      // handles strings. b/32995596
+      class_linker->GetInternTable()->InternStrong(roots->back()->AsString());
+    }
     ++index;
   }
   for (auto& entry : jit_class_roots_) {

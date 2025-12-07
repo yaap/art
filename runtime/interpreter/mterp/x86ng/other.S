@@ -29,28 +29,30 @@
     ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 
 %def op_const_object(jumbo="0", helper="nterp_load_object"):
+%  slow_path = add_slow_path(op_const_object_slow_path, helper)
    // Fast-path which gets the object from thread-local cache.
-%  fetch_from_thread_cache("%eax", miss_label="2f")
+%  fetch_from_thread_cache("%eax", miss_label=slow_path)
    cmpl MACRO_LITERAL(0), rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
-   jne 3f
-1:
+   jne 1f
+.L${opcode}_resume:
    SET_VREG_OBJECT %eax, rINST             # vAA <- value
    .if $jumbo
    ADVANCE_PC_FETCH_AND_GOTO_NEXT 3
    .else
    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
    .endif
-2:
+1:
+   // 00 is %eax
+   call art_quick_read_barrier_mark_reg00
+   jmp .L${opcode}_resume
+
+%def op_const_object_slow_path(helper):
    EXPORT_PC
    movl rSELF:THREAD_SELF_OFFSET, ARG0
    movl 0(%esp), ARG1
    movl rPC, ARG2
    call SYMBOL($helper)
-   jmp 1b
-3:
-   // 00 is %eax
-   call art_quick_read_barrier_mark_reg00
-   jmp 1b
+   jmp .L${opcode}_resume
 
 %def op_const_class():
 %  op_const_object(jumbo="0", helper="nterp_get_class")

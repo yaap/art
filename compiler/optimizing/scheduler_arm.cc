@@ -54,13 +54,14 @@ static constexpr uint32_t kArmNopLatency = 2;
 static constexpr uint32_t kArmLoadWithBakerReadBarrierLatency = 18;
 static constexpr uint32_t kArmRuntimeTypeCheckLatency = 46;
 
-class SchedulingLatencyVisitorARM final : public SchedulingLatencyVisitor {
+class SchedulingLatencyVisitorARM final
+    : public SchedulingLatencyVisitor<SchedulingLatencyVisitorARM> {
  public:
   explicit SchedulingLatencyVisitorARM(CodeGenerator* codegen)
       : codegen_(down_cast<CodeGeneratorARMVIXL*>(codegen)) {}
 
   // Default visitor for instructions not handled specifically below.
-  void VisitInstruction([[maybe_unused]] HInstruction*) override {
+  void VisitInstruction([[maybe_unused]] HInstruction*) {
     last_visited_latency_ = kArmIntegerOpLatency;
   }
 
@@ -105,7 +106,7 @@ class SchedulingLatencyVisitorARM final : public SchedulingLatencyVisitor {
   M(DataProcWithShifterOp, unused)
 
 #define DECLARE_VISIT_INSTRUCTION(type, unused)  \
-  void Visit##type(H##type* instruction) override;
+  void Visit##type(H##type* instruction);
 
   FOR_EACH_SCHEDULED_ARM_INSTRUCTION(DECLARE_VISIT_INSTRUCTION)
   FOR_EACH_SCHEDULED_SHARED_INSTRUCTION(DECLARE_VISIT_INSTRUCTION)
@@ -138,6 +139,8 @@ class SchedulingLatencyVisitorARM final : public SchedulingLatencyVisitor {
   // The latency setting for each HInstruction depends on how CodeGenerator may generate code,
   // latency visitors may query CodeGenerator for such information for accurate latency settings.
   CodeGeneratorARMVIXL* codegen_;
+
+  template <typename T> friend class art::CRTPGraphVisitor;
 };
 
 void SchedulingLatencyVisitorARM::HandleBinaryOperationLantencies(HBinaryOperation* instr) {
@@ -1153,7 +1156,7 @@ void SchedulingLatencyVisitorARM::VisitStaticFieldSet(HStaticFieldSet* instructi
 void SchedulingLatencyVisitorARM::VisitSuspendCheck(HSuspendCheck* instruction) {
   HBasicBlock* block = instruction->GetBlock();
   DCHECK_IMPLIES(block->GetLoopInformation() == nullptr,
-                 block->IsEntryBlock() && instruction->GetNext()->IsGoto());
+                 block->GetGraph()->IsEntryBlock(block) && instruction->GetNext()->IsGoto());
   // Users do not use any data results.
   last_visited_latency_ = 0;
 }
@@ -1278,13 +1281,9 @@ bool HSchedulerARM::IsSchedulable(const HInstruction* instruction) const {
   }
 }
 
-std::pair<SchedulingGraph, ScopedArenaVector<SchedulingNode*>> HSchedulerARM::BuildSchedulingGraph(
-    HBasicBlock* block,
-    ScopedArenaAllocator* allocator,
-    const HeapLocationCollector* heap_location_collector) {
+void HSchedulerARM::CalculateLatencies(ArrayRef<SchedulingNode* const> scheduling_nodes) {
   SchedulingLatencyVisitorARM latency_visitor(codegen_);
-  return HScheduler::BuildSchedulingGraph(
-      block, allocator, heap_location_collector, &latency_visitor);
+  return HScheduler::CalculateLatencies(scheduling_nodes, &latency_visitor);
 }
 
 }  // namespace arm

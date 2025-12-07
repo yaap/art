@@ -17,9 +17,14 @@
 package com.android.server.art;
 
 import static android.app.ActivityManager.RunningAppProcessInfo;
+import static android.platform.test.flag.junit.DeviceFlagsValueProvider.createCheckFlagsRule;
+
+import static com.android.server.art.testing.TestDataHelper.newPackageState;
+import static com.android.server.art.testing.TestingUtils.FLAGS_PREFIX;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -28,31 +33,47 @@ import static org.mockito.Mockito.when;
 import android.app.ActivityManager;
 import android.os.SystemProperties;
 import android.os.UserHandle;
+import android.platform.test.annotations.RequiresFlagsDisabled;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
 import android.util.SparseArray;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.art.flags.Flags;
+import com.android.server.art.DexUseManagerLocal;
 import com.android.server.art.Utils;
 import com.android.server.art.testing.StaticMockitoRule;
+import com.android.server.pm.PackageManagerLocal.FilteredSnapshot;
 import com.android.server.pm.pkg.PackageState;
 
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 
 @SmallTest
 @RunWith(AndroidJUnit4.class)
 public class UtilsTest {
+    @Rule public final CheckFlagsRule mCheckFlagsRule = createCheckFlagsRule();
+
     @Rule
     public StaticMockitoRule mockitoRule =
             new StaticMockitoRule(SystemProperties.class, Constants.class);
+
+    @Mock private FilteredSnapshot mSnapshot;
+    @Mock private DexUseManagerLocal mDexUseManager;
+
+    private static final String PKG_NAME = "com.example.foo";
+    private static final String WEBVIEW_PKG_NAME = "com.android.webview";
 
     @Before
     public void setUp() throws Exception {
@@ -62,6 +83,7 @@ public class UtilsTest {
         lenient().when(Constants.getPreferredAbi()).thenReturn("arm64-v8a");
         lenient().when(Constants.getNative64BitAbi()).thenReturn("arm64-v8a");
         lenient().when(Constants.getNative32BitAbi()).thenReturn("armeabi-v7a");
+        lenient().when(Constants.getWebviewPackageNames()).thenReturn(Set.of(WEBVIEW_PKG_NAME));
     }
 
     @Test
@@ -98,49 +120,44 @@ public class UtilsTest {
 
     @Test
     public void testGetAllAbis() {
-        var pkgState = mock(PackageState.class);
-        when(pkgState.getPrimaryCpuAbi()).thenReturn("armeabi-v7a");
-        when(pkgState.getSecondaryCpuAbi()).thenReturn("arm64-v8a");
+        var pkgState = newPackageState(PKG_NAME).setAbis("armeabi-v7a", "arm64-v8a").build();
 
-        assertThat(Utils.getAllAbis(pkgState))
+        assertThat(Utils.getAllPrimaryDexAbis(pkgState))
                 .containsExactly(Utils.Abi.create("armeabi-v7a", "arm", true /* isPrimaryAbi */),
-                        Utils.Abi.create("arm64-v8a", "arm64", false /* isPrimaryAbi */));
+                        Utils.Abi.create("arm64-v8a", "arm64", false /* isPrimaryAbi */))
+                .inOrder();
     }
 
     @Test
     public void testGetAllAbisTranslated() {
-        var pkgState = mock(PackageState.class);
-        when(pkgState.getPrimaryCpuAbi()).thenReturn("x86_64");
-        when(pkgState.getSecondaryCpuAbi()).thenReturn("x86");
+        var pkgState = newPackageState(PKG_NAME).setAbis("x86_64", "x86").build();
 
-        assertThat(Utils.getAllAbis(pkgState))
+        assertThat(Utils.getAllPrimaryDexAbis(pkgState))
                 .containsExactly(Utils.Abi.create("arm64-v8a", "arm64", true /* isPrimaryAbi */),
-                        Utils.Abi.create("armeabi-v7a", "arm", false /* isPrimaryAbi */));
+                        Utils.Abi.create("armeabi-v7a", "arm", false /* isPrimaryAbi */))
+                .inOrder();
     }
 
     @Test
     public void testGetAllAbisPrimaryOnly() {
-        var pkgState = mock(PackageState.class);
-        when(pkgState.getPrimaryCpuAbi()).thenReturn("armeabi-v7a");
-        when(pkgState.getSecondaryCpuAbi()).thenReturn(null);
+        var pkgState = newPackageState(PKG_NAME).setAbi("armeabi-v7a").build();
 
-        assertThat(Utils.getAllAbis(pkgState))
+        assertThat(Utils.getAllPrimaryDexAbis(pkgState))
                 .containsExactly(Utils.Abi.create("armeabi-v7a", "arm", true /* isPrimaryAbi */));
     }
 
     @Test
+    @RequiresFlagsDisabled(FLAGS_PREFIX + Flags.FLAG_DEXOPT_SECONDARY_ISA_ONLY_WHEN_NEEDED)
     public void testGetAllAbisNone() {
-        var pkgState = mock(PackageState.class);
-        when(pkgState.getPrimaryCpuAbi()).thenReturn(null);
-        when(pkgState.getSecondaryCpuAbi()).thenReturn(null);
+        var pkgState = newPackageState(PKG_NAME).clearAbis().build();
 
-        assertThat(Utils.getAllAbis(pkgState))
+        assertThat(Utils.getAllPrimaryDexAbis(pkgState))
                 .containsExactly(Utils.Abi.create("arm64-v8a", "arm64", true /* isPrimaryAbi */));
 
         // Make sure the result does come from `Constants.getPreferredAbi()` rather than somewhere
         // else.
         when(Constants.getPreferredAbi()).thenReturn("armeabi-v7a");
-        assertThat(Utils.getAllAbis(pkgState))
+        assertThat(Utils.getAllPrimaryDexAbis(pkgState))
                 .containsExactly(Utils.Abi.create("armeabi-v7a", "arm", true /* isPrimaryAbi */));
     }
 
@@ -148,11 +165,9 @@ public class UtilsTest {
     public void testGetAllAbisInvalidNativeIsa() {
         lenient().when(SystemProperties.get(eq("ro.dalvik.vm.isa.x86_64"))).thenReturn("x86");
 
-        var pkgState = mock(PackageState.class);
-        when(pkgState.getPrimaryCpuAbi()).thenReturn("x86_64");
-        when(pkgState.getSecondaryCpuAbi()).thenReturn(null);
+        var pkgState = newPackageState(PKG_NAME).setAbi("x86_64").build();
 
-        Utils.getAllAbis(pkgState);
+        Utils.getAllPrimaryDexAbis(pkgState);
     }
 
     @Test
@@ -160,13 +175,82 @@ public class UtilsTest {
         lenient().when(SystemProperties.get(eq("ro.dalvik.vm.isa.x86_64"))).thenReturn("");
         lenient().when(SystemProperties.get(eq("ro.dalvik.vm.isa.x86"))).thenReturn("");
 
-        var pkgState = mock(PackageState.class);
-        when(pkgState.getPrimaryCpuAbi()).thenReturn("x86_64");
-        when(pkgState.getSecondaryCpuAbi()).thenReturn("x86");
+        var pkgState = newPackageState(PKG_NAME).setAbis("x86_64", "x86").build();
 
         when(Constants.getPreferredAbi()).thenReturn("armeabi-v7a");
-        assertThat(Utils.getAllAbis(pkgState))
+        assertThat(Utils.getAllPrimaryDexAbis(pkgState))
                 .containsExactly(Utils.Abi.create("armeabi-v7a", "arm", true /* isPrimaryAbi */));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(FLAGS_PREFIX + Flags.FLAG_DEXOPT_SECONDARY_ISA_ONLY_WHEN_NEEDED)
+    public void testGetUsedPrimaryDexAbisRemoveUnusedSecondaryAbi() {
+        lenient()
+                .when(mDexUseManager.getPrimaryDexLoaders(eq(PKG_NAME), any() /* dexPath */))
+                .thenReturn(Set.of());
+        PackageState pkgState = newPackageState(PKG_NAME).setAbis("x86_64", "x86").build();
+
+        assertThat(Utils.getUsedPrimaryDexAbis(mDexUseManager, mSnapshot, pkgState, "dexPath"))
+                .containsExactly(Utils.Abi.create("arm64-v8a", "arm64", true /* isPrimaryAbi */));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(FLAGS_PREFIX + Flags.FLAG_DEXOPT_SECONDARY_ISA_ONLY_WHEN_NEEDED)
+    public void testGetUsedPrimaryDexAbisAddMissingUsedAbi() {
+        String pkgName1 = "com.example.foo.1";
+        String pkgName2 = "com.example.foo.2";
+        Set<DexUseManagerLocal.DexLoader> loaders =
+                Set.of(DexUseManagerLocal.DexLoader.create(pkgName1, false /* isolatedProcess */),
+                        DexUseManagerLocal.DexLoader.create(pkgName2, true /* isolatedProcess */));
+        lenient()
+                .when(mDexUseManager.getPrimaryDexLoaders(eq(PKG_NAME), any() /* dexPath */))
+                .thenReturn(loaders);
+        PackageState state1 = newPackageState(pkgName1).setAbi("arm64-v8a").build();
+        lenient().when(mSnapshot.getPackageState(eq(pkgName1))).thenReturn(state1);
+        PackageState state2 = newPackageState(pkgName2).setAbi("armeabi-v7a").build();
+        lenient().when(mSnapshot.getPackageState(eq(pkgName2))).thenReturn(state2);
+
+        var pkgState = newPackageState(PKG_NAME).clearAbis().build();
+
+        assertThat(Utils.getUsedPrimaryDexAbis(mDexUseManager, mSnapshot, pkgState, "dexPath"))
+                .containsExactly(Utils.Abi.create("arm64-v8a", "arm64", true /* isPrimaryAbi */),
+                        Utils.Abi.create("armeabi-v7a", "arm", false /* isPrimaryAbi */))
+                .inOrder();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(FLAGS_PREFIX + Flags.FLAG_DEXOPT_SECONDARY_ISA_ONLY_WHEN_NEEDED)
+    public void testGetUsedPrimaryDexAbisKeepSecondaryAbiIfWebviewPackage() {
+        lenient()
+                .when(mDexUseManager.getPrimaryDexLoaders(
+                        eq(WEBVIEW_PKG_NAME), any() /* dexPath */))
+                .thenReturn(Set.of());
+        PackageState pkgState = newPackageState(WEBVIEW_PKG_NAME).setAbis("x86", "x86_64").build();
+
+        assertThat(Utils.getUsedPrimaryDexAbis(mDexUseManager, mSnapshot, pkgState, "dexPath"))
+                .containsExactly(Utils.Abi.create("armeabi-v7a", "arm", true /* isPrimaryAbi */),
+                        Utils.Abi.create("arm64-v8a", "arm64", false /* isPrimaryAbi */));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(FLAGS_PREFIX + Flags.FLAG_DEXOPT_SECONDARY_ISA_ONLY_WHEN_NEEDED)
+    public void testGetUsedPrimaryDexAbisOneAbi() {
+        var pkgState = newPackageState(PKG_NAME).clearAbis().build();
+
+        when(Constants.getNative32BitAbi()).thenReturn(null);
+        assertThat(Utils.getAllPrimaryDexAbis(pkgState))
+                .containsExactly(Utils.Abi.create("arm64-v8a", "arm64", true /* isPrimaryAbi */));
+    }
+
+    @Test
+    @RequiresFlagsEnabled(FLAGS_PREFIX + Flags.FLAG_DEXOPT_SECONDARY_ISA_ONLY_WHEN_NEEDED)
+    public void testGetUsedPrimaryDexAbisTwoAbis() {
+        var pkgState = newPackageState(PKG_NAME).clearAbis().build();
+
+        assertThat(Utils.getAllPrimaryDexAbis(pkgState))
+                .containsExactly(Utils.Abi.create("arm64-v8a", "arm64", true /* isPrimaryAbi */),
+                        Utils.Abi.create("armeabi-v7a", "arm", false /* isPrimaryAbi */))
+                .inOrder();
     }
 
     @Test
@@ -244,7 +328,7 @@ public class UtilsTest {
     public void TestGetRunningProcessInfoForPackage() throws Exception {
         String packageName1 = "com.example.foo";
         String packageName2 = "com.example.bar";
-        PackageState pkgState1 = createPackageState(packageName1, 10000 /* appId */);
+        PackageState pkgState1 = newPackageState(packageName1).setAppId(10000).build();
 
         var am = mock(ActivityManager.class);
         when(am.getRunningAppProcesses())
@@ -291,12 +375,5 @@ public class UtilsTest {
         info.uid = uid;
         info.importance = importance;
         return info;
-    }
-
-    private PackageState createPackageState(String packageName, int appId) {
-        PackageState pkgState = mock(PackageState.class);
-        lenient().when(pkgState.getPackageName()).thenReturn(packageName);
-        lenient().when(pkgState.getAppId()).thenReturn(appId);
-        return pkgState;
     }
 }

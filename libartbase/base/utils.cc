@@ -17,6 +17,7 @@
 #include "utils.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <pthread.h>
 #include <string.h>
@@ -26,12 +27,12 @@
 
 #include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
 
 #include "android-base/file.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
-
 #include "base/mem_map.h"
 #include "base/stl_util.h"
 #include "bit_utils.h"
@@ -191,6 +192,11 @@ bool CacheOperationsMaySegFault() {
 bool RunningOnVM() {
   const char* on_vm = getenv("ART_TEST_ON_VM");
   return on_vm != nullptr && std::strcmp("true", on_vm) == 0;
+}
+
+bool RunningOnSBC() {
+  const char* on_sbc = getenv("ART_TEST_ON_SBC");
+  return on_sbc != nullptr && std::strcmp("true", on_sbc) == 0;
 }
 
 uint32_t GetTid() {
@@ -462,6 +468,216 @@ std::string GetOtherThreadOsStats() {
   return result;
 #else
   return "Can't get other threads";
+#endif
+}
+
+#if defined(__linux__)
+
+// Copy nfields single-blank-separated fields from the line referenced by src.
+// Return a pointer to one past the copy on success, nullptr on failure.
+static char* memcpy_fields(char* dest, const char* src, const char* src_end, size_t nfields) {
+  size_t nblanks = 0;
+  while (src < src_end) {
+    char c = *src++;
+    if (c == '\n') {
+      return nullptr;
+    }
+    if (c == ' ') {
+      ++nblanks;
+      if (nblanks == nfields) {
+        return dest;
+      }
+    }
+    *dest++ = c;
+  }
+  return nullptr;
+}
+
+// Return a pointer to the start of the field_no'th blank-separated field in the line at src.
+// field_no = 0 corresponds to the first field. Leading blanks are ignored.
+static const char* find_nth(const char* src, const char* src_end, size_t field_no) {
+  auto skip_blanks = [&src, src_end]() {
+    while (src < src_end && *src == ' ') {
+      ++src;
+    }
+  };
+  skip_blanks();
+  while (src < src_end) {
+    if (*src == '\n') {
+      return nullptr;  // Didn't find it.
+    }
+    if (*src == ' ') {
+      DCHECK_NE(field_no, 0ul);
+      --field_no;
+      skip_blanks();
+    }
+    if (field_no == 0) {
+      return src;
+    }
+    while (src < src_end && *src != ' ') {
+      ++src;
+    }
+  }
+  return nullptr;
+}
+
+#endif  // defined(__linux__)
+// Otherwise memcpy_fields and find_nth are unused.
+
+// Retrieve the first 3 fields of each of the sum and full lines, and combine them into a string.
+// Return the number of characters in the resulting buffer.
+std::string GetOSPressureIOSummary() {
+#if defined(__linux__)
+  int stat_fd = open("/proc/pressure/io", O_RDONLY | O_CLOEXEC);
+  if (stat_fd < 0) {
+    return "";
+  }
+  static constexpr size_t kBufSize = 150;
+  char tmp_buf[kBufSize + 1];
+  // Read the entire file, typically 110 characters.
+  ssize_t bytes_read = TEMP_FAILURE_RETRY(read(stat_fd, tmp_buf, kBufSize));
+  CHECK_GT(bytes_read, 0) << strerror(errno);
+  int ret = close(stat_fd);
+  CHECK_EQ(ret, 0) << strerror(errno);
+  char buf[kBufSize];
+  char* out = buf;
+  const char* in = tmp_buf;
+  DCHECK_EQ(0, strncmp(in, "some ", strlen("some ")));
+  out = memcpy_fields(out, in, tmp_buf + kBufSize, 3);
+  if (out == nullptr) {
+    return "";
+  }
+  in += out - buf;
+  *out++ = ',';
+  *out++ = ' ';
+  while (*in++ != '\n') {
+    if (in >= tmp_buf + kBufSize) {
+      return "";
+    }
+  }
+  DCHECK_EQ(0, strncmp(in, "full ", strlen("full ")));
+  out = memcpy_fields(out, in, tmp_buf + kBufSize, 3);
+  if (out == nullptr) {
+    return "";
+  }
+  *out++ = '\0';
+  return std::string(buf);
+#else
+  return "";
+#endif
+}
+
+size_t GetOSDiskStats(const char* disk_name, char* buf, size_t len) {
+  // This is theoretically easier to get from /disk/block/sda, but the selinux permission issues
+  // there look harder.
+#if defined(__linux__)
+  int stat_fd = open("/proc/diskstats", O_RDONLY | O_CLOEXEC);
+  if (stat_fd < 0) {
+    return 0;
+  }
+  static constexpr size_t kBufSize = 20'000;
+  std::unique_ptr<char[]> tmp_buf_ptr(new char[kBufSize]);
+  char* tmp_buf = tmp_buf_ptr.get();
+  // Read the entire file, typically 10K characters.
+  ssize_t bytes_read = TEMP_FAILURE_RETRY(read(stat_fd, tmp_buf, kBufSize));
+  CHECK_GT(bytes_read, 0) << strerror(errno);
+  int ret = close(stat_fd);
+  CHECK_EQ(ret, 0) << strerror(errno);
+  const char* line_p = tmp_buf;
+  const char* const tmp_buf_end = tmp_buf + bytes_read;
+  const size_t disk_name_len = strlen(disk_name);
+  while (line_p < tmp_buf_end) {
+    static constexpr size_t kNamePos = 2;  // Position of disk name in diskstats line, 0-based.
+    const char* name_etc = find_nth(line_p, tmp_buf_end, kNamePos);
+    if (name_etc != nullptr && name_etc + disk_name_len < tmp_buf_end &&
+        strncmp(name_etc, disk_name, disk_name_len) == 0) {
+      size_t out_index = 0;
+      for (const char* p = name_etc; p < tmp_buf_end && *p != '\n'; ++p) {
+        if (out_index >= len - 1) {
+          break;
+        }
+        buf[out_index++] = *p;
+      }
+      buf[out_index] = '\0';
+      return out_index;
+    }
+    while (line_p < tmp_buf_end && *line_p != '\n') {
+      ++line_p;
+    }
+    ++line_p;
+  }
+#else
+  UNUSED(buf);
+  UNUSED(len);
+  UNUSED(disk_name);
+#endif
+  return 0;
+}
+
+ConciseDiskStats::ConciseDiskStats(const char* disk_name)
+    : write_millis_(0), io_millis_(0), flush_millis_(0), in_progress_(0) {
+#if defined(__linux__)
+  if (disk_name == nullptr) {
+    return;
+  }
+  static constexpr size_t kBufSize = 300;
+  char tmp_buf[kBufSize];
+  int bytes = GetOSDiskStats(disk_name, tmp_buf, kBufSize);
+  if (bytes == 0) {
+    return;
+  }
+  // Could do this with sscanf, but that seems more prone to counting errors,
+  // and the man page points to a slightly troubling UB issue.
+
+  static constexpr int kWriteMillisOffset = 8;
+  static constexpr int kInProgressOffset = 9;
+  static constexpr int kIOMillisOffset = 10;
+  static constexpr int kFlushMillisOffset = 17;
+  const char* p = tmp_buf;
+  const char* const buf_end = tmp_buf + bytes;
+
+  // Buf has disk name as zeroth field. Field numbers match iostats.rst.
+  p = find_nth(p, buf_end, kWriteMillisOffset);
+  if (p == nullptr) {
+    return;
+  }
+  write_millis_ = static_cast<unsigned int>(strtoul(p, nullptr, 10));
+  p = find_nth(p, buf_end, kInProgressOffset - kWriteMillisOffset);
+  if (p == nullptr) {
+    return;
+  }
+  in_progress_ = static_cast<unsigned int>(strtoul(p, nullptr, 10));
+  p = find_nth(p, buf_end, kIOMillisOffset - kInProgressOffset);
+  if (p == nullptr) {
+    return;
+  }
+  io_millis_ = static_cast<unsigned int>(strtoul(p, nullptr, 10));
+  p = find_nth(p, buf_end, kFlushMillisOffset - kIOMillisOffset);
+  if (p == nullptr) {
+    return;
+  }
+  flush_millis_ = static_cast<unsigned int>(strtoul(p, nullptr, 10));
+#else
+  UNUSED(disk_name);
+#endif
+}
+
+std::string ConciseDiskStats::SummarizeDiff(ConciseDiskStats earlier) {
+#if defined(__linux__)
+  if (io_millis_ == 0) {
+    return "";
+  }
+  std::stringstream output;
+  output << "ioms: " << (io_millis_ - earlier.io_millis_) << ", ";
+  output << "wrms: " << (write_millis_ - earlier.write_millis_) << ", ";
+  if (flush_millis_ != 0) {
+    output << "flms: " << (flush_millis_ - earlier.flush_millis_) << ", ";
+  }
+  output << "in progress: " << earlier.in_progress_ << "->" << in_progress_;
+  return output.str();
+#else
+  UNUSED(earlier);
+  return "";
 #endif
 }
 

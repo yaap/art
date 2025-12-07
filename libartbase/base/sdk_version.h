@@ -60,6 +60,10 @@ inline bool IsSdkVersionSetAndLessThan(uint32_t lhs, SdkVersion rhs) {
   return lhs != static_cast<uint32_t>(SdkVersion::kUnset) && lhs < static_cast<uint32_t>(rhs);
 }
 
+inline bool IsSdkVersionUnsetOrMoreThan(uint32_t lhs, SdkVersion rhs) {
+  return lhs == static_cast<uint32_t>(SdkVersion::kUnset) || lhs > static_cast<uint32_t>(rhs);
+}
+
 }  // namespace art
 
 #endif  // ART_LIBARTBASE_BASE_SDK_VERSION_H_

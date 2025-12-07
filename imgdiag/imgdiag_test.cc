@@ -119,8 +119,9 @@ TEST_F(ImgDiagTest, DISABLED_ImageDiffPidSelf) {
   // This should succeed because we have a runtime and so it should
   // be able to map in the boot.art and do a diff for it.
 
-  // Not allowed to read /proc/kpagestats on VM (in the same way as on host).
+  // Not allowed to read /proc/kpagestats on VM/SBC (in the same way as on host).
   TEST_DISABLED_ON_VM();
+  TEST_DISABLED_ON_SBC();
 
   // Run imgdiag --image-diff-pid=$(self pid) and wait until it's done with a 0 exit code.
   std::string error_msg;

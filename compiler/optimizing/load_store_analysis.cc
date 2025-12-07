@@ -199,9 +199,7 @@ bool LoadStoreAnalysis::Run() {
     return false;
   }
 
-  for (HBasicBlock* block : graph_->GetReversePostOrder()) {
-    heap_location_collector_.VisitBasicBlock(block);
-  }
+  heap_location_collector_.VisitReversePostOrder();
 
   if (heap_location_collector_.GetNumberOfHeapLocations() > kMaxNumberOfHeapLocations) {
     // Bail out if there are too many heap locations to deal with.

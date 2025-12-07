@@ -516,7 +516,7 @@ void IntrinsicLocationsBuilderARMVIXL::VisitThreadCurrentThread(HInvoke* invoke)
 void IntrinsicCodeGeneratorARMVIXL::VisitThreadCurrentThread(HInvoke* invoke) {
   ArmVIXLAssembler* assembler = GetAssembler();
   __ Ldr(OutputRegister(invoke),
-         MemOperand(tr, Thread::PeerOffset<kArmPointerSize>().Int32Value()));
+         MemOperand(tr, Thread::CurrentPeerOffset<kArmPointerSize>().Int32Value()));
 }
 
 void IntrinsicLocationsBuilderARMVIXL::VisitStringCompareTo(HInvoke* invoke) {

@@ -106,7 +106,7 @@ static bool CheckType(DataType::Type type, Location location) {
 }
 
 // Check that a location summary is consistent with an instruction.
-static bool CheckTypeConsistency(HInstruction* instruction) {
+bool CodeGenerator::CheckTypeConsistency(HInstruction* instruction) {
   LocationSummary* locations = instruction->GetLocations();
   if (locations == nullptr) {
     return true;
@@ -221,7 +221,8 @@ uint64_t CodeGenerator::GetJitMethodTypeRootIndex(ProtoReference proto_reference
   return code_generation_data_->GetJitMethodTypeRootIndex(proto_reference);
 }
 
-void CodeGenerator::EmitJitRootPatches([[maybe_unused]] uint8_t* code,
+void CodeGenerator::EmitJitRootPatches([[maybe_unused]] uint8_t* buffer,
+                                       [[maybe_unused]] const uint8_t* code_address,
                                        [[maybe_unused]] const uint8_t* roots_data) {
   DCHECK(code_generation_data_ != nullptr);
   DCHECK_EQ(code_generation_data_->GetNumberOfJitStringRoots(), 0u);
@@ -332,8 +333,8 @@ void CodeGenerator::Compile() {
   DCHECK_EQ(current_block_index_, 0u);
 
   GetStackMapStream()->BeginMethod(HasEmptyFrame() ? 0 : frame_size_,
-                                   core_spill_mask_,
-                                   fpu_spill_mask_,
+                                   GetCoreSpillMask(),
+                                   GetFpuSpillMask(),
                                    GetGraph()->GetNumberOfVRegs(),
                                    GetGraph()->IsCompilingBaseline(),
                                    GetGraph()->IsDebuggable(),
@@ -458,9 +459,6 @@ void CodeGenerator::CreateCommonInvokeLocationSummary(
     HInvokeStaticOrDirect* call = invoke->AsInvokeStaticOrDirect();
     MethodLoadKind method_load_kind = call->GetMethodLoadKind();
     CodePtrLocation code_ptr_location = call->GetCodePtrLocation();
-    if (code_ptr_location == CodePtrLocation::kCallCriticalNative) {
-      locations->AddTemp(Location::RequiresRegister());  // For target method.
-    }
     if (code_ptr_location == CodePtrLocation::kCallCriticalNative ||
         method_load_kind == MethodLoadKind::kRecursive) {
       // For `kCallCriticalNative` we need the current method as the hidden argument
@@ -896,58 +894,6 @@ uint32_t CodeGenerator::GetBootImageOffsetOfIntrinsicDeclaringClass(HInvoke* inv
   return GetBootImageOffsetImpl(declaring_class.Ptr(), ImageHeader::kSectionObjects);
 }
 
-void CodeGenerator::BlockIfInRegister(Location location, bool is_out) const {
-  // The DCHECKS below check that a register is not specified twice in
-  // the summary. The out location can overlap with an input, so we need
-  // to special case it.
-  if (location.IsRegister()) {
-    DCHECK(is_out || !blocked_core_registers_[location.reg()]);
-    blocked_core_registers_[location.reg()] = true;
-  } else if (location.IsFpuRegister()) {
-    DCHECK(is_out || !blocked_fpu_registers_[location.reg()]);
-    blocked_fpu_registers_[location.reg()] = true;
-  } else if (location.IsFpuRegisterPair()) {
-    DCHECK(is_out || !blocked_fpu_registers_[location.AsFpuRegisterPairLow<int>()]);
-    blocked_fpu_registers_[location.AsFpuRegisterPairLow<int>()] = true;
-    DCHECK(is_out || !blocked_fpu_registers_[location.AsFpuRegisterPairHigh<int>()]);
-    blocked_fpu_registers_[location.AsFpuRegisterPairHigh<int>()] = true;
-  } else if (location.IsRegisterPair()) {
-    DCHECK(is_out || !blocked_core_registers_[location.AsRegisterPairLow<int>()]);
-    blocked_core_registers_[location.AsRegisterPairLow<int>()] = true;
-    DCHECK(is_out || !blocked_core_registers_[location.AsRegisterPairHigh<int>()]);
-    blocked_core_registers_[location.AsRegisterPairHigh<int>()] = true;
-  }
-}
-
-void CodeGenerator::AllocateLocations(HInstruction* instruction) {
-  ArenaAllocator* allocator = GetGraph()->GetAllocator();
-  for (HEnvironment* env = instruction->GetEnvironment(); env != nullptr; env = env->GetParent()) {
-    env->AllocateLocations(allocator);
-  }
-  GetLocationBuilder()->Dispatch(instruction);
-  DCHECK(CheckTypeConsistency(instruction));
-  LocationSummary* locations = instruction->GetLocations();
-  if (!instruction->IsSuspendCheckEntry()) {
-    if (locations != nullptr) {
-      if (locations->CanCall()) {
-        MarkNotLeaf();
-        if (locations->NeedsSuspendCheckEntry()) {
-          MarkNeedsSuspendCheckEntry();
-        }
-      } else if (locations->Intrinsified() &&
-                 instruction->IsInvokeStaticOrDirect() &&
-                 !instruction->AsInvokeStaticOrDirect()->HasCurrentMethodInput()) {
-        // A static method call that has been fully intrinsified, and cannot call on the slow
-        // path or refer to the current method directly, no longer needs current method.
-        return;
-      }
-    }
-    if (instruction->NeedsCurrentMethod()) {
-      SetRequiresCurrentMethod();
-    }
-  }
-}
-
 std::unique_ptr<CodeGenerator> CodeGenerator::Create(HGraph* graph,
                                                      const CompilerOptions& compiler_options,
                                                      OptimizingCompilerStats* stats) {
@@ -995,26 +941,19 @@ std::unique_ptr<CodeGenerator> CodeGenerator::Create(HGraph* graph,
 CodeGenerator::CodeGenerator(HGraph* graph,
                              size_t number_of_core_registers,
                              size_t number_of_fpu_registers,
-                             size_t number_of_register_pairs,
-                             uint32_t core_callee_save_mask,
-                             uint32_t fpu_callee_save_mask,
+                             RegisterSet callee_saves,
                              const CompilerOptions& compiler_options,
                              OptimizingCompilerStats* stats,
-                             const art::ArrayRef<const bool>& unimplemented_intrinsics)
+                             ArrayRef<const bool> unimplemented_intrinsics)
     : frame_size_(0),
-      core_spill_mask_(0),
-      fpu_spill_mask_(0),
       first_register_slot_in_slow_path_(0),
+      callee_saves_(callee_saves),
+      blocked_registers_(RegisterSet::Empty()),
       allocated_registers_(RegisterSet::Empty()),
-      blocked_core_registers_(graph->GetAllocator()->AllocArray<bool>(number_of_core_registers,
-                                                                      kArenaAllocCodeGenerator)),
-      blocked_fpu_registers_(graph->GetAllocator()->AllocArray<bool>(number_of_fpu_registers,
-                                                                     kArenaAllocCodeGenerator)),
+      spilled_registers_(RegisterSet::Empty()),
+      data_types_requiring_register_pair_(0u),
       number_of_core_registers_(number_of_core_registers),
       number_of_fpu_registers_(number_of_fpu_registers),
-      number_of_register_pairs_(number_of_register_pairs),
-      core_callee_save_mask_(core_callee_save_mask),
-      fpu_callee_save_mask_(fpu_callee_save_mask),
       block_order_(nullptr),
       disasm_info_(nullptr),
       stats_(stats),
@@ -1023,28 +962,18 @@ CodeGenerator::CodeGenerator(HGraph* graph,
       current_slow_path_(nullptr),
       current_block_index_(0),
       is_leaf_(true),
-      needs_suspend_check_entry_(false),
-      requires_current_method_(false),
+      // We need the current method for baseline in case we reach the hotness threshold.
+      // As a side effect this makes the frame non-empty.
+      requires_current_method_(GetGraph()->IsCompilingBaseline()),
       code_generation_data_(),
       unimplemented_intrinsics_(unimplemented_intrinsics) {
+  DCHECK_LE(number_of_core_registers_, BitSizeOf<uint32_t>());
+  DCHECK_LE(number_of_fpu_registers_, BitSizeOf<uint32_t>());
+
   if (GetGraph()->IsCompilingOsr()) {
     // Make OSR methods have all registers spilled, this simplifies the logic of
     // jumping to the compiled code directly.
-    for (size_t i = 0; i < number_of_core_registers_; ++i) {
-      if (IsCoreCalleeSaveRegister(i)) {
-        AddAllocatedRegister(Location::RegisterLocation(i));
-      }
-    }
-    for (size_t i = 0; i < number_of_fpu_registers_; ++i) {
-      if (IsFloatingPointCalleeSaveRegister(i)) {
-        AddAllocatedRegister(Location::FpuRegisterLocation(i));
-      }
-    }
-  }
-  if (GetGraph()->IsCompilingBaseline()) {
-    // We need the current method in case we reach the hotness threshold. As a
-    // side effect this makes the frame non-empty.
-    SetRequiresCurrentMethod();
+    allocated_registers_ = allocated_registers_.Union(callee_saves_);
   }
 }
 
@@ -1185,18 +1114,18 @@ void CodeGenerator::RecordPcInfo(HInstruction* instruction,
   if (locations->CanCall()) {
     stack_mask = locations->GetStackMask();
     register_mask = locations->GetRegisterMask();
-    DCHECK_EQ(register_mask & ~locations->GetLiveRegisters()->GetCoreRegisters(), 0u);
+    DCHECK_EQ(register_mask & ~locations->GetLiveRegisters()->GetCoreRegisterSet(), 0u);
     if (locations->OnlyCallsOnSlowPath()) {
       // In case of slow path, we currently set the location of caller-save registers
       // to register (instead of their stack location when pushed before the slow-path
       // call). Therefore register_mask contains both callee-save and caller-save
       // registers that hold objects. We must remove the spilled caller-save from the
       // mask, since they will be overwritten by the callee.
-      uint32_t spills = GetSlowPathSpills(locations, /* core_registers= */ true);
+      uint32_t spills = GetSlowPathSpills(locations).GetCoreRegisterSet();
       register_mask &= ~spills;
     } else {
       // The register mask must be a subset of callee-save registers.
-      DCHECK_EQ(register_mask & core_callee_save_mask_, register_mask);
+      DCHECK_EQ(register_mask & GetCalleeSaveRegisters().GetCoreRegisterSet(), register_mask);
     }
   }
 
@@ -1749,8 +1678,8 @@ void SlowPathCode::SaveLiveRegisters(CodeGenerator* codegen, LocationSummary* lo
   size_t bulk_offset = codegen->SaveBulkLiveCoreRegisters(locations, stack_offset,
                                                           &saved_core_stack_offsets_[0]);
   if (bulk_offset == SIZE_MAX) {
-    const uint32_t core_spills = codegen->GetSlowPathSpills(locations, /* core_registers= */ true);
-    for (uint32_t i : LowToHighBits(core_spills)) {
+    const RegisterSet spills = codegen->GetSlowPathSpills(locations);
+    for (uint32_t i : LowToHighBits(spills.GetCoreRegisterSet())) {
       // If the register holds an object, update the stack mask.
       if (locations->RegisterContainsObject(i)) {
         locations->SetStackBit(stack_offset / kVRegSize);
@@ -1767,8 +1696,8 @@ void SlowPathCode::SaveLiveRegisters(CodeGenerator* codegen, LocationSummary* lo
   bulk_offset = codegen->SaveBulkLiveFpuRegisters(locations, stack_offset,
                                                   &saved_fpu_stack_offsets_[0]);
   if (bulk_offset == SIZE_MAX) {
-    const uint32_t fp_spills = codegen->GetSlowPathSpills(locations, /* core_registers= */ false);
-    for (uint32_t i : LowToHighBits(fp_spills)) {
+    const RegisterSet spills = codegen->GetSlowPathSpills(locations);
+    for (uint32_t i : LowToHighBits(spills.GetFpuRegisterSet())) {
       DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
       DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
       saved_fpu_stack_offsets_[i] = stack_offset;
@@ -1785,8 +1714,8 @@ void SlowPathCode::RestoreLiveRegisters(CodeGenerator* codegen, LocationSummary*
   size_t bulk_offset = codegen->RestoreBulkLiveCoreRegisters(locations, stack_offset);
 
   if (bulk_offset == SIZE_MAX) {
-    const uint32_t core_spills = codegen->GetSlowPathSpills(locations, /* core_registers= */ true);
-    for (uint32_t i : LowToHighBits(core_spills)) {
+    const RegisterSet spills = codegen->GetSlowPathSpills(locations);
+    for (uint32_t i : LowToHighBits(spills.GetCoreRegisterSet())) {
       DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
       DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
       stack_offset += codegen->RestoreCoreRegister(stack_offset, i);
@@ -1797,8 +1726,8 @@ void SlowPathCode::RestoreLiveRegisters(CodeGenerator* codegen, LocationSummary*
 
   bulk_offset = codegen->RestoreBulkLiveFpuRegisters(locations, stack_offset);
   if (bulk_offset == SIZE_MAX) {
-    const uint32_t fp_spills = codegen->GetSlowPathSpills(locations, /* core_registers= */ false);
-    for (uint32_t i : LowToHighBits(fp_spills)) {
+    const RegisterSet spills = codegen->GetSlowPathSpills(locations);
+    for (uint32_t i : LowToHighBits(spills.GetFpuRegisterSet())) {
       DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
       DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
       stack_offset += codegen->RestoreFloatingPointRegister(stack_offset, i);
@@ -1862,15 +1791,20 @@ LocationSummary* CodeGenerator::CreateSystemArrayCopyLocationSummary(
   return locations;
 }
 
-void CodeGenerator::EmitJitRoots(uint8_t* code,
+void CodeGenerator::EmitJitRoots(uint8_t* buffer,
+                                 const uint8_t* code_address,
                                  const uint8_t* roots_data,
                                  /*out*/std::vector<Handle<mirror::Object>>* roots) {
   code_generation_data_->EmitJitRoots(roots);
-  EmitJitRootPatches(code, roots_data);
+  EmitJitRootPatches(buffer, code_address, roots_data);
 }
 
 QuickEntrypointEnum CodeGenerator::GetArrayAllocationEntrypoint(HNewArray* new_array) {
-  switch (new_array->GetComponentSizeShift()) {
+  return GetArrayAllocationEntrypoint(new_array->GetComponentSizeShift());
+}
+
+QuickEntrypointEnum CodeGenerator::GetArrayAllocationEntrypoint(size_t component_size_shift) {
+  switch (component_size_shift) {
     case 0: return kQuickAllocArrayResolved8;
     case 1: return kQuickAllocArrayResolved16;
     case 2: return kQuickAllocArrayResolved32;

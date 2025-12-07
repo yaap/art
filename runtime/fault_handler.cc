@@ -80,6 +80,9 @@ FaultManager::FaultManager()
       initialized_(false) {}
 
 FaultManager::~FaultManager() {
+  // ~Runtime() calls Shutdown(), but the FaultManager's lifetime can be shorter than the runtime.
+  // Make sure to call Shutdown in the destructor to not leak memory through the handlers.
+  Shutdown();
 }
 
 static const char* SignalCodeName(int sig, int code) {
@@ -121,6 +124,12 @@ static std::ostream& PrintSignalInfo(std::ostream& os, siginfo_t* info) {
   }
   return os;
 }
+
+#if defined(__riscv) && defined(ART_TEST_ON_SBC_RISCV64_V_ADRALN_WORKAROUND)
+namespace riscv64 {
+EXPORT void SigBusAdrAlnWorkaround(int signo, siginfo_t* siginfo, void* ucontext_raw);
+}  // namespace riscv64
+#endif  // defined(__riscv) && defined(ART_TEST_ON_SBC_RISCV64_V_ADRALN_WORKAROUND)
 
 void FaultManager::Init(bool use_sig_chain) {
   CHECK(!initialized_);
@@ -178,6 +187,12 @@ void FaultManager::Init(bool use_sig_chain) {
     std::memset(&act, '\0', sizeof(act));
     act.sa_flags = SA_SIGINFO | SA_RESTART;
     act.sa_sigaction = [](int sig, siginfo_t* info, void* context) {
+#if defined(__riscv) && defined(ART_TEST_ON_SBC_RISCV64_V_ADRALN_WORKAROUND)
+      if (info->si_code == BUS_ADRALN) {
+        art::riscv64::SigBusAdrAlnWorkaround(sig, info, context);
+        return;
+      }
+#endif  // defined(__riscv) && defined(ART_TEST_ON_SBC_RISCV64_V_ADRALN_WORKAROUND)
       if (!art_sigbus_handler(sig, info, context)) {
         std::ostringstream oss;
         PrintSignalInfo(oss, info);
@@ -384,20 +399,6 @@ void FaultManager::AddHandler(FaultHandler* handler, bool generated_code) {
   }
 }
 
-void FaultManager::RemoveHandler(FaultHandler* handler) {
-  auto it = std::find(generated_code_handlers_.begin(), generated_code_handlers_.end(), handler);
-  if (it != generated_code_handlers_.end()) {
-    generated_code_handlers_.erase(it);
-    return;
-  }
-  auto it2 = std::find(other_handlers_.begin(), other_handlers_.end(), handler);
-  if (it2 != other_handlers_.end()) {
-    other_handlers_.erase(it2);
-    return;
-  }
-  LOG(FATAL) << "Attempted to remove non existent handler " << handler;
-}
-
 inline FaultManager::GeneratedCodeRange* FaultManager::CreateGeneratedCodeRange(
     const void* start, size_t size) {
   GeneratedCodeRange* range = free_generated_code_ranges_;
@@ -582,16 +583,6 @@ bool FaultManager::IsInGeneratedCode(siginfo_t* siginfo, void* context) {
   return false;
 }
 
-FaultHandler::FaultHandler(FaultManager* manager) : manager_(manager) {
-}
-
-//
-// Null pointer fault handler
-//
-NullPointerHandler::NullPointerHandler(FaultManager* manager) : FaultHandler(manager) {
-  manager_->AddHandler(this, true);
-}
-
 bool NullPointerHandler::IsValidMethod(ArtMethod* method) {
   // At this point we know that the thread is `Runnable` and the PC is in one of
   // the registered code ranges. The `method` was read from the top of the stack
@@ -660,27 +651,6 @@ bool NullPointerHandler::IsValidReturnPc(ArtMethod** sp, uintptr_t return_pc) {
   uint32_t dexpc = method_header->ToDexPc(reinterpret_cast<ArtMethod**>(sp), return_pc, false);
   VLOG(signals) << "dexpc: " << dexpc;
   return dexpc != dex::kDexNoIndex;
-}
-
-//
-// Suspension fault handler
-//
-SuspensionHandler::SuspensionHandler(FaultManager* manager) : FaultHandler(manager) {
-  manager_->AddHandler(this, true);
-}
-
-//
-// Stack overflow fault handler
-//
-StackOverflowHandler::StackOverflowHandler(FaultManager* manager) : FaultHandler(manager) {
-  manager_->AddHandler(this, true);
-}
-
-//
-// Stack trace handler, used to help get a stack trace from SIGSEGV inside of compiled code.
-//
-JavaStackTraceHandler::JavaStackTraceHandler(FaultManager* manager) : FaultHandler(manager) {
-  manager_->AddHandler(this, false);
 }
 
 bool JavaStackTraceHandler::Action([[maybe_unused]] int sig, siginfo_t* siginfo, void* context) {

@@ -29,8 +29,11 @@ message PreRebootStats {
         STATUS_SCHEDULED = 1;
         STATUS_STARTED = 2;
         STATUS_FAILED = 3;
+        // The job is either finished or cancelled. The server will determine the case based on the
+        // package counts.
         STATUS_FINISHED = 4;
-        STATUS_CANCELLED = 5;
+        STATUS_CANCELLED = 5 [deprecated = true];
+        // System requirements are not met.
         STATUS_ABORTED_SYSTEM_REQUIREMENTS = 6;
         STATUS_NOT_SCHEDULED_DISABLED = 7;
         STATUS_NOT_SCHEDULED_JOB_SCHEDULER = 8;
@@ -72,4 +75,18 @@ message PreRebootStats {
         JOB_TYPE_MAINLINE = 2;
     }
     optional JobType job_type = 9;
+
+    // The reason for the failure. Only applicable when `status` is `STATUS_FAILED`.
+    enum FailureReason {
+        // A catch-all value for all uncategorized failures.
+        FAILURE_UNSPECIFIED = 0;
+        // update_engine error.
+        FAILURE_UPDATE_ENGINE = 1;
+        // Failed to set up chroot.
+        FAILURE_CHROOT_SETUP = 2;
+        // Failed to create a class loader for the new service-art.jar.
+        FAILURE_CLASS_LOADER = 3;
+    }
+
+    optional FailureReason failure_reason = 10;
 }

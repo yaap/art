@@ -92,7 +92,11 @@ art_cc_library_static {
 
 art_cc_binary {
     name: "profman",
-    defaults: ["profman-defaults"],
+    defaults: [
+        "profman-defaults",
+        // Needed by "libprofman_static" on host.
+        "art_libz_static_transitive_defaults",
+    ],
     target: {
         android: {
             shared_libs: [
@@ -106,9 +110,6 @@ art_cc_binary {
             // avoids having to bundle host dynamic libs in prebuilts.
             static_libs: ["libprofman_static"],
             stl: "c++_static",
-            // libz is a libprofman_static transitive dependency from art_libz_static_defaults,
-            // duplicated here because we cannot import *_static_defaults only for host.
-            shared_libs: ["libz"],
         },
     },
     apex_available: [
@@ -123,6 +124,8 @@ art_cc_binary {
     defaults: [
         "art_debug_defaults",
         "profman-defaults",
+        // Needed by "libprofmand_static" on host.
+        "art_libz_static_transitive_defaults",
     ],
     target: {
         android: {
@@ -136,7 +139,6 @@ art_cc_binary {
             // Comments for host in the profman binary apply here too.
             static_libs: ["libprofmand_static"],
             stl: "c++_static",
-            shared_libs: ["libz"],
         },
     },
     apex_available: [

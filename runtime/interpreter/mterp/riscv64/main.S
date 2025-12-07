@@ -266,25 +266,12 @@ END \name
 // Update xPC by \units code units. On back edges, perform hotness and suspend.
 .macro BRANCH units
     sh1add xPC, \units, xPC
-    blez \units, 2f  // If branch is <= 0, increase hotness and do a suspend check.
-1:
+    blez \units, 1f  // If branch is <= 0, increase hotness and do a suspend check.
     FETCH_INST
     GET_INST_OPCODE t0
     GOTO_OPCODE t0
-2:
-    ld a0, (sp)
-    lhu t0, ART_METHOD_HOTNESS_COUNT_OFFSET(a0)  // t0 := hotness
-#if (NTERP_HOTNESS_VALUE != 0)
-#error Expected 0 for hotness value
-#endif
-    // If the counter is at zero (hot), handle it in the runtime.
-    beqz t0, 3f
-    addi t0, t0, -1  // increase hotness
-    sh t0, ART_METHOD_HOTNESS_COUNT_OFFSET(a0)
-    DO_SUSPEND_CHECK continue=1b
-    j 1b
-3:
-    tail NterpHandleHotnessOverflow  // arg a0 (ArtMethod*)
+1:
+    tail NterpHotnessCheck
 .endm
 
 // Increase method hotness before starting the method.
@@ -622,19 +609,31 @@ NterpInvokePolymorphicRange:
 NterpInvokeCustomRange:
 %  nterp_invoke_custom_range()
 
-// Arg a0: ArtMethod*
-NterpHandleHotnessOverflow:
-   CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=.Lhotspill_hot, if_not_hot=.Lhotspill_suspend
-.Lhotspill_hot:
+NterpHotnessCheck:
+    ld a0, (sp)
+    lhu t0, ART_METHOD_HOTNESS_COUNT_OFFSET(a0)  // t0 := hotness
+#if (NTERP_HOTNESS_VALUE != 0)
+#error Expected 0 for hotness value
+#endif
+    // If the counter is at zero (hot), handle it in the runtime.
+    beqz t0, 3f
+    addi t0, t0, -1  // increase hotness
+    sh t0, ART_METHOD_HOTNESS_COUNT_OFFSET(a0)
+1:
+    DO_SUSPEND_CHECK continue=2f
+2:
+    FETCH_INST
+    GET_INST_OPCODE t0
+    GOTO_OPCODE t0
+
+3:
+   CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=4f, if_not_hot=1b
+4:
    mv a1, xPC
    mv a2, xFP
    call nterp_hot_method  // args a0, a1, a2
-   bnez a0, .Lhotspill_osr
-.Lhotspill_advance:
-   FETCH_INST
-   GET_INST_OPCODE t0
-   GOTO_OPCODE t0
-.Lhotspill_osr:
+   beqz a0, 2b
+
    // a0 = OsrData*
    // Drop most of the current nterp frame, but keep the callee-saves.
    // The nterp callee-saves (count and layout) match the OSR frame's callee-saves.
@@ -660,9 +659,6 @@ NterpHandleHotnessOverflow:
    ld s8, OSR_DATA_NATIVE_PC(a0)  // s8 := native PC; jump after free
    call free  // arg a0; release OsrData*
    jr s8      // Jump to the compiled code.
-.Lhotspill_suspend:
-   DO_SUSPEND_CHECK continue=.Lhotspill_advance
-   j .Lhotspill_advance
 
 // This is the logical end of ExecuteNterpImpl, where the frame info applies.
 .cfi_endproc

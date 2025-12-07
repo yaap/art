@@ -106,6 +106,8 @@ class GarbageCollector : public RootVisitor, public IsMarkedVisitor, public Mark
   }
   // Reset the cumulative timings and pause histogram.
   void ResetMeasurements() REQUIRES(!pause_histogram_lock_);
+  // Returns mean cpu-time in nanoseconds.
+  double GetMeanCpuTime() const;
   // Returns the estimated throughput in bytes / second.
   uint64_t GetEstimatedMeanThroughput() const;
   // Returns how many GC iterations have been run.

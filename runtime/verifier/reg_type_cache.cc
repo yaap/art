@@ -458,7 +458,6 @@ const UninitializedType& RegTypeCache::UninitializedThisArgument(const RegType& 
   }
 
   UninitializedType* entry;
-  const std::string_view& descriptor(type.GetDescriptor());
   if (type.IsUnresolvedReference()) {
     for (size_t i = kNumberOfFixedCacheIds; i < entries_.size(); i++) {
       const RegType* cur_entry = entries_[i];

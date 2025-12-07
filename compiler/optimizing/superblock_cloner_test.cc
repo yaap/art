@@ -50,7 +50,7 @@ class SuperblockClonerTest : public OptimizingUnitTest {
     // Header block.
     auto [phi, induction_inc] = MakeLinearLoopVar(loop_header, loop_body, const_0, const_1);
     std::initializer_list<HInstruction*> common_env{phi, const_128, param_};
-    HInstruction* suspend_check = MakeSuspendCheck(loop_header, common_env);
+    MakeSuspendCheck(loop_header, common_env);
     HInstruction* loop_check = MakeCondition(loop_header, kCondGE, phi, const_128);
     MakeIf(loop_header, loop_check);
 
@@ -61,8 +61,7 @@ class SuperblockClonerTest : public OptimizingUnitTest {
     HInstruction* array_get =
         MakeArrayGet(loop_body, null_check, bounds_check, DataType::Type::kInt32, dex_pc);
     HInstruction* add =  MakeBinOp<HAdd>(loop_body, DataType::Type::kInt32, array_get, const_1);
-    HInstruction* array_set =
-        MakeArraySet(loop_body, null_check, bounds_check, add, DataType::Type::kInt32, dex_pc);
+    MakeArraySet(loop_body, null_check, bounds_check, add, DataType::Type::kInt32, dex_pc);
 
     graph_->SetHasBoundsChecks(true);
   }
@@ -544,9 +543,6 @@ static HLoopInformation* FindCommonLoopCheck(HLoopInformation* loop1, HLoopInfor
 
 // Tests FindCommonLoop function on a loop nest.
 TEST_F(SuperblockClonerTest, FindCommonLoop) {
-  HBasicBlock* header = nullptr;
-  HBasicBlock* loop_body = nullptr;
-
   HBasicBlock* return_block = InitGraphAndParameters();
 
   // Create the following nested structure of loops

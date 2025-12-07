@@ -2443,6 +2443,18 @@ ENTRY art_quick_compile_optimized
 END art_quick_compile_optimized
 
 // On entry, method is at the bottom of the stack.
+ENTRY art_quick_compile_baseline
+    SETUP_SAVE_EVERYTHING_FRAME r0
+    ldr r0, [sp, FRAME_SIZE_SAVE_EVERYTHING] @ pass ArtMethod
+    mov r1, rSELF                            @ pass Thread::Current
+    bl     artCompileBaseline                @ (ArtMethod*, Thread*)
+    RESTORE_SAVE_EVERYTHING_FRAME
+    // We don't need to restore the marking register here, as
+    // artCompileBaseline doesn't allow thread suspension.
+    blx lr
+END art_quick_compile_baseline
+
+// On entry, method is at the bottom of the stack.
 ENTRY art_quick_method_entry_hook
     SETUP_SAVE_EVERYTHING_FRAME r0
     ldr r0, [sp, FRAME_SIZE_SAVE_EVERYTHING] @ pass ArtMethod

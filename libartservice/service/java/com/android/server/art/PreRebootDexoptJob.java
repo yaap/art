@@ -16,9 +16,7 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.model.ArtFlags.ScheduleStatus;
-import static com.android.server.art.prereboot.PreRebootDriver.PreRebootResult;
-import static com.android.server.art.proto.PreRebootStats.Status;
+import static com.android.server.art.IDexoptChrootSetup.CHROOT_DIR;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -43,10 +41,16 @@ import androidx.annotation.RequiresApi;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.art.model.ArtFlags;
+import com.android.server.art.model.ArtFlags.ScheduleStatus;
 import com.android.server.art.model.ArtServiceJobInterface;
 import com.android.server.art.prereboot.PreRebootDriver;
+import com.android.server.art.prereboot.PreRebootDriver.PreRebootResult;
 import com.android.server.art.prereboot.PreRebootStatsReporter;
+import com.android.server.art.proto.PreRebootStats.FailureReason;
+import com.android.server.art.proto.PreRebootStats.Status;
 
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.UUID;
@@ -74,7 +78,7 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
     /** An arbitrary number. Must be unique among all jobs owned by the system uid. */
     public static final int JOB_ID = 27873781;
 
-    private static final long UPDATE_ENGINE_TIMEOUT_MS = 10000;
+    private static final long UPDATE_ENGINE_TIMEOUT_MS = 30000;
 
     @NonNull private final Injector mInjector;
 
@@ -137,9 +141,7 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
         // Recycle the thread if it's not used for `keepAliveTime`.
         mSerializedExecutor.allowsCoreThreadTimeOut();
         mExecutor.allowsCoreThreadTimeOut();
-        if (hasStarted()) {
-            maybeCleanUpChrootAsyncForStartup();
-        }
+        maybeCleanUpChrootAsyncForStartup();
     }
 
     @Override
@@ -180,7 +182,7 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
             jobService.jobFinished(params, false /* wantsReschedule */);
         };
         startLocked(onJobFinishedLocked, false /* isUpdateEngineReady */).exceptionally(t -> {
-            AsLog.e("Fatal error", t);
+            AsLog.wtf("Fatal error", t);
             return null;
         });
     }
@@ -205,7 +207,7 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
      * @param otaSlot The slot that contains the OTA update, "_a" or "_b", or null for a Mainline
      *         update.
      */
-    public synchronized void onUpdateReady(@Nullable String otaSlot) {
+    public void onUpdateReady(@Nullable String otaSlot) {
         // `onUpdateReadyImpl` can take time, especially on `resetLocked` when there are staged
         // files from a previous run to be cleaned up, so we put it on a separate thread.
         mSerializedExecutor.execute(() -> onUpdateReadyImpl(otaSlot));
@@ -269,6 +271,9 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
 
     /** Cleans up chroot if it exists. Only expected to be called on system server startup. */
     private synchronized void maybeCleanUpChrootAsyncForStartup() {
+        if (!Files.exists(Paths.get(CHROOT_DIR))) {
+            return;
+        }
         // We only get here when there was a system server restart (probably due to a crash). In
         // this case, it's possible that a previous Pre-reboot Dexopt job didn't end normally and
         // left over a chroot, so we need to clean it up.
@@ -388,7 +393,6 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
         var cancellationSignal = mCancellationSignal = new CancellationSignal();
         mIsUpdateEngineReady = isUpdateEngineReady;
         mRunningJob = new CompletableFuture().runAsync(() -> {
-            markHasStarted(true);
             PreRebootStatsReporter statsReporter = mInjector.getStatsReporter();
             try {
                 statsReporter.recordJobStarted();
@@ -398,8 +402,8 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
                         // This check is not strictly necessary, but is an optimization to return
                         // early.
                         if (mCancellationSignal.isCanceled()) {
-                            // The stats reporter translates success=true to STATUS_CANCELLED.
-                            statsReporter.recordJobEnded(new PreRebootResult(true /* success */));
+                            statsReporter.recordJobEnded(
+                                    new PreRebootResult(Status.STATUS_FINISHED));
                             return;
                         }
                         Utils.check(mIsUpdateEngineReady);
@@ -409,10 +413,11 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
                         otaSlot, mapSnapshotsForOta, cancellationSignal);
                 statsReporter.recordJobEnded(result);
             } catch (UpdateEngineException e) {
-                AsLog.e("update_engine error", e);
-                statsReporter.recordJobEnded(new PreRebootResult(false /* success */));
+                AsLog.wtf("update_engine error", e);
+                statsReporter.recordJobEnded(new PreRebootResult(
+                        Status.STATUS_FAILED, FailureReason.FAILURE_UPDATE_ENGINE));
             } catch (RuntimeException e) {
-                statsReporter.recordJobEnded(new PreRebootResult(false /* success */));
+                statsReporter.recordJobEnded(new PreRebootResult(Status.STATUS_FAILED));
                 throw e;
             } finally {
                 synchronized (this) {
@@ -451,6 +456,26 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
         try {
             mInjector.getUpdateEngine().triggerPostinstall("system" /* partition */);
         } catch (ServiceSpecificException e) {
+            // From system/update_engine/common/error_code.h.
+            final int POSTINTALL_RUNNER_ERROR = 5;
+            final int UPDATE_PROCESSING = 65;
+            // update_engine threw "Already processing an update, cancel it first."
+            // It probably means a newer update is superseding the original update.
+            boolean updateSuperseded = e.errorCode == UPDATE_PROCESSING;
+            // update_engine threw "Postinstall action did not run. OTA update must first reach the
+            // Postinstall phase(which verfies that all partitions can be mounted) before calling
+            // TriggerPostinstall".
+            // It probably means the original update has been revoked.
+            boolean updateRevoked =
+                    e.errorCode == POSTINTALL_RUNNER_ERROR
+                            && e.getMessage().contains("TriggerPostinstall");
+            if (updateSuperseded || updateRevoked) {
+                AsLog.i("update_engine error ignored: " + e.getMessage());
+                synchronized (this) {
+                    mCancellationSignal.cancel();
+                }
+                return;
+            }
             throw new UpdateEngineException("Failed to trigger postinstall: " + e.getMessage());
         }
         long startTime = System.currentTimeMillis();
@@ -594,29 +619,47 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
 
     @GuardedBy("this")
     private void resetLocked() {
-        mInjector.getStatsReporter().delete();
-        if (hasStarted()) {
-            try {
+        PreRebootStagedFilesStatus status = null;
+        try {
+            status = mInjector.getArtd().checkPreRebootStagedFilesStatus();
+            if (status != null) {
                 mInjector.getArtd().cleanUpPreRebootStagedFiles();
-            } catch (ServiceSpecificException | RemoteException e) {
-                AsLog.e("Failed to clean up obsolete Pre-reboot staged files", e);
             }
-            markHasStarted(false);
+        } catch (ServiceSpecificException | RemoteException e) {
+            AsLog.e("Failed to clean up obsolete Pre-reboot staged files", e);
+        } finally {
+            var statsAfterRebootSession = mInjector.getStatsReporter().new AfterRebootSession();
+            statsAfterRebootSession.setExpectFound(false);
+            statsAfterRebootSession.recordArtifactsEndStatus(
+                    PreRebootStatsReporter.END_STATUS_SUPERSEDED,
+                    status != null ? mInjector.getCurrentTimeMillis() - status.createdAtMillis : 0);
+            // Usually does nothing, unless there are pending stats to report.
+            statsAfterRebootSession.report();
         }
     }
 
     /**
-     * Whether the job has started at least once, meaning the device is expected to have staged
-     * files, no matter it succeed, failed, or cancelled.
-     *
-     * This flag is survives across system server restarts, but not device reboots.
+     * Returns the age of the staged files and whether they are expired.
      */
-    public boolean hasStarted() {
-        return SystemProperties.getBoolean("dalvik.vm.pre-reboot.has-started", false /* def */);
-    }
-
-    private void markHasStarted(boolean value) {
-        ArtJni.setProperty("dalvik.vm.pre-reboot.has-started", String.valueOf(value));
+    public StagedFilesAge checkStagedFilesAge() {
+        int retentionDays = SystemProperties.getInt("dalvik.vm.pr_dexopt_retention", 30 /* def */);
+        Duration retentionPeriod = Duration.ofDays(Math.max(retentionDays, 0));
+        try {
+            PreRebootStagedFilesStatus status =
+                    mInjector.getArtd().checkPreRebootStagedFilesStatus();
+            if (status == null) {
+                return null;
+            }
+            Duration age =
+                    Duration.ofMillis(mInjector.getCurrentTimeMillis() - status.createdAtMillis);
+            return new StagedFilesAge(age, age.compareTo(retentionPeriod) >= 0);
+        } catch (ServiceSpecificException | RemoteException e) {
+            AsLog.e("Failed to check Pre-reboot staged files status", e);
+            // This method is for deciding whether we should keep the staged files. If we get an
+            // error here, we will probably get the same when committing the staged files, so
+            // there's no point to keep them. We return null here to get them removed.
+            return null;
+        }
     }
 
     @GuardedBy("this")
@@ -629,6 +672,8 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
             super(message);
         }
     }
+
+    public record StagedFilesAge(Duration age, boolean isExpired) {}
 
     /**
      * Injector pattern for testing purpose.
@@ -676,6 +721,10 @@ public class PreRebootDexoptJob implements ArtServiceJobInterface {
         @NonNull
         public UpdateEngine getUpdateEngine() {
             return new UpdateEngine();
+        }
+
+        public long getCurrentTimeMillis() {
+            return System.currentTimeMillis();
         }
     }
 }

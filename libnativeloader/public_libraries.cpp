@@ -356,7 +356,7 @@ Result<ApexLibrariesConfigLine> ParseApexLibrariesConfigLine(const std::string& 
   if (tokens.size() != 3) {
     return Errorf("Malformed line \"{}\"", line);
   }
-  if (tokens[0] != "jni" && tokens[0] != "public") {
+  if (tokens[0] != "jni" && tokens[0] != "public" && tokens[0] != "vendor_public") {
     return Errorf("Invalid tag \"{}\"", line);
   }
   if (!std::regex_match(tokens[1], kApexNamespaceRegex)) {
@@ -423,6 +423,12 @@ const std::string& apex_jni_libraries(const std::string& apex_ns_name) {
 const std::map<std::string, std::string>& apex_public_libraries() {
   static std::map<std::string, std::string> public_libraries = InitApexLibraries("public");
   return public_libraries;
+}
+
+const std::map<std::string, std::string>& vendor_apex_public_libraries() {
+  static std::map<std::string, std::string> vendor_public_libraries =
+      InitApexLibraries("vendor_public");
+  return vendor_public_libraries;
 }
 
 bool is_product_treblelized() {
@@ -524,6 +530,9 @@ Result<std::vector<std::string>> ParseConfig(
 // If <tag> is "jni", <library list> is the list of JNI libraries exposed by <apex namespace>.
 // If <tag> is "public", <library list> is the list of public libraries exposed by <apex namespace>.
 // Public libraries are the libs listed in /system/etc/public.libraries.txt.
+// If <tag> is "vendor_public", <library list> is the list of vendor public libraries exposed by
+// <apex namespace>. Vendor public libraries are the libs listed in
+// /vendor/etc/public.libraries.txt.
 Result<std::map<std::string, std::string>> ParseApexLibrariesConfig(const std::string& file_content, const std::string& tag) {
   std::map<std::string, std::string> entries;
   std::vector<std::string> lines = base::Split(file_content, "\n");

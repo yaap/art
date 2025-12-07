@@ -22,6 +22,38 @@
 
 namespace art HIDDEN {
 
+namespace helpers {
+
+bool IsBeforeInReversePostOrder(HGraph* graph, HInstruction* lhs, HInstruction* rhs) {
+  DCHECK(lhs->IsInBlock());
+  DCHECK(rhs->IsInBlock());
+  DCHECK(!lhs->IsPhi());
+  DCHECK(!rhs->IsPhi());
+  if (lhs->GetBlock() == rhs->GetBlock()) {
+    for (HInstruction* insn = lhs->GetBlock()->GetFirstInstruction(); ; insn = insn->GetNext()) {
+      DCHECK(insn != nullptr);
+      if (insn == rhs) {
+        return false;
+      }
+      if (insn == lhs) {
+        return true;
+      }
+    }
+  } else {
+    for (auto it = graph->GetReversePostOrder().begin(); ; ++it) {
+      DCHECK(it != graph->GetReversePostOrder().end());
+      if (*it == rhs->GetBlock()) {
+        return false;
+      }
+      if (*it == lhs->GetBlock()) {
+        return true;
+      }
+    }
+  }
+}
+
+}  // namespace helpers
+
 namespace {
 
 bool TrySimpleMultiplyAccumulatePatterns(HMul* mul,
@@ -89,80 +121,76 @@ bool TrySimpleMultiplyAccumulatePatterns(HMul* mul,
 
 }  // namespace
 
-bool TryCombineMultiplyAccumulate(HMul* mul, InstructionSet isa) {
-  DataType::Type type = mul->GetType();
+static bool CheckMultiplyResultType(DataType::Type type, InstructionSet isa) {
   switch (isa) {
     case InstructionSet::kArm:
     case InstructionSet::kThumb2:
-      if (type != DataType::Type::kInt32) {
-        return false;
-      }
-      break;
+      return type == DataType::Type::kInt32;
     case InstructionSet::kArm64:
-      if (!DataType::IsIntOrLongType(type)) {
-        return false;
-      }
-      break;
+      return DataType::IsIntOrLongType(type);
     default:
       return false;
   }
+}
+
+bool TryCombineMultiplyAccumulate(HInstruction* use, HMul* mul, InstructionSet isa) {
+  DCHECK(use->IsAdd() || use->IsSub() || use->IsNeg());
+  DCHECK_IMPLIES(use->IsSub(), mul == use->AsSub()->GetRight());
+  DCHECK_IMPLIES(use->IsNeg(), isa == InstructionSet::kArm64);
+  DCHECK(mul->HasOnlyOneNonEnvironmentUse());
+  DCHECK(use == mul->GetUses().front().GetUser());
+  DataType::Type type = mul->GetType();
+  if (!CheckMultiplyResultType(type, isa)) {
+    return false;
+  }
 
   ArenaAllocator* allocator = mul->GetBlock()->GetGraph()->GetAllocator();
+  HMultiplyAccumulate* mulacc = nullptr;
+  if (use->IsAdd() || use->IsSub()) {
+    // Replace code looking like
+    //    MUL tmp, x, y
+    //    SUB dst, acc, tmp
+    // with
+    //    MULSUB dst, acc, x, y
+    // Note that we do not want to (unconditionally) perform the merge when the
+    // multiplication has multiple uses and it can be merged in all of them.
+    // Multiple uses could happen on the same control-flow path, and we would
+    // then increase the amount of work. In the future we could try to evaluate
+    // whether all uses are on different control-flow paths (using dominance and
+    // reverse-dominance information) and only perform the merge when they are.
+    HBinaryOperation* binop = use->AsBinaryOperation();
+    HInstruction* binop_left = binop->GetLeft();
+    HInstruction* binop_right = binop->GetRight();
+    // Be careful after GVN. This should not happen since the `HMul` has only
+    // one use.
+    DCHECK_NE(binop_left, binop_right);
+    DCHECK_IMPLIES(binop_right != mul, use->IsAdd());
+    DCHECK_IMPLIES(binop_right != mul, binop_left == mul);
+    HInstruction* accumulator = (binop_right == mul) ? binop_left : binop_right;
 
-  if (mul->HasOnlyOneNonEnvironmentUse()) {
-    HInstruction* use = mul->GetUses().front().GetUser();
-    if (use->IsAdd() || use->IsSub()) {
-      // Replace code looking like
-      //    MUL tmp, x, y
-      //    SUB dst, acc, tmp
-      // with
-      //    MULSUB dst, acc, x, y
-      // Note that we do not want to (unconditionally) perform the merge when the
-      // multiplication has multiple uses and it can be merged in all of them.
-      // Multiple uses could happen on the same control-flow path, and we would
-      // then increase the amount of work. In the future we could try to evaluate
-      // whether all uses are on different control-flow paths (using dominance and
-      // reverse-dominance information) and only perform the merge when they are.
-      HInstruction* accumulator = nullptr;
-      HBinaryOperation* binop = use->AsBinaryOperation();
-      HInstruction* binop_left = binop->GetLeft();
-      HInstruction* binop_right = binop->GetRight();
-      // Be careful after GVN. This should not happen since the `HMul` has only
-      // one use.
-      DCHECK_NE(binop_left, binop_right);
-      if (binop_right == mul) {
-        accumulator = binop_left;
-      } else if (use->IsAdd()) {
-        DCHECK_EQ(binop_left, mul);
-        accumulator = binop_right;
-      }
+    mulacc = new (allocator) HMultiplyAccumulate(type,
+                                                 binop->GetKind(),
+                                                 accumulator,
+                                                 mul->GetLeft(),
+                                                 mul->GetRight());
+  } else {
+    DCHECK(use->IsNeg()) << use->DebugName();
+    DCHECK_EQ(isa, InstructionSet::kArm64);
+    mulacc = new (allocator) HMultiplyAccumulate(type,
+                                                 HInstruction::kSub,
+                                                 mul->GetBlock()->GetGraph()->GetConstant(type, 0),
+                                                 mul->GetLeft(),
+                                                 mul->GetRight());
+  }
+  use->GetBlock()->ReplaceAndRemoveInstructionWith(use, mulacc);
+  DCHECK(!mul->HasUses());
+  mul->GetBlock()->RemoveInstruction(mul);
+  return true;
+}
 
-      if (accumulator != nullptr) {
-        HMultiplyAccumulate* mulacc =
-            new (allocator) HMultiplyAccumulate(type,
-                                                binop->GetKind(),
-                                                accumulator,
-                                                mul->GetLeft(),
-                                                mul->GetRight());
-
-        binop->GetBlock()->ReplaceAndRemoveInstructionWith(binop, mulacc);
-        DCHECK(!mul->HasUses());
-        mul->GetBlock()->RemoveInstruction(mul);
-        return true;
-      }
-    } else if (use->IsNeg() && isa != InstructionSet::kArm) {
-      HMultiplyAccumulate* mulacc =
-          new (allocator) HMultiplyAccumulate(type,
-                                              HInstruction::kSub,
-                                              mul->GetBlock()->GetGraph()->GetConstant(type, 0),
-                                              mul->GetLeft(),
-                                              mul->GetRight());
-
-      use->GetBlock()->ReplaceAndRemoveInstructionWith(use, mulacc);
-      DCHECK(!mul->HasUses());
-      mul->GetBlock()->RemoveInstruction(mul);
-      return true;
-    }
+bool TrySimpleMultiplyAccumulatePatterns(HMul* mul, InstructionSet isa) {
+  if (!CheckMultiplyResultType(mul->GetType(), isa)) {
+    return false;
   }
 
   // Use multiply accumulate instruction for a few simple patterns.
@@ -170,12 +198,12 @@ bool TryCombineMultiplyAccumulate(HMul* mul, InstructionSet isa) {
   // right inputs perform the same operation.
   // We rely on GVN having squashed the inputs if appropriate. However the
   // results are still correct even if that did not happen.
-  if (mul->GetLeft() == mul->GetRight()) {
+  HInstruction* left = mul->GetLeft();
+  HInstruction* right = mul->GetRight();
+  if (left == right) {
     return false;
   }
 
-  HInstruction* left = mul->GetLeft();
-  HInstruction* right = mul->GetRight();
   if ((right->IsAdd() || right->IsSub()) &&
       TrySimpleMultiplyAccumulatePatterns(mul, right->AsBinaryOperation(), left)) {
     return true;
@@ -300,7 +328,7 @@ bool TryReplaceSubSubWithSubAdd(HSub* last_sub) {
   ArenaAllocator* allocator = basic_block->GetGraph()->GetAllocator();
   HInstruction* last_sub_right = last_sub->GetRight();
   HInstruction* last_sub_left = last_sub->GetLeft();
-  if (last_sub_right->GetUses().HasExactlyOneElement()) {
+  if (last_sub_right->HasOnlyOneNonEnvironmentUse()) {
     // Reorder operands of last_sub_right: Sub(a, b) -> Sub(b, a).
     HInstruction* a = last_sub_right->InputAt(0);
     HInstruction* b = last_sub_right->InputAt(1);

@@ -103,6 +103,7 @@ java_defaults {
     static_libs: [
         "android.content.pm.flags-aconfig-java-export",
         "android.os.flags-aconfig-java-export",
+        "art-aconfig-rw-flags-java-lib",
         "art-statslog-art-java",
         "artd-aidl-java",
         "dexopt_chroot_setup-aidl-java",
@@ -113,17 +114,6 @@ java_defaults {
     ],
     plugins: [
         "auto_value_plugin",
-    ],
-}
-
-// Used by tests to allow tests to mock the right classes.
-java_library {
-    name: "service-art-pre-jarjar",
-    defaults: ["service-art-defaults"],
-    installable: false,
-    visibility: [
-        "//visibility:override",
-        "//visibility:private",
     ],
 }
 
@@ -240,9 +230,10 @@ art_cc_test {
     test_config_template: ":art-gtests-target-standalone-non-multilib-template",
 }
 
-android_test {
-    name: "ArtServiceTests",
-
+// Used by tests to allow tests to jarjar flags.
+java_library {
+    name: "service-art-tests",
+    defaults: ["service-art-defaults"],
     // Include all test java files.
     srcs: [
         "javatests/**/*.java",
@@ -253,6 +244,7 @@ android_test {
     ],
 
     static_libs: [
+        "art-aconfig-flags-java-lib",
         "androidx.test.ext.junit",
         "androidx.test.ext.truth",
         "androidx.test.runner",
@@ -262,7 +254,20 @@ android_test {
         // We need ExtendedMockito to mock static methods.
         "mockito-target-extended-minus-junit4",
         "modules-utils-package-state",
-        "service-art-pre-jarjar",
+    ],
+    jarjar_rules: "test-jarjar-rules.txt",
+    installable: false,
+    visibility: [
+        "//visibility:override",
+        "//visibility:private",
+    ],
+}
+
+android_test {
+    name: "ArtServiceTests",
+
+    static_libs: [
+        "service-art-tests",
         // Statically link against system server to allow us to mock system
         // server APIs. This won't work on master-art, but it's fine because we
         // don't run this test on master-art.
@@ -274,6 +279,7 @@ android_test {
         "libdexmakerjvmtiagent",
         "libstaticjvmtiagent",
     ],
+
     compile_multilib: "first",
 
     sdk_version: "system_server_current",

@@ -55,17 +55,10 @@ static constexpr size_t kMaxPageSize = kMinPageSize;
 // this is the value to be used in images files for aligning contents to page size.
 static constexpr size_t kElfSegmentAlignment = kMaxPageSize;
 
-// Clion, clang analyzer, etc can falsely believe that "if (kIsDebugBuild)" always
-// returns the same value. By wrapping into a call to another constexpr function, we force it
-// to realize that is not actually always evaluating to the same value.
-static constexpr bool GlobalsReturnSelf(bool self) { return self; }
-
-// Whether or not this is a debug build. Useful in conditionals where NDEBUG isn't.
-// TODO: Use only __clang_analyzer__ here. b/64455231
-#if defined(NDEBUG) && !defined(__CLION_IDE__)
-static constexpr bool kIsDebugBuild = GlobalsReturnSelf(false);
+#if defined(NDEBUG) && !defined(__clang_analyzer__)
+static constexpr bool kIsDebugBuild = false;
 #else
-static constexpr bool kIsDebugBuild = GlobalsReturnSelf(true);
+static constexpr bool kIsDebugBuild = true;
 #endif
 
 #if defined(ART_PGO_INSTRUMENTATION)

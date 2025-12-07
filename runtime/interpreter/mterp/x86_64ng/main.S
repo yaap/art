@@ -250,24 +250,9 @@ END_FUNCTION \name
     leaq    (rPC, rINSTq, 2), rPC
     // Update method counter and do a suspend check if the branch is negative or zero.
     testq rINSTq, rINSTq
-    jle 3f
-2:  // We use 2 and not 1 for this local label as the users of the BRANCH macro have a 1 label.
+    jle NterpHotnessCheck
     FETCH_INST
     GOTO_NEXT
-3:
-    movq (%rsp), %rdi
-    movzwl ART_METHOD_HOTNESS_COUNT_OFFSET(%rdi), %esi
-#if (NTERP_HOTNESS_VALUE != 0)
-#error Expected 0 for hotness value
-#endif
-    // If the counter is at zero, handle this in the runtime.
-    testw %si, %si
-    je NterpHandleHotnessOverflow
-    // Update counter.
-    addl $$-1, %esi
-    movw %si, ART_METHOD_HOTNESS_COUNT_OFFSET(%rdi)
-    DO_SUSPEND_CHECK continue_label=2b
-    jmp 2b
 .endm
 
 // Expects:
@@ -2185,18 +2170,33 @@ NterpGetWideInstanceField:
 NterpGetInstanceField:
   OP_IGET load="movl", wide=0
 
-NterpHandleHotnessOverflow:
-    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=1f, if_not_hot=4f
+NterpHotnessCheck:
+    movq (%rsp), %rdi
+    movzwl ART_METHOD_HOTNESS_COUNT_OFFSET(%rdi), %esi
+#if (NTERP_HOTNESS_VALUE != 0)
+#error Expected 0 for hotness value
+#endif
+    // If the counter is at zero, handle this in the runtime.
+    testw %si, %si
+    je 3f
+    // Update counter.
+    addl $$-1, %esi
+    movw %si, ART_METHOD_HOTNESS_COUNT_OFFSET(%rdi)
 1:
+    DO_SUSPEND_CHECK continue_label=2f
+2:
+    FETCH_INST
+    GOTO_NEXT
+
+3:
+    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=4f, if_not_hot=1b
+4:
     movq rPC, %rsi
     movq rFP, %rdx
     call nterp_hot_method
     testq %rax, %rax
-    jne 3f
-2:
-    FETCH_INST
-    GOTO_NEXT
-3:
+    je 2b
+
     // Drop the current frame.
     movq -8(rREFS), %rsp
     CFI_DEF_CFA(rsp, CALLEE_SAVES_SIZE)
@@ -2224,9 +2224,6 @@ NterpHandleHotnessOverflow:
 
     // Jump to the compiled code.
     jmp *%rbx
-4:
-    DO_SUSPEND_CHECK continue_label=2b
-    jmp 2b
 
 NterpHandleInvokeInterfaceOnObjectMethodRange:
    shrl $$16, %eax

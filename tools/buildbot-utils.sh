@@ -67,7 +67,7 @@ function msgnote() {
 export TARGET_ARCH=$(build/soong/soong_ui.bash --dumpvar-mode TARGET_ARCH)
 
 # Do some checks and prepare environment for tests that run on Linux (not on Android).
-if [[ -n "$ART_TEST_ON_VM" ]]; then
+if [[ -n "$ART_TEST_ON_VM" ]] || [[ -n "$ART_TEST_ON_SBC" ]]; then
   if [[ -z $ANDROID_BUILD_TOP ]]; then
     msgfatal "ANDROID_BUILD_TOP is not set"
   elif [[ -z "$ART_TEST_SSH_USER" ]]; then
@@ -78,7 +78,11 @@ if [[ -n "$ART_TEST_ON_VM" ]]; then
     msgfatal "ART_TEST_SSH_PORT not set"
   fi
 
-  SSH_CONFIG=$ANDROID_BUILD_TOP/art/test/testrunner/ssh_config
+  if [[ -n "$ART_TEST_ON_SBC" ]]; then
+    SSH_CONFIG=$ANDROID_BUILD_TOP/art/test/testrunner/ssh_config_sbc
+  else
+    SSH_CONFIG=$ANDROID_BUILD_TOP/art/test/testrunner/ssh_config
+  fi
   export ART_TEST_CHROOT_BASENAME="art-test-chroot"
   export ART_TEST_CHROOT="/home/$ART_TEST_SSH_USER/$ART_TEST_CHROOT_BASENAME"
   export ART_CHROOT_CMD="unshare --user --map-root-user chroot $ART_TEST_CHROOT_BASENAME"

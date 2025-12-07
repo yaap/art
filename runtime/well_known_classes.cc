@@ -118,6 +118,9 @@ ArtMethod* WellKnownClasses::java_util_function_Consumer_accept;
 ArtMethod* WellKnownClasses::jdk_internal_math_FloatingDecimal_getBinaryToASCIIConverter_D;
 ArtMethod* WellKnownClasses::jdk_internal_math_FloatingDecimal_getBinaryToASCIIConverter_F;
 ArtMethod* WellKnownClasses::jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_getChars;
+ArtMethod* WellKnownClasses::jdk_internal_vm_Continuation_doYieldNative;
+ArtMethod* WellKnownClasses::jdk_internal_vm_Continuation_enter;
+ArtMethod* WellKnownClasses::jdk_internal_vm_Continuation_enterSpecial;
 ArtMethod* WellKnownClasses::libcore_reflect_AnnotationFactory_createAnnotation;
 ArtMethod* WellKnownClasses::libcore_reflect_AnnotationMember_init;
 ArtMethod* WellKnownClasses::org_apache_harmony_dalvik_ddmc_DdmServer_broadcast;
@@ -146,6 +149,7 @@ ArtField* WellKnownClasses::java_lang_System_in;
 ArtField* WellKnownClasses::java_lang_System_out;
 ArtField* WellKnownClasses::java_lang_System_err;
 ArtField* WellKnownClasses::java_lang_String_EMPTY;
+ArtField* WellKnownClasses::java_lang_Thread_cont;
 ArtField* WellKnownClasses::java_lang_Thread_parkBlocker;
 ArtField* WellKnownClasses::java_lang_Thread_daemon;
 ArtField* WellKnownClasses::java_lang_Thread_group;
@@ -178,6 +182,7 @@ ArtField* WellKnownClasses::java_nio_ByteBuffer_isReadOnly;
 ArtField* WellKnownClasses::java_nio_ByteBuffer_offset;
 ArtField* WellKnownClasses::java_util_Collections_EMPTY_LIST;
 ArtField* WellKnownClasses::java_util_concurrent_ThreadLocalRandom_seeder;
+ArtField* WellKnownClasses::jdk_internal_vm_Continuation_virtualThreadContext;
 ArtField* WellKnownClasses::jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_buffer;
 ArtField* WellKnownClasses::jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer_image;
 ArtField* WellKnownClasses::libcore_util_EmptyArray_STACK_TRACE_ELEMENT;
@@ -448,7 +453,7 @@ void WellKnownClasses::InitFieldsAndMethodsOnly(JNIEnv* env) {
   java_lang_Long_value = CacheValueInBoxField(
       class_linker, self, "Ljava/lang/Long;", "J");
 
-  StackHandleScope<49u> hs(self);
+  StackHandleScope<50u> hs(self);
   Handle<mirror::Class> d_s_bdcl =
       hs.NewHandle(FindSystemClass(class_linker, self, "Ldalvik/system/BaseDexClassLoader;"));
   Handle<mirror::Class> d_s_dlcl =
@@ -531,6 +536,8 @@ void WellKnownClasses::InitFieldsAndMethodsOnly(JNIEnv* env) {
       hs.NewHandle(FindSystemClass(class_linker, self, "Ljava/util/concurrent/ThreadLocalRandom;"));
   Handle<mirror::Class> j_u_f_c =
       hs.NewHandle(FindSystemClass(class_linker, self, "Ljava/util/function/Consumer;"));
+  Handle<mirror::Class> j_i_v_cont =
+      hs.NewHandle(FindSystemClass(class_linker, self, "Ljdk/internal/vm/Continuation;"));
   Handle<mirror::Class> j_i_m_fd =
       hs.NewHandle(FindSystemClass(class_linker, self, "Ljdk/internal/math/FloatingDecimal;"));
   Handle<mirror::Class> j_i_m_fd_btab = hs.NewHandle(FindSystemClass(
@@ -767,6 +774,23 @@ void WellKnownClasses::InitFieldsAndMethodsOnly(JNIEnv* env) {
       pointer_size);
   jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_getChars =
       CacheMethod(j_i_m_fd_btab.Get(), /*is_static=*/ false, "getChars", "([C)I", pointer_size);
+  jdk_internal_vm_Continuation_doYieldNative =
+      CacheMethod(j_i_v_cont.Get(),
+                  /*is_static=*/true,
+                  "doYieldNative",
+                  "(Ldalvik/system/VirtualThreadContext;Ldalvik/system/"
+                  "VirtualThreadParkedStates;Ldalvik/system/VirtualThreadParkingError;)I",
+                  pointer_size);
+  jdk_internal_vm_Continuation_enter = CacheMethod(j_i_v_cont.Get(),
+                                                   /*is_static=*/true,
+                                                   "enter",
+                                                   "(Ljdk/internal/vm/Continuation;Z)V",
+                                                   pointer_size);
+  jdk_internal_vm_Continuation_enterSpecial = CacheMethod(j_i_v_cont.Get(),
+                                                          /*is_static=*/true,
+                                                          "enterSpecial",
+                                                          "(Ljdk/internal/vm/Continuation;ZZ)V",
+                                                          pointer_size);
 
   libcore_reflect_AnnotationFactory_createAnnotation = CacheMethod(
       l_r_af.Get(),
@@ -866,6 +890,8 @@ void WellKnownClasses::InitFieldsAndMethodsOnly(JNIEnv* env) {
   java_lang_System_err =
       CacheField(ToClass(java_lang_System), /*is_static=*/ true, "err", "Ljava/io/PrintStream;");
 
+  java_lang_Thread_cont =
+      CacheField(j_l_Thread.Get(), /*is_static=*/false, "cont", "Ljdk/internal/vm/Continuation;");
   java_lang_Thread_parkBlocker =
       CacheField(j_l_Thread.Get(), /*is_static=*/ false, "parkBlocker", "Ljava/lang/Object;");
   java_lang_Thread_daemon = CacheField(j_l_Thread.Get(), /*is_static=*/ false, "daemon", "Z");
@@ -928,6 +954,11 @@ void WellKnownClasses::InitFieldsAndMethodsOnly(JNIEnv* env) {
   java_util_concurrent_ThreadLocalRandom_seeder = CacheField(
       j_u_c_tlr.Get(), /*is_static=*/ true, "seeder", "Ljava/util/concurrent/atomic/AtomicLong;");
 
+  jdk_internal_vm_Continuation_virtualThreadContext =
+      CacheField(j_i_v_cont.Get(),
+                 /*is_static=*/false,
+                 "virtualThreadContext",
+                 "Ldalvik/system/VirtualThreadContext;");
   jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_buffer =
       CacheField(j_i_m_fd_btab.Get(), /*is_static=*/ false, "buffer", "[C");
   jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer_image = CacheField(
@@ -1052,6 +1083,9 @@ void WellKnownClasses::Clear() {
   jdk_internal_math_FloatingDecimal_getBinaryToASCIIConverter_D = nullptr;
   jdk_internal_math_FloatingDecimal_getBinaryToASCIIConverter_F = nullptr;
   jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_getChars = nullptr;
+  jdk_internal_vm_Continuation_doYieldNative = nullptr;
+  jdk_internal_vm_Continuation_enter = nullptr;
+  jdk_internal_vm_Continuation_enterSpecial = nullptr;
   libcore_reflect_AnnotationFactory_createAnnotation = nullptr;
   libcore_reflect_AnnotationMember_init = nullptr;
   org_apache_harmony_dalvik_ddmc_DdmServer_broadcast = nullptr;
@@ -1071,6 +1105,7 @@ void WellKnownClasses::Clear() {
   java_lang_System_in = nullptr;
   java_lang_System_out = nullptr;
   java_lang_System_err = nullptr;
+  java_lang_Thread_cont = nullptr;
   java_lang_Thread_parkBlocker = nullptr;
   java_lang_Thread_daemon = nullptr;
   java_lang_Thread_group = nullptr;
@@ -1099,6 +1134,7 @@ void WellKnownClasses::Clear() {
   java_nio_ByteBuffer_offset = nullptr;
   java_util_Collections_EMPTY_LIST = nullptr;
   java_util_concurrent_ThreadLocalRandom_seeder = nullptr;
+  jdk_internal_vm_Continuation_virtualThreadContext = nullptr;
   jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_buffer = nullptr;
   jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer_image = nullptr;
   libcore_util_EmptyArray_STACK_TRACE_ELEMENT = nullptr;

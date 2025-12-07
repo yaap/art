@@ -19,7 +19,7 @@ import os
 
 def run(ctx, args):
   ctx.default_run(args)
-  if os.environ.get("ART_TEST_ON_VM"):
+  if os.environ.get("ART_TEST_ON_VM") or os.environ.get("ART_TEST_ON_SBC"):
     # On Linux, max thread priority is not the same as on Android, but otherwise
     # test results are the same. Cut the offending line to make the test pass.
     line = "thread priority for t[12] was 5 \[expected Thread.MAX_PRIORITY\]"

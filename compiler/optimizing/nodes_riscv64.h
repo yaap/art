@@ -59,6 +59,74 @@ class HRiscv64ShiftAdd final : public HBinaryOperation {
   using DistanceField = BitField<uint32_t, kFieldDistance, kFieldDistanceSize>;
 };
 
+class HRiscv64BitSet final : public HBinaryOperation {
+ public:
+  HRiscv64BitSet(HInstruction* left, HInstruction* right, uint32_t dex_pc = kNoDexPc)
+      : HBinaryOperation(
+            kRiscv64BitSet, DataType::Type::kInt64, left, right, SideEffects::None(), dex_pc) {}
+
+  HConstant* Evaluate(HLongConstant* x, HIntConstant* y) const override {
+    int64_t value = x->GetValue() | (UINT64_C(1) << (y->GetValue() & kMaxLongShiftDistance));
+    return GetBlock()->GetGraph()->GetLongConstant(value);
+  }
+
+  DECLARE_INSTRUCTION(Riscv64BitSet);
+
+ protected:
+  DEFAULT_COPY_CONSTRUCTOR(Riscv64BitSet);
+};
+
+class HRiscv64BitClear final : public HBinaryOperation {
+ public:
+  HRiscv64BitClear(HInstruction* left, HInstruction* right, uint32_t dex_pc = kNoDexPc)
+      : HBinaryOperation(
+            kRiscv64BitClear, DataType::Type::kInt64, left, right, SideEffects::None(), dex_pc) {}
+
+  HConstant* Evaluate(HLongConstant* x, HIntConstant* y) const override {
+    int64_t value = x->GetValue() & (~(UINT64_C(1) << (y->GetValue() & kMaxLongShiftDistance)));
+    return GetBlock()->GetGraph()->GetLongConstant(value);
+  }
+
+  DECLARE_INSTRUCTION(Riscv64BitClear);
+
+ protected:
+  DEFAULT_COPY_CONSTRUCTOR(Riscv64BitClear);
+};
+
+class HRiscv64BitExtract final : public HBinaryOperation {
+ public:
+  HRiscv64BitExtract(HInstruction* left, HInstruction* right, uint32_t dex_pc = kNoDexPc)
+      : HBinaryOperation(
+            kRiscv64BitExtract, DataType::Type::kInt64, left, right, SideEffects::None(), dex_pc) {}
+
+  HConstant* Evaluate(HLongConstant* x, HIntConstant* y) const override {
+    int64_t value = (x->GetValue() >> (y->GetValue() & kMaxLongShiftDistance)) & UINT64_C(1);
+    return GetBlock()->GetGraph()->GetLongConstant(value);
+  }
+
+  DECLARE_INSTRUCTION(Riscv64BitExtract);
+
+ protected:
+  DEFAULT_COPY_CONSTRUCTOR(Riscv64BitExtract);
+};
+
+class HRiscv64BitInvert final : public HBinaryOperation {
+ public:
+  HRiscv64BitInvert(HInstruction* left, HInstruction* right, uint32_t dex_pc = kNoDexPc)
+      : HBinaryOperation(
+            kRiscv64BitInvert, DataType::Type::kInt64, left, right, SideEffects::None(), dex_pc) {}
+
+  HConstant* Evaluate(HLongConstant* x, HIntConstant* y) const override {
+    int64_t value = x->GetValue() ^ (UINT64_C(1) << (y->GetValue() & kMaxLongShiftDistance));
+    return GetBlock()->GetGraph()->GetLongConstant(value);
+  }
+
+  DECLARE_INSTRUCTION(Riscv64BitInvert);
+
+ protected:
+  DEFAULT_COPY_CONSTRUCTOR(Riscv64BitInvert);
+};
+
 }  // namespace art
 
 #endif  // ART_COMPILER_OPTIMIZING_NODES_RISCV64_H_

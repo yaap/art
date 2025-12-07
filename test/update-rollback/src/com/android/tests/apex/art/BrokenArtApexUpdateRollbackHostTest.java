@@ -25,9 +25,7 @@ import com.android.tradefed.invoker.TestInformation;
 import com.android.tradefed.log.LogUtil.CLog;
 import com.android.tradefed.testtype.DeviceJUnit4ClassRunner;
 import com.android.tradefed.testtype.IDeviceTest;
-import com.android.tradefed.testtype.junit4.AfterClassWithInfo;
 import com.android.tradefed.testtype.junit4.BaseHostJUnit4Test;
-import com.android.tradefed.testtype.junit4.BeforeClassWithInfo;
 import com.android.tradefed.util.GenericLogcatEventParser;
 import com.android.tradefed.util.StreamUtil;
 
@@ -42,23 +40,18 @@ public class BrokenArtApexUpdateRollbackHostTest extends BaseHostJUnit4Test {
 
     private static final long EVENT_TIMEOUT_MS = 30 * 1000L;
 
-    private ApexUpdateLogcatEventParser mLogcatEventParser;
-
-    private static ArtApexTestUtils sTestUtils;
-
-    @BeforeClassWithInfo
-    public static void beforeClassWithDevice(TestInformation testInfo) throws Exception {
-        sTestUtils = new ArtApexTestUtils(testInfo);
-        sTestUtils.installTestApex();
-    }
-
     @Test
     public void verifyArtApexIsRolledBack() throws Exception {
-        startLogcatListener();
+        ApexUpdateLogcatEventParser logcatEventParser =
+                ApexUpdateLogcatEventParserFactory.buildParser(getDevice());
+        logcatEventParser.start();
+
+        ArtApexTestUtils testUtils = new ArtApexTestUtils(getTestInformation());
+        testUtils.installTestApex();
 
         {
             ApexUpdateLogcatEventParser.LogcatEvent result =
-                    mLogcatEventParser.waitForEvent(EVENT_TIMEOUT_MS);
+                    logcatEventParser.waitForEvent(EVENT_TIMEOUT_MS);
             assertNotNull(result);
             assertEquals(ApexUpdateLogcatEventType.SESSION_REVERTED, result.getEventType());
             CLog.i("Found event type " + result.getEventType() + " in logcat: "
@@ -67,14 +60,18 @@ public class BrokenArtApexUpdateRollbackHostTest extends BaseHostJUnit4Test {
 
         {
             ApexUpdateLogcatEventParser.LogcatEvent result =
-                    mLogcatEventParser.waitForEvent(EVENT_TIMEOUT_MS);
+                    logcatEventParser.waitForEvent(EVENT_TIMEOUT_MS);
             assertNotNull(result);
             assertEquals(ApexUpdateLogcatEventType.ROLLBACK_SUCCESS, result.getEventType());
             CLog.i("Found event type " + result.getEventType() + " in logcat: "
                     + result.getMessage());
         }
 
-        stopLogcatListener();
+        // Note: This should not be necessary, as the "broken" ART APEX is expected to be rolled
+        // back.
+        testUtils.uninstallTestApex();
+
+        StreamUtil.close(logcatEventParser);
     }
 
     // TODO(b/185672266): When tombstones are preserved across rollbacks, add a check verifying the
@@ -82,24 +79,6 @@ public class BrokenArtApexUpdateRollbackHostTest extends BaseHostJUnit4Test {
 
     // TODO(b/185672266): When logcat entries are preserved across rollbacks, add a check verifying
     // the presence of relevant logcat entries (e.g. a stack trace for the native crash).
-
-    @AfterClassWithInfo
-    public static void afterClassWithDevice(TestInformation testInfo) throws Exception {
-        // Note: This should not be necessary, as the "broken" ART APEX is expected to be rolled
-        // back.
-        sTestUtils.uninstallTestApex();
-    }
-
-    private void startLogcatListener() {
-        if (mLogcatEventParser == null) {
-            mLogcatEventParser = ApexUpdateLogcatEventParserFactory.buildParser(getDevice());
-        }
-        mLogcatEventParser.start();
-    }
-
-    private void stopLogcatListener() {
-        StreamUtil.close(mLogcatEventParser);
-    }
 }
 
 

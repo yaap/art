@@ -28,6 +28,7 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/memory_region.h"
+#include "compilation_kind.h"
 #include "dex/dex_file_types.h"
 #include "dex_register_location.h"
 #include "quick/quick_method_frame_info.h"
@@ -511,8 +512,21 @@ class CodeInfo {
     return HasFlag<kIsBaseline>(code_info_data);
   }
 
+  ALWAYS_INLINE static bool IsFast(const uint8_t* code_info_data) {
+    return HasFlag<kIsFast>(code_info_data);
+  }
+
+  ALWAYS_INLINE static bool IsOptimized(const uint8_t* code_info_data) {
+    return !IsFast(code_info_data) && !IsBaseline(code_info_data);
+  }
+
   ALWAYS_INLINE static bool IsDebuggable(const uint8_t* code_info_data) {
     return HasFlag<kIsDebuggable>(code_info_data);
+  }
+
+  ALWAYS_INLINE static CompilationKind GetCompilationKind(const uint8_t* code_info_data) {
+    return IsFast(code_info_data) ? CompilationKind::kFast :
+           IsBaseline(code_info_data) ? CompilationKind::kBaseline : CompilationKind::kOptimized;
   }
 
   uint32_t GetNumberOfDexRegisters() {
@@ -569,6 +583,7 @@ class CodeInfo {
     kHasShouldDeoptimizeFlag = 1 << 1,
     kIsBaseline = 1 << 2,
     kIsDebuggable = 1 << 3,
+    kIsFast = 1 << 4,
   };
 
   // The CodeInfo starts with sequence of variable-length bit-encoded integers.

@@ -62,6 +62,9 @@ static constexpr uint32_t kAccInBootImageAndNotInPreloadedClasses = 0x00400000; 
 // Set after verification if at least one of the class's method has unresolved
 // type checks failures.
 static constexpr uint32_t kAccHasTypeChecksFailure = 0x00800000;  // class (runtime)
+// We do not reject classes with duplicate methods in their definition. To
+// simplify method lookup, we flag such classes.
+static constexpr uint32_t kAccHasDuplicateMethods = 0x01000000;  // class (runtime)
 // This is set by the class linker during LinkInterfaceMethods. It is used by a method
 // to represent that it was copied from its declaring class into another class.
 // We need copies of the original method because the method may end up in different

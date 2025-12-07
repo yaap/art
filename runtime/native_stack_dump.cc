@@ -322,6 +322,7 @@ void DumpNativeStack(std::ostream& os,
                      void* ucontext_ptr,
                      bool skip_frames) {
   unwindstack::AndroidLocalUnwinder unwinder;
+  unwinder.set_check_global_elf_cache(true);
   DumpNativeStack(os, unwinder, tid, prefix, current_method, ucontext_ptr, skip_frames);
 }
 

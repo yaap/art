@@ -1470,16 +1470,15 @@ template <bool is_save>
 void SaveRestoreLiveRegistersHelperSveImpl(CodeGeneratorARM64* codegen,
                                            LocationSummary* locations,
                                            int64_t spill_offset) {
-  const uint32_t core_spills = codegen->GetSlowPathSpills(locations, /* core_registers= */ true);
-  const uint32_t fp_spills = codegen->GetSlowPathSpills(locations, /* core_registers= */ false);
-  DCHECK(helpers::ArtVixlRegCodeCoherentForRegSet(core_spills,
+  const RegisterSet spills = codegen->GetSlowPathSpills(locations);
+  DCHECK(helpers::ArtVixlRegCodeCoherentForRegSet(spills.GetCoreRegisterSet(),
                                                   codegen->GetNumberOfCoreRegisters(),
-                                                  fp_spills,
+                                                  spills.GetFpuRegisterSet(),
                                                   codegen->GetNumberOfFloatingPointRegisters()));
   MacroAssembler* masm = codegen->GetVIXLAssembler();
   Register base = masm->StackPointer();
 
-  CPURegList core_list = CPURegList(CPURegister::kRegister, kXRegSize, core_spills);
+  CPURegList core_list(CPURegister::kRegister, kXRegSize, spills.GetCoreRegisterSet());
   int64_t core_spill_size = core_list.GetTotalSizeInBytes();
   int64_t fp_spill_offset = spill_offset + core_spill_size;
 
@@ -1489,14 +1488,15 @@ void SaveRestoreLiveRegistersHelperSveImpl(CodeGeneratorARM64* codegen,
     } else {
       masm->LoadCPURegList(core_list, MemOperand(base, spill_offset));
     }
-    codegen->GetAssembler()->SaveRestoreZRegisterList<is_save>(fp_spills, fp_spill_offset);
+    codegen->GetAssembler()->SaveRestoreZRegisterList<is_save>(
+        spills.GetFpuRegisterSet(), fp_spill_offset);
     return;
   }
 
   // Case when we only need to restore D-registers.
   DCHECK(!codegen->GetGraph()->HasSIMD());
   DCHECK_LE(codegen->GetSlowPathFPWidth(), kDRegSizeInBytes);
-  CPURegList fp_list = CPURegList(CPURegister::kVRegister, kDRegSize, fp_spills);
+  CPURegList fp_list(CPURegister::kVRegister, kDRegSize, spills.GetFpuRegisterSet());
   if (is_save) {
     masm->StoreCPURegList(core_list, MemOperand(base, spill_offset));
     masm->StoreCPURegList(fp_list, MemOperand(base, fp_spill_offset));

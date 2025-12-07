@@ -65,8 +65,8 @@ template <bool kVisitNativeRoots,
           ReadBarrierOption kReadBarrierOption,
           typename Visitor,
           typename JavaLangRefVisitor>
-inline void Object::VisitReferences(const Visitor& visitor,
-                                    const JavaLangRefVisitor& ref_visitor) {
+inline void Object::FastVisitReferences(const Visitor& visitor,
+                                        const JavaLangRefVisitor& ref_visitor) {
   visitor(this, ClassOffset(), /* is_static= */ false);
   ObjPtr<Class> klass = GetClass<kVerifyFlags, kReadBarrierOption>();
   const uint32_t class_flags = klass->GetClassFlags<kVerifyNone>();
@@ -78,11 +78,17 @@ inline void Object::VisitReferences(const Visitor& visitor,
   }
   DCHECK(!klass->IsStringClass<kVerifyFlags>());
 
+  if ((class_flags & kClassFlagObjectArray) != 0) {
+    DCHECK((klass->IsObjectArrayClass<kVerifyFlags, kReadBarrierOption>()));
+    AsObjectArray<mirror::Object, kVerifyNone>()->VisitReferences(visitor);
+    return;
+  }
+
+  VisitInstanceFieldsReferences<kVerifyFlags, kReadBarrierOption>(klass, visitor);
   // Record with no references will return from previous if block.
   if ((class_flags & (kClassFlagNormal | kClassFlagRecord)) != 0) {
     CheckNormalClass<kVerifyFlags>(klass);
     DCHECK(klass->IsInstantiableNonArray()) << klass->PrettyDescriptor();
-    VisitInstanceFieldsReferences<kVerifyFlags, kReadBarrierOption>(klass, visitor);
     return;
   }
 
@@ -90,41 +96,38 @@ inline void Object::VisitReferences(const Visitor& visitor,
     DCHECK(klass->IsClassClass<kVerifyFlags>());
     DCHECK(klass->IsInstantiableNonArray()) << klass->PrettyDescriptor();
     ObjPtr<Class> as_klass = AsClass<kVerifyNone>();
-    as_klass->VisitReferences<kVisitNativeRoots, kVerifyFlags, kReadBarrierOption>(klass, visitor);
-    return;
-  }
-
-  if ((class_flags & kClassFlagObjectArray) != 0) {
-    DCHECK((klass->IsObjectArrayClass<kVerifyFlags, kReadBarrierOption>()));
-    AsObjectArray<mirror::Object, kVerifyNone>()->VisitReferences(visitor);
+    as_klass->VisitReferences<kVisitNativeRoots,
+                              /*kVisitInstanceFieldsRefs=*/false,
+                              kVerifyFlags,
+                              kReadBarrierOption>(klass, visitor);
     return;
   }
 
   if ((class_flags & kClassFlagReference) != 0) {
     DCHECK(klass->IsInstantiableNonArray()) << klass->PrettyDescriptor();
-    VisitInstanceFieldsReferences<kVerifyFlags, kReadBarrierOption>(klass, visitor);
     ref_visitor(klass, AsReference<kVerifyFlags, kReadBarrierOption>());
     return;
   }
 
-  if ((class_flags & kClassFlagDexCache) != 0) {
-    DCHECK(klass->IsInstantiableNonArray()) << klass->PrettyDescriptor();
-    DCHECK(klass->IsDexCacheClass<kVerifyFlags>());
-    ObjPtr<mirror::DexCache> const dex_cache = AsDexCache<kVerifyFlags, kReadBarrierOption>();
-    dex_cache->VisitReferences<kVisitNativeRoots,
-                               kVerifyFlags,
-                               kReadBarrierOption>(klass, visitor);
+  if (!kVisitNativeRoots) {
     return;
   }
 
-  if ((class_flags & kClassFlagClassLoader) != 0) {
+  if (UNLIKELY((class_flags & kClassFlagDexCache) != 0)) {
+    DCHECK(klass->IsInstantiableNonArray()) << klass->PrettyDescriptor();
+    DCHECK(klass->IsDexCacheClass<kVerifyFlags>());
+    ObjPtr<mirror::DexCache> const dex_cache = AsDexCache<kVerifyFlags, kReadBarrierOption>();
+    auto should_visit = [](void* ptr) { return ptr != nullptr; };
+    dex_cache->VisitNativeRoots<kVerifyFlags, kReadBarrierOption>(visitor, should_visit);
+    return;
+  }
+
+  if (UNLIKELY((class_flags & kClassFlagClassLoader) != 0)) {
     DCHECK(klass->IsInstantiableNonArray()) << klass->PrettyDescriptor();
     DCHECK(klass->IsClassLoaderClass<kVerifyFlags>());
     ObjPtr<mirror::ClassLoader> const class_loader =
         AsClassLoader<kVerifyFlags, kReadBarrierOption>();
-    class_loader->VisitReferences<kVisitNativeRoots,
-                                  kVerifyFlags,
-                                  kReadBarrierOption>(klass, visitor);
+    class_loader->VisitNativeRoots<kVerifyFlags>(visitor);
     return;
   }
 

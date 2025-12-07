@@ -66,6 +66,27 @@ public class Main {
       // expected
       System.out.println(e.getMessage());
     }
+
+    $noinline$b405152615(/*should_throw=*/false);
+    try {
+        $noinline$b405152615(/*should_throw=*/true);
+        throw new Error("Expected NullPointerException");
+    } catch (NullPointerException expected) {
+    }
+
+    $noinline$b405152615_fixedIndex(/*should_throw=*/false);
+    try {
+        $noinline$b405152615_fixedIndex(/*should_throw=*/true);
+        throw new Error("Expected NullPointerException");
+    } catch (NullPointerException expected) {
+    }
+
+    $noinline$b405152615_oneSet(/*should_throw=*/false);
+    try {
+        $noinline$b405152615_oneSet(/*should_throw=*/true);
+        throw new Error("Expected NullPointerException");
+    } catch (NullPointerException expected) {
+    }
   }
 
   /// CHECK-START: void Main.testSimpleUse() code_sinking (before)
@@ -723,6 +744,80 @@ public class Main {
     String s1s2 = sb.append(s1).append(s2).toString();
     sb = null;
     throw new Error(s1s2);
+  }
+
+  // Don't sink the ArraySet as both the index and the ArraySet are in a loop.
+
+  /// CHECK-START: void Main.$noinline$b405152615(boolean) code_sinking (before)
+  /// CHECK: ArraySet loop:B{{\d+}}
+
+  /// CHECK-START: void Main.$noinline$b405152615(boolean) code_sinking (after)
+  /// CHECK: ArraySet loop:B{{\d+}}
+  static void $noinline$b405152615(boolean should_throw) {
+      char[] arr = new char[2];
+      int i = 2;
+      int d = 2;
+      do {
+          --i;
+          arr[i] = '0';
+          d /= 2;
+      } while (d != 0);
+
+      if (should_throw) {
+          // Ends in a throw to create an uncommon branch.
+          System.out.println(arr);
+          throw null;
+      }
+  }
+
+  // Fine to sink the ArraySet in the loop since the index is not in a loop.
+
+  /// CHECK-START: void Main.$noinline$b405152615_fixedIndex(boolean) code_sinking (before)
+  /// CHECK: ArraySet loop:B{{\d+}}
+
+  /// CHECK-START: void Main.$noinline$b405152615_fixedIndex(boolean) code_sinking (after)
+  /// CHECK: ArraySet loop:none
+  static void $noinline$b405152615_fixedIndex(boolean should_throw) {
+      char[] arr = {'0', '1'};
+      int i = 1;
+      int d = 2;
+      do {
+          arr[i] = '0';
+          d /= 2;
+      } while (d != 0);
+
+      if (should_throw) {
+          // Ends in a throw to create an uncommon branch.
+          System.out.println(arr);
+          throw null;
+      }
+  }
+
+  // Fine to sink the ArraySet not in a loop even when the index is in a loop.
+
+  /// CHECK-START: void Main.$noinline$b405152615_oneSet(boolean) code_sinking (before)
+  /// CHECK:      ArraySet
+  /// CHECK-NEXT: If
+
+  /// CHECK-START: void Main.$noinline$b405152615_oneSet(boolean) code_sinking (after)
+  /// CHECK:      ArraySet
+  /// CHECK-NEXT: ClinitCheck
+  /// CHECK-NEXT: StaticFieldGet field_name:java.lang.System.out
+  static void $noinline$b405152615_oneSet(boolean should_throw) {
+      char[] arr = new char[1];
+      int i = 2;
+      int d = 2;
+      do {
+          --i;
+          d /= 2;
+      } while (d != 0);
+      arr[i] = '0';
+
+      if (should_throw) {
+          // Ends in a throw to create an uncommon branch.
+          System.out.println(arr);
+          throw null;
+      }
   }
 
   private static void requireNonNull(Object o) {

@@ -46,10 +46,7 @@ class HSchedulerARM64 : public HScheduler {
   }
 
  protected:
-  std::pair<SchedulingGraph, ScopedArenaVector<SchedulingNode*>> BuildSchedulingGraph(
-      HBasicBlock* block,
-      ScopedArenaAllocator* allocator,
-      const HeapLocationCollector* heap_location_collector) override;
+  void CalculateLatencies(ArrayRef<SchedulingNode* const> scheduling_nodes) override;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(HSchedulerARM64);

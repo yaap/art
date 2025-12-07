@@ -5149,7 +5149,7 @@ void IntrinsicLocationsBuilderRISCV64::VisitThreadCurrentThread(HInvoke* invoke)
 void IntrinsicCodeGeneratorRISCV64::VisitThreadCurrentThread(HInvoke* invoke) {
   Riscv64Assembler* assembler = GetAssembler();
   XRegister out = invoke->GetLocations()->Out().AsRegister<XRegister>();
-  __ Loadwu(out, TR, Thread::PeerOffset<kRiscv64PointerSize>().Int32Value());
+  __ Loadwu(out, TR, Thread::CurrentPeerOffset<kRiscv64PointerSize>().Int32Value());
 }
 
 void IntrinsicLocationsBuilderRISCV64::VisitThreadInterrupted(HInvoke* invoke) {

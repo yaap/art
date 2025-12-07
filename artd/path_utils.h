@@ -140,6 +140,8 @@ bool PreRebootFlag(const aidl::com::android::server::art::VdexPath& vdex_path);
 
 bool IsPreRebootStagedFile(std::string_view filename);
 
+android::base::Result<std::string> GetPreRebootStagedMetadataFile();
+
 // Sets the root dir for `ListManagedFiles` and `ListRuntimeImageFiles`.
 // The passed string must be alive until the test ends.
 // For testing use only.

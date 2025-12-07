@@ -19,7 +19,6 @@
 #include <android-base/logging.h>
 
 #include "arch/instruction_set.h"
-#include "indirect_reference_table.h"
 
 #ifdef ART_ENABLE_CODEGEN_arm
 #include "jni/quick/arm/calling_convention_arm.h"

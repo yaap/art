@@ -30,24 +30,28 @@ public class Main {
   public static int p(float arg) {
     return (arg > 5.0f) ? 0 : -1;
   }
-  
+
+  /// CHECK-START: void Main.testThrowIntoCatchBlock(int, java.lang.Object, int[]) liveness (before)
+  /// CHECK-DAG:                    SuspendCheck
+
+  /// CHECK-START: void Main.testThrowIntoCatchBlock(int, java.lang.Object, int[]) liveness (after)
+  /// CHECK-NOT:                    SuspendCheck
+
   /// CHECK-START-{ARM,ARM64}: void Main.testThrowIntoCatchBlock(int, java.lang.Object, int[]) liveness (after)
   /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[45,49]
-  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[21,45,49,65]
-  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[21,45,49,65]
+  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[45,49,65]
+  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[45,49,65]
   /// CHECK-DAG:  <<Const1:i\d+>>   IntConstant 1         env_uses:[45,49]
-  /// CHECK-DAG:                    SuspendCheck          env:[[_,<<IntArg>>,<<RefArg>>,<<Array>>]]           liveness:20
   /// CHECK-DAG:                    NullCheck             env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:40
   /// CHECK-DAG:                    ArrayLength                                                               liveness:44
   /// CHECK-DAG:                    BoundsCheck           env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:48
   /// CHECK-DAG:                    TryBoundary
-  
+
   /// CHECK-START-{ARM,ARM64}-DEBUGGABLE: void Main.testThrowIntoCatchBlock(int, java.lang.Object, int[]) liveness (after)
-  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[21,45,49,65]
-  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[21,45,49,65]
-  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[21,45,49,65]
+  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[45,49,65]
+  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[45,49,65]
+  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[45,49,65]
   /// CHECK-DAG:  <<Const1:i\d+>>   IntConstant 1         env_uses:[45,49,65]
-  /// CHECK-DAG:                    SuspendCheck          env:[[_,<<IntArg>>,<<RefArg>>,<<Array>>]]           liveness:20
   /// CHECK-DAG:                    NullCheck             env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:40
   /// CHECK-DAG:                    ArrayLength                                                               liveness:44
   /// CHECK-DAG:                    BoundsCheck           env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:48
@@ -56,21 +60,19 @@ public class Main {
   // X86 and X86_64 generate at use site the ArrayLength, meaning only the BoundsCheck will have environment uses.
   /// CHECK-START-{X86,X86_64}: void Main.testThrowIntoCatchBlock(int, java.lang.Object, int[]) liveness (after)
   /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[49,49]
-  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[21,49,49,65]
-  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[21,49,49,65]
+  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[49,49,65]
+  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[49,49,65]
   /// CHECK-DAG:  <<Const1:i\d+>>   IntConstant 1         env_uses:[49,49]
-  /// CHECK-DAG:                    SuspendCheck          env:[[_,<<IntArg>>,<<RefArg>>,<<Array>>]]           liveness:20
   /// CHECK-DAG:                    NullCheck             env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:40
   /// CHECK-DAG:                    ArrayLength                                                               liveness:44
   /// CHECK-DAG:                    BoundsCheck           env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:48
   /// CHECK-DAG:                    TryBoundary
 
   /// CHECK-START-{X86,X86_64}-DEBUGGABLE: void Main.testThrowIntoCatchBlock(int, java.lang.Object, int[]) liveness (after)
-  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[21,49,49,65]
-  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[21,49,49,65]
-  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[21,49,49,65]
+  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[49,49,65]
+  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[49,49,65]
+  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[49,49,65]
   /// CHECK-DAG:  <<Const1:i\d+>>   IntConstant 1         env_uses:[49,49,65]
-  /// CHECK-DAG:                    SuspendCheck          env:[[_,<<IntArg>>,<<RefArg>>,<<Array>>]]           liveness:20
   /// CHECK-DAG:                    NullCheck             env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:40
   /// CHECK-DAG:                    ArrayLength                                                               liveness:44
   /// CHECK-DAG:                    BoundsCheck           env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:48
@@ -86,42 +88,44 @@ public class Main {
     }
   }
 
+  /// CHECK-START: void Main.testBoundsCheck(int, java.lang.Object, int[]) liveness (before)
+  /// CHECK-DAG:                    SuspendCheck
+
+  /// CHECK-START: void Main.testBoundsCheck(int, java.lang.Object, int[]) liveness (after)
+  /// CHECK-NOT:                    SuspendCheck
+
   /// CHECK-START-{ARM,ARM64}: void Main.testBoundsCheck(int, java.lang.Object, int[]) liveness (after)
   /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[]
-  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[21,37,41]
-  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[21,37,41]
+  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[37,41]
+  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[37,41]
   /// CHECK-DAG:  <<Const1:i\d+>>   IntConstant 1         env_uses:[]
-  /// CHECK-DAG:                    SuspendCheck          env:[[_,<<IntArg>>,<<RefArg>>,<<Array>>]]           liveness:20
   /// CHECK-DAG:                    NullCheck             env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:32
   /// CHECK-DAG:                    ArrayLength                                                               liveness:36
   /// CHECK-DAG:                    BoundsCheck           env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:40
 
   /// CHECK-START-{ARM,ARM64}-DEBUGGABLE: void Main.testBoundsCheck(int, java.lang.Object, int[]) liveness (after)
-  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[21,37,41]
-  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[21,37,41]
-  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[21,37,41]
+  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[37,41]
+  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[37,41]
+  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[37,41]
   /// CHECK-DAG:  <<Const1:i\d+>>   IntConstant 1         env_uses:[37,41]
-  /// CHECK-DAG:                    SuspendCheck          env:[[_,<<IntArg>>,<<RefArg>>,<<Array>>]]           liveness:20
   /// CHECK-DAG:                    NullCheck             env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:32
   /// CHECK-DAG:                    ArrayLength                                                               liveness:36
   /// CHECK-DAG:                    BoundsCheck           env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:40
 
   /// CHECK-START-{X86,X86_64}: void Main.testBoundsCheck(int, java.lang.Object, int[]) liveness (after)
   /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[]
-  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[21,41,41]
-  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[21,41,41]
+  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[41,41]
+  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[41,41]
   /// CHECK-DAG:  <<Const1:i\d+>>   IntConstant 1         env_uses:[]
-  /// CHECK-DAG:                    SuspendCheck          env:[[_,<<IntArg>>,<<RefArg>>,<<Array>>]]           liveness:20
   /// CHECK-DAG:                    NullCheck             env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:32
   /// CHECK-DAG:                    ArrayLength                                                               liveness:36
   /// CHECK-DAG:                    BoundsCheck           env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:40
 
   /// CHECK-START-{X86,X86_64}-DEBUGGABLE: void Main.testBoundsCheck(int, java.lang.Object, int[]) liveness (after)
-  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[21,41,41]
-  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[21,41,41]
-  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[21,41,41]
+  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[41,41]
+  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[41,41]
+  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[41,41]
   /// CHECK-DAG:  <<Const1:i\d+>>   IntConstant 1         env_uses:[41,41]
-  /// CHECK-DAG:                    SuspendCheck          env:[[_,<<IntArg>>,<<RefArg>>,<<Array>>]]           liveness:20
   /// CHECK-DAG:                    NullCheck             env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:32
   /// CHECK-DAG:                    ArrayLength                                                               liveness:36
   /// CHECK-DAG:                    BoundsCheck           env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:40
@@ -129,32 +133,35 @@ public class Main {
     a[1] = x;
   }
 
+  /// CHECK-START: void Main.testDeoptimize(int, java.lang.Object, int[]) liveness (before)
+  /// CHECK-DAG:                    SuspendCheck
+
+  /// CHECK-START: void Main.testDeoptimize(int, java.lang.Object, int[]) liveness (after)
+  /// CHECK-NOT:                    SuspendCheck
+
   /// CHECK-START: void Main.testDeoptimize(int, java.lang.Object, int[]) liveness (after)
   /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[49]
-  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[25,41,49]
-  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[25,41,49]
+  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[41,49]
+  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[41,49]
   /// CHECK-DAG:  <<Const0:i\d+>>   IntConstant 0         env_uses:[49]
-  /// CHECK-DAG:                    SuspendCheck          env:[[_,<<IntArg>>,<<RefArg>>,<<Array>>]]           liveness:24
   /// CHECK-DAG:                    NullCheck             env:[[<<Const0>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:36
   /// CHECK-DAG:                    ArrayLength                                                               liveness:40
   /// CHECK-DAG:                    Deoptimize            env:[[<<Const0>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:48
-  
+
   /// CHECK-START-{ARM,ARM64}-DEBUGGABLE: void Main.testDeoptimize(int, java.lang.Object, int[]) liveness (after)
-  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[25,41,49]
-  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[25,41,49]
-  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[25,41,49]
+  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[41,49]
+  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[41,49]
+  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[41,49]
   /// CHECK-DAG:  <<Const0:i\d+>>   IntConstant 0         env_uses:[41,49]
-  /// CHECK-DAG:                    SuspendCheck          env:[[_,<<IntArg>>,<<RefArg>>,<<Array>>]]           liveness:24
   /// CHECK-DAG:                    NullCheck             env:[[<<Const0>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:36
   /// CHECK-DAG:                    ArrayLength                                                               liveness:40
   /// CHECK-DAG:                    Deoptimize            env:[[<<Const0>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:48
 
   /// CHECK-START-{X86,X86_64}-DEBUGGABLE: void Main.testDeoptimize(int, java.lang.Object, int[]) liveness (after)
-  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[25,41,49]
-  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[25,41,49]
-  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[25,41,49]
+  /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[41,49]
+  /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[41,49]
+  /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[41,49]
   /// CHECK-DAG:  <<Const0:i\d+>>   IntConstant 0         env_uses:[41,49]
-  /// CHECK-DAG:                    SuspendCheck          env:[[_,<<IntArg>>,<<RefArg>>,<<Array>>]]           liveness:24
   /// CHECK-DAG:                    NullCheck             env:[[<<Const0>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:36
   /// CHECK-DAG:                    ArrayLength                                                               liveness:40
   /// CHECK-DAG:                    Deoptimize            env:[[<<Const0>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:48

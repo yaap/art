@@ -17,11 +17,15 @@
 #ifndef ART_RUNTIME_COMPILER_CALLBACKS_H_
 #define ART_RUNTIME_COMPILER_CALLBACKS_H_
 
+#include "android-base/properties.h"
 #include "base/locks.h"
 #include "base/macros.h"
 #include "class_status.h"
+#include "com_android_art_rw_flags.h"
 #include "dex/class_reference.h"
 #include "dex/method_reference.h"
+
+using ::android::base::GetBoolProperty;
 
 namespace art HIDDEN {
 
@@ -79,6 +83,11 @@ class CompilerCallbacks {
   virtual bool CanUseOatStatusForVerification([[maybe_unused]] mirror::Class* klass)
       REQUIRES_SHARED(Locks::mutator_lock_) {
     return false;
+  }
+
+  virtual bool ShouldEnableProfileCode() {
+    bool build_enabled = GetBoolProperty("dalvik.vm.allow_profile_code", false);
+    return com::android::art::rw::flags::enable_profile_code_rw() && build_enabled;
   }
 
  protected:

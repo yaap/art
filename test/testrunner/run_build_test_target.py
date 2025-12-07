@@ -106,24 +106,6 @@ if 'make' in target:
   if subprocess.call(build_command.split()):
     sys.exit(1)
 
-if 'golem' in target:
-  machine_type = target.get('golem')
-  # use art-opt-cc by default since it mimics the default preopt config.
-  default_golem_config = 'art-opt-cc'
-
-  os.chdir(env.ANDROID_BUILD_TOP)
-  cmd =  ['art/tools/golem/build-target.sh']
-  cmd += ['-j' + str(n_threads)]
-  cmd += ['--showcommands']
-  cmd += ['--machine-type=%s' %(machine_type)]
-  cmd += ['--golem=%s' %(default_golem_config)]
-  cmd += ['--tarball']
-  sys.stdout.write(str(cmd) + '\n')
-  sys.stdout.flush()
-
-  if subprocess.call(cmd):
-    sys.exit(1)
-
 if 'run-test' in target:
   run_test_command = [sys.executable, # Use the same python as we are using now.
                       os.path.join(env.ANDROID_BUILD_TOP,

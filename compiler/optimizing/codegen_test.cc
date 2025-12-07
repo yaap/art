@@ -875,11 +875,8 @@ TEST_F(CodegenTest, ARM64FrameSizeSIMD) {
   graph->SetHasTraditionalSIMD(true);
 
   DCHECK_EQ(arm64::callee_saved_fp_registers.GetCount(), 8);
-  vixl::aarch64::CPURegList reg_list = arm64::callee_saved_fp_registers;
-  while (!reg_list.IsEmpty()) {
-    uint32_t reg_code = reg_list.PopLowestIndex().GetCode();
-    codegen.AddAllocatedRegister(Location::FpuRegisterLocation(reg_code));
-  }
+  codegen.AddAllocatedFpuRegisterSet(
+      dchecked_integral_cast<uint32_t>(arm64::callee_saved_fp_registers.GetList()));
   codegen.ComputeSpillMask();
 
   EXPECT_EQ(codegen.GetFpuSpillSize(), kExpectedFPSpillSize);
@@ -896,11 +893,8 @@ TEST_F(CodegenTest, ARM64FrameSizeNoSIMD) {
   graph->SetHasPredicatedSIMD(false);
 
   DCHECK_EQ(arm64::callee_saved_fp_registers.GetCount(), 8);
-  vixl::aarch64::CPURegList reg_list = arm64::callee_saved_fp_registers;
-  while (!reg_list.IsEmpty()) {
-    uint32_t reg_code = reg_list.PopLowestIndex().GetCode();
-    codegen.AddAllocatedRegister(Location::FpuRegisterLocation(reg_code));
-  }
+  codegen.AddAllocatedFpuRegisterSet(
+      dchecked_integral_cast<uint32_t>(arm64::callee_saved_fp_registers.GetList()));
   codegen.ComputeSpillMask();
 
   EXPECT_EQ(codegen.GetFpuSpillSize(), kExpectedFPSpillSize);

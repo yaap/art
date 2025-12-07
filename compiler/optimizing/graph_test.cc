@@ -262,7 +262,7 @@ TEST_F(GraphTest, IfSuccessorMultiplePreHeaders2) {
 }
 
 TEST_F(GraphTest, InsertInstructionBefore) {
-  HGraph* graph = CreateGraph();
+  CreateGraph();
   HBasicBlock* block = CreateGotoBlock();
   HInstruction* got = block->GetLastInstruction();
   ASSERT_TRUE(got->IsControlFlow());

@@ -42,7 +42,6 @@ class ImTableTest : public CommonRuntimeTest {
     jobject jclass_loader_b = LoadDex("IMTB");
     CHECK(jclass_loader_b != nullptr);
 
-    ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
     Thread* self = Thread::Current();
 
     StackHandleScope<3> hs(self);

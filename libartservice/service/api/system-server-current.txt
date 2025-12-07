@@ -1,10 +1,11 @@
 // Signature format: 2.0
 package com.android.server.art {
 
-  @FlaggedApi("com.android.art.flags.art_service_v3") public final class ArtManagedInstallFileHelper {
-    method @FlaggedApi("com.android.art.flags.art_service_v3") @NonNull public static java.util.List<java.lang.String> filterPathsForApk(@NonNull java.util.List<java.lang.String>, @NonNull String);
-    method @FlaggedApi("com.android.art.flags.art_service_v3") @NonNull public static String getTargetPathForApk(@NonNull String, @NonNull String);
-    method @FlaggedApi("com.android.art.flags.art_service_v3") public static boolean isArtManaged(@NonNull String);
+  public final class ArtManagedInstallFileHelper {
+    method @NonNull public static java.util.List<java.lang.String> filterPathsForApk(@NonNull java.util.List<java.lang.String>, @NonNull String);
+    method @NonNull public static String getTargetPathForApk(@NonNull String, @NonNull String);
+    method public static boolean isArtManaged(@NonNull String);
+    method @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") @CheckResult @NonNull public static java.util.List<com.android.server.art.model.ValidationResult> validateFiles(@NonNull java.util.List<java.lang.String>);
   }
 
   public final class ArtManagerLocal {
@@ -64,12 +65,15 @@ package com.android.server.art {
 
   public class DexUseManagerLocal {
     method @NonNull public static com.android.server.art.DexUseManagerLocal createInstance(@NonNull android.content.Context);
+    method @FlaggedApi("com.android.art.flags.package_last_used_api") public long getPackageLastUsedAtMillis(@NonNull String);
     method @NonNull public java.util.List<com.android.server.art.model.DexContainerFileUseInfo> getSecondaryDexContainerFileUseInfo(@NonNull String);
     method public void notifyDexContainersLoaded(@NonNull com.android.server.pm.PackageManagerLocal.FilteredSnapshot, @NonNull String, @NonNull java.util.Map<java.lang.String,java.lang.String>);
     method public void systemReady();
   }
 
   public class ReasonMapping {
+    method @FlaggedApi("com.android.art.flags.updatable_filter_and_reason") public static int getCompilationReasonValueForFrameworkStatsReporting(@NonNull String);
+    method @FlaggedApi("com.android.art.flags.updatable_filter_and_reason") public static int getCompilerFilterValueForFrameworkStatsReporting(@NonNull String);
     field public static final String REASON_BG_DEXOPT = "bg-dexopt";
     field public static final String REASON_BOOT_AFTER_MAINLINE_UPDATE = "boot-after-mainline-update";
     field public static final String REASON_BOOT_AFTER_OTA = "boot-after-ota";
@@ -82,7 +86,7 @@ package com.android.server.art {
     field public static final String REASON_INSTALL_BULK_SECONDARY = "install-bulk-secondary";
     field public static final String REASON_INSTALL_BULK_SECONDARY_DOWNGRADED = "install-bulk-secondary-downgraded";
     field public static final String REASON_INSTALL_FAST = "install-fast";
-    field @FlaggedApi("com.android.art.flags.art_service_v3") public static final String REASON_PRE_REBOOT_DEXOPT = "ab-ota";
+    field public static final String REASON_PRE_REBOOT_DEXOPT = "ab-ota";
   }
 
 }
@@ -207,6 +211,16 @@ package com.android.server.art.model {
 
   public abstract class OperationProgress {
     method public int getPercentage();
+  }
+
+  @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") public class ValidationResult {
+    method @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") public int getCode();
+    method @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") @Nullable public String getMessage();
+    method @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") @NonNull public String getPath();
+    field @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") public static final int RESULT_ACCEPTED = 0; // 0x0
+    field @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") public static final int RESULT_SHOULD_DELETE_AND_CONTINUE = 2; // 0x2
+    field @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") public static final int RESULT_SHOULD_FAIL = 3; // 0x3
+    field @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") public static final int RESULT_UNRECOGNIZED = 1; // 0x1
   }
 
 }

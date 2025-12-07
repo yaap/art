@@ -164,6 +164,13 @@ std::unique_ptr<RuntimeParser> ParsedOptions::MakeParser(bool ignore_unrecognize
       .Define("-XX:HeapTargetUtilization=_")
           .WithType<double>().WithRange(0.1, 0.9)
           .IntoKey(M::HeapTargetUtilization)
+      .Define("-XX:EnableTimeBasedGcTrigger=_")
+          .WithType<bool>()
+          .WithValueMap({{"false", false}, {"true", true}})
+          .IntoKey(M::EnableTimeBasedGcTrigger)
+      .Define("-XX:HeapMemoryGcCostFactor=_")
+          .WithType<MemoryKiB>()
+          .IntoKey(M::HeapMemoryGcCostFactor)
       .Define("-XX:ForegroundHeapGrowthMultiplier=_")
           .WithType<double>().WithRange(0.1, 5.0)
           .IntoKey(M::ForegroundHeapGrowthMultiplier)
@@ -427,6 +434,7 @@ std::unique_ptr<RuntimeParser> ParsedOptions::MakeParser(bool ignore_unrecognize
           .WithValueMap(hiddenapi_policy_valuemap)
           .IntoKey(M::HiddenApiPolicy)
       .Define("-Xcore-platform-api-policy:_")
+          .WithHelp("Ignored if the hiddenapi_platform_enforcement flag is set.")
           .WithType<hiddenapi::EnforcementPolicy>()
           .WithValueMap(hiddenapi_policy_valuemap)
           .IntoKey(M::CorePlatformApiPolicy)
@@ -634,6 +642,7 @@ static void MaybeOverrideVerbosity() {
   //  gLogVerbosity.third_party_jni = true;  // TODO: don't check this in!
   //  gLogVerbosity.threads = true;  // TODO: don't check this in!
   //  gLogVerbosity.verifier = true;  // TODO: don't check this in!
+  //  gLogVerbosity.hiddenapi = true;  // TODO: don't check this in!
 }
 
 bool ParsedOptions::DoParse(const RuntimeOptions& options,
@@ -657,17 +666,11 @@ bool ParsedOptions::DoParse(const RuntimeOptions& options,
 
   // Handle parse errors by displaying the usage and potentially exiting.
   if (parse_result.IsError()) {
-    if (parse_result.GetStatus() == CmdlineResult::kUsage) {
+    if (parse_result.GetStatus() == CmdlineResult::kHelp) {
       UsageMessage(stdout, "%s\n", parse_result.GetMessage().c_str());
       Exit(0);
-    } else if (parse_result.GetStatus() == CmdlineResult::kUnknown && !ignore_unrecognized) {
-      Usage("%s\n", parse_result.GetMessage().c_str());
-      return false;
-    } else {
-      Usage("%s\n", parse_result.GetMessage().c_str());
-      Exit(0);
     }
-
+    Usage("%s\n", parse_result.GetMessage().c_str());
     UNREACHABLE();
   }
 
@@ -675,17 +678,22 @@ bool ParsedOptions::DoParse(const RuntimeOptions& options,
   RuntimeArgumentMap args = parser->ReleaseArgumentsMap();
   bool use_default_bootclasspath = true;
 
-  // -help, -showversion, etc.
+  // -help
   if (args.Exists(M::Help)) {
     Usage(nullptr);
-    return false;
-  } else if (args.Exists(M::ShowVersion)) {
+    UNREACHABLE();
+  }
+
+  // -showversion
+  if (args.Exists(M::ShowVersion)) {
     UsageMessage(stdout,
                  "ART version %s %s\n",
                  Runtime::GetVersion(),
                  GetInstructionSetString(kRuntimeISA));
     Exit(0);
-  } else if (args.Exists(M::BootClassPath)) {
+  }
+
+  if (args.Exists(M::BootClassPath)) {
     LOG(INFO) << "setting boot class path to " << args.Get(M::BootClassPath)->Join();
     use_default_bootclasspath = false;
   }
@@ -693,7 +701,7 @@ bool ParsedOptions::DoParse(const RuntimeOptions& options,
   if (args.GetOrDefault(M::Interpret)) {
     if (args.Exists(M::UseJitCompilation) && *args.Get(M::UseJitCompilation)) {
       Usage("-Xusejit:true and -Xint cannot be specified together\n");
-      Exit(0);
+      UNREACHABLE();
     }
     args.Set(M::UseJitCompilation, false);
   }
@@ -764,7 +772,7 @@ bool ParsedOptions::DoParse(const RuntimeOptions& options,
   if (args.Exists(M::ForceJitZygote)) {
     if (args.Exists(M::Image)) {
       Usage("-Ximage and -Xforcejitzygote cannot be specified together\n");
-      Exit(0);
+      UNREACHABLE();
     }
     // If `boot.art` exists in the ART APEX, it will be used. Otherwise, Everything will be JITed.
     args.Set(M::Image, ParseStringList<':'>::Split(GetJitZygoteBootImageLocation()));

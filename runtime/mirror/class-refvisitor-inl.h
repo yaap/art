@@ -46,11 +46,14 @@ inline void Class::VisitStaticFieldsReferences(const Visitor& visitor) NO_THREAD
 }
 
 template <bool kVisitNativeRoots,
+          bool kVisitInstanceFieldsRefs,
           VerifyObjectFlags kVerifyFlags,
           ReadBarrierOption kReadBarrierOption,
           typename Visitor>
 inline void Class::VisitReferences(ObjPtr<Class> klass, const Visitor& visitor) {
-  VisitInstanceFieldsReferences<kVerifyFlags>(klass.Ptr(), visitor);
+  if (kVisitInstanceFieldsRefs) {
+    VisitInstanceFieldsReferences<kVerifyFlags>(klass.Ptr(), visitor);
+  }
   // Right after a class is allocated, but not yet loaded
   // (ClassStatus::kNotReady, see ClassLinker::LoadClass()), GC may find it
   // and scan it. IsTemp() may call Class::GetAccessFlags() but may

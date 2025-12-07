@@ -29,6 +29,7 @@
     <test class="com.android.tradefed.testtype.ArtRunTest">
         <option name="run-test-name" value="{MODULE}" />
         <option name="classpath" value="/data/local/tmp/{MODULE}/{MODULE}.jar" />
+        <option name="test-timeout" value="120000" />
     </test>
 
     <!-- When this test is run in a Mainline context (e.g. with `mts-tradefed`), only enable it if

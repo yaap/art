@@ -18,6 +18,8 @@ package com.android.server.art.model;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import android.os.ParcelFileDescriptor;
+
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
@@ -41,11 +43,6 @@ public class DexoptParamsTest {
     @Test(expected = IllegalArgumentException.class)
     public void testBuildEmptyReason() {
         new DexoptParams.Builder("").build();
-    }
-
-    @Test(expected = IllegalArgumentException.class)
-    public void testBuildReasonVdex() {
-        new DexoptParams.Builder("vdex").setCompilerFilter("speed").setPriorityClass(90).build();
     }
 
     @Test(expected = IllegalArgumentException.class)
@@ -116,7 +113,7 @@ public class DexoptParamsTest {
     }
 
     @Test
-    public void testToBuilder() {
+    public void testToBuilder() throws Exception {
         // Update this test with new fields if this assertion fails.
         checkFieldCoverage();
 
@@ -126,6 +123,8 @@ public class DexoptParamsTest {
                         .setCompilerFilter("speed")
                         .setPriorityClass(90)
                         .setSplitName("split_0")
+                        .setLoggingFd(ParcelFileDescriptor.fromFd(1))
+                        .setVerboseLogTags("compiler,profiler")
                         .build();
 
         DexoptParams params2 = params1.toBuilder().build();
@@ -135,6 +134,8 @@ public class DexoptParamsTest {
         assertThat(params1.getPriorityClass()).isEqualTo(params2.getPriorityClass());
         assertThat(params1.getReason()).isEqualTo(params2.getReason());
         assertThat(params1.getSplitName()).isEqualTo(params2.getSplitName());
+        assertThat(params1.getLoggingFd()).isEqualTo(params2.getLoggingFd());
+        assertThat(params1.getVerboseLogTags()).isEqualTo(params2.getVerboseLogTags());
     }
 
     @Test
@@ -154,6 +155,7 @@ public class DexoptParamsTest {
         assertThat(proto.getCompilerFilter()).isEqualTo(params.getCompilerFilter());
         assertThat(proto.getPriorityClass()).isEqualTo(params.getPriorityClass());
         assertThat(proto.getReason()).isEqualTo(params.getReason());
+        // mLoggingFd and mVerboseLogTags are not supported yet.
     }
 
     @Test
@@ -175,6 +177,7 @@ public class DexoptParamsTest {
         assertThat(params.getPriorityClass()).isEqualTo(proto.getPriorityClass());
         assertThat(params.getReason()).isEqualTo(proto.getReason());
         assertThat(params.getSplitName()).isNull();
+        // mLoggingFd and mVerboseLogTags are not supported yet.
     }
 
     private void checkFieldCoverage() {
@@ -182,7 +185,7 @@ public class DexoptParamsTest {
                            .filter(field -> !Modifier.isStatic(field.getModifiers()))
                            .map(Field::getName)
                            .toList())
-                .containsExactly(
-                        "mFlags", "mCompilerFilter", "mPriorityClass", "mReason", "mSplitName");
+                .containsExactly("mFlags", "mCompilerFilter", "mPriorityClass", "mReason",
+                        "mSplitName", "mLoggingFd", "mVerboseLogTags");
     }
 }

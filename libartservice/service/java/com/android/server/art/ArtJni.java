@@ -20,11 +20,13 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.os.Build;
 import android.os.RemoteException;
+import android.system.ErrnoException;
 
 import androidx.annotation.RequiresApi;
 
 import dalvik.system.VMRuntime;
 
+import java.io.FileDescriptor;
 import java.io.IOException;
 
 /**
@@ -39,7 +41,6 @@ import java.io.IOException;
  */
 @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 public class ArtJni {
-
     private static volatile boolean sLoaded = false;
 
     private ArtJni() {}
@@ -61,21 +62,22 @@ public class ArtJni {
                 return;
             }
 
-            // During Pre-reboot Dexopt, the code is loaded by a separate class loader from the chroot
-            // dir, where the new ART apex is mounted. In this case, loading libartservice.so is tricky.
-            // The library depends on libc++.so, libbase.so, etc. Although the classloader allows
-            // specifying a library search path, it doesn’t allow specifying how to search for
-            // dependencies. Because the classloading takes place in system server, the old linkerconfig
-            // takes effect rather than the new one, and the old linkerconfig doesn’t specify how to
-            // search for dependencies for the new libartservice.so. This leads to an undesired
-            // behavior: the dependencies are resolved to those on the old platform.
+            // During Pre-reboot Dexopt, the code is loaded by a separate class loader from the
+            // chroot dir, where the new ART apex is mounted. In this case, loading libartservice.so
+            // is tricky. The library depends on libc++.so, libbase.so, etc. Although the
+            // classloader allows specifying a library search path, it doesn’t allow specifying how
+            // to search for dependencies. Because the classloading takes place in system server,
+            // the old linkerconfig takes effect rather than the new one, and the old linkerconfig
+            // doesn’t specify how to search for dependencies for the new libartservice.so. This
+            // leads to an undesired behavior: the dependencies are resolved to those on the old
+            // platform.
             //
-            // Also, we can't statically link libartservice.so against all dependencies because it not
-            // only bloats libartservice.so by a lot, but also prevents us from accessing the global
-            // runtime instance when the code is running in the normal situation.
+            // Also, we can't statically link libartservice.so against all dependencies because it
+            // not only bloats libartservice.so by a lot, but also prevents us from accessing the
+            // global runtime instance when the code is running in the normal situation.
             //
-            // Therefore, for Pre-reboot Dexopt, we just avoid loading libartservice.so, and delegate
-            // calls to artd instead.
+            // Therefore, for Pre-reboot Dexopt, we just avoid loading libartservice.so, and
+            // delegate calls to artd instead.
             if (VMRuntime.getRuntime().vmLibrary().equals("libartd.so")) {
                 System.loadLibrary("artserviced");
             } else {
@@ -185,6 +187,21 @@ public class ArtJni {
         return null;
     }
 
+    /**
+     * Generally the same as
+     * <a href="https://man7.org/linux/man-pages/man2/F_SETPIPE_SZ.2const.html">F_SETPIPE_SZ</a>,
+     * but caps the size to {@code /proc/sys/fs/pipe-max-size} to avoid the EPERM error.
+     */
+    public static int setPipeSize(@NonNull FileDescriptor fd, int size)
+            throws IOException, ErrnoException {
+        if (GlobalInjector.getInstance().isPreReboot()) {
+            // This is for shell commands only. We don't need this for Pre-reboot Dexopt.
+            throw new UnsupportedOperationException();
+        }
+        loadLibrary();
+        return setPipeSizeNative(fd, size);
+    }
+
     @Nullable private static native String validateDexPathNative(@NonNull String dexPath);
     @Nullable
     private static native String validateClassLoaderContextNative(
@@ -193,4 +210,6 @@ public class ArtJni {
     private static native void setPropertyNative(@NonNull String key, @NonNull String value);
     private static native void ensureNoProcessInDirNative(@NonNull String dir, int timeoutMs)
             throws IOException;
+    private static native int setPipeSizeNative(@NonNull FileDescriptor fd, int size)
+            throws IOException, ErrnoException;
 }

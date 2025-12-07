@@ -30,7 +30,7 @@
 #include "art_method-inl.h"
 #include "base/arena_allocator.h"
 #include "base/array_ref.h"
-#include "base/bit_vector.h"
+#include "base/bit_vector-inl.h"
 #include "base/hash_set.h"
 #include "base/logging.h"  // For VLOG
 #include "base/pointer_size.h"
@@ -59,6 +59,7 @@
 #include "gc/space/image_space.h"
 #include "gc/space/space.h"
 #include "handle_scope-inl.h"
+#include "intern_table.h"
 #include "intrinsics_enum.h"
 #include "intrinsics_list.h"
 #include "jni/jni_internal.h"
@@ -581,10 +582,67 @@ void CompilerDriver::Resolve(jobject class_loader,
   }
 }
 
-void CompilerDriver::ResolveConstStrings(const std::vector<const DexFile*>& dex_files,
-                                         bool only_startup_strings,
-                                         TimingLogger* timings) {
+BitVectorView<size_t> CompilerDriver::StringIndexesForDexFile(
+    const DexFile* dex_file, /*inout*/ DexFileStringReferences* dex_file_string_references) {
+  size_t num_string_ids = dex_file->NumStringIds();
+  auto [it, inserted] = dex_file_string_references->insert({dex_file, nullptr});
+  if (inserted) {
+    DCHECK(it->second == nullptr);
+    size_t size = BitVectorView<size_t>::BitsToWords(num_string_ids);
+    it->second = std::make_unique<size_t[]>(size);
+  }
+  return {it->second.get(), num_string_ids};
+}
+
+void CompilerDriver::CollectStringsForLinkerPatches(
+    /*inout*/ DexFileStringReferences* dex_file_string_references,
+    /*inout*/ TimingLogger* timings) {
+  TimingLogger::ScopedTiming t("Collect strings for linker patches", timings);
+  const DexFile* last_dex_file = nullptr;
+  BitVectorView<size_t> string_indexes;
+  compiled_methods_.Visit(
+      [&]([[maybe_unused]] const DexFileReference& ref, CompiledMethod* method) {
+        if (method != nullptr) {
+          for (const linker::LinkerPatch& patch : method->GetPatches()) {
+            if (patch.GetType() == linker::LinkerPatch::Type::kStringRelative) {
+              StringReference target_string = patch.TargetString();
+              if (last_dex_file != target_string.dex_file) {
+                last_dex_file = target_string.dex_file;
+                string_indexes = StringIndexesForDexFile(last_dex_file, dex_file_string_references);
+              }
+              string_indexes.SetBit(target_string.index);
+            }
+          }
+        }
+      });
+}
+
+void CompilerDriver::InternStrings(const DexFileStringReferences& dex_file_string_references,
+                                   /*inout*/ TimingLogger* timings) {
+  TimingLogger::ScopedTiming t("Intern const-string Strings", timings);
+  InternTable* intern_table = Runtime::Current()->GetClassLinker()->GetInternTable();
+  ScopedObjectAccess soa(Thread::Current());
+  for (const auto& pair : dex_file_string_references) {
+    const DexFile* dex_file = pair.first;
+    BitVectorView<size_t> string_indexes(pair.second.get(), dex_file->NumStringIds());
+    for (size_t index : string_indexes.Indexes()) {
+      dex::StringIndex string_index(index);
+      uint32_t utf16_length;
+      const char* utf8_data = dex_file->GetStringDataAndUtf16Length(string_index, &utf16_length);
+      ObjPtr<mirror::String> string =
+          intern_table->InternStrong(utf16_length, utf8_data);
+      CHECK(string != nullptr) << "Could not allocate a string";
+    }
+  }
+}
+
+void CompilerDriver::ResolveConstStrings(
+    const std::vector<const DexFile*>& dex_files,
+    bool only_startup_strings,
+    /*inout*/ DexFileStringReferences* dex_file_string_references,
+    /*inout*/ TimingLogger* timings) {
   TimingLogger::ScopedTiming t("Resolve const-string Strings", timings);
+  DCHECK_EQ(dex_file_string_references != nullptr, com::android::art::flags::weak_const_string());
   const ProfileCompilationInfo* profile_compilation_info =
       GetCompilerOptions().GetProfileCompilationInfo();
   if (only_startup_strings && profile_compilation_info == nullptr) {
@@ -599,7 +657,12 @@ void CompilerDriver::ResolveConstStrings(const std::vector<const DexFile*>& dex_
   size_t num_instructions = 0u;
 
   for (const DexFile* dex_file : dex_files) {
-    dex_cache.Assign(class_linker->FindDexCache(soa.Self(), *dex_file));
+    BitVectorView<size_t> string_indexes;
+    if (com::android::art::flags::weak_const_string()) {
+      string_indexes = StringIndexesForDexFile(dex_file, dex_file_string_references);
+    } else {
+      dex_cache.Assign(class_linker->FindDexCache(soa.Self(), *dex_file));
+    }
 
     ProfileCompilationInfo::ProfileIndexType profile_index =
         ProfileCompilationInfo::MaxProfileIndex();
@@ -646,21 +709,19 @@ void CompilerDriver::ResolveConstStrings(const std::vector<const DexFile*>& dex_
         // TODO: Collect the relevant string indices in parallel, then allocate them sequentially
         // in a stable order.
         for (const DexInstructionPcPair& inst : method.GetInstructions()) {
-          switch (inst->Opcode()) {
-            case Instruction::CONST_STRING:
-            case Instruction::CONST_STRING_JUMBO: {
-              dex::StringIndex string_index((inst->Opcode() == Instruction::CONST_STRING)
-                  ? inst->VRegB_21c()
-                  : inst->VRegB_31c());
-              ObjPtr<mirror::String> string = class_linker->ResolveString(string_index, dex_cache);
-              CHECK(string != nullptr) << "Could not allocate a string when forcing determinism";
-              ++num_instructions;
-              break;
-            }
-
-            default:
-              break;
+          Instruction::Code opcode = inst->Opcode();
+          if (opcode != Instruction::CONST_STRING && opcode != Instruction::CONST_STRING_JUMBO) {
+            continue;
           }
+          dex::StringIndex string_index(
+              (opcode == Instruction::CONST_STRING) ? inst->VRegB_21c() : inst->VRegB_31c());
+          if (com::android::art::flags::weak_const_string()) {
+            string_indexes.SetBit(string_index.index_);
+          } else {
+            ObjPtr<mirror::String> string = class_linker->ResolveString(string_index, dex_cache);
+            CHECK(string != nullptr) << "Could not allocate a string";
+          }
+          ++num_instructions;
         }
       }
     }
@@ -864,13 +925,21 @@ void CompilerDriver::PreCompile(jobject class_loader,
     Verify(class_loader, dex_files, timings);
     VLOG(compiler) << "Verify: " << GetMemoryUsageString(false);
 
-    if (GetCompilerOptions().IsForceDeterminism() &&
-        (GetCompilerOptions().IsBootImage() || GetCompilerOptions().IsBootImageExtension())) {
-      // Resolve strings from const-string. Do this now to have a deterministic image.
-      ResolveConstStrings(dex_files, /*only_startup_strings=*/ false, timings);
-      VLOG(compiler) << "Resolve const-strings: " << GetMemoryUsageString(false);
-    } else if (GetCompilerOptions().ResolveStartupConstStrings()) {
-      ResolveConstStrings(dex_files, /*only_startup_strings=*/ true, timings);
+    if (!com::android::art::flags::weak_const_string()) {
+      if (GetCompilerOptions().IsForceDeterminism() &&
+          (GetCompilerOptions().IsBootImage() || GetCompilerOptions().IsBootImageExtension())) {
+        // Resolve strings from const-string. Do this now to have a deterministic image.
+        ResolveConstStrings(dex_files,
+                            /*only_startup_strings=*/ false,
+                            /*dex_file_string_references=*/ nullptr,
+                            timings);
+        VLOG(compiler) << "Resolve const-strings: " << GetMemoryUsageString(false);
+      } else if (GetCompilerOptions().ResolveStartupConstStrings()) {
+        ResolveConstStrings(dex_files,
+                            /*only_startup_strings=*/ true,
+                            /*dex_file_string_references=*/ nullptr,
+                            timings);
+      }
     }
 
     if (had_hard_verifier_failure_ && GetCompilerOptions().AbortOnHardVerifierFailure()) {
@@ -930,6 +999,26 @@ void CompilerDriver::PreCompile(jobject class_loader,
   }
 }
 
+void CompilerDriver::PostCompile(const std::vector<const DexFile*>& dex_files,
+                                 TimingLogger* timings) {
+  if (!com::android::art::flags::weak_const_string()) {
+    return;
+  }
+  CheckThreadPools();
+  DexFileStringReferences dex_file_string_references;
+  if (GetCompilerOptions().IsAnyCompilationEnabled() &&
+      (GetCompilerOptions().IsBootImage() || GetCompilerOptions().IsBootImageExtension())) {
+    CollectStringsForLinkerPatches(&dex_file_string_references, timings);
+  }
+  if (GetCompilerOptions().ResolveStartupConstStrings()) {
+    ResolveConstStrings(
+        dex_files, /*only_startup_strings=*/ true, &dex_file_string_references, timings);
+  }
+  if (!dex_file_string_references.empty()) {
+    InternStrings(dex_file_string_references, timings);
+  }
+}
+
 class ResolveCatchBlockExceptionsClassVisitor : public ClassVisitor {
  public:
   explicit ResolveCatchBlockExceptionsClassVisitor(Thread* self)
@@ -949,7 +1038,7 @@ class ResolveCatchBlockExceptionsClassVisitor : public ClassVisitor {
     }
     // Filter out classes without methods.
     // These include primitive types and array types which have no dex file.
-    if (c->GetMethodsPtr()->size() == 0u) {
+    if (c->NumMethods() == 0u) {
       return true;
     }
     auto it = dex_file_records_.find(&c->GetDexFile());
@@ -2448,10 +2537,21 @@ class InitializeClassVisitor : public CompilationVisitor {
                                                                  *class_def);
     for ( ; value_it.HasNext(); value_it.Next()) {
       if (value_it.GetValueType() == annotations::RuntimeEncodedStaticFieldValueIterator::kString) {
-        // Resolve the string. This will intern the string.
-        art::ObjPtr<mirror::String> resolved = class_linker->ResolveString(
-            dex::StringIndex(value_it.GetJavaValue().i), dex_cache);
-        CHECK(resolved != nullptr);
+        dex::StringIndex string_index(value_it.GetJavaValue().i);
+        if (com::android::art::flags::weak_const_string()) {
+          // Strongly intern the string to ensure it stays alive and makes it to the image.
+          uint32_t utf16_length;
+          const char* utf8_data =
+              dex_cache->GetDexFile()->GetStringDataAndUtf16Length(string_index, &utf16_length);
+          ObjPtr<mirror::String> string =
+              class_linker->GetInternTable()->InternStrong(utf16_length, utf8_data);
+          CHECK(string != nullptr) << "Could not allocate a string";
+        } else {
+          // Resolve the string. This will intern the string.
+          art::ObjPtr<mirror::String> resolved =
+              class_linker->ResolveString(string_index, dex_cache);
+          CHECK(resolved != nullptr) << "Could not allocate a string";
+        }
       }
     }
 

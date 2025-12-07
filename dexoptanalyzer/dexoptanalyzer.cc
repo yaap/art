@@ -252,7 +252,7 @@ class DexoptAnalyzer final {
     }
   }
 
-  bool CreateRuntime() const {
+  bool CreateRuntime(CompilerCallbacks* callbacks) const {
     RuntimeOptions options;
     // The image could be custom, so make sure we explicitly pass it.
     std::string img = "-Ximage:" + image_;
@@ -268,8 +268,7 @@ class DexoptAnalyzer final {
     options.push_back(std::make_pair("-Xno-sig-chain", nullptr));
     // Pretend we are a compiler so that we can re-use the same infrastructure to load a different
     // ISA image and minimize the amount of things that get started.
-    NoopCompilerCallbacks callbacks;
-    options.push_back(std::make_pair("compilercallbacks", &callbacks));
+    options.push_back(std::make_pair("compilercallbacks", callbacks));
     // Make sure we don't attempt to relocate. The tool should only retrieve the DexOptNeeded
     // status and not attempt to relocate the boot image.
     options.push_back(std::make_pair("-Xnorelocate", nullptr));
@@ -286,7 +285,8 @@ class DexoptAnalyzer final {
   }
 
   ReturnCode GetDexOptNeeded() const {
-    if (!CreateRuntime()) {
+    NoopCompilerCallbacks callbacks;
+    if (!CreateRuntime(&callbacks)) {
       return ReturnCode::kErrorCannotCreateRuntime;
     }
     std::unique_ptr<Runtime> runtime(Runtime::Current());

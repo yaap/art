@@ -28,22 +28,33 @@ namespace art HIDDEN {
 
 using helpers::CanFitInShifterOperand;
 using helpers::HasShifterOperand;
+using helpers::IsBeforeInReversePostOrder;
 using helpers::IsSubRightSubLeftShl;
+using helpers::ShifterOperandMap;
 
 namespace arm {
 
-class InstructionSimplifierArmVisitor final : public HGraphVisitor {
+class InstructionSimplifierArmVisitor final
+    : public CRTPGraphVisitor<InstructionSimplifierArmVisitor> {
  public:
   InstructionSimplifierArmVisitor(
       HGraph* graph, CodeGenerator* codegen, OptimizingCompilerStats* stats)
-      : HGraphVisitor(graph), codegen_(codegen), stats_(stats) {}
+      : CRTPGraphVisitor(graph),
+        codegen_(codegen),
+        stats_(stats),
+        shifter_operand_map_(std::nullopt) {}
+
+  ~InstructionSimplifierArmVisitor() {
+    DCHECK_IMPLIES(shifter_operand_map_.has_value(), shifter_operand_map_->IsEmpty());
+  }
 
  private:
   void RecordSimplification() {
     MaybeRecordStat(stats_, MethodCompilationStat::kInstructionSimplificationsArch);
   }
 
-  bool TryMergeIntoUsersShifterOperand(HInstruction* instruction);
+  bool TryMarkingShifterOperand(HInstruction* bitfield_op);
+  bool TryMergingShifterOperand(HInstruction* use);
   bool TryMergeIntoShifterOperand(HInstruction* use, HInstruction* bitfield_op, bool do_merge);
   bool CanMergeIntoShifterOperand(HInstruction* use, HInstruction* bitfield_op) {
     return TryMergeIntoShifterOperand(use, bitfield_op, /* do_merge= */ false);
@@ -53,36 +64,56 @@ class InstructionSimplifierArmVisitor final : public HGraphVisitor {
     return TryMergeIntoShifterOperand(use, bitfield_op, /* do_merge= */ true);
   }
 
-  /**
-   * This simplifier uses a special-purpose BB visitor.
-   * (1) No need to visit Phi nodes.
-   * (2) Since statements can be removed in a "forward" fashion,
-   *     the visitor should test if each statement is still there.
-   */
-  void VisitBasicBlock(HBasicBlock* block) override {
-    // TODO: fragile iteration, provide more robust iterators?
-    for (HInstructionIteratorPrefetchNext it(block->GetInstructions()); !it.Done(); it.Advance()) {
-      HInstruction* instruction = it.Current();
-      if (instruction->IsInBlock()) {
-        Dispatch(instruction);
-      }
-    }
+  bool TryMultiplyAccumulateSimplification(HInstruction* use, HInstruction* maybe_mul) {
+    return maybe_mul->IsMul() &&
+           maybe_mul->HasOnlyOneNonEnvironmentUse() &&
+           TryCombineMultiplyAccumulate(use, maybe_mul->AsMul(), InstructionSet::kArm);
   }
 
-  void VisitAnd(HAnd* instruction) override;
-  void VisitArrayGet(HArrayGet* instruction) override;
-  void VisitArraySet(HArraySet* instruction) override;
-  void VisitMul(HMul* instruction) override;
-  void VisitOr(HOr* instruction) override;
-  void VisitRol(HRol* instruction) override;
-  void VisitShl(HShl* instruction) override;
-  void VisitShr(HShr* instruction) override;
-  void VisitSub(HSub* instruction) override;
-  void VisitTypeConversion(HTypeConversion* instruction) override;
-  void VisitUShr(HUShr* instruction) override;
+  // Keep `ForwardVisit()` functions from base class visible except for those we replace below.
+  using CRTPGraphVisitor::ForwardVisit;
+
+  // Forward `Shl`, `Shr` and `UShr` to `HandleShiftForShifterOperand()`.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HShl*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitShl);
+    return &InstructionSimplifierArmVisitor::HandleShiftForShifterOperand;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HShr*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitShr);
+    return &InstructionSimplifierArmVisitor::HandleShiftForShifterOperand;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HUShr*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitUShr);
+    return &InstructionSimplifierArmVisitor::HandleShiftForShifterOperand;
+  }
+
+  // Forward `And` and `Or` to `HandleAndOr()`.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HAnd*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitAnd);
+    return &InstructionSimplifierArmVisitor::HandleAndOr;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HOr*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitOr);
+    return &InstructionSimplifierArmVisitor::HandleAndOr;
+  }
+
+  void HandleShiftForShifterOperand(HBinaryOperation* shift);
+  void HandleAndOr(HBinaryOperation* bitwise_op);
+
+  void VisitAdd(HAdd* instruction);
+  void VisitArrayGet(HArrayGet* instruction);
+  void VisitArraySet(HArraySet* instruction);
+  void VisitMul(HMul* instruction);
+  void VisitRol(HRol* instruction);
+  void VisitSub(HSub* instruction);
+  void VisitTypeConversion(HTypeConversion* instruction);
+  void VisitXor(HXor* instruction);
 
   CodeGenerator* codegen_;
   OptimizingCompilerStats* stats_;
+  std::optional<ShifterOperandMap> shifter_operand_map_;
+
+  template <typename T> friend class art::CRTPGraphVisitor;
 };
 
 bool InstructionSimplifierArmVisitor::TryMergeIntoShifterOperand(HInstruction* use,
@@ -151,14 +182,13 @@ bool InstructionSimplifierArmVisitor::TryMergeIntoShifterOperand(HInstruction* u
     if (bitfield_op->GetUses().empty()) {
       bitfield_op->GetBlock()->RemoveInstruction(bitfield_op);
     }
-    RecordSimplification();
   }
 
   return true;
 }
 
-// Merge a bitfield move instruction into its uses if it can be merged in all of them.
-bool InstructionSimplifierArmVisitor::TryMergeIntoUsersShifterOperand(HInstruction* bitfield_op) {
+// Mark a bitfield move instruction for merging into its uses if it can be merged in all of them.
+bool InstructionSimplifierArmVisitor::TryMarkingShifterOperand(HInstruction* bitfield_op) {
   DCHECK(CanFitInShifterOperand(bitfield_op));
 
   if (bitfield_op->HasEnvironmentUses()) {
@@ -176,22 +206,54 @@ bool InstructionSimplifierArmVisitor::TryMergeIntoUsersShifterOperand(HInstructi
     if (!CanMergeIntoShifterOperand(user, bitfield_op)) {
       return false;
     }
+    if (shifter_operand_map_.has_value() && shifter_operand_map_->Contains(user)) {
+      return false;  // The user shall already have shifter operand merged.
+    }
   }
 
-  // Merge the instruction into its uses.
-  for (auto it = uses.begin(), end = uses.end(); it != end; /* ++it below */) {
-    HInstruction* user = it->GetUser();
-    // Increment `it` now because `*it` will disappear thanks to MergeIntoShifterOperand().
-    ++it;
-    bool merged = MergeIntoShifterOperand(user, bitfield_op);
-    DCHECK(merged);
+  // Mark the instruction for merging into its uses. The merging is done when we visit those uses.
+  if (!shifter_operand_map_.has_value()) {
+    shifter_operand_map_.emplace(GetGraph()->GetArenaStack());
   }
-
+  for (const HUseListNode<HInstruction*>& use : uses) {
+    shifter_operand_map_->Add(use.GetUser(), bitfield_op);
+  }
   return true;
 }
 
-void InstructionSimplifierArmVisitor::VisitAnd(HAnd* instruction) {
-  if (TryMergeNegatedInput(instruction)) {
+bool InstructionSimplifierArmVisitor::TryMergingShifterOperand(HInstruction* user) {
+  if (!shifter_operand_map_.has_value()) {
+    return false;
+  }
+  HInstruction* bitfield_op = shifter_operand_map_->TryTakingBitFieldOp(user);
+  if (bitfield_op == nullptr) {
+    return false;
+  }
+  bool merged = MergeIntoShifterOperand(user, bitfield_op);
+  DCHECK(merged);
+  return true;
+}
+
+void InstructionSimplifierArmVisitor::HandleShiftForShifterOperand(HBinaryOperation* shift) {
+  DCHECK(shift->IsShl() || shift->IsShr() || shift->IsUShr());
+  DCHECK_EQ(shift->GetRight()->IsConstant(), shift->GetRight()->IsIntConstant());
+  if (shift->GetRight()->IsIntConstant()) {
+    TryMarkingShifterOperand(shift);
+  }
+}
+
+void InstructionSimplifierArmVisitor::HandleAndOr(HBinaryOperation* bitwise_op) {
+  DCHECK(bitwise_op->IsAnd() || bitwise_op->IsOr());
+  if (TryMergingShifterOperand(bitwise_op) ||
+      TryMergeNegatedInput(bitwise_op)) {
+    RecordSimplification();
+  }
+}
+
+void InstructionSimplifierArmVisitor::VisitAdd(HAdd* instruction) {
+  if (TryMergingShifterOperand(instruction)  ||
+      TryMultiplyAccumulateSimplification(instruction, instruction->GetLeft()) ||
+      TryMultiplyAccumulateSimplification(instruction, instruction->GetRight())) {
     RecordSimplification();
   }
 }
@@ -253,13 +315,14 @@ void InstructionSimplifierArmVisitor::VisitArraySet(HArraySet* instruction) {
 }
 
 void InstructionSimplifierArmVisitor::VisitMul(HMul* instruction) {
-  if (TryCombineMultiplyAccumulate(instruction, InstructionSet::kArm)) {
-    RecordSimplification();
+  if (instruction->HasOnlyOneNonEnvironmentUse()) {
+    HInstruction* use = instruction->GetUses().front().GetUser();
+    if (use->IsAdd() || (use->IsSub() && instruction == use->AsSub()->GetRight())) {
+      // Shall be simplified when visiting the `use` unless the `use` is simplified in another way.
+      return;
+    }
   }
-}
-
-void InstructionSimplifierArmVisitor::VisitOr(HOr* instruction) {
-  if (TryMergeNegatedInput(instruction)) {
+  if (TrySimpleMultiplyAccumulatePatterns(instruction, InstructionSet::kArm)) {
     RecordSimplification();
   }
 }
@@ -269,23 +332,33 @@ void InstructionSimplifierArmVisitor::VisitRol(HRol* instruction) {
   RecordSimplification();
 }
 
-void InstructionSimplifierArmVisitor::VisitShl(HShl* instruction) {
-  if (instruction->InputAt(1)->IsConstant()) {
-    TryMergeIntoUsersShifterOperand(instruction);
-  }
-}
-
-void InstructionSimplifierArmVisitor::VisitShr(HShr* instruction) {
-  if (instruction->InputAt(1)->IsConstant()) {
-    TryMergeIntoUsersShifterOperand(instruction);
-  }
-}
-
 void InstructionSimplifierArmVisitor::VisitSub(HSub* instruction) {
+  if (TryMergingShifterOperand(instruction) ||
+      TryMultiplyAccumulateSimplification(instruction, instruction->GetRight())) {
+    RecordSimplification();
+    return;
+  }
   if (IsSubRightSubLeftShl(instruction)) {
-    HInstruction* shl = instruction->GetRight()->InputAt(0);
+    HSub* right_sub = instruction->GetRight()->AsSub();
+    HInstruction* shl = right_sub->InputAt(0);
     if (shl->InputAt(1)->IsConstant() && TryReplaceSubSubWithSubAdd(instruction)) {
-      if (TryMergeIntoUsersShifterOperand(shl)) {
+      DCHECK(!instruction->IsInBlock());
+      DCHECK(shl->IsInBlock());
+      DCHECK(right_sub->IsInBlock());
+      DCHECK(right_sub->HasOnlyOneNonEnvironmentUse());
+      if (TryMarkingShifterOperand(shl)) {
+        HInstruction* replacement = right_sub->GetUses().front().GetUser();
+        bool success = TryMergingShifterOperand(right_sub);
+        DCHECK(success);
+        for (auto it = shl->GetUses().begin(), end = shl->GetUses().end(); it != end; ) {
+          HInstruction* use = it->GetUser();
+          ++it;  // Move to next use early as the current use node can be removed below.
+          if (IsBeforeInReversePostOrder(GetGraph(), use, replacement)) {
+            // This use shall not be visited again, so make the replacement now.
+            success = TryMergingShifterOperand(use);
+            DCHECK(success);
+          }
+        }
         return;
       }
     }
@@ -306,13 +379,13 @@ void InstructionSimplifierArmVisitor::VisitTypeConversion(HTypeConversion* instr
   }
 
   if (DataType::IsIntegralType(result_type) && DataType::IsIntegralType(input_type)) {
-    TryMergeIntoUsersShifterOperand(instruction);
+    TryMarkingShifterOperand(instruction);
   }
 }
 
-void InstructionSimplifierArmVisitor::VisitUShr(HUShr* instruction) {
-  if (instruction->InputAt(1)->IsConstant()) {
-    TryMergeIntoUsersShifterOperand(instruction);
+void InstructionSimplifierArmVisitor::VisitXor(HXor* instruction) {
+  if (TryMergingShifterOperand(instruction)) {
+    RecordSimplification();
   }
 }
 

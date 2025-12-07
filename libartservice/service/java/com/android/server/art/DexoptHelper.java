@@ -39,6 +39,7 @@ import com.android.server.art.model.DexoptParams;
 import com.android.server.art.model.DexoptResult;
 import com.android.server.art.model.OperationProgress;
 import com.android.server.pm.PackageManagerLocal;
+import com.android.server.pm.PackageManagerLocal.FilteredSnapshot;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.PackageState;
 import com.android.server.pm.pkg.SharedLibrary;
@@ -53,7 +54,6 @@ import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -96,27 +96,13 @@ public class DexoptHelper {
      * ArtManagerLocal#dexoptPackages}.
      */
     @NonNull
-    public DexoptResult dexopt(@NonNull PackageManagerLocal.FilteredSnapshot snapshot,
+    public DexoptResult dexopt(@NonNull FilteredSnapshot snapshot,
             @NonNull List<String> packageNames, @NonNull DexoptParams params,
             @NonNull CancellationSignal cancellationSignal, @NonNull Executor dexoptExecutor,
             @Nullable Executor progressCallbackExecutor,
             @Nullable Consumer<OperationProgress> progressCallback) {
-        return dexoptPackages(
-                getPackageStates(snapshot, packageNames,
-                        (params.getFlags() & ArtFlags.FLAG_SHOULD_INCLUDE_DEPENDENCIES) != 0),
-                params, cancellationSignal, dexoptExecutor, progressCallbackExecutor,
-                progressCallback);
-    }
-
-    /**
-     * DO NOT use this method directly. Use {@link ArtManagerLocal#dexoptPackage} or {@link
-     * ArtManagerLocal#dexoptPackages}.
-     */
-    @NonNull
-    private DexoptResult dexoptPackages(@NonNull List<PackageState> pkgStates,
-            @NonNull DexoptParams params, @NonNull CancellationSignal cancellationSignal,
-            @NonNull Executor dexoptExecutor, @Nullable Executor progressCallbackExecutor,
-            @Nullable Consumer<OperationProgress> origProgressCallback) {
+        List<PackageState> pkgStates = getPackageStates(snapshot, packageNames,
+                (params.getFlags() & ArtFlags.FLAG_SHOULD_INCLUDE_DEPENDENCIES) != 0);
         // TODO(jiakaiz): Find out whether this is still needed.
         long identityToken = Binder.clearCallingIdentity();
 
@@ -145,7 +131,8 @@ public class DexoptHelper {
                         PrimaryDexUtils.getDexInfoBySplitName(pkg, params.getSplitName());
                     }
                     try {
-                        return dexoptPackage(pkgState, pkg, params, childCancellationSignal);
+                        return dexoptPackage(
+                                snapshot, pkgState, pkg, params, childCancellationSignal);
                     } catch (RuntimeException e) {
                         AsLog.wtf("Unexpected package-level exception during dexopt", e);
                         return PackageDexoptResult.create(pkgState.getPackageName(),
@@ -155,19 +142,7 @@ public class DexoptHelper {
                 }, dexoptExecutor));
             }
 
-            Consumer<OperationProgress> progressCallback =
-                DexoptHooks.maybeWrapDexoptProgressCallback(params, origProgressCallback);
-
             if (progressCallback != null) {
-                if (progressCallbackExecutor == null) {
-                    if (origProgressCallback == progressCallback) {
-                        // this is not a wrapper progress callback, and caller hasn't supplied the
-                        // executor
-                        throw new NullPointerException("progressCallbackExecutor");
-                    }
-                    progressCallbackExecutor = Executors.newSingleThreadExecutor();
-                }
-
                 CompletableFuture.runAsync(() -> {
                     progressCallback.accept(OperationProgress.create(
                             0 /* current */, futures.size(), null /* packageDexoptResult */));
@@ -224,9 +199,9 @@ public class DexoptHelper {
      * ArtManagerLocal#dexoptPackages}.
      */
     @NonNull
-    private PackageDexoptResult dexoptPackage(@NonNull PackageState pkgState,
-            @NonNull AndroidPackage pkg, @NonNull DexoptParams params,
-            @NonNull CancellationSignal cancellationSignal) {
+    private PackageDexoptResult dexoptPackage(@NonNull FilteredSnapshot snapshot,
+            @NonNull PackageState pkgState, @NonNull AndroidPackage pkg,
+            @NonNull DexoptParams params, @NonNull CancellationSignal cancellationSignal) {
         List<DexContainerFileDexoptResult> results = new ArrayList<>();
         Function<Integer, PackageDexoptResult> createResult = (packageLevelStatus)
                 -> PackageDexoptResult.create(
@@ -242,8 +217,9 @@ public class DexoptHelper {
                     return createResult.apply(DexoptResult.DEXOPT_CANCELLED);
                 }
 
-                results.addAll(
-                        mInjector.getPrimaryDexopter(pkgState, pkg, params, cancellationSignal)
+                results.addAll(mInjector
+                                .getPrimaryDexopter(
+                                        snapshot, pkgState, pkg, params, cancellationSignal)
                                 .dexopt());
             }
 
@@ -346,11 +322,11 @@ public class DexoptHelper {
         }
 
         @NonNull
-        PrimaryDexopter getPrimaryDexopter(@NonNull PackageState pkgState,
-                @NonNull AndroidPackage pkg, @NonNull DexoptParams params,
-                @NonNull CancellationSignal cancellationSignal) {
-            return new PrimaryDexopter(mContext, mConfig, mReporterExecutor, pkgState, pkg, params,
-                    cancellationSignal);
+        PrimaryDexopter getPrimaryDexopter(@NonNull FilteredSnapshot snapshot,
+                @NonNull PackageState pkgState, @NonNull AndroidPackage pkg,
+                @NonNull DexoptParams params, @NonNull CancellationSignal cancellationSignal) {
+            return new PrimaryDexopter(mContext, mConfig, mReporterExecutor, snapshot, pkgState,
+                    pkg, params, cancellationSignal);
         }
 
         @NonNull

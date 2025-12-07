@@ -23,6 +23,7 @@
 
 #include "art_method-inl.h"
 #include "base/dumpable.h"
+#include "base/inlined_vector.h"
 #include "base/mutex-inl.h"
 #include "base/sdk_version.h"
 #include "base/stl_util.h"
@@ -567,12 +568,15 @@ std::unique_ptr<JavaVMExt> JavaVMExt::Create(Runtime* runtime,
 }
 
 jint JavaVMExt::HandleGetEnv(/*out*/void** env, jint version) {
-  std::vector<GetEnvHook> env_hooks;
+  static constexpr size_t kMaxStackEntries = 4u;
+  InlinedVector<GetEnvHook, kMaxStackEntries> env_hooks;
   {
     ReaderMutexLock rmu(Thread::Current(), env_hooks_lock_);
-    env_hooks.assign(env_hooks_.begin(), env_hooks_.end());
+    for (GetEnvHook hook : env_hooks_) {
+      env_hooks.push_back(hook);
+    }
   }
-  for (GetEnvHook hook : env_hooks) {
+  for (GetEnvHook hook : env_hooks.GetArray()) {
     jint res = hook(this, env, version);
     if (res == JNI_OK) {
       return JNI_OK;

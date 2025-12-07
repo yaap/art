@@ -11,41 +11,59 @@ func init() {
 	testInstallInfoGobRegId = gobtools.RegisterType(func() gobtools.CustomDec { return new(testInstallInfo) })
 }
 
-func (r testInstallInfo) Encode(buf *bytes.Buffer) error {
+func (r testInstallInfo) Encode(ctx gobtools.EncContext, buf *bytes.Buffer) error {
 	var err error
 
-	if err = gobtools.EncodeSimple(buf, int32(len(r.Testcases))); err != nil {
-		return err
-	}
-	for k, v := range r.Testcases {
-		if err = gobtools.EncodeString(buf, k); err != nil {
+	if r.Testcases == nil {
+		if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
 			return err
 		}
-		if err = gobtools.EncodeString(buf, v); err != nil {
+	} else {
+		if err = gobtools.EncodeSimple(buf, int32(len(r.Testcases))); err != nil {
 			return err
+		}
+		for k, v := range r.Testcases {
+			if err = gobtools.EncodeString(buf, k); err != nil {
+				return err
+			}
+			if err = gobtools.EncodeString(buf, v); err != nil {
+				return err
+			}
 		}
 	}
 
-	if err = gobtools.EncodeSimple(buf, int32(len(r.TestMap))); err != nil {
-		return err
-	}
-	for k, v := range r.TestMap {
-		if err = gobtools.EncodeString(buf, k); err != nil {
+	if r.TestMap == nil {
+		if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
 			return err
 		}
-		if err = gobtools.EncodeSimple(buf, int32(len(v))); err != nil {
+	} else {
+		if err = gobtools.EncodeSimple(buf, int32(len(r.TestMap))); err != nil {
 			return err
 		}
-		for val1 := 0; val1 < len(v); val1++ {
-			if err = gobtools.EncodeString(buf, v[val1]); err != nil {
+		for k, v := range r.TestMap {
+			if err = gobtools.EncodeString(buf, k); err != nil {
 				return err
+			}
+			if v == nil {
+				if err = gobtools.EncodeSimple(buf, int32(-1)); err != nil {
+					return err
+				}
+			} else {
+				if err = gobtools.EncodeSimple(buf, int32(len(v))); err != nil {
+					return err
+				}
+				for val1 := 0; val1 < len(v); val1++ {
+					if err = gobtools.EncodeString(buf, v[val1]); err != nil {
+						return err
+					}
+				}
 			}
 		}
 	}
 	return err
 }
 
-func (r *testInstallInfo) Decode(buf *bytes.Reader) error {
+func (r *testInstallInfo) Decode(ctx gobtools.EncContext, buf *bytes.Reader) error {
 	var err error
 
 	var val1 int32
@@ -53,7 +71,7 @@ func (r *testInstallInfo) Decode(buf *bytes.Reader) error {
 	if err != nil {
 		return err
 	}
-	if val1 > 0 {
+	if val1 != -1 {
 		r.Testcases = make(map[string]string, val1)
 		for val2 := 0; val2 < int(val1); val2++ {
 			var k string
@@ -75,7 +93,7 @@ func (r *testInstallInfo) Decode(buf *bytes.Reader) error {
 	if err != nil {
 		return err
 	}
-	if val5 > 0 {
+	if val5 != -1 {
 		r.TestMap = make(map[string][]string, val5)
 		for val6 := 0; val6 < int(val5); val6++ {
 			var k string
@@ -89,7 +107,7 @@ func (r *testInstallInfo) Decode(buf *bytes.Reader) error {
 			if err != nil {
 				return err
 			}
-			if val9 > 0 {
+			if val9 != -1 {
 				v = make([]string, val9)
 				for val10 := 0; val10 < int(val9); val10++ {
 					err = gobtools.DecodeString(buf, &v[val10])

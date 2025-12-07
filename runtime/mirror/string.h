@@ -227,7 +227,7 @@ class MANAGED String final : public Object {
   int32_t LastIndexOf(MemoryType* chars, int32_t ch, int32_t from_index)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  int32_t CompareTo(ObjPtr<String> other) REQUIRES_SHARED(Locks::mutator_lock_);
+  EXPORT int32_t CompareTo(ObjPtr<String> other) REQUIRES_SHARED(Locks::mutator_lock_);
 
   static ObjPtr<CharArray> ToCharArray(Handle<String> h_this, Thread* self)
       REQUIRES_SHARED(Locks::mutator_lock_)

@@ -68,7 +68,7 @@ static constexpr int32_t kFloatNaN = INT32_C(0x7FC00000);
 static RegisterSet OneRegInReferenceOutSaveEverythingCallerSaves() {
   InvokeRuntimeCallingConvention calling_convention;
   RegisterSet caller_saves = RegisterSet::Empty();
-  caller_saves.Add(Location::RegisterLocation(calling_convention.GetRegisterAt(0)));
+  caller_saves.AddCoreRegister(calling_convention.GetRegisterAt(0));
   // TODO: Add GetReturnLocation() to the calling convention so that we can DCHECK()
   // that the kPrimNot result register is the same as the first argument register.
   return caller_saves;
@@ -1143,10 +1143,7 @@ CodeGeneratorX86::CodeGeneratorX86(HGraph* graph,
     : CodeGenerator(graph,
                     kNumberOfCpuRegisters,
                     kNumberOfXmmRegisters,
-                    kNumberOfRegisterPairs,
-                    ComputeRegisterMask(kCoreCalleeSaves, arraysize(kCoreCalleeSaves))
-                        | (1 << kFakeReturnRegister),
-                    0,
+                    ComputeCalleeSaves(),
                     compiler_options,
                     stats,
                     ArrayRef<const bool>(detail::kIsIntrinsicUnimplemented)),
@@ -1174,13 +1171,27 @@ CodeGeneratorX86::CodeGeneratorX86(HGraph* graph,
       fixups_to_jump_tables_(graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)),
       method_address_offset_(std::less<uint32_t>(),
                              graph->GetAllocator()->Adapter(kArenaAllocCodeGenerator)) {
+  // `long`s require register pairs.
+  data_types_requiring_register_pair_ = 1u << enum_cast<>(DataType::Type::kInt64);
+
+  blocked_registers_ = ComputeBlockedRegisters();
   // Use a fake return address register to mimic Quick.
-  AddAllocatedRegister(Location::RegisterLocation(kFakeReturnRegister));
+  AddAllocatedCoreRegister(kFakeReturnRegister);
 }
 
-void CodeGeneratorX86::SetupBlockedRegisters() const {
+inline RegisterSet CodeGeneratorX86::ComputeCalleeSaves() {
+  RegisterSet callee_saves = RegisterSet::Empty();
+  callee_saves.AddCoreRegisterSet(
+      ComputeRegisterMask(kCoreCalleeSaves, arraysize(kCoreCalleeSaves)) |
+      (1 << kFakeReturnRegister));
+  return callee_saves;
+}
+
+inline RegisterSet CodeGeneratorX86::ComputeBlockedRegisters() {
+  RegisterSet blocked_registers = RegisterSet::Empty();
   // Stack register is always reserved.
-  blocked_core_registers_[ESP] = true;
+  blocked_registers.AddCoreRegister(ESP);
+  return blocked_registers;
 }
 
 InstructionCodeGeneratorX86::InstructionCodeGeneratorX86(HGraph* graph, CodeGeneratorX86* codegen)
@@ -1885,7 +1896,7 @@ void CodeGeneratorX86::AddLocationAsTemp(Location location, LocationSummary* loc
 }
 
 void InstructionCodeGeneratorX86::HandleGoto(HInstruction* got, HBasicBlock* successor) {
-  if (successor->IsExitBlock()) {
+  if (GetGraph()->IsExitBlock(successor)) {
     DCHECK(got->GetPrevious()->AlwaysThrows());
     return;  // no code needed
   }
@@ -1900,7 +1911,7 @@ void InstructionCodeGeneratorX86::HandleGoto(HInstruction* got, HBasicBlock* suc
     return;
   }
 
-  if (block->IsEntryBlock() && (previous != nullptr) && previous->IsSuspendCheck()) {
+  if (GetGraph()->IsEntryBlock(block) && (previous != nullptr) && previous->IsSuspendCheck()) {
     GenerateSuspendCheck(previous->AsSuspendCheck(), nullptr);
   }
   if (!codegen_->GoesToNextBlock(got->GetBlock(), successor)) {
@@ -1922,7 +1933,7 @@ void LocationsBuilderX86::VisitTryBoundary(HTryBoundary* try_boundary) {
 
 void InstructionCodeGeneratorX86::VisitTryBoundary(HTryBoundary* try_boundary) {
   HBasicBlock* successor = try_boundary->GetNormalFlowSuccessor();
-  if (!successor->IsExitBlock()) {
+  if (!GetGraph()->IsExitBlock(successor)) {
     HandleGoto(try_boundary, successor);
   }
 }
@@ -2274,7 +2285,7 @@ void LocationsBuilderX86::VisitDeoptimize(HDeoptimize* deoptimize) {
       LocationSummary::Create(allocator_, deoptimize, LocationSummary::kCallOnSlowPath);
   InvokeRuntimeCallingConvention calling_convention;
   RegisterSet caller_saves = RegisterSet::Empty();
-  caller_saves.Add(Location::RegisterLocation(calling_convention.GetRegisterAt(0)));
+  caller_saves.AddCoreRegister(calling_convention.GetRegisterAt(0));
   locations->SetCustomSlowPathCallerSaves(caller_saves);
   if (IsBooleanValueOrMaterializedCondition(deoptimize->InputAt(0))) {
     locations->SetInAt(0, Location::Any());
@@ -2752,6 +2763,9 @@ void LocationsBuilderX86::VisitInvokeStaticOrDirect(HInvokeStaticOrDirect* invok
     CriticalNativeCallingConventionVisitorX86 calling_convention_visitor(
         /*for_register_allocation=*/ true);
     CodeGenerator::CreateCommonInvokeLocationSummary(invoke, &calling_convention_visitor);
+    if (invoke->GetMethodLoadKind() != MethodLoadKind::kBootImageLinkTimePcRelative) {
+      invoke->GetLocations()->AddTemp(Location::RequiresRegister());  // For target method.
+    }
   } else {
     HandleInvoke(invoke);
   }
@@ -5567,6 +5581,7 @@ void CodeGeneratorX86::GenerateStaticOrDirectCall(
     case MethodLoadKind::kBootImageLinkTimePcRelative:
       // For kCallCriticalNative we skip loading the method and do the call directly.
       if (invoke->GetCodePtrLocation() == CodePtrLocation::kCallCriticalNative) {
+        DCHECK(callee_method.IsInvalid());
         break;
       }
       FALLTHROUGH_INTENDED;
@@ -5588,7 +5603,9 @@ void CodeGeneratorX86::GenerateStaticOrDirectCall(
                                     GetCriticalNativeDirectCallFrameSize>(invoke);
       if (invoke->GetMethodLoadKind() == MethodLoadKind::kBootImageLinkTimePcRelative) {
         DCHECK(GetCompilerOptions().IsBootImage() || GetCompilerOptions().IsBootImageExtension());
-        Register base_reg = GetInvokeExtraParameter(invoke, temp.AsRegister<Register>());
+        DCHECK(temp.IsInvalid());
+        Register base_reg =
+            invoke->GetLocations()->InAt(invoke->GetSpecialInputIndex()).AsRegister<Register>();
         __ call(Address(base_reg, CodeGeneratorX86::kPlaceholder32BitOffset));
         RecordBootImageJniEntrypointPatch(invoke);
       } else {
@@ -6868,8 +6885,8 @@ void InstructionCodeGeneratorX86::VisitArrayLength(HArrayLength* instruction) {
 void LocationsBuilderX86::VisitBoundsCheck(HBoundsCheck* instruction) {
   RegisterSet caller_saves = RegisterSet::Empty();
   InvokeRuntimeCallingConvention calling_convention;
-  caller_saves.Add(Location::RegisterLocation(calling_convention.GetRegisterAt(0)));
-  caller_saves.Add(Location::RegisterLocation(calling_convention.GetRegisterAt(1)));
+  caller_saves.AddCoreRegister(calling_convention.GetRegisterAt(0));
+  caller_saves.AddCoreRegister(calling_convention.GetRegisterAt(1));
   LocationSummary* locations = codegen_->CreateThrowingSlowPathLocations(instruction, caller_saves);
   locations->SetInAt(0, Location::RegisterOrConstant(instruction->InputAt(0)));
   HInstruction* length = instruction->InputAt(1);
@@ -6978,7 +6995,7 @@ void InstructionCodeGeneratorX86::VisitSuspendCheck(HSuspendCheck* instruction) 
     // The back edge will generate the suspend check.
     return;
   }
-  if (block->IsEntryBlock() && instruction->GetNext()->IsGoto()) {
+  if (GetGraph()->IsEntryBlock(block) && instruction->GetNext()->IsGoto()) {
     // The goto will generate the suspend check.
     return;
   }
@@ -9285,17 +9302,19 @@ void CodeGeneratorX86::PatchJitRootUse(uint8_t* code,
       dchecked_integral_cast<uint32_t>(address);
 }
 
-void CodeGeneratorX86::EmitJitRootPatches(uint8_t* code, const uint8_t* roots_data) {
+void CodeGeneratorX86::EmitJitRootPatches(uint8_t* buffer,
+                                          [[maybe_unused]] const uint8_t* code_address,
+                                          const uint8_t* roots_data) {
   for (const PatchInfo<Label>& info : jit_string_patches_) {
     StringReference string_reference(info.target_dex_file, dex::StringIndex(info.offset_or_index));
     uint64_t index_in_table = GetJitStringRootIndex(string_reference);
-    PatchJitRootUse(code, roots_data, info, index_in_table);
+    PatchJitRootUse(buffer, roots_data, info, index_in_table);
   }
 
   for (const PatchInfo<Label>& info : jit_class_patches_) {
     TypeReference type_reference(info.target_dex_file, dex::TypeIndex(info.offset_or_index));
     uint64_t index_in_table = GetJitClassRootIndex(type_reference);
-    PatchJitRootUse(code, roots_data, info, index_in_table);
+    PatchJitRootUse(buffer, roots_data, info, index_in_table);
   }
 }
 

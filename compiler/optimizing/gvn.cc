@@ -453,7 +453,7 @@ void GlobalValueNumberer::VisitBasicBlock(HBasicBlock* block) {
   ValueSet* set = nullptr;
 
   const ArenaVector<HBasicBlock*>& predecessors = block->GetPredecessors();
-  if (predecessors.size() == 0 || predecessors[0]->IsEntryBlock()) {
+  if (predecessors.size() == 0 || graph_->IsEntryBlock(predecessors[0])) {
     // The entry block should only accumulate constant instructions, and
     // the builder puts constants only in the entry block.
     // Therefore, there is no need to propagate the value set to the next block.

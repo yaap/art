@@ -17,6 +17,7 @@
 #include "common_compiler_test.h"
 
 #include <android-base/unique_fd.h>
+
 #include <type_traits>
 
 #include "arch/instruction_set_features.h"
@@ -31,9 +32,9 @@
 #include "dex/descriptors_names.h"
 #include "driver/compiled_code_storage.h"
 #include "driver/compiler_options.h"
-#include "jni/java_vm_ext.h"
 #include "instrumentation-inl.h"
 #include "interpreter/interpreter.h"
+#include "jni/java_vm_ext.h"
 #include "mirror/class-inl.h"
 #include "mirror/class_loader.h"
 #include "mirror/dex_cache.h"
@@ -333,6 +334,10 @@ std::vector<uint8_t> CommonCompilerTestImpl::JniCompileCode(ArtMethod* method) {
 
 void CommonCompilerTestImpl::ClearBootImageOption() {
   compiler_options_->image_type_ = CompilerOptions::ImageType::kNone;
+}
+
+void CommonCompilerTestImpl::OverrideAssumedValue(ArtField* field, int32_t value) {
+  compiler_options_->assume_value_options_.assumed_value_overrides_.emplace(field, value);
 }
 
 }  // namespace art

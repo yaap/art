@@ -197,7 +197,7 @@ struct CmdlineType<double> : CmdlineTypeParser<double> {
       return Result::Failure("Failed to parse double from " + str);
     }
     if (errno == ERANGE) {
-      return Result::OutOfRange(
+      return Result::Invalid(
           "Failed to parse double from " + str + "; overflow/underflow occurred");
     }
 

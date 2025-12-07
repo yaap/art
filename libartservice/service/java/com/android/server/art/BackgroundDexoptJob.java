@@ -44,9 +44,12 @@ import com.android.server.art.model.Config;
 import com.android.server.art.model.DexoptResult;
 import com.android.server.art.model.OperationProgress;
 import com.android.server.pm.PackageManagerLocal;
+import android.os.Environment;
 
 import com.google.auto.value.AutoValue;
 
+import java.io.File;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -64,8 +67,6 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
      * frameworks/base/core/res/AndroidManifest.xml
      */
     private static final String JOB_PKG_NAME = Utils.PLATFORM_PACKAGE_NAME;
-    /** An arbitrary number. Must be unique among all jobs owned by the system uid. */
-    public static final int JOB_ID = 27873780;
 
     @VisibleForTesting public static final long JOB_INTERVAL_MS = TimeUnit.DAYS.toMillis(1);
 
@@ -86,24 +87,31 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
     }
 
     /** Handles {@link BackgroundDexoptJobService#onStartJob(JobParameters)}. */
+    @SuppressWarnings("FutureReturnValueIgnored") // This future never throws.
     @Override
     public boolean onStartJob(
             @NonNull BackgroundDexoptJobService jobService, @NonNull JobParameters params) {
-        start().thenAcceptAsync(result -> {
-            try {
-                writeStats(result);
-            } catch (RuntimeException e) {
-                // Not expected. Log wtf to surface it.
-                AsLog.wtf("Failed to write stats", e);
+        JobType jobType = JobType.fromJobId(params.getJobId());
+        start(jobType).thenAcceptAsync(result -> {
+            boolean wantsReschedule = false;
+
+            if (jobType == JobType.BG_DEXOPT) {
+                try {
+                    writeStats(result);
+                } catch (RuntimeException e) {
+                    // Not expected. Log wtf to surface it.
+                    AsLog.wtf("Failed to write stats", e);
+                }
+
+                // This is a periodic job, where the interval is specified in the `JobInfo`. "true"
+                // means to execute again in the same interval with the default retry policy, while
+                // "false" means not to execute again in the same interval but to execute again in
+                // the next interval.
+                wantsReschedule = result instanceof CompletedResult
+                        && ((CompletedResult) result).isCancelled();
             }
 
-            // This is a periodic job, where the interval is specified in the `JobInfo`. "true"
-            // means to execute again in the same interval with the default retry policy, while
-            // "false" means not to execute again in the same interval but to execute again in the
-            // next interval.
             // This call will be ignored if `onStopJob` is called.
-            boolean wantsReschedule =
-                    result instanceof CompletedResult && ((CompletedResult) result).isCancelled();
             jobService.jobFinished(params, wantsReschedule);
         });
         // "true" means the job will continue running until `jobFinished` is called.
@@ -122,8 +130,8 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
     }
 
     /** Handles {@link ArtManagerLocal#scheduleBackgroundDexoptJob()}. */
-    public @ScheduleStatus int schedule() {
-        if (this != BackgroundDexoptJobService.getJob(JOB_ID)) {
+    public @ScheduleStatus int schedule(@NonNull JobType jobType) {
+        if (this != BackgroundDexoptJobService.getJob(jobType.getJobId())) {
             throw new IllegalStateException("This job cannot be scheduled");
         }
 
@@ -132,21 +140,24 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
             return ArtFlags.SCHEDULE_DISABLED_BY_SYSPROP;
         }
 
+        // Don't set requires device idle for the post-UR job.
         JobInfo.Builder builder =
                 new JobInfo
-                        .Builder(JOB_ID,
+                        .Builder(jobType.getJobId(),
                                 new ComponentName(
                                         JOB_PKG_NAME, BackgroundDexoptJobService.class.getName()))
-                        .setPeriodic(JOB_INTERVAL_MS)
-                        .setRequiresDeviceIdle(true)
                         .setRequiresCharging(true)
                         .setRequiresBatteryNotLow(true);
 
-        Callback<ScheduleBackgroundDexoptJobCallback, Void> callback =
-                mInjector.getConfig().getScheduleBackgroundDexoptJobCallback();
-        if (callback != null) {
-            Utils.executeAndWait(
-                    callback.executor(), () -> { callback.get().onOverrideJobInfo(builder); });
+        if (jobType == JobType.BG_DEXOPT) {
+            builder.setRequiresDeviceIdle(true).setPeriodic(JOB_INTERVAL_MS);
+
+            Callback<ScheduleBackgroundDexoptJobCallback, Void> callback =
+                    mInjector.getConfig().getScheduleBackgroundDexoptJobCallback();
+            if (callback != null) {
+                Utils.executeAndWait(
+                        callback.executor(), () -> { callback.get().onOverrideJobInfo(builder); });
+            }
         }
 
         JobInfo info = builder.build();
@@ -162,16 +173,16 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
     }
 
     /** Handles {@link ArtManagerLocal#unscheduleBackgroundDexoptJob()}. */
-    public void unschedule() {
-        if (this != BackgroundDexoptJobService.getJob(JOB_ID)) {
+    public void unschedule(@NonNull JobType jobType) {
+        if (this != BackgroundDexoptJobService.getJob(jobType.getJobId())) {
             throw new IllegalStateException("This job cannot be unscheduled");
         }
 
-        mInjector.getJobScheduler().cancel(JOB_ID);
+        mInjector.getJobScheduler().cancel(jobType.getJobId());
     }
 
     @NonNull
-    public synchronized CompletableFuture<Result> start() {
+    public synchronized CompletableFuture<Result> start(@NonNull JobType jobType) {
         if (mRunningJob != null) {
             AsLog.i("Job is already running");
             return mRunningJob;
@@ -181,7 +192,7 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
         mLastStopReason = Optional.empty();
         mRunningJob = new CompletableFuture().supplyAsync(() -> {
             try (var tracing = new Utils.TracingWithTimingLogging(AsLog.getTag(), "jobExecution")) {
-                return run(mCancellationSignal);
+                return run(jobType, mCancellationSignal);
             } catch (RuntimeException e) {
                 AsLog.wtf("Fatal error", e);
                 return new FatalErrorResult();
@@ -211,7 +222,8 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
     }
 
     @NonNull
-    private CompletedResult run(@NonNull CancellationSignal cancellationSignal) {
+    private CompletedResult run(
+            @NonNull JobType jobType, @NonNull CancellationSignal cancellationSignal) {
         // Create callbacks to time each pass.
         Map<Integer, Long> startTimeMsByPass = new HashMap<>();
         Map<Integer, Long> durationMsByPass = new HashMap<>();
@@ -232,13 +244,12 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
         Map<Integer, DexoptResult> dexoptResultByPass;
         try (var snapshot = mInjector.getPackageManagerLocal().withFilteredSnapshot()) {
             dexoptResultByPass = mInjector.getArtManagerLocal().dexoptPackages(snapshot,
-                    ReasonMapping.REASON_BG_DEXOPT, cancellationSignal, Runnable::run,
-                    progressCallbacks);
+                    jobType.getReason(), cancellationSignal, Runnable::run, progressCallbacks);
         }
 
         // For simplicity, we don't support cancelling the following operation in the middle.
         // This is fine because it typically takes only a few seconds.
-        if (!cancellationSignal.isCanceled()) {
+        if (jobType == JobType.BG_DEXOPT && !cancellationSignal.isCanceled()) {
             // We do the cleanup after dexopt so that it doesn't affect the `getSizeBeforeBytes`
             // field in the result that we send to callbacks. Admittedly, this will cause us to
             // lose some chance to dexopt when the storage is very low, but it's fine because we
@@ -250,6 +261,10 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
                 long freedBytes = mInjector.getArtManagerLocal().cleanup(snapshot);
                 AsLog.i(String.format("Freed %d bytes", freedBytes));
             }
+            // Clean up files for legacy dexopt.
+            new File(Environment.getDataDirectory(), "system/package-cstats.list").delete();
+            new File(Environment.getDataDirectory(), "system/package-dex-usage.list").delete();
+            // TODO(b/258223472): Also delete "package-dcl.list" and "package-usage.list".
         }
         return CompletedResult.create(dexoptResultByPass, durationMsByPass);
     }
@@ -286,6 +301,36 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
         public boolean isCancelled() {
             return dexoptResultByPass().values().stream().anyMatch(
                     result -> result.getFinalStatus() == DexoptResult.DEXOPT_CANCELLED);
+        }
+    }
+
+    public enum JobType {
+        /** An arbitrary number. Must be unique among all jobs owned by the system uid. */
+        BG_DEXOPT(27873780, ReasonMapping.REASON_BG_DEXOPT),
+        /** An arbitrary number. Must be unique among all jobs owned by the system uid. */
+        POST_UNATTENDED_REBOOT(27873782, ReasonMapping.REASON_POST_UNATTENDED_REBOOT);
+
+        private final int jobId;
+        private final @NonNull String reason;
+
+        JobType(int jobId, @NonNull String reason) {
+            this.jobId = jobId;
+            this.reason = reason;
+        }
+
+        public int getJobId() {
+            return jobId;
+        }
+
+        public String getReason() {
+            return reason;
+        }
+
+        public static JobType fromJobId(int jobId) {
+            return Arrays.stream(values())
+                    .filter(t -> t.getJobId() == jobId)
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("Unknown jobId: " + jobId));
         }
     }
 

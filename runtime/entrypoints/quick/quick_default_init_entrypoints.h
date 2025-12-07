@@ -133,6 +133,7 @@ static void DefaultInitEntryPoints(JniEntryPoints* jpoints,
   // Tiered JIT support
   qpoints->SetUpdateInlineCache(art_quick_update_inline_cache);
   qpoints->SetCompileOptimized(art_quick_compile_optimized);
+  qpoints->SetCompileBaseline(art_quick_compile_baseline);
 
   // Tracing hooks
   qpoints->SetMethodEntryHook(art_quick_method_entry_hook);

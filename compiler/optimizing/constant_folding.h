@@ -23,6 +23,8 @@
 
 namespace art HIDDEN {
 
+class CompilerOptions;
+
 /**
  * Optimization pass performing a simple constant-expression
  * evaluation on the SSA form.
@@ -41,15 +43,18 @@ namespace art HIDDEN {
 class HConstantFolding : public HOptimization {
  public:
   HConstantFolding(HGraph* graph,
+                   const CompilerOptions& compiler_options,
                    OptimizingCompilerStats* stats = nullptr,
                    const char* name = kConstantFoldingPassName)
-      : HOptimization(graph, name, stats) {}
+      : HOptimization(graph, name, stats), compiler_options_(compiler_options) {}
 
   bool Run() override;
 
   static constexpr const char* kConstantFoldingPassName = "constant_folding";
 
  private:
+  const CompilerOptions& compiler_options_;
+
   DISALLOW_COPY_AND_ASSIGN(HConstantFolding);
 };
 

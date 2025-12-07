@@ -19,7 +19,6 @@
 #include "android-base/macros.h"
 #include "art_method-inl.h"
 #include "base/pointer_size.h"
-#include "class_linker-inl.h"
 #include "common_runtime_test.h"
 #include "common_throws.h"
 #include "dex/dex_file.h"
@@ -487,8 +486,6 @@ TEST_F(InstrumentationTest, NoInstrumentation) {
 TEST_F(InstrumentationTest, MethodEntryEvent) {
   ScopedObjectAccess soa(Thread::Current());
   jobject class_loader = LoadDex("Instrumentation");
-  Runtime* const runtime = Runtime::Current();
-  ClassLinker* class_linker = runtime->GetClassLinker();
   StackHandleScope<1> hs(soa.Self());
   Handle<mirror::ClassLoader> loader(hs.NewHandle(soa.Decode<mirror::ClassLoader>(class_loader)));
   ObjPtr<mirror::Class> klass = FindClass("LInstrumentation;", loader);
@@ -507,8 +504,6 @@ TEST_F(InstrumentationTest, MethodEntryEvent) {
 TEST_F(InstrumentationTest, MethodExitObjectEvent) {
   ScopedObjectAccess soa(Thread::Current());
   jobject class_loader = LoadDex("Instrumentation");
-  Runtime* const runtime = Runtime::Current();
-  ClassLinker* class_linker = runtime->GetClassLinker();
   StackHandleScope<1> hs(soa.Self());
   MutableHandle<mirror::ClassLoader> loader(
       hs.NewHandle(soa.Decode<mirror::ClassLoader>(class_loader)));
@@ -528,8 +523,6 @@ TEST_F(InstrumentationTest, MethodExitObjectEvent) {
 TEST_F(InstrumentationTest, MethodExitPrimEvent) {
   ScopedObjectAccess soa(Thread::Current());
   jobject class_loader = LoadDex("Instrumentation");
-  Runtime* const runtime = Runtime::Current();
-  ClassLinker* class_linker = runtime->GetClassLinker();
   StackHandleScope<1> hs(soa.Self());
   Handle<mirror::ClassLoader> loader(hs.NewHandle(soa.Decode<mirror::ClassLoader>(class_loader)));
   ObjPtr<mirror::Class> klass = FindClass("LInstrumentation;", loader);
@@ -563,8 +556,6 @@ TEST_F(InstrumentationTest, WatchedFramePop) {
 TEST_F(InstrumentationTest, FieldWriteObjectEvent) {
   ScopedObjectAccess soa(Thread::Current());
   jobject class_loader = LoadDex("Instrumentation");
-  Runtime* const runtime = Runtime::Current();
-  ClassLinker* class_linker = runtime->GetClassLinker();
   StackHandleScope<1> hs(soa.Self());
   Handle<mirror::ClassLoader> loader(hs.NewHandle(soa.Decode<mirror::ClassLoader>(class_loader)));
   ObjPtr<mirror::Class> klass = FindClass("LInstrumentation;", loader);
@@ -581,8 +572,6 @@ TEST_F(InstrumentationTest, FieldWriteObjectEvent) {
 TEST_F(InstrumentationTest, FieldWritePrimEvent) {
   ScopedObjectAccess soa(Thread::Current());
   jobject class_loader = LoadDex("Instrumentation");
-  Runtime* const runtime = Runtime::Current();
-  ClassLinker* class_linker = runtime->GetClassLinker();
   StackHandleScope<1> hs(soa.Self());
   Handle<mirror::ClassLoader> loader(hs.NewHandle(soa.Decode<mirror::ClassLoader>(class_loader)));
   ObjPtr<mirror::Class> klass = FindClass("LInstrumentation;", loader);
@@ -613,7 +602,6 @@ TEST_F(InstrumentationTest, DeoptimizeDirectMethod) {
   jobject class_loader = LoadDex("Instrumentation");
   Runtime* const runtime = Runtime::Current();
   instrumentation::Instrumentation* instr = runtime->GetInstrumentation();
-  ClassLinker* class_linker = runtime->GetClassLinker();
   StackHandleScope<1> hs(soa.Self());
   Handle<mirror::ClassLoader> loader(hs.NewHandle(soa.Decode<mirror::ClassLoader>(class_loader)));
   ObjPtr<mirror::Class> klass = FindClass("LInstrumentation;", loader);
@@ -663,7 +651,6 @@ TEST_F(InstrumentationTest, MixedDeoptimization) {
   jobject class_loader = LoadDex("Instrumentation");
   Runtime* const runtime = Runtime::Current();
   instrumentation::Instrumentation* instr = runtime->GetInstrumentation();
-  ClassLinker* class_linker = runtime->GetClassLinker();
   StackHandleScope<1> hs(soa.Self());
   Handle<mirror::ClassLoader> loader(hs.NewHandle(soa.Decode<mirror::ClassLoader>(class_loader)));
   ObjPtr<mirror::Class> klass = FindClass("LInstrumentation;", loader);

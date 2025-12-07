@@ -55,7 +55,11 @@ art_cc_library_static {
 
 art_cc_binary {
     name: "oatdump",
-    defaults: ["oatdump-defaults"],
+    defaults: [
+        "oatdump-defaults",
+        // Needed by "liboatdump_static" on host.
+        "art_libz_static_transitive_defaults",
+    ],
 
     target: {
         android: {
@@ -75,9 +79,6 @@ art_cc_binary {
             // Make the host binary static, except for system libraries.
             static_libs: ["liboatdump_static"],
             stl: "c++_static",
-            // libz is a libdex2oat_static transitive dependency from art_libz_static_defaults,
-            // duplicated here because we cannot import *_static_defaults only for host.
-            shared_libs: ["libz"],
         },
     },
 
@@ -112,6 +113,8 @@ art_cc_binary {
     defaults: [
         "art_debug_defaults",
         "oatdump-defaults",
+        // Needed by "liboatdumpd_static" on host.
+        "art_libz_static_transitive_defaults",
     ],
 
     target: {
@@ -132,7 +135,6 @@ art_cc_binary {
             // Comments for host in the oatdump binary apply here too.
             static_libs: ["liboatdumpd_static"],
             stl: "c++_static",
-            shared_libs: ["libz"],
         },
     },
 

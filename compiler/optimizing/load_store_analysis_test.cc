@@ -656,7 +656,6 @@ TEST_F(LoadStoreAnalysisTest, PartialPhiPropagation1) {
 
   HPhi* left_phi = MakePhi(left_merge, {obj_param, new_inst});
   HInstruction* call_left = MakeInvokeStatic(left_merge, DataType::Type::kVoid, {left_phi});
-  MakeGoto(left_merge);
   left_phi->SetCanBeNull(true);
 
   HPhi* return_phi = MakePhi(breturn, {left_phi, obj_param});

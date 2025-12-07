@@ -55,7 +55,7 @@ static void RemoveFromCycle(HInstruction* instruction) {
   instruction->RemoveAsUserOfAllInputs();
   instruction->RemoveEnvironmentUsers();
   instruction->GetBlock()->RemoveInstructionOrPhi(instruction, /*ensure_safety=*/ false);
-  RemoveEnvironmentUses(instruction);
+  instruction->RemoveEnvironmentUses();
   ResetEnvironmentInputRecords(instruction);
 }
 

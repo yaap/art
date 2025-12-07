@@ -24,7 +24,7 @@
 namespace art HIDDEN {
 class HBasicBlock;
 
-struct BlockNamer {
+class BlockNamer {
  public:
   struct NameWrapper {
     HBasicBlock* blk_;

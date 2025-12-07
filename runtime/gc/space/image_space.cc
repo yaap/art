@@ -68,6 +68,7 @@
 #include "profile/profile_compilation_info.h"
 #include "runtime.h"
 #include "space-inl.h"
+#include "trace_common.h"
 
 namespace art HIDDEN {
 namespace gc {
@@ -3469,13 +3470,22 @@ bool ImageSpace::ValidateOatFile(const OatFile& oat_file,
   }
 
   // For a boot image, the key value store only exists in the first OAT file. Skip other OAT files.
-  if (oat_file.GetOatHeader().GetKeyValueStoreSize() != 0 &&
-      oat_file.GetOatHeader().IsConcurrentCopying() != gUseReadBarrier) {
-    *error_msg =
-        ART_FORMAT("ValidateOatFile found read barrier state mismatch (oat file: {}, runtime: {})",
-                   oat_file.GetOatHeader().IsConcurrentCopying(),
-                   gUseReadBarrier);
-    return false;
+  if (oat_file.GetOatHeader().GetKeyValueStoreSize() != 0) {
+    if (oat_file.GetOatHeader().IsConcurrentCopying() != gUseReadBarrier) {
+      *error_msg = ART_FORMAT(
+          "ValidateOatFile found read barrier state mismatch (oat file: {}, runtime: {})",
+          oat_file.GetOatHeader().IsConcurrentCopying(),
+          gUseReadBarrier);
+      return false;
+    }
+
+    if (oat_file.GetOatHeader().IsProfileCodeEnabled() != ShouldEnableProfileCode()) {
+      *error_msg =
+          ART_FORMAT("ValidateOatFile profile code enabled mismatch (oat file: {}, runtime: {})",
+                     oat_file.GetOatHeader().IsProfileCodeEnabled(),
+                     ShouldEnableProfileCode());
+      return false;
+    }
   }
 
   size_t dex_file_index = 0;  // Counts only primary dex files.

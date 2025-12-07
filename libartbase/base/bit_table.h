@@ -54,7 +54,7 @@ class BitTableBase {
     column_offset_[0] = 0;
     for (uint32_t i = 0; i < kNumColumns; i++) {
       size_t column_end = column_offset_[i] + header[i + 1];
-      column_offset_[i + 1] = dchecked_integral_cast<uint16_t>(column_end);
+      column_offset_[i + 1] = dchecked_integral_cast<uint32_t>(column_end);
     }
 
     // Record the region which contains the table data and skip past it.
@@ -98,7 +98,7 @@ class BitTableBase {
  protected:
   BitMemoryRegion table_data_;
   uint32_t num_rows_ = 0;
-  uint16_t column_offset_[kNumColumns + 1] = {};
+  uint32_t column_offset_[kNumColumns + 1] = {};
 };
 
 // Helper class which can be used to create BitTable accessors with named getters.

@@ -41,10 +41,11 @@
     GOTO_OPCODE ip                      // jump to next instruction
 
 %def op_const_object(jumbo="0", helper="nterp_load_object"):
+%  slow_path = add_slow_path(op_const_object_slow_path, helper)
    // Fast-path which gets the object from thread-local cache.
-%  fetch_from_thread_cache("x0", miss_label="2f")
-   TEST_IF_MARKING 3f
-1:
+%  fetch_from_thread_cache("x0", miss_label=slow_path)
+   TEST_IF_MARKING 1f
+.L${opcode}_resume:
    lsr     w1, wINST, #8               // w1<- AA
    .if $jumbo
    FETCH_ADVANCE_INST 3                // advance rPC, load wINST
@@ -54,16 +55,17 @@
    GET_INST_OPCODE ip                  // extract opcode from wINST
    SET_VREG_OBJECT w0, w1              // vAA <- value
    GOTO_OPCODE ip                      // jump to next instruction
-2:
+1:
+   bl art_quick_read_barrier_mark_reg00
+   b .L${opcode}_resume
+
+%def op_const_object_slow_path(helper):
    EXPORT_PC
    mov x0, xSELF
    ldr x1, [sp]
    mov x2, xPC
    bl $helper
-   b 1b
-3:
-   bl art_quick_read_barrier_mark_reg00
-   b 1b
+   b .L${opcode}_resume
 
 %def op_const_class():
 %  op_const_object(jumbo="0", helper="nterp_get_class")

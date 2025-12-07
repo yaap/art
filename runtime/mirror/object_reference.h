@@ -46,10 +46,10 @@ constexpr bool IsMirroredDescriptor(std::string_view desc) {
     // All primitives and arrays are mirrored
     return true;
   }
+  // LINT.IfChange
 #define MIRROR_DESCRIPTORS(vis)                       \
     vis("Ljava/lang/Class;")                          \
     vis("Ljava/lang/ClassLoader;")                    \
-    vis("Ljava/lang/ClassNotFoundException;")         \
     vis("Ljava/lang/DexCache;")                       \
     vis("Ljava/lang/Object;")                         \
     vis("Ljava/lang/StackFrameInfo;")                 \
@@ -77,6 +77,7 @@ constexpr bool IsMirroredDescriptor(std::string_view desc) {
     vis("Ljava/lang/reflect/Proxy;")                  \
     vis("Ldalvik/system/ClassExt;")                   \
     vis("Ldalvik/system/EmulatedStackFrame;")
+  // LINT.ThenChange(/libcore/r8_exclude_classes.txt)
   // TODO: Once we are C++ 20 we can just have a constexpr array and std::find.
   // constexpr std::array<std::string_view, 28> kMirrorTypes{
   //    // Fill in

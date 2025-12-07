@@ -77,6 +77,7 @@ template<typename T> ART_FRIEND_TEST(test_set_name, individual_test)
 #endif
 
 #define NO_STACK_PROTECTOR __attribute__ ((no_stack_protector))
+#define SINGLE_CALLER      ALWAYS_INLINE
 
 // clang doesn't like attributes on lambda functions. It would be nice to say:
 //   #define ALWAYS_INLINE_LAMBDA ALWAYS_INLINE

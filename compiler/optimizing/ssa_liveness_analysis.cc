@@ -18,6 +18,7 @@
 
 #include "base/arena_bit_vector.h"
 #include "base/bit_vector-inl.h"
+#include "base/bit_utils_iterator.h"
 #include "code_generator.h"
 #include "com_android_art_flags.h"
 #include "linear_order.h"
@@ -45,7 +46,65 @@ void SsaLivenessAnalysis::Analyze() {
   ComputeLiveness();
 }
 
+// Local flags for location processing.
+static constexpr uint32_t kFlagNotLeaf = 1u;
+static constexpr uint32_t kFlagNeedsSuspendCheckEntry = 2u;
+static constexpr uint32_t kFlagRequiresCurrentMethod = 4u;
+
+template <bool kIsPhi>
+static inline uint32_t AllocateLocations(HGraphVisitor* location_builder,
+                                         HInstruction* instruction,
+                                         uint32_t flags,
+                                         /*out*/ HSuspendCheck** entry_suspend_check) {
+  DCHECK_EQ(kIsPhi, instruction->IsPhi());
+  if (kIsPhi) {
+    DCHECK(instruction->GetEnvironment() == nullptr);
+    location_builder->VisitPhi(instruction->AsPhi());
+  } else {
+    ArenaAllocator* allocator = location_builder->GetGraph()->GetAllocator();
+    for (HEnvironment* env = instruction->GetEnvironment();
+         env != nullptr;
+         env = env->GetParent()) {
+      env->AllocateLocations(allocator);
+    }
+    location_builder->Dispatch(instruction);
+  }
+  DCHECK(CodeGenerator::CheckTypeConsistency(instruction));
+  if (kIsPhi) {
+    DCHECK(instruction->GetLocations() != nullptr);
+    DCHECK(!instruction->GetLocations()->CanCall());
+    DCHECK(!instruction->NeedsCurrentMethod());
+  } else if (instruction->IsSuspendCheck() &&
+             location_builder->GetGraph()->IsEntryBlock(instruction->GetBlock())) {
+    DCHECK(*entry_suspend_check == nullptr);  // At most one entry suspend check.
+    *entry_suspend_check = instruction->AsSuspendCheck();
+  } else {
+    LocationSummary* locations = instruction->GetLocations();
+    if (locations != nullptr) {
+      if (locations->CanCall()) {
+        flags |= kFlagNotLeaf | kFlagRequiresCurrentMethod;
+        if (locations->NeedsSuspendCheckEntry()) {
+          flags |= kFlagNeedsSuspendCheckEntry;
+        }
+      } else if (locations->Intrinsified() &&
+                 instruction->IsInvokeStaticOrDirect() &&
+                 !instruction->AsInvokeStaticOrDirect()->HasCurrentMethodInput()) {
+        // A static method call that has been fully intrinsified, and cannot call on the slow
+        // path or refer to the current method directly, no longer needs current method.
+        return flags;
+      }
+    }
+    if (instruction->NeedsCurrentMethod()) {
+      flags |= kFlagRequiresCurrentMethod;
+    }
+  }
+  return flags;
+}
+
 void SsaLivenessAnalysis::NumberInstructions() {
+  HGraphVisitor* location_builder = codegen_->GetLocationBuilder();
+  HSuspendCheck* entry_suspend_check = nullptr;
+  uint32_t flags = 0u;
   size_t ssa_index = 0;
   size_t lifetime_position = 0;
   // Each instruction gets a lifetime position, and a block gets a lifetime
@@ -60,17 +119,18 @@ void SsaLivenessAnalysis::NumberInstructions() {
   for (HBasicBlock* block : graph_->GetLinearOrder()) {
     block->SetLifetimeStart(lifetime_position);
 
-    for (HInstructionIteratorPrefetchNext inst_it(block->GetPhis()); !inst_it.Done();
-         inst_it.Advance()) {
+    for (HInstructionIterator inst_it(block->GetPhis()); !inst_it.Done(); inst_it.Advance()) {
       HInstruction* current = inst_it.Current();
-      codegen_->AllocateLocations(current);
-      LocationSummary* locations = current->GetLocations();
-      if (locations != nullptr && locations->Out().IsValid()) {
-        instructions_from_ssa_index_.push_back(current);
-        current->SetSsaIndex(ssa_index++);
-        current->SetLiveInterval(
-            LiveInterval::MakeInterval(allocator_, current->GetType(), current));
-      }
+      flags = AllocateLocations</*kIsPhi=*/ true>(
+          location_builder, current, flags, &entry_suspend_check);
+      // Phis always have a valid output location, namely `Location::Any()`.
+      DCHECK(current->GetLocations() != nullptr);
+      DCHECK(current->GetLocations()->Out().IsValid());
+      instructions_from_ssa_index_.push_back(current);
+      current->SetSsaIndex(ssa_index++);
+      bool is_pair = codegen_->NeedsTwoRegisters(current->GetType());
+      current->SetLiveInterval(
+          LiveInterval::MakeInterval(allocator_, current->GetType(), is_pair, current));
       current->SetLifetimePosition(lifetime_position);
     }
     lifetime_position += kLivenessPositionsPerInstruction;
@@ -78,16 +138,18 @@ void SsaLivenessAnalysis::NumberInstructions() {
     // Add a null marker to notify we are starting a block.
     instructions_from_lifetime_position_.push_back(nullptr);
 
-    for (HInstructionIteratorPrefetchNext inst_it(block->GetInstructions()); !inst_it.Done();
+    for (HInstructionIterator inst_it(block->GetInstructions()); !inst_it.Done();
          inst_it.Advance()) {
       HInstruction* current = inst_it.Current();
-      codegen_->AllocateLocations(current);
+      flags = AllocateLocations</*kIsPhi=*/ false>(
+          location_builder, current, flags, &entry_suspend_check);
       LocationSummary* locations = current->GetLocations();
       if (locations != nullptr && locations->Out().IsValid()) {
         instructions_from_ssa_index_.push_back(current);
         current->SetSsaIndex(ssa_index++);
+        bool is_pair = codegen_->NeedsTwoRegisters(current->GetType());
         current->SetLiveInterval(
-            LiveInterval::MakeInterval(allocator_, current->GetType(), current));
+            LiveInterval::MakeInterval(allocator_, current->GetType(), is_pair, current));
       }
       instructions_from_lifetime_position_.push_back(current);
       current->SetLifetimePosition(lifetime_position);
@@ -97,6 +159,19 @@ void SsaLivenessAnalysis::NumberInstructions() {
     block->SetLifetimeEnd(lifetime_position);
   }
   DCHECK_EQ(GetNumberOfSsaValues(), ssa_index);
+
+  DCHECK(codegen_->IsLeafMethod());  // Initial value.
+  codegen_->SetIsLeaf((flags & kFlagNotLeaf) == 0u);
+  // Update current method requirement.
+  DCHECK_EQ(codegen_->RequiresCurrentMethod(), codegen_->GetGraph()->IsCompilingBaseline());
+  codegen_->SetRequiresCurrentMethod(
+      codegen_->RequiresCurrentMethod() || (flags & kFlagRequiresCurrentMethod) != 0u);
+  if ((flags & kFlagNeedsSuspendCheckEntry) == 0u && entry_suspend_check != nullptr) {
+    // We do this here because we do not want the suspend check to artificially create live
+    // registers. This is the earliest point where we know the suspend chech is not required.
+    DCHECK_EQ(entry_suspend_check->GetLocations()->GetTempCount(), 0u);
+    entry_suspend_check->GetBlock()->RemoveInstruction(entry_suspend_check);
+  }
 }
 
 void SsaLivenessAnalysis::ComputeLiveness() {
@@ -118,8 +193,10 @@ void SsaLivenessAnalysis::ComputeLiveness() {
 }
 
 void SsaLivenessAnalysis::RecursivelyProcessInputs(HInstruction* current,
+                                                   HBasicBlock* block,
                                                    HInstruction* actual_user,
                                                    BitVectorView<size_t> live_in) {
+  DCHECK(current->GetBlock() == block);
   HInputsRef inputs = current->GetInputs();
   for (size_t i = 0; i < inputs.size(); ++i) {
     HInstruction* input = inputs[i];
@@ -134,7 +211,8 @@ void SsaLivenessAnalysis::RecursivelyProcessInputs(HInstruction* current,
       DCHECK(input->HasSsaIndex());
       // `input` generates a result used by `current`. Add use and update
       // the live-in set.
-      input->GetLiveInterval()->AddUse(current, /* environment= */ nullptr, i, actual_user);
+      input->GetLiveInterval()->AddUse</*kEnvironmentUse=*/ false>(
+          current, block, /* environment= */ nullptr, i, actual_user);
       live_in.SetBit(input->GetSsaIndex());
     } else if (has_out_location) {
       // `input` generates a result but it is not used by `current`.
@@ -146,36 +224,91 @@ void SsaLivenessAnalysis::RecursivelyProcessInputs(HInstruction* current,
       // lead to an infinite loop.
       DCHECK(!input->IsPhi());
       DCHECK(!input->HasEnvironment());
-      RecursivelyProcessInputs(input, actual_user, live_in);
+      RecursivelyProcessInputs(input, input->GetBlock(), actual_user, live_in);
     }
   }
 }
 
+inline bool SsaLivenessAnalysis::ShouldAllBeLiveForEnvironment(HInstruction* env_holder,
+                                                               HGraph* graph) {
+  // A value that's not live in compiled code may still be needed in interpreter,
+  // due to code motion, etc.
+  if (env_holder->IsDeoptimize()) {
+    return true;
+  }
+
+  // A value live at a throwing instruction in a try block may be copied by
+  // the exception handler to its location at the top of the catch block.
+  if (env_holder->CanThrowIntoCatchBlock()) {
+    return true;
+  }
+
+  // For debuggable graphs, we keep all values live.
+  if (graph->IsDebuggable()) {
+    return true;
+  }
+
+  // When compiling in OSR mode, all loops in the compiled method may be entered
+  // from the interpreter via SuspendCheck; thus we need to preserve the environment.
+  if (env_holder->IsSuspendCheck() && graph->IsCompilingOsr()) {
+    return true;
+  }
+
+  return false;
+}
+
+inline bool SsaLivenessAnalysis::ShouldBeLiveForEnvironment(HInstruction* instruction,
+                                                            bool is_dead_reference_safe) {
+  DCHECK(instruction != nullptr);
+  if (is_dead_reference_safe) {
+    return false;
+  }
+  return instruction->GetType() == DataType::Type::kReference;
+}
+
 void SsaLivenessAnalysis::ProcessEnvironment(HInstruction* current,
+                                             HBasicBlock* block,
                                              HInstruction* actual_user,
                                              BitVectorView<size_t> live_in) {
-  for (HEnvironment* environment = current->GetEnvironment();
-       environment != nullptr;
-       environment = environment->GetParent()) {
-    // Handle environment uses. See statements (b) and (c) of the
-    // SsaLivenessAnalysis.
-    for (size_t i = 0, e = environment->Size(); i < e; ++i) {
-      HInstruction* instruction = environment->GetInstructionAt(i);
-      if (instruction == nullptr) {
-        continue;
-      }
-      bool should_be_live = ShouldBeLiveForEnvironment(current, instruction);
-      // If this environment use does not keep the instruction live, it does not
-      // affect the live range of that instruction.
-      if (should_be_live) {
-        CHECK(instruction->HasSsaIndex()) << instruction->DebugName();
-        live_in.SetBit(instruction->GetSsaIndex());
-        instruction->GetLiveInterval()->AddUse(current,
-                                               environment,
-                                               i,
-                                               actual_user);
+  DCHECK(current->GetBlock() == block);
+  if (current->GetEnvironment() == nullptr) {
+    return;
+  }
+  // Handle environment uses. See statements (b), (c) and (d) of the SsaLivenessAnalysis.
+  auto process_environment = [&](auto should_be_live) ALWAYS_INLINE {
+    for (HEnvironment* environment = current->GetEnvironment();
+         environment != nullptr;
+         environment = environment->GetParent()) {
+      for (size_t i = 0, e = environment->Size(); i < e; ++i) {
+        HInstruction* instruction = environment->GetInstructionAt(i);
+        if (instruction == nullptr) {
+          continue;
+        }
+        // If this environment use does not keep the instruction live, it does not
+        // affect the live range of that instruction.
+        if (should_be_live(instruction)) {
+          CHECK(instruction->HasSsaIndex()) << instruction->DebugName();
+          live_in.SetBit(instruction->GetSsaIndex());
+          instruction->GetLiveInterval()->AddUse</*kEnvironmentUse=*/ true>(
+              current, block, environment, i, actual_user);
+        }
       }
     }
+  };
+  if (ShouldAllBeLiveForEnvironment(current, block->GetGraph())) {
+    process_environment([]([[maybe_unused]] HInstruction* instruction) { return true; });
+  } else if (block->GetGraph()->IsDeadReferenceSafe()) {
+    // Nothing to do. In debug build check that `ShouldBeLiveForEnvironment()` is always false.
+    if (kIsDebugBuild) {
+      process_environment([](HInstruction* instruction) {
+        CHECK(!ShouldBeLiveForEnvironment(instruction, /*is_dead_reference_safe=*/ true));
+        return false;
+      });
+    }
+  } else {
+    process_environment([](HInstruction* instruction) {
+      return ShouldBeLiveForEnvironment(instruction, /*is_dead_reference_safe=*/ false);
+    });
   }
 }
 
@@ -271,15 +404,15 @@ void SsaLivenessAnalysis::ComputeLiveRanges() {
       } else {
         // Process the environment first, because we know their uses come after
         // or at the same liveness position of inputs.
-        ProcessEnvironment(current, current, live_in);
+        ProcessEnvironment(current, block, current, live_in);
 
         // Special case implicit null checks. We want their environment uses to be
         // emitted at the instruction doing the actual null check.
         HNullCheck* check = current->GetImplicitNullCheck();
         if (check != nullptr) {
-          ProcessEnvironment(check, current, live_in);
+          ProcessEnvironment(check, block, current, live_in);
         }
-        RecursivelyProcessInputs(current, current, live_in);
+        RecursivelyProcessInputs(current, block, current, live_in);
       }
     }
 
@@ -362,26 +495,27 @@ void SsaLivenessAnalysis::DoCheckNoLiveInIrreducibleLoop(const HBasicBlock& bloc
   // and the current method, which can be trivially re-materialized.
   for (uint32_t idx : live_in.Indexes()) {
     HInstruction* instruction = GetInstructionFromSsaIndex(idx);
-    DCHECK(instruction->GetBlock()->IsEntryBlock()) << instruction->DebugName();
+    DCHECK(graph_->IsEntryBlock(instruction->GetBlock())) << instruction->DebugName();
     DCHECK(!instruction->IsParameterValue());
     DCHECK(instruction->IsCurrentMethod() || instruction->IsConstant())
         << instruction->DebugName();
   }
 }
 
-void LiveInterval::AddUse(HInstruction* instruction,
-                          HEnvironment* environment,
-                          size_t input_index,
-                          HInstruction* actual_user) {
-  bool is_environment = (environment != nullptr);
-  LocationSummary* locations = instruction->GetLocations();
-  if (actual_user == nullptr) {
-    actual_user = instruction;
-  }
+template <bool kEnvironmentUse>
+ALWAYS_INLINE inline void LiveInterval::AddUse(HInstruction* instruction,
+                                               HBasicBlock* block,
+                                               HEnvironment* environment,
+                                               size_t input_index,
+                                               HInstruction* actual_user) {
+  DCHECK(instruction->GetBlock() == block);
+  DCHECK_EQ(kEnvironmentUse, environment != nullptr);
+  DCHECK(actual_user != nullptr);
 
   // Set the use within the instruction.
   size_t position = actual_user->GetLifetimePosition() + kLivenessPositionOfNormalUse;
-  if (!is_environment) {
+  if (!kEnvironmentUse) {
+    LocationSummary* locations = instruction->GetLocations();
     if (locations->IsFixedInput(input_index) || locations->OutputUsesSameAs(input_index)) {
       // For fixed inputs and output same as input, the register allocator
       // requires to have inputs die at the instruction, so that input moves use the
@@ -394,16 +528,20 @@ void LiveInterval::AddUse(HInstruction* instruction,
     }
   }
 
-  if (!is_environment && instruction->IsInLoop()) {
-    AddBackEdgeUses(*instruction->GetBlock());
+  if (!kEnvironmentUse && block->IsInLoop()) {
+    AddBackEdgeUses(*block);
   }
 
-  if ((!uses_.empty()) &&
-      (uses_.front().GetUser() == actual_user) &&
-      (uses_.front().GetPosition() < position)) {
+  if (kEnvironmentUse) {
+    DCHECK(env_uses_.empty() || position <= env_uses_.front().GetPosition());
+    DCHECK(uses_.empty() || position < uses_.front().GetPosition());
+    EnvUsePosition* new_env_use =
+        new (allocator_) EnvUsePosition(environment, input_index, position);
+    env_uses_.push_front(*new_env_use);
+  } else if (!uses_.empty() && uses_.front().GetPosition() < position) {
+    DCHECK(uses_.front().GetUser() == actual_user);
     // The user uses the instruction multiple times, and one use dies before the other.
     // We update the use list so that the latter is first.
-    DCHECK(!is_environment);
     DCHECK(uses_.front().GetPosition() + kLivenessPositionOfNormalUse == position);
     UsePositionList::iterator next_pos = uses_.begin();
     UsePositionList::iterator insert_pos;
@@ -417,20 +555,13 @@ void LiveInterval::AddUse(HInstruction* instruction,
       first_range_->end_ = position;
     }
     return;
-  }
-
-  if (is_environment) {
-    DCHECK(env_uses_.empty() || position <= env_uses_.front().GetPosition());
-    EnvUsePosition* new_env_use =
-        new (allocator_) EnvUsePosition(environment, input_index, position);
-    env_uses_.push_front(*new_env_use);
   } else {
     DCHECK(uses_.empty() || position <= uses_.front().GetPosition());
     UsePosition* new_use = new (allocator_) UsePosition(instruction, input_index, position);
     uses_.push_front(*new_use);
   }
 
-  size_t start_block_position = instruction->GetBlock()->GetLifetimeStart();
+  size_t start_block_position = block->GetLifetimeStart();
   if (first_range_ == nullptr) {
     // First time we see a use of that interval.
     first_range_ = last_range_ = range_search_start_ =
@@ -464,17 +595,7 @@ LiveInterval* LiveInterval::SplitAt(size_t position) {
     return nullptr;
   }
 
-  LiveInterval* new_interval = new (allocator_) LiveInterval(allocator_, type_);
-
-  SafepointPositionList::const_iterator before = safepoints_.before_begin();
-  for (auto it = safepoints_.begin(), end = safepoints_.end(); it != end; ++it) {
-    if (it->GetPosition() >= position) {
-      break;
-    }
-    before = it;
-  }
-  new_interval->safepoints_.splice_after(
-      new_interval->safepoints_.before_begin(), safepoints_, before, safepoints_.end());
+  LiveInterval* new_interval = new (allocator_) LiveInterval(allocator_, type_, IsPair());
 
   new_interval->next_sibling_ = next_sibling_;
   next_sibling_ = new_interval;
@@ -507,25 +628,26 @@ LiveInterval* LiveInterval::SplitAt(size_t position) {
       new_interval->range_search_start_ = new_interval->first_range_;
       return new_interval;
     } else {
-      // This range covers position. We create a new last_range_ for this interval
-      // that covers last_range_->Start() and position. We also shorten the current
-      // range and make it the first range of the new interval.
+      // This range covers position. We create a new `first_range_` for the `new_interval`
+      // that covers the range from the `position`. We also shorten the current
+      // range and make it the last range of this interval.
+      // Note: We must not do it the other way around as the `current` range may be cached
+      // as the search start position by the register allocator and updating its start
+      // position can break certain invariants.
       DCHECK(position < current->GetEnd() && position > current->GetStart());
-      new_interval->last_range_ = last_range_;
-      last_range_ = new (allocator_) LiveRange(current->start_, position, nullptr);
-      if (previous != nullptr) {
-        previous->next_ = last_range_;
-      } else {
-        first_range_ = last_range_;
-      }
-      new_interval->first_range_ = current;
-      current->start_ = position;
-      if (range_search_start_ != nullptr && range_search_start_->GetEnd() >= current->GetEnd()) {
+      new_interval->first_range_ =
+          new (allocator_) LiveRange(position, current->end_, current->next_);
+      new_interval->range_search_start_ = new_interval->first_range_;
+      new_interval->last_range_ =
+          (last_range_ != current) ? last_range_ : new_interval->first_range_;
+      current->next_ = nullptr;
+      current->end_ = position;
+      last_range_ = current;
+      if (range_search_start_ != nullptr && range_search_start_->GetEnd() >= position) {
         // Search start point is inside `new_interval`. Change it to `last_range`
         // in the original interval. This is conservative but always correct.
         range_search_start_ = last_range_;
       }
-      new_interval->range_search_start_ = new_interval->first_range_;
       return new_interval;
     }
   } while (current != nullptr);
@@ -554,21 +676,29 @@ void LiveInterval::Dump(std::ostream& stream) const {
   }
   stream << "}";
   stream << " is_fixed: " << is_fixed_ << ", is_split: " << IsSplit();
-  stream << " is_low: " << IsLowInterval();
-  stream << " is_high: " << IsHighInterval();
+  stream << " is_pair: " << IsPair();
 }
 
 void LiveInterval::DumpWithContext(std::ostream& stream,
                                    const CodeGenerator& codegen) const {
   Dump(stream);
   if (IsFixed()) {
-    stream << ", register:" << GetRegister() << "(";
-    if (IsFloatingPoint()) {
-      codegen.DumpFloatingPointRegister(stream, GetRegister());
+    if (HasRegisters()) {
+      stream << ", registers:0x" << GetRegisters() << std::dec << "(";
+      const char* delim = "";
+      for (uint32_t reg : LowToHighBits(GetRegisters())) {
+        stream << delim;
+        delim = ",";
+        if (IsFloatingPoint()) {
+          codegen.DumpFloatingPointRegister(stream, reg);
+        } else {
+          codegen.DumpCoreRegister(stream, reg);
+        }
+      }
+      stream << ")";
     } else {
-      codegen.DumpCoreRegister(stream, GetRegister());
+      stream << ", registers:none";
     }
-    stream << ")";
   } else {
     stream << ", spill slot:" << GetSpillSlot();
   }
@@ -579,158 +709,15 @@ void LiveInterval::DumpWithContext(std::ostream& stream,
   }
 }
 
-static int RegisterOrLowRegister(Location location) {
-  return location.IsPair() ? location.low() : location.reg();
-}
-
-int LiveInterval::FindFirstRegisterHint(
-    ArrayRef<size_t> free_until, ArrayRef<HInstruction* const> instructions_from_positions) const {
-  DCHECK(!IsHighInterval());
-  if (IsTemp()) return kNoRegister;
-
-  if (GetParent() == this && defined_by_ != nullptr) {
-    // This is the first interval for the instruction. Try to find
-    // a register based on its definition.
-    DCHECK_EQ(defined_by_->GetLiveInterval(), this);
-    int hint = FindHintAtDefinition();
-    if (hint != kNoRegister && free_until[hint] > GetStart()) {
-      return hint;
-    }
-  }
-
-  if (IsSplit() &&
-      SsaLivenessAnalysis::IsAtBlockBoundary(
-          GetStart() / kLivenessPositionsPerInstruction, instructions_from_positions)) {
-    // If the start of this interval is at a block boundary, we look at the
-    // location of the interval in blocks preceding the block this interval
-    // starts at. If one location is a register we return it as a hint. This
-    // will avoid a move between the two blocks.
-    HBasicBlock* block = SsaLivenessAnalysis::GetBlockFromPosition(
-        GetStart() / kLivenessPositionsPerInstruction, instructions_from_positions);
-    size_t next_register_use = FirstRegisterUse();
-    for (HBasicBlock* predecessor : block->GetPredecessors()) {
-      size_t position = predecessor->GetLifetimeEnd() - 1;
-      // We know positions above GetStart() do not have a location yet.
-      if (position < GetStart()) {
-        LiveInterval* existing = GetParent()->GetSiblingAt(position);
-        if (existing != nullptr
-            && existing->HasRegister()
-            // It's worth using that register if it is available until
-            // the next use.
-            && (free_until[existing->GetRegister()] >= next_register_use)) {
-          return existing->GetRegister();
-        }
-      }
-    }
-  }
-
-  size_t start = GetStart();
-  size_t end = GetEnd();
-  for (const UsePosition& use : GetUses()) {
-    size_t use_position = use.GetPosition();
-    if (use_position > end) {
-      break;
-    }
-    if (use_position >= start && !use.IsSynthesized()) {
-      HInstruction* user = use.GetUser();
-      size_t input_index = use.GetInputIndex();
-      if (user->IsPhi()) {
-        // If the phi has a register, try to use the same.
-        Location phi_location = user->GetLiveInterval()->ToLocation();
-        if (phi_location.IsRegisterKind()) {
-          DCHECK(SameRegisterKind(phi_location));
-          int reg = RegisterOrLowRegister(phi_location);
-          if (free_until[reg] >= use_position) {
-            return reg;
-          }
-        }
-        // If the instruction dies at the phi assignment, we can try having the
-        // same register.
-        if (end == user->GetBlock()->GetPredecessors()[input_index]->GetLifetimeEnd()) {
-          HInputsRef inputs = user->GetInputs();
-          for (size_t i = 0; i < inputs.size(); ++i) {
-            if (i == input_index) {
-              continue;
-            }
-            Location location = inputs[i]->GetLiveInterval()->GetLocationAt(
-                user->GetBlock()->GetPredecessors()[i]->GetLifetimeEnd() - 1);
-            if (location.IsRegisterKind()) {
-              int reg = RegisterOrLowRegister(location);
-              if (free_until[reg] >= use_position) {
-                return reg;
-              }
-            }
-          }
-        }
-      } else {
-        // If the instruction is expected in a register, try to use it.
-        LocationSummary* locations = user->GetLocations();
-        Location expected = locations->InAt(use.GetInputIndex());
-        // We use the user's lifetime position - 1 (and not `use_position`) because the
-        // register is blocked at the beginning of the user.
-        size_t position = user->GetLifetimePosition() - 1;
-        if (expected.IsRegisterKind()) {
-          DCHECK(SameRegisterKind(expected));
-          int reg = RegisterOrLowRegister(expected);
-          if (free_until[reg] >= position) {
-            return reg;
-          }
-        }
-      }
-    }
-  }
-
-  return kNoRegister;
-}
-
-int LiveInterval::FindHintAtDefinition() const {
-  if (defined_by_->IsPhi()) {
-    // Try to use the same register as one of the inputs.
-    const ArenaVector<HBasicBlock*>& predecessors = defined_by_->GetBlock()->GetPredecessors();
-    HInputsRef inputs = defined_by_->GetInputs();
-    for (size_t i = 0; i < inputs.size(); ++i) {
-      size_t end = predecessors[i]->GetLifetimeEnd();
-      LiveInterval* input_interval = inputs[i]->GetLiveInterval()->GetSiblingAt(end - 1);
-      if (input_interval->GetEnd() == end) {
-        // If the input dies at the end of the predecessor, we know its register can
-        // be reused.
-        Location input_location = input_interval->ToLocation();
-        if (input_location.IsRegisterKind()) {
-          DCHECK(SameRegisterKind(input_location));
-          return RegisterOrLowRegister(input_location);
-        }
-      }
-    }
-  } else {
-    LocationSummary* locations = GetDefinedBy()->GetLocations();
-    Location out = locations->Out();
-    if (out.IsUnallocated() && out.GetPolicy() == Location::kSameAsFirstInput) {
-      // Try to use the same register as the first input.
-      LiveInterval* input_interval =
-          GetDefinedBy()->InputAt(0)->GetLiveInterval()->GetSiblingAt(GetStart() - 1);
-      if (input_interval->GetEnd() == GetStart()) {
-        // If the input dies at the start of this instruction, we know its register can
-        // be reused.
-        Location location = input_interval->ToLocation();
-        if (location.IsRegisterKind()) {
-          DCHECK(SameRegisterKind(location));
-          return RegisterOrLowRegister(location);
-        }
-      }
-    }
-  }
-  return kNoRegister;
-}
-
 bool LiveInterval::SameRegisterKind(Location other) const {
   if (IsFloatingPoint()) {
-    if (IsLowInterval() || IsHighInterval()) {
+    if (IsPair()) {
       return other.IsFpuRegisterPair();
     } else {
       return other.IsFpuRegister();
     }
   } else {
-    if (IsLowInterval() || IsHighInterval()) {
+    if (IsPair()) {
       return other.IsRegisterPair();
     } else {
       return other.IsRegister();
@@ -750,41 +737,6 @@ size_t LiveInterval::NumberOfSpillSlotsNeeded() const {
   }
   // Return number of needed spill slots based on type.
   return (type_ == DataType::Type::kInt64 || type_ == DataType::Type::kFloat64) ? 2 : 1;
-}
-
-Location LiveInterval::ToLocation() const {
-  DCHECK(!IsHighInterval());
-  if (HasRegister()) {
-    if (IsFloatingPoint()) {
-      if (HasHighInterval()) {
-        return Location::FpuRegisterPairLocation(GetRegister(), GetHighInterval()->GetRegister());
-      } else {
-        return Location::FpuRegisterLocation(GetRegister());
-      }
-    } else {
-      if (HasHighInterval()) {
-        return Location::RegisterPairLocation(GetRegister(), GetHighInterval()->GetRegister());
-      } else {
-        return Location::RegisterLocation(GetRegister());
-      }
-    }
-  } else {
-    HInstruction* defined_by = GetParent()->GetDefinedBy();
-    if (defined_by->IsConstant()) {
-      return defined_by->GetLocations()->Out();
-    } else if (GetParent()->HasSpillSlot()) {
-      return Location::StackSlotByNumOfSlots(NumberOfSpillSlotsNeeded(),
-                                             GetParent()->GetSpillSlot());
-    } else {
-      return Location();
-    }
-  }
-}
-
-Location LiveInterval::GetLocationAt(size_t position) {
-  LiveInterval* sibling = GetSiblingAt(position);
-  DCHECK(sibling != nullptr);
-  return sibling->ToLocation();
 }
 
 LiveInterval* LiveInterval::GetSiblingAt(size_t position) {

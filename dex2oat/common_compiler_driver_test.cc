@@ -24,6 +24,7 @@
 #include "dex/verification_results.h"
 #include "driver/compiler_driver.h"
 #include "driver/compiler_options.h"
+#include "trace_common.h"
 #include "utils/atomic_dex_ref_map-inl.h"
 
 namespace art {
@@ -81,6 +82,7 @@ void CommonCompilerDriverTest::CreateCompilerDriver() {
   compiler_options_->SetCompilerFilter(GetCompilerFilter());
   compiler_options_->image_classes_.swap(*GetImageClasses());
   compiler_options_->profile_compilation_info_ = GetProfileCompilationInfo();
+  compiler_options_->enable_profile_code_ = ShouldEnableProfileCode();
   compiler_driver_.reset(new CompilerDriver(compiler_options_.get(),
                                             verification_results_.get(),
                                             number_of_threads_,

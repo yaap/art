@@ -16,11 +16,6 @@
 
 package com.android.server.art.prereboot;
 
-import static com.android.server.art.prereboot.PreRebootDriver.PreRebootResult;
-import static com.android.server.art.proto.PreRebootStats.JobRun;
-import static com.android.server.art.proto.PreRebootStats.JobType;
-import static com.android.server.art.proto.PreRebootStats.Status;
-
 import android.annotation.NonNull;
 import android.os.Build;
 
@@ -35,11 +30,17 @@ import com.android.server.art.AsLog;
 import com.android.server.art.ReasonMapping;
 import com.android.server.art.Utils;
 import com.android.server.art.model.DexoptStatus;
+import com.android.server.art.prereboot.PreRebootDriver.PreRebootResult;
 import com.android.server.art.proto.PreRebootStats;
+import com.android.server.art.proto.PreRebootStats.FailureReason;
+import com.android.server.art.proto.PreRebootStats.JobRun;
+import com.android.server.art.proto.PreRebootStats.JobType;
+import com.android.server.art.proto.PreRebootStats.Status;
 import com.android.server.pm.PackageManagerLocal;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -51,6 +52,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 import java.util.function.Function;
 
 /**
@@ -66,6 +69,22 @@ import java.util.function.Function;
  */
 @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 public class PreRebootStatsReporter {
+    // Shorthands for those ultra long names in the stats proto generated code.
+    public static final int END_STATUS_UNSPECIFIED =
+            ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__ARTIFACTS_END_STATUS__END_STATUS_UNSPECIFIED;
+    public static final int END_STATUS_COMMITTED =
+            ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__ARTIFACTS_END_STATUS__END_STATUS_COMMITTED;
+    public static final int END_STATUS_MISSING =
+            ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__ARTIFACTS_END_STATUS__END_STATUS_MISSING;
+    public static final int END_STATUS_ERROR =
+            ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__ARTIFACTS_END_STATUS__END_STATUS_ERROR;
+    public static final int END_STATUS_EXPIRED =
+            ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__ARTIFACTS_END_STATUS__END_STATUS_EXPIRED;
+    public static final int END_STATUS_OBSOLETE =
+            ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__ARTIFACTS_END_STATUS__END_STATUS_OBSOLETE;
+    public static final int END_STATUS_SUPERSEDED =
+            ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__ARTIFACTS_END_STATUS__END_STATUS_SUPERSEDED;
+
     private static final String FILENAME = "/data/system/pre-reboot-stats.pb";
 
     @NonNull private final Injector mInjector;
@@ -110,6 +129,7 @@ public class PreRebootStatsReporter {
         JobRun.Builder runBuilder =
                 JobRun.newBuilder().setJobStartedTimestampMillis(mInjector.getCurrentTimeMillis());
         statsBuilder.setStatus(Status.STATUS_STARTED)
+                .clearFailureReason()
                 .addJobRuns(runBuilder)
                 .setSkippedPackageCount(0)
                 .setOptimizedPackageCount(0)
@@ -157,50 +177,50 @@ public class PreRebootStatsReporter {
         JobRun.Builder runBuilder = JobRun.newBuilder(lastRun).setJobEndedTimestampMillis(
                 mInjector.getCurrentTimeMillis());
 
-        Status status;
-        if (result.success()) {
-            // The job is cancelled if it hasn't done package scanning (total package count is 0),
-            // or it's interrupted in the middle of package processing (package counts don't add up
-            // to the total).
-            // TODO(b/336239721): Move this logic to the server.
-            if (statsBuilder.getTotalPackageCount() > 0
-                    && (statsBuilder.getOptimizedPackageCount()
-                               + statsBuilder.getFailedPackageCount()
-                               + statsBuilder.getSkippedPackageCount())
-                            == statsBuilder.getTotalPackageCount()) {
-                status = Status.STATUS_FINISHED;
-            } else {
-                status = Status.STATUS_CANCELLED;
-            }
-        } else {
-            if (result.systemRequirementCheckFailed()) {
-                status = Status.STATUS_ABORTED_SYSTEM_REQUIREMENTS;
-            } else {
-                status = Status.STATUS_FAILED;
-            }
-        }
+        Utils.check(result.status() == Status.STATUS_FINISHED
+                || result.status() == Status.STATUS_FAILED
+                || result.status() == Status.STATUS_ABORTED_SYSTEM_REQUIREMENTS);
 
-        statsBuilder.setStatus(status).setJobRuns(jobRuns.size() - 1, runBuilder);
+        statsBuilder.setStatus(result.status())
+                .setFailureReason(result.status() == Status.STATUS_FAILED
+                                ? result.failureReason()
+                                : FailureReason.FAILURE_UNSPECIFIED)
+                .setJobRuns(jobRuns.size() - 1, runBuilder);
         save(statsBuilder);
     }
 
     public class AfterRebootSession {
         private @NonNull Set<String> mPackagesWithArtifacts = new HashSet<>();
+        private int mArtifactsEndStatus = END_STATUS_UNSPECIFIED;
+        private long mArtifactsAgeMillis = 0;
+        private boolean mExpectFound = true;
 
         public void recordPackageWithArtifacts(@NonNull String packageName) {
             mPackagesWithArtifacts.add(packageName);
         }
 
-        public void reportAsync() {
-            new CompletableFuture().runAsync(this::report).exceptionally(t -> {
-                AsLog.e("Failed to report stats", t);
-                return null;
-            });
+        public void recordArtifactsEndStatus(int status, long ageMillis) {
+            mArtifactsEndStatus = status;
+            mArtifactsAgeMillis = ageMillis;
         }
 
-        @VisibleForTesting
+        public void setExpectFound(boolean value) {
+            mExpectFound = value;
+        }
+
+        public void reportAsync() {
+            new CompletableFuture()
+                    .runAsync(this::report, mInjector.getExecutor())
+                    .exceptionally(t -> {
+                        AsLog.e("Failed to report stats", t);
+                        return null;
+                    });
+        }
+
         public void report() {
-            PreRebootStats.Builder statsBuilder = load();
+            Utils.check(mArtifactsEndStatus != END_STATUS_UNSPECIFIED);
+
+            PreRebootStats.Builder statsBuilder = load(mExpectFound);
             delete();
 
             if (statsBuilder.getStatus() == Status.STATUS_UNKNOWN) {
@@ -210,17 +230,20 @@ public class PreRebootStatsReporter {
 
             ArtManagerLocal artManagerLocal = mInjector.getArtManagerLocal();
 
-            // This takes some time (~3ms per package). It probably fine because we are running
-            // asynchronously. Consider removing this in the future.
-            int packagesWithArtifactsUsableCount;
-            try (var snapshot = mInjector.getPackageManagerLocal().withFilteredSnapshot();
-                    var pin = mInjector.createArtdPin()) {
-                packagesWithArtifactsUsableCount =
-                        (int) mPackagesWithArtifacts.stream()
-                                .map(packageName
-                                        -> artManagerLocal.getDexoptStatus(snapshot, packageName))
-                                .filter(status -> hasUsablePreRebootArtifacts(status))
-                                .count();
+            int packagesWithArtifactsUsableCount = 0;
+            if (mArtifactsEndStatus == END_STATUS_COMMITTED) {
+                // This takes some time (~3ms per package). It probably fine because we are running
+                // asynchronously. Consider removing this in the future.
+                try (var snapshot = mInjector.getPackageManagerLocal().withFilteredSnapshot();
+                        var pin = mInjector.createArtdPin()) {
+                    packagesWithArtifactsUsableCount =
+                            (int) mPackagesWithArtifacts.stream()
+                                    .map(packageName
+                                            -> artManagerLocal.getDexoptStatus(
+                                                    snapshot, packageName))
+                                    .filter(status -> hasUsablePreRebootArtifacts(status))
+                                    .count();
+                }
             }
 
             List<JobRun> jobRuns = statsBuilder.getJobRunsList();
@@ -250,52 +273,62 @@ public class PreRebootStatsReporter {
                     jobDurationMs, jobLatencyMs, mPackagesWithArtifacts.size(),
                     packagesWithArtifactsUsableCount, jobRuns.size(),
                     statsBuilder.getPackagesWithArtifactsBeforeRebootCount(),
-                    getJobTypeForStatsd(statsBuilder.getJobType()));
+                    getJobTypeForStatsd(statsBuilder.getJobType()),
+                    getFailureReasonForStatsd(statsBuilder.getFailureReason()), mArtifactsEndStatus,
+                    mArtifactsAgeMillis);
         }
     }
 
-    private int getStatusForStatsd(@NonNull Status status) {
-        switch (status) {
-            case STATUS_UNKNOWN:
-                return ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_UNKNOWN;
-            case STATUS_SCHEDULED:
-                return ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_SCHEDULED;
-            case STATUS_STARTED:
-                return ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_STARTED;
-            case STATUS_FINISHED:
-                return ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_FINISHED;
-            case STATUS_FAILED:
-                return ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_FAILED;
-            case STATUS_CANCELLED:
-                return ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_CANCELLED;
-            case STATUS_ABORTED_SYSTEM_REQUIREMENTS:
-                return ArtStatsLog
-                        .PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_ABORTED_SYSTEM_REQUIREMENTS;
-            case STATUS_NOT_SCHEDULED_DISABLED:
-                return ArtStatsLog
-                        .PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_NOT_SCHEDULED_DISABLED;
-            case STATUS_NOT_SCHEDULED_JOB_SCHEDULER:
-                return ArtStatsLog
-                        .PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_NOT_SCHEDULED_JOB_SCHEDULER;
-            default:
-                throw new IllegalStateException("Unknown status: " + status.getNumber());
-        }
+    @VisibleForTesting
+    public static int getStatusForStatsd(@NonNull Status status) {
+        return switch (status) {
+            case STATUS_UNKNOWN -> ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_UNKNOWN;
+            case STATUS_SCHEDULED ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_SCHEDULED;
+            case STATUS_STARTED -> ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_STARTED;
+            case STATUS_FINISHED ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_FINISHED;
+            case STATUS_FAILED -> ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_FAILED;
+            case STATUS_CANCELLED ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_CANCELLED;
+            case STATUS_ABORTED_SYSTEM_REQUIREMENTS ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_ABORTED_SYSTEM_REQUIREMENTS;
+            case STATUS_NOT_SCHEDULED_DISABLED ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_NOT_SCHEDULED_DISABLED;
+            case STATUS_NOT_SCHEDULED_JOB_SCHEDULER ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__STATUS__STATUS_NOT_SCHEDULED_JOB_SCHEDULER;
+            default -> throw new IllegalStateException("Unknown status: " + status.getNumber());
+        };
     }
 
-    private int getJobTypeForStatsd(@NonNull JobType jobType) {
-        switch (jobType) {
-            case JOB_TYPE_UNKNOWN:
-                return ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__JOB_TYPE__JOB_TYPE_UNKNOWN;
-            case JOB_TYPE_OTA:
-                return ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__JOB_TYPE__JOB_TYPE_OTA;
-            case JOB_TYPE_MAINLINE:
-                return ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__JOB_TYPE__JOB_TYPE_MAINLINE;
-            default:
-                throw new IllegalStateException("Unknown job type: " + jobType.getNumber());
-        }
+    private static int getJobTypeForStatsd(@NonNull JobType jobType) {
+        return switch (jobType) {
+            case JOB_TYPE_UNKNOWN ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__JOB_TYPE__JOB_TYPE_UNKNOWN;
+            case JOB_TYPE_OTA -> ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__JOB_TYPE__JOB_TYPE_OTA;
+            case JOB_TYPE_MAINLINE ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__JOB_TYPE__JOB_TYPE_MAINLINE;
+            default -> throw new IllegalStateException("Unknown job type: " + jobType.getNumber());
+        };
     }
 
-    private boolean hasUsablePreRebootArtifacts(@NonNull DexoptStatus status) {
+    private static int getFailureReasonForStatsd(@NonNull FailureReason failureReason) {
+        return switch (failureReason) {
+            case FAILURE_UNSPECIFIED ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__FAILURE_REASON__FAILURE_UNSPECIFIED;
+            case FAILURE_UPDATE_ENGINE ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__FAILURE_REASON__FAILURE_UPDATE_ENGINE;
+            case FAILURE_CHROOT_SETUP ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__FAILURE_REASON__FAILURE_CHROOT_SETUP;
+            case FAILURE_CLASS_LOADER ->
+                ArtStatsLog.PRE_REBOOT_DEXOPT_JOB_ENDED__FAILURE_REASON__FAILURE_CLASS_LOADER;
+            default ->
+                throw new IllegalStateException(
+                        "Unknown failure reason: " + failureReason.getNumber());
+        };
+    }
+
+    private static boolean hasUsablePreRebootArtifacts(@NonNull DexoptStatus status) {
         // For simplicity, we consider all artifacts of a package usable if we see at least one
         // `REASON_PRE_REBOOT_DEXOPT` because it's not easy to know which files are committed.
         return status.getDexContainerFileDexoptStatuses().stream().anyMatch(fileStatus
@@ -305,12 +338,19 @@ public class PreRebootStatsReporter {
 
     @NonNull
     private PreRebootStats.Builder load() {
+        return load(true /* expectFound */);
+    }
+
+    @NonNull
+    private PreRebootStats.Builder load(boolean expectFound) {
         PreRebootStats.Builder statsBuilder = PreRebootStats.newBuilder();
         try (InputStream in = new FileInputStream(mInjector.getFilename())) {
             statsBuilder.mergeFrom(in);
         } catch (IOException e) {
             // Nothing else we can do but to start from scratch.
-            AsLog.e("Failed to load pre-reboot stats", e);
+            if (expectFound || !(e instanceof FileNotFoundException)) {
+                AsLog.e("Failed to load pre-reboot stats", e);
+            }
         }
         return statsBuilder;
     }
@@ -332,7 +372,7 @@ public class PreRebootStatsReporter {
         }
     }
 
-    public void delete() {
+    private void delete() {
         Utils.deleteIfExistsSafe(new File(mInjector.getFilename()));
     }
 
@@ -375,12 +415,19 @@ public class PreRebootStatsReporter {
                 long jobDurationMillis, long jobLatencyMillis,
                 int packagesWithArtifactsAfterRebootCount,
                 int packagesWithArtifactsUsableAfterRebootCount, int jobRunCount,
-                int packagesWithArtifactsBeforeRebootCount, int jobType) {
+                int packagesWithArtifactsBeforeRebootCount, int jobType, int failureReason,
+                int artifactsEndStatus, long artifactsAgeMillis) {
             ArtStatsLog.write(code, status, optimizedPackageCount, failedPackageCount,
                     skippedPackageCount, totalPackageCount, jobDurationMillis, jobLatencyMillis,
                     packagesWithArtifactsAfterRebootCount,
                     packagesWithArtifactsUsableAfterRebootCount, jobRunCount,
-                    packagesWithArtifactsBeforeRebootCount, jobType);
+                    packagesWithArtifactsBeforeRebootCount, jobType, failureReason,
+                    artifactsEndStatus, artifactsAgeMillis);
+        }
+
+        @NonNull
+        public Executor getExecutor() {
+            return ForkJoinPool.commonPool();
         }
     }
 }

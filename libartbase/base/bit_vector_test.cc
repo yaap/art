@@ -206,7 +206,7 @@ void TestBitVectorViewIndexes() {
   StorageType empty_storage[] = {0u, 0u, 0u};
   BitVectorView empty(empty_storage, 3 * BitSizeOf<StorageType>() - 1u);
   for (size_t index : empty.Indexes()) {
-    FAIL();
+    FAIL() << index;
   }
   ASSERT_TRUE(empty.Indexes().begin().Done());
 }
@@ -286,7 +286,7 @@ void TestBitVectorViewUnionIfNotIn() {
   StorageType subset_storage[] = { kInitWord0 & mask, kInitWord1 & mask };
   BitVectorView<StorageType> subset_bvv(subset_storage, size);
   StorageType empty_storage[] = { 0u, 0u };
-  BitVectorView<StorageType> empty_bvv(subset_storage, size);
+  BitVectorView<StorageType> empty_bvv(empty_storage, size);
   static constexpr StorageType kOtherWord0 = kInitWord1;
   static constexpr StorageType kOtherWord1 = kInitWord0;
   StorageType other_storage[] = { kOtherWord0, kOtherWord1 };

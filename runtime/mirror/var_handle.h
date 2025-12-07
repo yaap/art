@@ -283,6 +283,8 @@ class MANAGED StaticFieldVarHandle : public FieldVarHandle {
 // The corresponding managed class in libart java.lang.invoke.ArrayElementVarHandle.
 class MANAGED ArrayElementVarHandle : public VarHandle {
  public:
+  MIRROR_CLASS("Ljava/lang/invoke/ArrayElementVarHandle;");
+
   bool Access(AccessMode access_mode,
               ShadowFrame* shadow_frame,
               const InstructionOperands* const operands,

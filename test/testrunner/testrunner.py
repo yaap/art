@@ -136,6 +136,7 @@ verbose = False
 dry_run = False
 ignore_skips = False
 build = False
+host_gtest = False
 dist = False
 gdb = False
 gdb_arg = ''
@@ -352,7 +353,7 @@ def get_device_name():
   """
   if env.ART_TEST_RUN_FROM_SOONG:
     return "target"  # We can't use adb during build.
-  if env.ART_TEST_ON_VM:
+  if env.ART_TEST_ON_VM or env.ART_TEST_ON_SBC:
     return subprocess.Popen(f"{env.ART_SSH_CMD} uname -a".split(),
                             stdout = subprocess.PIPE,
                             universal_newlines=True).stdout.read().strip()
@@ -682,7 +683,7 @@ def run_test(args, test, test_variant, test_name):
     failed_tests.append((test_name, 'Timed out in %d seconds' % timeout))
 
     # HACK(b/142039427): Print extra backtraces on timeout.
-    if "-target-" in test_name and not env.ART_TEST_ON_VM:
+    if "-target-" in test_name and not env.ART_TEST_ON_VM and not env.ART_TEST_ON_SBC:
       for i in range(8):
         proc_name = "dalvikvm" + test_name[-2:]
         pidof = subprocess.run(["adb", "shell", "pidof", proc_name], stdout=subprocess.PIPE)
@@ -1037,7 +1038,7 @@ def parse_test_name(test_name):
 
 
 def get_target_cpu_count():
-  if env.ART_TEST_ON_VM:
+  if env.ART_TEST_ON_VM or env.ART_TEST_ON_SBC:
     command = f"{env.ART_SSH_CMD} cat /sys/devices/system/cpu/present"
   else:
     command = 'adb shell cat /sys/devices/system/cpu/present'
@@ -1064,6 +1065,7 @@ def parse_option():
   global ignore_skips
   global n_thread
   global build
+  global host_gtest
   global dist
   global gdb
   global gdb_arg
@@ -1102,6 +1104,12 @@ def parse_option():
                             action='store_true', dest='build',
                             help="""Build dependencies under all circumstances. By default we will
                             not build dependencies unless ART_TEST_RUN_TEST_BUILD=true.""")
+  global_group.add_argument('--host-gtest',
+                            action='store_true', dest='host_gtest',
+                            help="""Run host gtests as part of building dependencies. Requires
+                            '-b'/'--build-dependencies'. Note that if no gtests run because they
+                            passed before and none of their dependencies were touched, building
+                            dependencies shall fail and run-tests shall not run.""")
   global_group.add_argument('--dist',
                             action='store_true', dest='dist',
                             help="""If dependencies are to be built, pass `dist` to the build
@@ -1176,6 +1184,8 @@ def parse_option():
     dry_run = True
     verbose = True
   build = options['build']
+  if options['host_gtest']:
+    host_gtest = options['host_gtest']
   dist = options['dist']
   if options['gdb']:
     n_thread = 1
@@ -1208,6 +1218,9 @@ def main():
   gather_disabled_test_info()
   if build:
     build_targets = []
+    # Run host gtests if requested.
+    if host_gtest:
+      build_targets += ['test-art-host-gtest']
     # Build only the needed shards (depending on the selected tests).
     shards = set(re.search(r"(\d\d)-", t).group(1) for t in tests)
     if any("hiddenapi" in t for t in tests):

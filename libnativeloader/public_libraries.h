@@ -46,6 +46,8 @@ const std::string& apex_jni_libraries(const std::string& apex_name);
 // Note that libfoo.so and libbar.so are listed in /system/etc/public.libraries.txt
 // but provided by com.android.foo APEX.
 const std::map<std::string, std::string>& apex_public_libraries();
+// Public libraries provided by vendor APEXes
+const std::map<std::string, std::string>& vendor_apex_public_libraries();
 
 std::string get_vndk_version(bool is_product_vndk);
 

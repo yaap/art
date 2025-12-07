@@ -44,6 +44,7 @@
 #include "dex/invoke_type.h"
 #include "dex/method_reference.h"
 #include "entrypoints/quick/quick_entrypoints_enum.h"
+#include "graph.h"
 #include "handle.h"
 #include "handle_cache.h"
 #include "instruction_list.h"
@@ -90,12 +91,6 @@ namespace mirror {
 class DexCache;
 }  // namespace mirror
 
-static const int kDefaultNumberOfBlocks = 8;
-static const int kDefaultNumberOfSuccessors = 2;
-static const int kDefaultNumberOfPredecessors = 2;
-static const int kDefaultNumberOfExceptionalPredecessors = 0;
-static const int kDefaultNumberOfDominatedBlocks = 1;
-
 // The maximum (meaningful) distance (31) that can be used in an integer shift/rotate operation.
 static constexpr int32_t kMaxIntShiftDistance = 0x1f;
 // The maximum (meaningful) distance (63) that can be used in a long shift/rotate operation.
@@ -103,8 +98,6 @@ static constexpr int32_t kMaxLongShiftDistance = 0x3f;
 
 static constexpr uint32_t kUnknownFieldIndex = static_cast<uint32_t>(-1);
 static constexpr uint16_t kUnknownClassDefIndex = static_cast<uint16_t>(-1);
-
-static constexpr InvokeType kInvalidInvokeType = static_cast<InvokeType>(-1);
 
 static constexpr uint32_t kNoDexPc = -1;
 
@@ -137,511 +130,10 @@ enum IfCondition {
   kCondLast = kCondAE,
 };
 
-enum GraphAnalysisResult {
-  kAnalysisSkipped,
-  kAnalysisInvalidBytecode,
-  kAnalysisFailThrowCatchLoop,
-  kAnalysisFailAmbiguousArrayOp,
-  kAnalysisFailIrreducibleLoopAndStringInit,
-  kAnalysisFailPhiEquivalentInOsr,
-  kAnalysisSuccess,
-};
-
-std::ostream& operator<<(std::ostream& os, GraphAnalysisResult ga);
-
 template <typename T>
 static inline typename std::make_unsigned<T>::type MakeUnsigned(T x) {
   return static_cast<typename std::make_unsigned<T>::type>(x);
 }
-
-// Control-flow graph of a method. Contains a list of basic blocks.
-class HGraph : public ArenaObject<kArenaAllocGraph> {
- public:
-  HGraph(ArenaAllocator* allocator,
-         ArenaStack* arena_stack,
-         VariableSizedHandleScope* handles,
-         const DexFile& dex_file,
-         uint32_t method_idx,
-         InstructionSet instruction_set,
-         InvokeType invoke_type = kInvalidInvokeType,
-         bool dead_reference_safe = false,
-         bool debuggable = false,
-         CompilationKind compilation_kind = CompilationKind::kOptimized,
-         int start_instruction_id = 0)
-      : allocator_(allocator),
-        arena_stack_(arena_stack),
-        handle_cache_(handles),
-        blocks_(allocator->Adapter(kArenaAllocBlockList)),
-        reverse_post_order_(allocator->Adapter(kArenaAllocReversePostOrder)),
-        linear_order_(allocator->Adapter(kArenaAllocLinearOrder)),
-        entry_block_(nullptr),
-        exit_block_(nullptr),
-        number_of_vregs_(0),
-        number_of_in_vregs_(0),
-        temporaries_vreg_slots_(0),
-        has_bounds_checks_(false),
-        has_try_catch_(false),
-        has_monitor_operations_(false),
-        has_traditional_simd_(false),
-        has_predicated_simd_(false),
-        has_loops_(false),
-        has_irreducible_loops_(false),
-        has_direct_critical_native_call_(false),
-        has_always_throwing_invokes_(false),
-        dead_reference_safe_(dead_reference_safe),
-        debuggable_(debuggable),
-        current_instruction_id_(start_instruction_id),
-        dex_file_(dex_file),
-        method_idx_(method_idx),
-        invoke_type_(invoke_type),
-        in_ssa_form_(false),
-        number_of_cha_guards_(0),
-        instruction_set_(instruction_set),
-        cached_null_constant_(nullptr),
-        cached_int_constants_(std::less<int32_t>(), allocator->Adapter(kArenaAllocConstantsMap)),
-        cached_float_constants_(std::less<int32_t>(), allocator->Adapter(kArenaAllocConstantsMap)),
-        cached_long_constants_(std::less<int64_t>(), allocator->Adapter(kArenaAllocConstantsMap)),
-        cached_double_constants_(std::less<int64_t>(), allocator->Adapter(kArenaAllocConstantsMap)),
-        cached_current_method_(nullptr),
-        art_method_(nullptr),
-        compilation_kind_(compilation_kind),
-        useful_optimizing_(false),
-        cha_single_implementation_list_(allocator->Adapter(kArenaAllocCHA)) {
-    blocks_.reserve(kDefaultNumberOfBlocks);
-  }
-
-  std::ostream& Dump(std::ostream& os,
-                     CodeGenerator* codegen,
-                     std::optional<std::reference_wrapper<const BlockNamer>> namer = std::nullopt);
-
-  ArenaAllocator* GetAllocator() const { return allocator_; }
-  ArenaStack* GetArenaStack() const { return arena_stack_; }
-
-  HandleCache* GetHandleCache() { return &handle_cache_; }
-
-  const ArenaVector<HBasicBlock*>& GetBlocks() const { return blocks_; }
-
-  // An iterator to only blocks that are still actually in the graph (when
-  // blocks are removed they are replaced with 'nullptr' in GetBlocks to
-  // simplify block-id assignment and avoid memmoves in the block-list).
-  IterationRange<FilterNull<ArenaVector<HBasicBlock*>::const_iterator>> GetActiveBlocks() const {
-    return FilterOutNull(MakeIterationRange(GetBlocks()));
-  }
-
-  bool IsInSsaForm() const { return in_ssa_form_; }
-  void SetInSsaForm() { in_ssa_form_ = true; }
-
-  HBasicBlock* GetEntryBlock() const { return entry_block_; }
-  HBasicBlock* GetExitBlock() const { return exit_block_; }
-  bool HasExitBlock() const { return exit_block_ != nullptr; }
-
-  void SetEntryBlock(HBasicBlock* block) { entry_block_ = block; }
-  void SetExitBlock(HBasicBlock* block) { exit_block_ = block; }
-
-  void AddBlock(HBasicBlock* block);
-
-  void ComputeDominanceInformation();
-  void ClearDominanceInformation();
-  void ClearLoopInformation();
-  void FindBackEdges(/*out*/ BitVectorView<size_t> visited);
-  GraphAnalysisResult BuildDominatorTree();
-  GraphAnalysisResult RecomputeDominatorTree();
-  void SimplifyCFG();
-  void SimplifyCatchBlocks();
-
-  // Analyze all natural loops in this graph. Returns a code specifying that it
-  // was successful or the reason for failure. The method will fail if a loop
-  // is a throw-catch loop, i.e. the header is a catch block.
-  GraphAnalysisResult AnalyzeLoops() const;
-
-  // Iterate over blocks to compute try block membership. Needs reverse post
-  // order and loop information.
-  void ComputeTryBlockInformation();
-
-  // Inline this graph in `outer_graph`, replacing the given `invoke` instruction.
-  // Returns the instruction to replace the invoke expression or null if the
-  // invoke is for a void method. Note that the caller is responsible for replacing
-  // and removing the invoke instruction.
-  HInstruction* InlineInto(HGraph* outer_graph, HInvoke* invoke);
-
-  // Update the loop and try membership of `block`, which was spawned from `reference`.
-  // In case `reference` is a back edge, `replace_if_back_edge` notifies whether `block`
-  // should be the new back edge.
-  // `has_more_specific_try_catch_info` will be set to true when inlining a try catch.
-  void UpdateLoopAndTryInformationOfNewBlock(HBasicBlock* block,
-                                             HBasicBlock* reference,
-                                             bool replace_if_back_edge,
-                                             bool has_more_specific_try_catch_info = false);
-
-  // Need to add a couple of blocks to test if the loop body is entered and
-  // put deoptimization instructions, etc.
-  void TransformLoopHeaderForBCE(HBasicBlock* header);
-
-  // Adds a new loop directly after the loop with the given header and exit.
-  // Returns the new preheader.
-  HBasicBlock* TransformLoopForVectorization(HBasicBlock* header,
-                                             HBasicBlock* body,
-                                             HBasicBlock* exit);
-
-  // Removes `block` from the graph. Assumes `block` has been disconnected from
-  // other blocks and has no instructions or phis.
-  void DeleteDeadEmptyBlock(HBasicBlock* block);
-
-  // Splits the edge between `block` and `successor` while preserving the
-  // indices in the predecessor/successor lists. If there are multiple edges
-  // between the blocks, the lowest indices are used.
-  // Returns the new block which is empty and has the same dex pc as `successor`.
-  HBasicBlock* SplitEdge(HBasicBlock* block, HBasicBlock* successor);
-
-  void SplitCriticalEdge(HBasicBlock* block, HBasicBlock* successor);
-
-  void OrderLoopHeaderPredecessors(HBasicBlock* header);
-
-  // Transform a loop into a format with a single preheader.
-  //
-  // Each phi in the header should be split: original one in the header should only hold
-  // inputs reachable from the back edges and a single input from the preheader. The newly created
-  // phi in the preheader should collate the inputs from the original multiple incoming blocks.
-  //
-  // Loops in the graph typically have a single preheader, so this method is used to "repair" loops
-  // that no longer have this property.
-  void TransformLoopToSinglePreheaderFormat(HBasicBlock* header);
-
-  void SimplifyLoop(HBasicBlock* header);
-
-  ALWAYS_INLINE int32_t AllocateInstructionId();
-
-  int32_t GetCurrentInstructionId() const {
-    return current_instruction_id_;
-  }
-
-  void SetCurrentInstructionId(int32_t id) {
-    CHECK_GE(id, current_instruction_id_);
-    current_instruction_id_ = id;
-  }
-
-  void UpdateTemporariesVRegSlots(size_t slots) {
-    temporaries_vreg_slots_ = std::max(slots, temporaries_vreg_slots_);
-  }
-
-  size_t GetTemporariesVRegSlots() const {
-    DCHECK(!in_ssa_form_);
-    return temporaries_vreg_slots_;
-  }
-
-  void SetNumberOfVRegs(uint16_t number_of_vregs) {
-    number_of_vregs_ = number_of_vregs;
-  }
-
-  uint16_t GetNumberOfVRegs() const {
-    return number_of_vregs_;
-  }
-
-  void SetNumberOfInVRegs(uint16_t value) {
-    number_of_in_vregs_ = value;
-  }
-
-  uint16_t GetNumberOfInVRegs() const {
-    return number_of_in_vregs_;
-  }
-
-  uint16_t GetNumberOfLocalVRegs() const {
-    DCHECK(!in_ssa_form_);
-    return number_of_vregs_ - number_of_in_vregs_;
-  }
-
-  const ArenaVector<HBasicBlock*>& GetReversePostOrder() const {
-    return reverse_post_order_;
-  }
-
-  ArrayRef<HBasicBlock* const> GetReversePostOrderSkipEntryBlock() const {
-    DCHECK(GetReversePostOrder()[0] == entry_block_);
-    return ArrayRef<HBasicBlock* const>(GetReversePostOrder()).SubArray(1);
-  }
-
-  IterationRange<ArenaVector<HBasicBlock*>::const_reverse_iterator> GetPostOrder() const {
-    return ReverseRange(GetReversePostOrder());
-  }
-
-  const ArenaVector<HBasicBlock*>& GetLinearOrder() const {
-    return linear_order_;
-  }
-
-  IterationRange<ArenaVector<HBasicBlock*>::const_reverse_iterator> GetLinearPostOrder() const {
-    return ReverseRange(GetLinearOrder());
-  }
-
-  bool HasBoundsChecks() const {
-    return has_bounds_checks_;
-  }
-
-  void SetHasBoundsChecks(bool value) {
-    has_bounds_checks_ = value;
-  }
-
-  // Is the code known to be robust against eliminating dead references
-  // and the effects of early finalization?
-  bool IsDeadReferenceSafe() const { return dead_reference_safe_; }
-
-  void MarkDeadReferenceUnsafe() { dead_reference_safe_ = false; }
-
-  bool IsDebuggable() const { return debuggable_; }
-
-  // Returns a constant of the given type and value. If it does not exist
-  // already, it is created and inserted into the graph. This method is only for
-  // integral types.
-  HConstant* GetConstant(DataType::Type type, int64_t value);
-
-  // TODO: This is problematic for the consistency of reference type propagation
-  // because it can be created anytime after the pass and thus it will be left
-  // with an invalid type.
-  HNullConstant* GetNullConstant();
-
-  HIntConstant* GetIntConstant(int32_t value);
-  HLongConstant* GetLongConstant(int64_t value);
-  HFloatConstant* GetFloatConstant(float value);
-  HDoubleConstant* GetDoubleConstant(double value);
-
-  HCurrentMethod* GetCurrentMethod();
-
-  const DexFile& GetDexFile() const {
-    return dex_file_;
-  }
-
-  uint32_t GetMethodIdx() const {
-    return method_idx_;
-  }
-
-  // Get the method name (without the signature), e.g. "<init>"
-  const char* GetMethodName() const;
-
-  // Get the pretty method name (class + name + optionally signature).
-  std::string PrettyMethod(bool with_signature = true) const;
-
-  InvokeType GetInvokeType() const {
-    return invoke_type_;
-  }
-
-  InstructionSet GetInstructionSet() const {
-    return instruction_set_;
-  }
-
-  bool IsCompilingOsr() const { return compilation_kind_ == CompilationKind::kOsr; }
-
-  bool IsCompilingBaseline() const { return compilation_kind_ == CompilationKind::kBaseline; }
-
-  CompilationKind GetCompilationKind() const { return compilation_kind_; }
-
-  ArenaSet<ArtMethod*>& GetCHASingleImplementationList() {
-    return cha_single_implementation_list_;
-  }
-
-  // In case of OSR we intend to use SuspendChecks as an entry point to the
-  // function; for debuggable graphs we might deoptimize to interpreter from
-  // SuspendChecks. In these cases we should always generate code for them.
-  bool SuspendChecksAreAllowedToNoOp() const {
-    return !IsDebuggable() && !IsCompilingOsr();
-  }
-
-  void AddCHASingleImplementationDependency(ArtMethod* method) {
-    cha_single_implementation_list_.insert(method);
-  }
-
-  bool HasShouldDeoptimizeFlag() const {
-    return number_of_cha_guards_ != 0 || debuggable_;
-  }
-
-  bool HasTryCatch() const { return has_try_catch_; }
-  void SetHasTryCatch(bool value) { has_try_catch_ = value; }
-
-  bool HasMonitorOperations() const { return has_monitor_operations_; }
-  void SetHasMonitorOperations(bool value) { has_monitor_operations_ = value; }
-
-  bool HasTraditionalSIMD() { return has_traditional_simd_; }
-  void SetHasTraditionalSIMD(bool value) { has_traditional_simd_ = value; }
-
-  bool HasPredicatedSIMD() { return has_predicated_simd_; }
-  void SetHasPredicatedSIMD(bool value) { has_predicated_simd_ = value; }
-
-  bool HasSIMD() const { return has_traditional_simd_ || has_predicated_simd_; }
-
-  bool HasLoops() const { return has_loops_; }
-  void SetHasLoops(bool value) { has_loops_ = value; }
-
-  bool HasIrreducibleLoops() const { return has_irreducible_loops_; }
-  void SetHasIrreducibleLoops(bool value) { has_irreducible_loops_ = value; }
-
-  bool HasDirectCriticalNativeCall() const { return has_direct_critical_native_call_; }
-  void SetHasDirectCriticalNativeCall(bool value) { has_direct_critical_native_call_ = value; }
-
-  bool HasAlwaysThrowingInvokes() const { return has_always_throwing_invokes_; }
-  void SetHasAlwaysThrowingInvokes(bool value) { has_always_throwing_invokes_ = value; }
-
-  ArtMethod* GetArtMethod() const { return art_method_; }
-  void SetArtMethod(ArtMethod* method) { art_method_ = method; }
-
-  void SetProfilingInfo(ProfilingInfo* info) { profiling_info_ = info; }
-  ProfilingInfo* GetProfilingInfo() const { return profiling_info_; }
-
-  ReferenceTypeInfo GetInexactObjectRti() {
-    return ReferenceTypeInfo::Create(handle_cache_.GetObjectClassHandle(), /* is_exact= */ false);
-  }
-
-  uint32_t GetNumberOfCHAGuards() const { return number_of_cha_guards_; }
-  void SetNumberOfCHAGuards(uint32_t num) { number_of_cha_guards_ = num; }
-  void IncrementNumberOfCHAGuards() { number_of_cha_guards_++; }
-
-  void SetUsefulOptimizing() { useful_optimizing_ = true; }
-  bool IsUsefulOptimizing() const { return useful_optimizing_; }
-
- private:
-  void RemoveDeadBlocksInstructionsAsUsersAndDisconnect(BitVectorView<const size_t> visited) const;
-  void RemoveDeadBlocks(BitVectorView<const size_t> visited);
-
-  template <class InstructionType, typename ValueType>
-  InstructionType* CreateConstant(ValueType value,
-                                  ArenaSafeMap<ValueType, InstructionType*>* cache);
-
-  void InsertConstant(HConstant* instruction);
-
-  // Cache a float constant into the graph. This method should only be
-  // called by the SsaBuilder when creating "equivalent" instructions.
-  void CacheFloatConstant(HFloatConstant* constant);
-
-  // See CacheFloatConstant comment.
-  void CacheDoubleConstant(HDoubleConstant* constant);
-
-  ArenaAllocator* const allocator_;
-  ArenaStack* const arena_stack_;
-
-  HandleCache handle_cache_;
-
-  // List of blocks in insertion order.
-  ArenaVector<HBasicBlock*> blocks_;
-
-  // List of blocks to perform a reverse post order tree traversal.
-  ArenaVector<HBasicBlock*> reverse_post_order_;
-
-  // List of blocks to perform a linear order tree traversal. Unlike the reverse
-  // post order, this order is not incrementally kept up-to-date.
-  ArenaVector<HBasicBlock*> linear_order_;
-
-  HBasicBlock* entry_block_;
-  HBasicBlock* exit_block_;
-
-  // The number of virtual registers in this method. Contains the parameters.
-  uint16_t number_of_vregs_;
-
-  // The number of virtual registers used by parameters of this method.
-  uint16_t number_of_in_vregs_;
-
-  // Number of vreg size slots that the temporaries use (used in baseline compiler).
-  size_t temporaries_vreg_slots_;
-
-  // Flag whether there are bounds checks in the graph. We can skip
-  // BCE if it's false.
-  bool has_bounds_checks_;
-
-  // Flag whether there are try/catch blocks in the graph. We will skip
-  // try/catch-related passes if it's false.
-  bool has_try_catch_;
-
-  // Flag whether there are any HMonitorOperation in the graph. If yes this will mandate
-  // DexRegisterMap to be present to allow deadlock analysis for non-debuggable code.
-  bool has_monitor_operations_;
-
-  // Flags whether SIMD (traditional or predicated) instructions appear in the graph.
-  // If either is true, the code generators may have to be more careful spilling the wider
-  // contents of SIMD registers.
-  bool has_traditional_simd_;
-  bool has_predicated_simd_;
-
-  // Flag whether there are any loops in the graph. We can skip loop
-  // optimization if it's false.
-  bool has_loops_;
-
-  // Flag whether there are any irreducible loops in the graph.
-  bool has_irreducible_loops_;
-
-  // Flag whether there are any direct calls to native code registered
-  // for @CriticalNative methods.
-  bool has_direct_critical_native_call_;
-
-  // Flag whether the graph contains invokes that always throw.
-  bool has_always_throwing_invokes_;
-
-  // Is the code known to be robust against eliminating dead references
-  // and the effects of early finalization? If false, dead reference variables
-  // are kept if they might be visible to the garbage collector.
-  // Currently this means that the class was declared to be dead-reference-safe,
-  // the method accesses no reachability-sensitive fields or data, and the same
-  // is true for any methods that were inlined into the current one.
-  bool dead_reference_safe_;
-
-  // Indicates whether the graph should be compiled in a way that
-  // ensures full debuggability. If false, we can apply more
-  // aggressive optimizations that may limit the level of debugging.
-  const bool debuggable_;
-
-  // The current id to assign to a newly added instruction. See HInstruction.id_.
-  int32_t current_instruction_id_;
-
-  // The dex file from which the method is from.
-  const DexFile& dex_file_;
-
-  // The method index in the dex file.
-  const uint32_t method_idx_;
-
-  // If inlined, this encodes how the callee is being invoked.
-  const InvokeType invoke_type_;
-
-  // Whether the graph has been transformed to SSA form. Only used
-  // in debug mode to ensure we are not using properties only valid
-  // for non-SSA form (like the number of temporaries).
-  bool in_ssa_form_;
-
-  // Number of CHA guards in the graph. Used to short-circuit the
-  // CHA guard optimization pass when there is no CHA guard left.
-  uint32_t number_of_cha_guards_;
-
-  const InstructionSet instruction_set_;
-
-  // Cached constants.
-  HNullConstant* cached_null_constant_;
-  ArenaSafeMap<int32_t, HIntConstant*> cached_int_constants_;
-  ArenaSafeMap<int32_t, HFloatConstant*> cached_float_constants_;
-  ArenaSafeMap<int64_t, HLongConstant*> cached_long_constants_;
-  ArenaSafeMap<int64_t, HDoubleConstant*> cached_double_constants_;
-
-  HCurrentMethod* cached_current_method_;
-
-  // The ArtMethod this graph is for. Note that for AOT, it may be null,
-  // for example for methods whose declaring class could not be resolved
-  // (such as when the superclass could not be found).
-  ArtMethod* art_method_;
-
-  // The `ProfilingInfo` associated with the method being compiled.
-  ProfilingInfo* profiling_info_;
-
-  // How we are compiling the graph: either optimized, osr, or baseline.
-  // For osr, we will make all loops seen as irreducible and emit special
-  // stack maps to mark compiled code entries which the interpreter can
-  // directly jump to.
-  const CompilationKind compilation_kind_;
-
-  // Whether after compiling baseline it is still useful re-optimizing this
-  // method.
-  bool useful_optimizing_;
-
-  // List of methods that are assumed to have single implementation.
-  ArenaSet<ArtMethod*> cha_single_implementation_list_;
-
-  friend class SsaBuilder;           // For caching constants.
-  friend class SsaLivenessAnalysis;  // For the linear order.
-  friend class HInliner;             // For the reverse post order.
-  ART_FRIEND_TEST(GraphTest, IfSuccessorSimpleJoinBlock1);
-  DISALLOW_COPY_AND_ASSIGN(HGraph);
-};
 
 // Stores try/catch information for basic blocks.
 // Note that HGraph is constructed so that catch blocks cannot simultaneously
@@ -734,14 +226,6 @@ class HBasicBlock final : public ArenaObject<kArenaAllocBasicBlock> {
 
   const ArenaVector<HBasicBlock*>& GetDominatedBlocks() const {
     return dominated_blocks_;
-  }
-
-  bool IsEntryBlock() const {
-    return graph_->GetEntryBlock() == this;
-  }
-
-  bool IsExitBlock() const {
-    return graph_->GetExitBlock() == this;
   }
 
   bool IsSingleGoto() const;
@@ -1008,6 +492,10 @@ class HBasicBlock final : public ArenaObject<kArenaAllocBasicBlock> {
   bool HasSinglePhi() const;
 
  private:
+  static const size_t kDefaultNumberOfSuccessors = 2u;
+  static const size_t kDefaultNumberOfPredecessors = 2u;
+  static const size_t kDefaultNumberOfDominatedBlocks = 1u;
+
   HBasicBlock(ArenaAllocator* allocator, HGraph* graph, uint32_t dex_pc)
       : graph_(graph),
         predecessors_(allocator->Adapter(kArenaAllocPredecessors)),
@@ -1210,7 +698,12 @@ class HBasicBlock final : public ArenaObject<kArenaAllocBasicBlock> {
 #define FOR_EACH_CONCRETE_INSTRUCTION_ARM64(M)
 
 #if defined(ART_ENABLE_CODEGEN_riscv64)
-#define FOR_EACH_CONCRETE_INSTRUCTION_RISCV64(M) M(Riscv64ShiftAdd, Instruction)
+#define FOR_EACH_CONCRETE_INSTRUCTION_RISCV64(M) \
+  M(Riscv64ShiftAdd, Instruction)                \
+  M(Riscv64BitSet, Instruction)                  \
+  M(Riscv64BitClear, Instruction)                \
+  M(Riscv64BitExtract, Instruction)              \
+  M(Riscv64BitInvert, Instruction)
 #else
 #define FOR_EACH_CONCRETE_INSTRUCTION_RISCV64(M)
 #endif
@@ -1876,22 +1369,40 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
 
   virtual ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() = 0;
 
-  ArrayRef<const HUserRecord<HInstruction*>> GetInputRecords() const {
-    // One virtual method is enough, just const_cast<> and then re-add the const.
-    return ArrayRef<const HUserRecord<HInstruction*>>(
-        const_cast<HInstruction*>(this)->GetInputRecords());
+  // As a workaround for clang++'s lack of devirtualization during inlining we redefine helpers
+  // that wrap `GetInputRecords()` in each class that provides a `final` override. b/413244085
+#define DEFINE_GET_INPUT_RECORDS_HELPERS(InstructionType)                             \
+  ArrayRef<const HUserRecord<HInstruction*>> GetInputRecords() const {                \
+    /* One virtual method is enough, just const_cast<> and then re-add the const. */  \
+    return ArrayRef<const HUserRecord<HInstruction*>>(                                \
+        const_cast<InstructionType*>(this)->GetInputRecords());                       \
+  }                                                                                   \
+                                                                                      \
+  HInputsRef GetInputs() {                                                            \
+    return MakeTransformArrayRef(GetInputRecords(), HInputExtractor());               \
+  }                                                                                   \
+                                                                                      \
+  HConstInputsRef GetInputs() const {                                                 \
+    return MakeTransformArrayRef(GetInputRecords(), HInputExtractor());               \
+  }                                                                                   \
+                                                                                      \
+  size_t InputCount() const { return GetInputRecords().size(); }                      \
+  HInstruction* InputAt(size_t i) const { return InputRecordAt(i).GetInstruction(); } \
+                                                                                      \
+  const HUserRecord<HInstruction*> InputRecordAt(size_t i) const {                    \
+    return GetInputRecords()[i];                                                      \
+  }                                                                                   \
+                                                                                      \
+  void SetRawInputRecordAt(size_t index, const HUserRecord<HInstruction*>& input) {   \
+    ArrayRef<HUserRecord<HInstruction*>> input_records = GetInputRecords();           \
+    input_records[index] = input;                                                     \
+  }                                                                                   \
+                                                                                      \
+  void SetRawInputAt(size_t index, HInstruction* input) {                             \
+    SetRawInputRecordAt(index, HUserRecord<HInstruction*>(input));                    \
   }
 
-  HInputsRef GetInputs() {
-    return MakeTransformArrayRef(GetInputRecords(), HInputExtractor());
-  }
-
-  HConstInputsRef GetInputs() const {
-    return MakeTransformArrayRef(GetInputRecords(), HInputExtractor());
-  }
-
-  size_t InputCount() const { return GetInputRecords().size(); }
-  HInstruction* InputAt(size_t i) const { return InputRecordAt(i).GetInstruction(); }
+  DEFINE_GET_INPUT_RECORDS_HELPERS(HInstruction);
 
   bool HasInput(HInstruction* input) const {
     for (const HInstruction* i : GetInputs()) {
@@ -1900,10 +1411,6 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
       }
     }
     return false;
-  }
-
-  void SetRawInputAt(size_t index, HInstruction* input) {
-    SetRawInputRecordAt(index, HUserRecord<HInstruction*>(input));
   }
 
   virtual const char* DebugName() const = 0;
@@ -1920,7 +1427,11 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
   uint32_t GetDexPc() const { return dex_pc_; }
 
   bool IsControlFlow() const {
-    switch (GetKind()) {
+    return IsControlFlow(GetKind());
+  }
+
+  static constexpr bool IsControlFlow(InstructionKind kind) {
+    switch (kind) {
       case kExit:
       case kGoto:
       case kIf:
@@ -2050,6 +1561,13 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
       input_use.GetInstruction()->FixUpUserRecordsAfterUseRemoval(before_use_node);
     }
   }
+
+  void RemoveAsUser() {
+    RemoveAsUserOfAllInputs();
+    RemoveEnvironmentUses();
+  }
+
+  void RemoveEnvironmentUses();
 
   const HUseList<HInstruction*>& GetUses() const { return uses_; }
   const HUseList<HEnvironment*>& GetEnvUses() const { return env_uses_; }
@@ -2262,8 +1780,6 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
   void SetLiveInterval(LiveInterval* interval) { live_interval_ = interval; }
   bool HasLiveInterval() const { return live_interval_ != nullptr; }
 
-  bool IsSuspendCheckEntry() const { return IsSuspendCheck() && GetBlock()->IsEntryBlock(); }
-
   // Returns whether the code generation of the instruction will require to have access
   // to the current method. Such instructions are:
   // (1): Instructions that require an environment, as calling the runtime requires
@@ -2304,15 +1820,6 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
                 "Too many generic packed fields");
 
   using TypeField = BitField<DataType::Type, kFieldType, kFieldTypeSize>;
-
-  const HUserRecord<HInstruction*> InputRecordAt(size_t i) const {
-    return GetInputRecords()[i];
-  }
-
-  void SetRawInputRecordAt(size_t index, const HUserRecord<HInstruction*>& input) {
-    ArrayRef<HUserRecord<HInstruction*>> input_records = GetInputRecords();
-    input_records[index] = input;
-  }
 
   uint32_t GetPackedFields() const {
     return packed_fields_;
@@ -2600,10 +2107,10 @@ IterationRange<HSTLInstructionIterator<InnerIter>> MakeSTLInstructionIteratorRan
 
 class HVariableInputSizeInstruction : public HInstruction {
  public:
-  using HInstruction::GetInputRecords;  // Keep the const version visible.
-  ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() override {
+  ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() final {
     return ArrayRef<HUserRecord<HInstruction*>>(inputs_);
   }
+  DEFINE_GET_INPUT_RECORDS_HELPERS(HVariableInputSizeInstruction);
 
   void AddInput(HInstruction* input);
   void InsertInputAt(size_t index, HInstruction* input);
@@ -2647,10 +2154,10 @@ class HExpression : public Base {
 
   virtual ~HExpression() {}
 
-  using HInstruction::GetInputRecords;  // Keep the const version visible.
   ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() final {
     return ArrayRef<HUserRecord<HInstruction*>>(inputs_);
   }
+  DEFINE_GET_INPUT_RECORDS_HELPERS(HExpression);
 
  protected:
   DEFAULT_COPY_CONSTRUCTOR(Expression);
@@ -2671,10 +2178,10 @@ class HExpression<0, Base> : public Base {
 
   virtual ~HExpression() {}
 
-  using HInstruction::GetInputRecords;  // Keep the const version visible.
   ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() final {
     return ArrayRef<HUserRecord<HInstruction*>>();
   }
+  DEFINE_GET_INPUT_RECORDS_HELPERS(HExpression);
 
  protected:
   DEFAULT_COPY_CONSTRUCTOR(Expression);
@@ -2997,17 +2504,17 @@ class HLongConstant final : public HConstant {
   bool IsZeroBitPattern() const override { return GetValue() == 0; }
   bool IsOne() const override { return GetValue() == 1; }
 
+  explicit HLongConstant(int64_t value)
+      : HConstant(kLongConstant, DataType::Type::kInt64),
+        value_(value) {
+  }
+
   DECLARE_INSTRUCTION(LongConstant);
 
  protected:
   DEFAULT_COPY_CONSTRUCTOR(LongConstant);
 
  private:
-  explicit HLongConstant(int64_t value)
-      : HConstant(kLongConstant, DataType::Type::kInt64),
-        value_(value) {
-  }
-
   const int64_t value_;
 
   friend class HGraph;
@@ -4694,25 +4201,6 @@ class HInvokeStaticOrDirect final : public HInvoke {
 
   DispatchInfo GetDispatchInfo() const {
     return dispatch_info_;
-  }
-
-  using HInstruction::GetInputRecords;  // Keep the const version visible.
-  ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() override {
-    ArrayRef<HUserRecord<HInstruction*>> input_records = HInvoke::GetInputRecords();
-    if (kIsDebugBuild && IsStaticWithExplicitClinitCheck()) {
-      DCHECK(!input_records.empty());
-      DCHECK_GT(input_records.size(), GetNumberOfArguments());
-      HInstruction* last_input = input_records.back().GetInstruction();
-      // Note: `last_input` may be null during arguments setup.
-      if (last_input != nullptr) {
-        // `last_input` is the last input of a static invoke marked as having
-        // an explicit clinit check. It must either be:
-        // - an art::HClinitCheck instruction, set by art::HGraphBuilder; or
-        // - an art::HLoadClass instruction, set by art::PrepareForRegisterAllocation.
-        DCHECK(last_input->IsClinitCheck() || last_input->IsLoadClass()) << last_input->DebugName();
-      }
-    }
-    return input_records;
   }
 
   bool CanDoImplicitNullCheckOn([[maybe_unused]] HInstruction* obj) const override {
@@ -6550,11 +6038,11 @@ class HLoadClass final : public HInstruction {
 
   void AddSpecialInput(HInstruction* special_input);
 
-  using HInstruction::GetInputRecords;  // Keep the const version visible.
   ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() final {
     return ArrayRef<HUserRecord<HInstruction*>>(
         &special_input_, (special_input_.GetInstruction() != nullptr) ? 1u : 0u);
   }
+  DEFINE_GET_INPUT_RECORDS_HELPERS(HLoadClass);
 
   Handle<mirror::Class> GetClass() const {
     return klass_;
@@ -6744,11 +6232,11 @@ class HLoadString final : public HInstruction {
 
   void AddSpecialInput(HInstruction* special_input);
 
-  using HInstruction::GetInputRecords;  // Keep the const version visible.
   ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() final {
     return ArrayRef<HUserRecord<HInstruction*>>(
         &special_input_, (special_input_.GetInstruction() != nullptr) ? 1u : 0u);
   }
+  DEFINE_GET_INPUT_RECORDS_HELPERS(HLoadString);
 
   DECLARE_INSTRUCTION(LoadString);
 
@@ -6822,11 +6310,11 @@ class HLoadMethodHandle final : public HInstruction {
         dex_file_(dex_file) {
   }
 
-  using HInstruction::GetInputRecords;  // Keep the const version visible.
   ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() final {
     return ArrayRef<HUserRecord<HInstruction*>>(
         &special_input_, (special_input_.GetInstruction() != nullptr) ? 1u : 0u);
   }
+  DEFINE_GET_INPUT_RECORDS_HELPERS(HLoadMethodHandle);
 
   bool IsClonable() const override { return true; }
 
@@ -6883,11 +6371,11 @@ class HLoadMethodType final : public HInstruction {
     SetPackedField<LoadKindField>(LoadKind::kRuntimeCall);
   }
 
-  using HInstruction::GetInputRecords;  // Keep the const version visible.
   ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() final {
     return ArrayRef<HUserRecord<HInstruction*>>(
         &special_input_, (special_input_.GetInstruction() != nullptr) ? 1u : 0u);
   }
+  DEFINE_GET_INPUT_RECORDS_HELPERS(HLoadMethodType);
 
   bool IsClonable() const override { return true; }
 
@@ -7029,6 +6517,11 @@ class HStaticFieldGet final : public HExpression<1, HFieldAccess> {
     DCHECK(DataType::IsIntegralType(new_type));
     DCHECK_EQ(DataType::Size(GetType()), DataType::Size(new_type));
     SetPackedField<TypeField>(new_type);
+  }
+
+  HLoadClass* GetLoadClass() const {
+    DCHECK(InputAt(0)->IsLoadClass());
+    return InputAt(0)->AsLoadClass();
   }
 
   DECLARE_INSTRUCTION(StaticFieldGet);
@@ -8195,7 +7688,6 @@ class HGraphVisitor : public ValueObject {
  protected:
   void VisitPhis(HBasicBlock* block);
   void VisitNonPhiInstructions(HBasicBlock* block);
-  void VisitNonPhiInstructionsHandleChanges(HBasicBlock* block);
 
   OptimizingCompilerStats* stats_;
 
@@ -8205,25 +7697,197 @@ class HGraphVisitor : public ValueObject {
   DISALLOW_COPY_AND_ASSIGN(HGraphVisitor);
 };
 
-class HGraphDelegateVisitor : public HGraphVisitor {
+// Graph visitor class template that's using the Curiously Recurring Template Pattern to avoid
+// virtual dispatch in the visitor design pattern and allows inlining individual visit functions
+// if the compiler deems it beneficial. For further optimizations, see `Dispatch()`.
+template <typename T>
+class CRTPGraphVisitor {
  public:
-  explicit HGraphDelegateVisitor(HGraph* graph, OptimizingCompilerStats* stats = nullptr)
-      : HGraphVisitor(graph, stats) {}
-  virtual ~HGraphDelegateVisitor() {}
+  explicit CRTPGraphVisitor(HGraph* graph) : graph_(graph) {}
 
-  // Visit functions that delegate to super class.
-#define DECLARE_VISIT_ABSTRACT_INSTRUCTION(name, super)               \
-  virtual void Visit##name(H##name* instr) { Visit##super(instr); }
-  FOR_EACH_ABSTRACT_INSTRUCTION(DECLARE_VISIT_ABSTRACT_INSTRUCTION)
-#undef DECLARE_VISIT_ABSTRACT_INSTRUCTION
+  HGraph* GetGraph() const { return graph_; }
 
-#define DECLARE_VISIT_CONCRETE_INSTRUCTION(name, super)               \
-  void Visit##name(H##name* instr) override { Visit##super(instr); }
-  FOR_EACH_CONCRETE_INSTRUCTION(DECLARE_VISIT_CONCRETE_INSTRUCTION)
-#undef DECLARE_VISIT_CONCRETE_INSTRUCTION
+  // The empty visit function that is the default target of visit method forwarding.
+  void VisitInstruction([[maybe_unused]] HInstruction* instruction) {}
+
+  // Visit function declarations for both abstract and concrete instructions. These shall
+  // not be defined. Instead, dispatch to these functions is forwarded, see `ForwardVisit()`.
+#define DECLARE_VISIT_INSTRUCTION(name, super)               \
+  void Visit##name(H##name* instr);
+  FOR_EACH_INSTRUCTION(DECLARE_VISIT_INSTRUCTION)
+#undef DECLARE_VISIT_INSTRUCTION
+
+  // Dispatch the `insn` to the appropriate visit function based on `insn->GetKind()`.
+  //
+  // The template parameter `bool kReturnIsControlFlow`, if true, specifies that `Dispatch()`
+  // shall return the compile-time evaluated result of `insn->IsControlFlow()` from each case
+  // in the dispatch `switch`; `CRTPGraphVisitor::VisitNonPhiInstructions()` uses this for
+  // additional optimization. Otherwise, it returns nothing (return type `void`).
+  template <bool kReturnIsControlFlow = false>
+  ALWAYS_INLINE std::conditional_t<kReturnIsControlFlow, bool, void> Dispatch(HInstruction* insn) {
+    // Evaluate target visit method for each instruction kind at compile time. If multiple
+    // kinds redirect to the same visit function, select the first kind as `dispatch_kind`,
+    // making the other cases in the second `switch` subject to dead code elimination.
+    // Rely on jump-threading optimization to avoid the second `switch` and land directly
+    // on the correct case based on the instruction kind dispatch from the first `switch`.
+    HInstruction::InstructionKind dispatch_kind = HInstruction::kLastInstructionKind;
+    switch (insn->GetKind()) {
+    #define DEFINE_CASE(kind, super)                                        \
+      case HInstruction::k##kind: {                                         \
+        constexpr auto visit = T::ForwardVisit(&T::Visit##kind);            \
+        using I = decltype(ExtractInstructionType(visit));                  \
+        static_assert(std::is_base_of_v<I, H##kind>);                       \
+        constexpr HInstruction::InstructionKind kDispatchKind =             \
+            FindDispatchKind<                                               \
+                /*kCheckIsControlFlow=*/ kReturnIsControlFlow,              \
+                HInstruction::IsControlFlow(HInstruction::k##kind)>(visit); \
+        dispatch_kind = kDispatchKind;                                      \
+        break;                                                              \
+      }
+      FOR_EACH_CONCRETE_INSTRUCTION(DEFINE_CASE)
+    #undef DEFINE_CASE
+      default:
+        DCHECK(false) << "UNREACHABLE";  // In debug build, check that this is unreachable.
+        UNREACHABLE();
+    }
+    switch (dispatch_kind) {
+    #define DEFINE_CASE(kind, super)                                        \
+      case HInstruction::k##kind: {                                         \
+        constexpr auto visit = T::ForwardVisit(&T::Visit##kind);            \
+        using I = decltype(ExtractInstructionType(visit));                  \
+        (down_cast<T*>(this)->*visit)(down_cast<I*>(insn));                 \
+        if constexpr (kReturnIsControlFlow) {                               \
+          return HInstruction::IsControlFlow(HInstruction::k##kind);        \
+        } else {                                                            \
+          return;                                                           \
+        }                                                                   \
+      }
+      FOR_EACH_CONCRETE_INSTRUCTION(DEFINE_CASE)
+    #undef DEFINE_CASE
+      default:
+        LOG(FATAL) << "UNREACHABLE";  // Should be optimized away in both debug and release build.
+        UNREACHABLE();
+    }
+  }
+
+  // Visit the graph following basic block insertion order.
+  void VisitInsertionOrder() {
+    for (HBasicBlock* block : graph_->GetActiveBlocks()) {
+      down_cast<T*>(this)->VisitBasicBlock(block);
+    }
+  }
+
+  // Visit the graph following dominator tree reverse post-order.
+  ALWAYS_INLINE void VisitReversePostOrder() {
+    for (HBasicBlock* block : graph_->GetReversePostOrder()) {
+      down_cast<T*>(this)->VisitBasicBlock(block);
+    }
+  }
+
+  // By default we visit block's instructions in normal (forward) order.
+  // The derived class `T` can change that by providing replacement functions
+  // `VisitBasicBlock()`, `VisitPhis()` or `VisitNonPhiInstructions()`.
+  ALWAYS_INLINE void VisitBasicBlock(HBasicBlock* block) {
+    down_cast<T*>(this)->VisitPhis(block);
+    down_cast<T*>(this)->VisitNonPhiInstructions(block);
+  }
+
+ protected:
+  ALWAYS_INLINE void VisitPhis(HBasicBlock* block) {
+    static constexpr auto visit_phi = T::ForwardVisit(&T::VisitPhi);
+    // Skip if `&T::VisitPhi` is forwarded to the empty `&CRTPGraphVisitor::VisitInstruction`.
+    if constexpr (IsSameVisit(visit_phi, &CRTPGraphVisitor::VisitInstruction)) {
+      return;
+    }
+    for (HInstructionIteratorPrefetchNext it(block->GetPhis()); !it.Done(); it.Advance()) {
+      DCHECK(it.Current()->IsPhi());
+      (down_cast<T*>(this)->*visit_phi)(it.Current()->AsPhi());
+    }
+  }
+
+  ALWAYS_INLINE void VisitNonPhiInstructions(HBasicBlock* block) {
+    HInstruction* next = block->GetFirstInstruction();
+    DCHECK(next != nullptr);
+    bool is_control_flow = false;
+    do {
+      HInstruction* current = next;
+      DCHECK(!current->IsPhi());
+      next = current->GetNext();
+      // Each block ends with a control flow instruction, use that as the loop exit
+      // condition. The `is_control_flow` is a Phi of compile-time constants in
+      // `Dispatch<>()`, so this shall be optimized with jump-threading and visitors
+      // for control-flow instructions shall be taken out of the loop. Empty visitors
+      // for non-control-flow instructions shall be redirected to the start of the loop.
+      is_control_flow = Dispatch</*kReturnIsControlFlow=*/ true>(current);
+      DCHECK_EQ(is_control_flow, current->IsControlFlow()) << current->DebugName();
+      DCHECK_EQ(is_control_flow, next == nullptr) << current->DebugName();
+      // Visitors are not allowed to remove the next instruction from the block.
+      DCHECK_IMPLIES(next != nullptr, next->IsInBlock()) << current->DebugName();
+    } while (!is_control_flow);
+  }
+
+  // The default `ForwardVisit()` function template just returns the `visit` argument.
+  //
+  // Overloads for instruction visit functions declared directly in the `CRTPGraphVisitor`
+  // are provided below and forward these functions to the visit functions for the
+  // instruction superclass until we find one that's defined in or forwarded differently
+  // by the derived class `T`, or reach the `VisitInstruction()`.
+  //
+  // Usually, the derived class `T` just defines visit functions for the instructions it
+  // needs to process. However, it may also define its own replacement `ForwardVisit()`
+  // functions that return member pointers to arbitrary visit functions that can take
+  // relevant instructions by pointer (no need to call them `Visit*()`).
+  template <typename U, typename I>
+  static constexpr auto ForwardVisit(void (U::*visit)(I*)) {
+    return visit;
+  }
+
+#define DEFINE_FORWARD_VISIT(name, super)                                             \
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor<T>::*visit)(H##name*)) {  \
+    DCHECK(visit == &CRTPGraphVisitor::Visit##name);                                  \
+    return T::ForwardVisit(&T::Visit##super);                                         \
+  }
+  FOR_EACH_INSTRUCTION(DEFINE_FORWARD_VISIT)
+#undef DEFINE_FORWARD_VISIT
 
  private:
-  DISALLOW_COPY_AND_ASSIGN(HGraphDelegateVisitor);
+  template <typename U, typename I>
+  static constexpr I ExtractInstructionType(void (U::*visit)(I*));
+
+  template <typename U, typename I, typename V, typename J>
+  static constexpr bool IsSameVisit([[maybe_unused]] void (U::*lhs)(I*),
+                                    [[maybe_unused]] void (V::*rhs)(J*)) { return false; }
+  template <typename U, typename I>
+  static constexpr bool IsSameVisit(void (U::*lhs)(I*), void (U::*rhs)(I*)) { return lhs == rhs; }
+
+  template <typename U, typename I>
+  static constexpr bool IsSameVisit(void (U::*visit)(I*), HInstruction::InstructionKind kind) {
+    switch (kind) {
+    #define DEFINE_CASE(kind, super)                                  \
+      case HInstruction::k##kind:                                     \
+        return IsSameVisit(visit, T::ForwardVisit(&T::Visit##kind));
+      FOR_EACH_CONCRETE_INSTRUCTION(DEFINE_CASE)
+    #undef DEFINE_CASE
+      default:
+        LOG(FATAL) << "Compile time error when executed in constexpr context.";
+        UNREACHABLE();
+    }
+  }
+
+  template <bool kCheckIsControlFlow, bool kIsControlFlow, typename U, typename I>
+  static constexpr HInstruction::InstructionKind FindDispatchKind(void (U::*visit)(I*)) {
+    for (uint32_t raw_kind = 0; raw_kind != HInstruction::kLastInstructionKind; ++raw_kind) {
+      HInstruction::InstructionKind kind = enum_cast<HInstruction::InstructionKind>(raw_kind);
+      if (IsSameVisit(visit, kind) &&
+          (!kCheckIsControlFlow || kIsControlFlow == HInstruction::IsControlFlow(kind))) {
+        return kind;
+      }
+    }
+    LOG(FATAL) << "Compile time error when executed in constexpr context.";
+    UNREACHABLE();
+  }
+
+  HGraph* graph_;
 };
 
 // Create a clone of the instruction, insert it into the graph; replace the old one with a new
@@ -8233,12 +7897,13 @@ HInstruction* ReplaceInstrOrPhiByClone(HInstruction* instr);
 // Create a clone for each clonable instructions/phis and replace the original with the clone.
 //
 // Used for testing individual instruction cloner.
-class CloneAndReplaceInstructionVisitor final : public HGraphDelegateVisitor {
+class CloneAndReplaceInstructionVisitor final
+    : public CRTPGraphVisitor<CloneAndReplaceInstructionVisitor> {
  public:
   explicit CloneAndReplaceInstructionVisitor(HGraph* graph)
-      : HGraphDelegateVisitor(graph), instr_replaced_by_clones_count_(0) {}
+      : CRTPGraphVisitor(graph), instr_replaced_by_clones_count_(0) {}
 
-  void VisitInstruction(HInstruction* instruction) override {
+  void VisitInstruction(HInstruction* instruction) {
     if (instruction->IsClonable()) {
       ReplaceInstrOrPhiByClone(instruction);
       instr_replaced_by_clones_count_++;
@@ -8367,7 +8032,6 @@ inline bool IsAddOrSub(const HInstruction* instruction) {
   return instruction->IsAdd() || instruction->IsSub();
 }
 
-void RemoveEnvironmentUses(HInstruction* instruction);
 bool HasEnvironmentUsedByOthers(HInstruction* instruction);
 void ResetEnvironmentInputRecords(HInstruction* instruction);
 

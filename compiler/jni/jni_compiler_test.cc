@@ -31,7 +31,6 @@
 #include "driver/compiler_options.h"
 #include "entrypoints/entrypoint_utils-inl.h"
 #include "gtest/gtest.h"
-#include "indirect_reference_table.h"
 #include "java_frame_root_info.h"
 #include "jni/java_vm_ext.h"
 #include "jni/jni_internal.h"

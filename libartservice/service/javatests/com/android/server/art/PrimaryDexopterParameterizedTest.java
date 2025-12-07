@@ -285,8 +285,8 @@ public class PrimaryDexopterParameterizedTest extends PrimaryDexopterTestBase {
                                 ArtFlags.FLAG_FORCE_COMPILER_FILTER)
                         .build();
 
-        mPrimaryDexopter =
-                new PrimaryDexopter(mInjector, mPkgState, mPkg, mDexoptParams, mCancellationSignal);
+        mPrimaryDexopter = new PrimaryDexopter(
+                mInjector, mSnapshot, mPkgState, mPkg, mDexoptParams, mCancellationSignal);
     }
 
     @Test
@@ -336,7 +336,7 @@ public class PrimaryDexopterParameterizedTest extends PrimaryDexopterTestBase {
                         eq("/somewhere/app/foo/base.apk"), eq("arm64"), eq("PCL[]"),
                         eq(mParams.mExpectedCompilerFilter), any() /* profile */,
                         isNull() /* inputVdex */, isNull() /* dmFile */,
-                        eq(PriorityClass.INTERACTIVE), argThat(dexoptOptionsMatcher), any());
+                        eq(PriorityClass.INTERACTIVE), argThat(dexoptOptionsMatcher), any(), any());
 
         // The second one fails on `dexopt`.
         doReturn(dexoptIsNeeded())
@@ -351,7 +351,7 @@ public class PrimaryDexopterParameterizedTest extends PrimaryDexopterTestBase {
                         eq("/somewhere/app/foo/base.apk"), eq("arm"), eq("PCL[]"),
                         eq(mParams.mExpectedCompilerFilter), any() /* profile */,
                         isNull() /* inputVdex */, isNull() /* dmFile */,
-                        eq(PriorityClass.INTERACTIVE), argThat(dexoptOptionsMatcher), any());
+                        eq(PriorityClass.INTERACTIVE), argThat(dexoptOptionsMatcher), any(), any());
 
         // The third one doesn't need dexopt.
         doReturn(dexoptIsNotNeeded())
@@ -373,7 +373,7 @@ public class PrimaryDexopterParameterizedTest extends PrimaryDexopterTestBase {
                         eq("/somewhere/app/foo/split_0.apk"), eq("arm"), eq("PCL[base.apk]"),
                         eq(mParams.mExpectedCompilerFilter), any() /* profile */,
                         isNull() /* inputVdex */, isNull() /* dmFile */,
-                        eq(PriorityClass.INTERACTIVE), argThat(dexoptOptionsMatcher), any());
+                        eq(PriorityClass.INTERACTIVE), argThat(dexoptOptionsMatcher), any(), any());
 
         if (mParams.mExpectedDeletesRuntimeArtifacts) {
             // Only delete runtime artifacts for successful dexopt operations, namely the first one
@@ -423,7 +423,7 @@ public class PrimaryDexopterParameterizedTest extends PrimaryDexopterTestBase {
         // Verify that there are no more calls than the ones above.
         verify(mArtd, times(3))
                 .dexopt(any(), any(), any(), any(), any(), any(), any(), any(), anyInt(), any(),
-                        any());
+                        any(), any());
 
         if (!mParams.mExpectedDeletesRuntimeArtifacts) {
             verify(mArtd, times(0)).deleteRuntimeArtifacts(any());

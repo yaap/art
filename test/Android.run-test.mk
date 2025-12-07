@@ -32,13 +32,13 @@ ART_TEST_TARGET_RUN_TEST_DEPENDENCIES := $(TESTING_ART_APEX) $(TARGET_CORE_IMG_O
 
 # Also need these other libs and binaries.
 ART_TEST_TARGET_RUN_TEST_DEPENDENCIES += \
-  libartagent-target libartagentd-target \
-  libtiagent-target libtiagentd-target \
-  libtistress-target libtistressd-target \
-  libarttest-target libarttestd-target \
-  libarttest_external-target libarttestd_external-target \
-  libnativebridgetest-target libnativebridgetestd-target \
-  signal_dumper-target
+  libartagent libartagentd \
+  libtiagent libtiagentd \
+  libtistress libtistressd \
+  libarttest libarttestd \
+  libarttest_external libarttestd_external \
+  libnativebridgetest libnativebridgetestd \
+  signal_dumper
 
 # All tests require the host executables. The tests also depend on the core images, but on
 # specific version depending on the compiler.

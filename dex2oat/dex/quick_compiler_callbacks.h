@@ -71,12 +71,17 @@ class QuickCompilerCallbacks final : public CompilerCallbacks {
     dex_files_ = dex_files;
   }
 
+  bool ShouldEnableProfileCode() override { return should_enable_profile_code_; }
+
+  void SetShouldEnableProfileCode(bool flag) { should_enable_profile_code_ = flag; }
+
  private:
   VerificationResults* verification_results_ = nullptr;
   bool does_class_unloading_ = false;
   CompilerDriver* compiler_driver_ = nullptr;
   std::unique_ptr<verifier::VerifierDeps> verifier_deps_;
   const std::vector<const DexFile*>* dex_files_;
+  bool should_enable_profile_code_ = false;
 };
 
 }  // namespace art

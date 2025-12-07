@@ -31,9 +31,8 @@ namespace art {
 
 class TestFaultHandler final : public FaultHandler {
  public:
-  explicit TestFaultHandler(FaultManager* manager)
-      : FaultHandler(manager),
-        map_error_(),
+  explicit TestFaultHandler()
+      : map_error_(),
         target_map_(MemMap::MapAnonymous("test-305-mmap",
                                          /* addr */ nullptr,
                                          /* byte_count */ MemMap::GetPageSize(),
@@ -45,11 +44,6 @@ class TestFaultHandler final : public FaultHandler {
                                          /* use_ashmem */ false)),
         was_hit_(false) {
     CHECK(target_map_.IsValid()) << "Unable to create segfault target address " << map_error_;
-    manager_->AddHandler(this, /*in_generated_code*/false);
-  }
-
-  virtual ~TestFaultHandler() {
-    manager_->RemoveHandler(this);
   }
 
   bool Action(int sig, siginfo_t* siginfo, [[maybe_unused]] void* context) override {
@@ -67,6 +61,8 @@ class TestFaultHandler final : public FaultHandler {
     CHECK(target_map_.Protect(PROT_READ)) << "Failed to mprotect R-only";
     return true;
   }
+
+  constexpr static bool IsGeneratedCodeHandler() { return false; }
 
   void CauseSegfault() {
     CHECK_EQ(target_map_.GetProtect(), PROT_NONE);
@@ -96,7 +92,8 @@ class TestFaultHandler final : public FaultHandler {
 };
 
 extern "C" JNIEXPORT void JNICALL Java_Main_runFaultHandlerTest(JNIEnv*, jclass) {
-  std::unique_ptr<TestFaultHandler> handler(new TestFaultHandler(&fault_manager));
+  TestFaultHandler* handler = new TestFaultHandler();
+  fault_manager.AddHandler(handler, TestFaultHandler::IsGeneratedCodeHandler());
   handler->CauseSegfault();
 }
 

@@ -20,6 +20,7 @@
 . "$(dirname $0)/buildbot-utils.sh"
 
 [[ -n "$ART_TEST_ON_VM" ]] && exit 0
+[[ -n "$ART_TEST_ON_SBC" ]] && exit 0
 
 # Setup as root, as some actions performed here require it.
 adb root

@@ -299,7 +299,6 @@ class CompilerDriverVerifyTest : public CompilerDriverTest {
   }
 
   void CheckVerifiedClass(jobject class_loader, const std::string& clazz) const {
-    ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
     Thread* self = Thread::Current();
     ScopedObjectAccess soa(self);
     StackHandleScope<1> hs(self);

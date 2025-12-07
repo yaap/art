@@ -924,6 +924,17 @@ ENTRY art_quick_compile_optimized
     ret
 END art_quick_compile_optimized
 
+ENTRY art_quick_compile_baseline
+    SETUP_SAVE_EVERYTHING_FRAME
+    ld   a0, FRAME_SIZE_SAVE_EVERYTHING(sp)   // pass ArtMethod
+    mv   a1, xSELF                            // pass Thread::Current
+    call artCompileBaseline                   // (ArtMethod*, Thread*)
+    RESTORE_SAVE_EVERYTHING_FRAME
+    // Note: If we implement implicit suspend checks or a marking register for GC, we don't need
+    // to restore such registers here, as artCompileBaseline doesn't allow thread suspension.
+    ret
+END art_quick_compile_baseline
+
 
 /*  extern"C" void art_quick_osr_stub(void*          stack,                 A0
  *                                    size_t         stack_size_in_bytes,   A1

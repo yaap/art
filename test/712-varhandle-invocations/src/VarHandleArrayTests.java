@@ -225,6 +225,7 @@ public class VarHandleArrayTests {
             for (final ByteOrder byteOrder : byteOrders) {
                 final ByteBuffer heapBuffer = ByteBuffer.allocate(32);
                 final ByteBuffer directBuffer = ByteBuffer.allocateDirect(32);
+                final ByteBuffer nativeBuffer = getNativeBuffer();
                 final ByteBuffer arrayBuffer = ByteBuffer.wrap(new byte[32]);
                 final ByteBuffer anotherArrayBuffer = ByteBuffer.wrap(new byte[32], 3, 23);
                 final ByteBuffer[] buffers = {
@@ -232,6 +233,8 @@ public class VarHandleArrayTests {
                     ((ByteBuffer) heapBuffer.duplicate().position(1)).slice(),
                     directBuffer,
                     ((ByteBuffer) directBuffer.duplicate().position(1)).slice(),
+                    nativeBuffer,
+                    ((ByteBuffer) nativeBuffer.duplicate().position(1)).slice(),
                     arrayBuffer,
                     ((ByteBuffer) arrayBuffer.duplicate().position(1)).slice(),
                     anotherArrayBuffer,
@@ -311,6 +314,8 @@ public class VarHandleArrayTests {
                         }
                     }
                 }
+
+                free(nativeBuffer);
             }
         }
 
@@ -328,6 +333,10 @@ public class VarHandleArrayTests {
     }
 
     public static void main(String[] args) {
+        System.loadLibrary(args[0]);
         ArrayStoreTest.main(args);
     }
+
+    private native static ByteBuffer getNativeBuffer();
+    private native static void free(ByteBuffer buffer);
 }

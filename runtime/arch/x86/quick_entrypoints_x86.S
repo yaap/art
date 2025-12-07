@@ -2197,7 +2197,7 @@ UNIMPLEMENTED art_quick_memcmp16
 DEFINE_FUNCTION art_quick_compile_optimized
     SETUP_SAVE_EVERYTHING_FRAME ebx
     mov FRAME_SIZE_SAVE_EVERYTHING(%esp), %eax // Fetch ArtMethod
-    sub LITERAL(8), %esp   		       // Alignment padding
+    sub LITERAL(8), %esp                       // Alignment padding
     CFI_ADJUST_CFA_OFFSET(8)
     pushl %fs:THREAD_SELF_OFFSET               // pass Thread::Current()
     CFI_ADJUST_CFA_OFFSET(4)
@@ -2209,6 +2209,23 @@ DEFINE_FUNCTION art_quick_compile_optimized
     RESTORE_SAVE_EVERYTHING_FRAME
     ret
 END_FUNCTION art_quick_compile_optimized
+
+// On entry, the method is at the bottom of the stack.
+DEFINE_FUNCTION art_quick_compile_baseline
+    SETUP_SAVE_EVERYTHING_FRAME ebx
+    mov FRAME_SIZE_SAVE_EVERYTHING(%esp), %eax // Fetch ArtMethod
+    sub LITERAL(8), %esp                       // Alignment padding
+    CFI_ADJUST_CFA_OFFSET(8)
+    pushl %fs:THREAD_SELF_OFFSET               // pass Thread::Current()
+    CFI_ADJUST_CFA_OFFSET(4)
+    pushl %eax
+    CFI_ADJUST_CFA_OFFSET(4)
+    call SYMBOL(artCompileBaseline)            // (ArtMethod*, Thread*)
+    addl LITERAL(16), %esp                     // Pop arguments.
+    CFI_ADJUST_CFA_OFFSET(-16)
+    RESTORE_SAVE_EVERYTHING_FRAME
+    ret
+END_FUNCTION art_quick_compile_baseline
 
 DEFINE_FUNCTION art_quick_method_entry_hook
     SETUP_SAVE_EVERYTHING_FRAME edx

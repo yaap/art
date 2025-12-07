@@ -123,6 +123,12 @@ void MetricsReporter::BackgroundThreadRun() {
                                                       /*as_daemon=*/true,
                                                       runtime_->GetSystemThreadGroup(),
                                                       /*create_peer=*/true);
+
+  if (attached) {
+    // Mark it as rutime thread so we won't report it via jvmti.
+    Thread::Current()->SetIsRuntimeThread(true);
+  }
+
   bool running = true;
 
   // Configure the backends

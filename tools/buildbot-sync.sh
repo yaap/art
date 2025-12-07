@@ -20,7 +20,7 @@ set -e
 
 . "$(dirname $0)/buildbot-utils.sh"
 
-if [[ -z "$ART_TEST_ON_VM" ]]; then
+if [[ -z "$ART_TEST_ON_VM" ]] && [[ -z "$ART_TEST_ON_SBC" ]]; then
   # Setup as root, as some actions performed here require it.
   adb root
   adb wait-for-device
@@ -47,7 +47,7 @@ fi
       continue
     fi
     msginfo "Syncing $dir directory..."
-    if [[ -n "$ART_TEST_ON_VM" ]]; then
+    if [[ -n "$ART_TEST_ON_VM" ]] || [[ -n "$ART_TEST_ON_SBC" ]]; then
       $ART_RSYNC_CMD -R $dir "$ART_TEST_SSH_USER@$ART_TEST_SSH_HOST:$ART_TEST_CHROOT"
     else
       adb shell mkdir -p "$ART_TEST_CHROOT/$dir"
@@ -58,7 +58,7 @@ fi
 
 # Overwrite the default public.libraries.txt file with a smaller one that
 # contains only the public libraries pushed to the chroot directory.
-if [[ -n "$ART_TEST_ON_VM" ]]; then
+if [[ -n "$ART_TEST_ON_VM" ]] || [[ -n "$ART_TEST_ON_SBC" ]]; then
   $ART_RSYNC_CMD "$ANDROID_BUILD_TOP/art/tools/public.libraries.buildbot.txt" \
     "$ART_TEST_SSH_USER@$ART_TEST_SSH_HOST:$ART_TEST_CHROOT/system/etc/public.libraries.txt"
 else
@@ -67,7 +67,7 @@ else
 fi
 
 # Create the framework directory if it doesn't exist. Some gtests need it.
-if [[ -n "$ART_TEST_ON_VM" ]]; then
+if [[ -n "$ART_TEST_ON_VM" ]] || [[ -n "$ART_TEST_ON_SBC" ]]; then
   $ART_SSH_CMD "$ART_CHROOT_CMD mkdir -p $ART_TEST_CHROOT/system/framework"
 else
   adb shell mkdir -p "$ART_TEST_CHROOT/system/framework"
@@ -76,7 +76,7 @@ fi
 # APEX packages activation.
 # -------------------------
 
-if [[ -n "$ART_TEST_ON_VM" ]]; then
+if [[ -n "$ART_TEST_ON_VM" ]] || [[ -n "$ART_TEST_ON_SBC" ]]; then
   $ART_SSH_CMD "$ART_CHROOT_CMD mkdir -p $ART_TEST_CHROOT/apex"
 else
   adb shell mkdir -p "$ART_TEST_CHROOT/apex"
@@ -111,7 +111,7 @@ activate_apex() {
   fi
 
   msginfo "Activating APEX ${src_apex} as ${dst_apex}..."
-  if [[ -n "$ART_TEST_ON_VM" ]]; then
+  if [[ -n "$ART_TEST_ON_VM" ]] || [[ -n "$ART_TEST_ON_SBC" ]]; then
     $ART_RSYNC_CMD $src_apex_path/* \
       "$ART_TEST_SSH_USER@$ART_TEST_SSH_HOST:$ART_TEST_CHROOT/apex/${dst_apex}"
   else
@@ -136,7 +136,7 @@ for b in {32,64}; do
   output_dir="/system/framework/art_boot_images"
   if [ -f $bin_on_host ]; then
     msginfo "Generating the primary boot image ($b-bit)..."
-    if [[ -n "$ART_TEST_ON_VM" ]]; then
+    if [[ -n "$ART_TEST_ON_VM" ]] || [[ -n "$ART_TEST_ON_SBC" ]]; then
       $ART_RSYNC_CMD "$bin_on_host" \
         "$ART_TEST_SSH_USER@$ART_TEST_SSH_HOST:$ART_TEST_CHROOT$bin_on_device"
       $ART_SSH_CMD "mkdir -p $ART_TEST_CHROOT$output_dir"
@@ -146,7 +146,7 @@ for b in {32,64}; do
     fi
     # `compiler-filter=speed-profile` is required because OatDumpTest checks the compiled code in
     # the boot image.
-    if [[ -n "$ART_TEST_ON_VM" ]]; then
+    if [[ -n "$ART_TEST_ON_VM" ]] || [[ -n "$ART_TEST_ON_SBC" ]]; then
       $ART_SSH_CMD \
         "$ART_CHROOT_CMD $bin_on_device --output-dir=$output_dir --compiler-filter=speed-profile"
     else
