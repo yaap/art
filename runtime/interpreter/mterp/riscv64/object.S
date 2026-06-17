@@ -3,7 +3,7 @@
 // Throw a ClassCastException if the reference in the given register cannot be cast to the indicated
 // type.
 %def op_check_cast():
-   FETCH_FROM_THREAD_CACHE /*expected klass*/a1, .L${opcode}_miss, t0, t1
+%  fetch_from_thread_cache(/*expected klass*/"a1", f".L{opcode}_miss", "t0", "t1")
 .L${opcode}_miss_resume:
 
    srliw t0, xINST, 8         // t0 := AA
@@ -101,7 +101,7 @@
    srliw s7, xINST, 8    // s7 := B|A
    srliw s8, xINST, 12   // s8 := B
    andi s7, s7, 0xF      // s7 := A, used in slow path
-   FETCH_FROM_THREAD_CACHE /*expected klass*/ a1, .L${opcode}_miss, t0, t1
+%  fetch_from_thread_cache(/*expected klass*/ "a1", f".L{opcode}_miss", "t0", "t1")
 .L${opcode}_miss_resume:
 
 %  get_vreg("a0", "s8", is_unsigned=True)  # a0 := fp[B], zext
@@ -200,7 +200,7 @@
 %def op_new_instance():
    EXPORT_PC
    srliw s7, xINST, 8  // s7 := AA
-   FETCH_FROM_THREAD_CACHE /*resolved klass*/a0, .L${opcode}_miss, t0, t1
+%  fetch_from_thread_cache(/*resolved klass*/"a0", f".L{opcode}_miss", "t0", "t1")
    TEST_IF_MARKING t0, .L${opcode}_mark
 .L${opcode}_mark_resume:
 
@@ -246,7 +246,6 @@
      ld $dst, ($src)
 %  else:
 %    assert False, width
-%#:
 
 
 %def store(src, dst, width):
@@ -260,7 +259,6 @@
      sd $src, ($dst)
 %  else:
 %    assert False, width
-%#:
 
 
 // iget vA, vB, field@CCCC
@@ -272,7 +270,7 @@
    andi s8, s8, 0xF        // s8 := A
 
    // Fast path: NterpGetInstanceFieldOffset's byte offset from thread-local cache.
-   FETCH_FROM_THREAD_CACHE /*field_offset*/a0, .L${opcode}_slow, t1, t2
+%  fetch_from_thread_cache(/*field_offset*/"a0", f".L{opcode}_slow", "t1", "t2")
 .L${opcode}_slow_resume:
 
 %  get_vreg("t0", "s7", is_unsigned=True)  # t0 := holder
@@ -334,7 +332,7 @@
    andi s8, s8, 0xF        // s8 := A
 
    // Fast path: NterpGetInstanceFieldOffset's byte offset from thread-local cache.
-   FETCH_FROM_THREAD_CACHE /*field_offset*/a0, .L${opcode}_slow, t1, t2
+%  fetch_from_thread_cache(/*field_offset*/"a0", f".L{opcode}_slow", "t1", "t2")
 .L${opcode}_slow_resume:
 
 %  get_vreg("t0", "s7", is_unsigned=True)  # t0 := holder
@@ -436,7 +434,7 @@
                            // s8 := value, held across slow path call
 
    // Fast path: NterpGetInstanceFieldOffset's byte offset from thread-local cache.
-   FETCH_FROM_THREAD_CACHE /*resolved_field*/a0, .L${opcode}_slow, t0, t1
+%  fetch_from_thread_cache(/*resolved_field*/"a0", f".L{opcode}_slow", "t0", "t1")
 .L${opcode}_slow_resume:
 
 %  get_vreg("t0", "s7", is_unsigned=True)  # t0 := holder
@@ -483,7 +481,6 @@
      amoswap.d.rl zero, $value, ($z0)
 %  else:
 %    assert False, width
-%#:
 
    FETCH_ADVANCE_INST 2
    GET_INST_OPCODE $z0
@@ -508,7 +505,7 @@
 %  get_vreg("s9", "s8", is_unsigned=True)  # s9 := reference
 
    // Fast path: NterpGetInstanceFieldOffset's byte offset from thread-local cache.
-   FETCH_FROM_THREAD_CACHE /*resolved_field*/a0, .L${opcode}_slow, t0, t1
+%  fetch_from_thread_cache(/*resolved_field*/"a0", f".L{opcode}_slow", "t0", "t1")
 .L${opcode}_slow_resume:   // s9 := reference (slow path only)
 
 %  get_vreg("t0", "s7", is_unsigned=True)  # t0 := holder
@@ -588,10 +585,6 @@
 
 // *** sget ***
 
-.macro CLEAR_STATIC_VOLATILE_MARKER reg
-    andi \reg, \reg, ~0x1
-.endm
-
 // sget vAA, field@BBBB
 // Format 21c: AA|60 BBBB
 // vAA := klass.field
@@ -599,11 +592,11 @@
    srliw s7, xINST, 8  // s7 := AA (live through volatile path)
    // Fast path: NterpGetStaticField's resolved_field from thread-local cache.
    // Stores cache value in a0 to match slow path's return from NterpGetStaticField.
-   FETCH_FROM_THREAD_CACHE /*resolved_field*/a0, .L${opcode}_slow, t0, t1
+%  fetch_from_thread_cache(/*resolved_field*/"a0", f".L{opcode}_slow", "t0", "t1")
 .L${opcode}_slow_resume:
 
-   lwu t0, ART_FIELD_OFFSET_OFFSET(a0)           // t0 := field offset
-   lwu a0, ART_FIELD_DECLARING_CLASS_OFFSET(a0)  // a0 := holder
+   sext.w t0, a0           // t0 := field offset
+   srli  a0, a0, 32        // a0 := class
    TEST_IF_MARKING t2, .L${opcode}_mark
 .L${opcode}_mark_resume:
 
@@ -628,7 +621,7 @@
    call nterp_get_static_field  // result a0 := resolved_field
 
    // Test for volatile bit
-   slli t0, a0, 63
+   slli t0, a0, 32
    bgez t0, .L${opcode}_slow_resume
 %  volatile_path = add_slow_path(op_sget_volatile, width, zext, "s7", "t0", "t1")
    tail $volatile_path
@@ -637,9 +630,8 @@
 // Volatile static load.
 // Temporaries: z0, z1, z2
 %def op_sget_volatile(width, zext, dst_vreg, z0, z1):
-   CLEAR_STATIC_VOLATILE_MARKER a0
-   lwu $z0, ART_FIELD_OFFSET_OFFSET(a0)          // z0 := field offset
-   lwu a0, ART_FIELD_DECLARING_CLASS_OFFSET(a0)  // a0 := holder
+   negw $z0, a0           // z0 := field offset
+   srli  a0, a0, 32       // a0 := class
    TEST_IF_MARKING $z1, .L${opcode}_volatile_mark
 .L${opcode}_volatile_mark_resume:
 
@@ -672,11 +664,11 @@
    srliw s7, xINST, 8  // s7 := AA (live through volatile path)
    // Fast path: NterpGetStaticField's resolved_field from thread-local cache.
    // Stores cache value in a0 to match slow path's return from NterpGetStaticField.
-   FETCH_FROM_THREAD_CACHE /*resolved_field*/a0, .L${opcode}_slow, t0, t1
+%  fetch_from_thread_cache(/*resolved_field*/"a0", f".L{opcode}_slow", "t0", "t1")
 .L${opcode}_slow_resume:
 
-   lwu t0, ART_FIELD_OFFSET_OFFSET(a0)           // t0 := field offset
-   lwu a0, ART_FIELD_DECLARING_CLASS_OFFSET(a0)  // a0 := holder
+   sext.w t0, a0           // t0 := field offset
+   srli  a0, a0, 32        // a0 := class
    TEST_IF_MARKING t1, .L${opcode}_mark
 
    add t0, t0, a0      // t0 := field addr
@@ -715,14 +707,13 @@
    call nterp_get_static_field  // result a0 := resolved_field
 
    // Test for volatile bit
-   slli $z0, a0, 63
+   slli $z0, a0, 32
    bltz $z0, .L${opcode}_volatile
    tail .L${opcode}_slow_resume  // resume offset exceeds branch imm
 
 .L${opcode}_volatile:
-   CLEAR_STATIC_VOLATILE_MARKER a0
-   lwu $z0, ART_FIELD_OFFSET_OFFSET(a0)          // z0 := field offset
-   lwu a0, ART_FIELD_DECLARING_CLASS_OFFSET(a0)  // a0 := holder
+   negw $z0, a0           // z0 := field offset
+   srli  a0, a0, 32       // a0 := class
    TEST_IF_MARKING $z1, .L${opcode}_volatile_mark
 
    add $z0, $z0, a0  // z0 := field addr
@@ -784,11 +775,11 @@
 
    // Fast path: NterpGetStaticField's resolved_field from thread-local cache.
    // Stores cache value in a0 to match slow path's return from NterpGetStaticField.
-   FETCH_FROM_THREAD_CACHE /*resolved_field*/a0, .L${opcode}_slow, t0, t1
+%  fetch_from_thread_cache(/*resolved_field*/"a0", f".L{opcode}_slow", "t0", "t1")
 .L${opcode}_slow_resume:
 
-   lwu t0, ART_FIELD_OFFSET_OFFSET(a0)
-   lwu a0, ART_FIELD_DECLARING_CLASS_OFFSET(a0)  // a0 := holder
+   sext.w t0, a0           // t0 := field offset
+   srli  a0, a0, 32        // a0 := class
    TEST_IF_MARKING t1, .L${opcode}_mark
 .L${opcode}_mark_resume:
 
@@ -811,7 +802,7 @@
    call nterp_get_static_field  // result a0 := resolved_field
 
    // Test for volatile bit
-   slli t0, a0, 63
+   slli t0, a0, 32
    bgez t0, .L${opcode}_slow_resume
 %  volatile_path = add_slow_path(op_sput_volatile, width, "s7", "t0", "t1")
    tail $volatile_path
@@ -820,9 +811,8 @@
 // Volatile static store.
 // Temporaries: z0, z1
 %def op_sput_volatile(width, value, z0, z1):
-   CLEAR_STATIC_VOLATILE_MARKER a0
-   lwu $z0, ART_FIELD_OFFSET_OFFSET(a0)          // z0 := field offset
-   lwu a0, ART_FIELD_DECLARING_CLASS_OFFSET(a0)  // a0 := holder
+   negw $z0, a0           // z0 := field offset
+   srli  a0, a0, 32       // a0 := class
    TEST_IF_MARKING $z1, .L${opcode}_volatile_mark
 .L${opcode}_volatile_mark_resume:
 
@@ -842,7 +832,6 @@
      amoswap.d.rl zero, $value, ($z0)
 %  else:
 %    assert False, width
-%#:
 
    FETCH_ADVANCE_INST 2
    GET_INST_OPCODE $z0
@@ -867,11 +856,11 @@
 
    // Fast path: NterpGetStaticField's resolved_field from thread-local cache.
    // Stores cache value in a0 to match slow path's return from NterpGetStaticField.
-   FETCH_FROM_THREAD_CACHE /*resolved_field*/a0, .L${opcode}_slow, t0, t1
+%  fetch_from_thread_cache(/*resolved_field*/"a0", f".L{opcode}_slow", "t0", "t1")
 .L${opcode}_slow_resume:   // s8 := reference (slow path only)
 
-   lwu t0, ART_FIELD_OFFSET_OFFSET(a0)
-   lwu a0, ART_FIELD_DECLARING_CLASS_OFFSET(a0)  // a0 := holder
+   sext.w t0, a0           // t0 := field offset
+   srli  a0, a0, 32        // a0 := class
    TEST_IF_MARKING t1, .L${opcode}_mark
 .L${opcode}_mark_resume:
 
@@ -889,7 +878,7 @@
 
 .L${opcode}_slow:
 %  slow_path = add_slow_path(op_sput_object_slow_path, "s7", "s8", "t0", "t1")
-   tail $slow_path  // slow path offset exceeds regular branch imm in FETCH_FROM_THREAD_CACHE
+   tail $slow_path  // slow path offset exceeds regular branch imm in fetch_from_thread_cache
 
 
 // Static store, object variant. Contains both slow path and volatile path
@@ -909,14 +898,13 @@
 %  get_vreg(value, src_vreg, is_unsigned=True)  # value := fp[AA], zext
 
    // Test for volatile bit
-   slli $z0, a0, 63
+   slli $z0, a0, 32
    bltz $z0, .L${opcode}_volatile
    tail .L${opcode}_slow_resume  // resume offset exceeds branch imm
 
 .L${opcode}_volatile:
-   CLEAR_STATIC_VOLATILE_MARKER a0
-   lwu $z0, ART_FIELD_OFFSET_OFFSET(a0)          // z0 := field offset
-   lwu a0, ART_FIELD_DECLARING_CLASS_OFFSET(a0)  // a0 := holder
+   negw $z0, a0           // z0 := field offset
+   srli  a0, a0, 32       // a0 := class
    TEST_IF_MARKING $z1, .L${opcode}_volatile_mark
 .L${opcode}_volatile_mark_resume:
 
@@ -944,6 +932,7 @@
    add $z1, $z0, $z1
    sb $z0, ($z1)
 .L${uniq}_skip_write_barrier:
+%  pass
 
 
 // sput-object vAA, field@BBBB

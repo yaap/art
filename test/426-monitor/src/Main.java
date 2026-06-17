@@ -33,8 +33,17 @@ public class Main {
 
   public static void $opt$SynchronizedBlock() {
     Object o = new Object();
+    if (Thread.holdsLock(o)) {
+      System.out.println("Monitor unexpectedly held");
+    }
     synchronized(o) {
       System.out.println("In synchronized block");
+      if (!Thread.holdsLock(o)) {
+        System.out.println("Monitor unexpectedly not acquired");
+      }
+    }
+    if (Thread.holdsLock(o)) {
+      System.out.println("Monitor unexpectedly not released");
     }
   }
 

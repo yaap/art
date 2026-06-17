@@ -98,8 +98,8 @@ Result<void> ValidateDexPath(const std::string& dex_path) {
   return {};
 }
 
-android::base::Result<void> ValidateClassLoaderContext(std::string_view dex_path,
-                                                       const std::string& class_loader_context) {
+android::base::Result<std::vector<std::string>> FlattenAndValidateClassLoaderContext(
+    std::string_view dex_path, const std::string& class_loader_context) {
   if (class_loader_context == ClassLoaderContext::kUnsupportedClassLoaderContextEncoding) {
     return {};
   }
@@ -110,13 +110,15 @@ android::base::Result<void> ValidateClassLoaderContext(std::string_view dex_path
   }
 
   std::vector<std::string> flattened_context = context->FlattenDexPaths();
+  std::vector<std::string> absolute_flattened_context;
   std::string dex_dir = Dirname(dex_path);
   for (const std::string& context_element : flattened_context) {
     std::string context_path = std::filesystem::path(dex_dir).append(context_element);
     OR_RETURN(ValidateDexPath(context_path));
+    absolute_flattened_context.push_back(std::move(context_path));
   }
 
-  return {};
+  return absolute_flattened_context;
 }
 
 std::string GetGarbageCollector() {
@@ -140,7 +142,8 @@ Java_com_android_server_art_ArtJni_validateClassLoaderContextNative(
   ScopedUtfChars dex_path = GET_UTF_OR_RETURN(env, j_dex_path);
   std::string class_loader_context(GET_UTF_OR_RETURN(env, j_class_loader_context));
 
-  if (Result<void> result = ValidateClassLoaderContext(dex_path, class_loader_context);
+  if (Result<std::vector<std::string>> result =
+          FlattenAndValidateClassLoaderContext(dex_path, class_loader_context);
       !result.ok()) {
     return CREATE_UTF_OR_RETURN(env, result.error().message()).release();
   } else {

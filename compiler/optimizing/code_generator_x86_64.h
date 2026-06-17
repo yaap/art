@@ -56,6 +56,7 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
 static constexpr FloatRegister non_volatile_xmm_regs[] = { XMM12, XMM13, XMM14, XMM15 };
 
 #define UNIMPLEMENTED_INTRINSIC_LIST_X86_64(V) \
+  V(ClassIsAssignableFrom)                     \
   V(MathSignumFloat)                           \
   V(MathSignumDouble)                          \
   V(MathCopySignFloat)                         \
@@ -156,22 +157,22 @@ class FieldAccessCallingConventionX86_64 : public FieldAccessCallingConvention {
   FieldAccessCallingConventionX86_64() {}
 
   Location GetObjectLocation() const override {
-    return Location::RegisterLocation(RSI);
+    return Location::CoreRegister(RSI);
   }
   Location GetFieldIndexLocation() const override {
-    return Location::RegisterLocation(RDI);
+    return Location::CoreRegister(RDI);
   }
   Location GetReturnLocation([[maybe_unused]] DataType::Type type) const override {
-    return Location::RegisterLocation(RAX);
+    return Location::CoreRegister(RAX);
   }
   Location GetSetValueLocation([[maybe_unused]] DataType::Type type,
                                bool is_instance) const override {
     return is_instance
-        ? Location::RegisterLocation(RDX)
-        : Location::RegisterLocation(RSI);
+        ? Location::CoreRegister(RDX)
+        : Location::CoreRegister(RSI);
   }
   Location GetFpuLocation([[maybe_unused]] DataType::Type type) const override {
-    return Location::FpuRegisterLocation(XMM0);
+    return Location::FpuRegister(XMM0);
   }
 
  private:
@@ -214,9 +215,11 @@ class ParallelMoveResolverX86_64 : public ParallelMoveResolverWithSwap {
   void Exchange64(CpuRegister reg1, CpuRegister reg2);
   void Exchange64(CpuRegister reg, int mem);
   void Exchange64(XmmRegister reg, int mem);
-  void Exchange128(XmmRegister reg, int mem);
+  void ExchangeSIMD(XmmRegister reg, int mem);
+  void ExchangeFPReg(XmmRegister reg1, XmmRegister reg2);
   void ExchangeMemory32(int mem1, int mem2);
   void ExchangeMemory64(int mem1, int mem2, int num_of_qwords);
+  void ExchangeMemorySIMD(int mem1, int mem2);
 
   CodeGeneratorX86_64* const codegen_;
 
@@ -260,6 +263,18 @@ class LocationsBuilderX86_64 : public HGraphVisitor {
   InvokeDexCallingConventionVisitorX86_64 parameter_visitor_;
 
   DISALLOW_COPY_AND_ASSIGN(LocationsBuilderX86_64);
+};
+
+class SlowPathCodeX86_64 : public SlowPathCode {
+ public:
+  explicit SlowPathCodeX86_64(HInstruction* instruction)
+      : SlowPathCode(instruction) {}
+
+  void SaveLiveRegisters(CodeGenerator* codegen, LocationSummary* locations) override;
+  void RestoreLiveRegisters(CodeGenerator* codegen, LocationSummary* locations) override;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(SlowPathCodeX86_64);
 };
 
 class InstructionCodeGeneratorX86_64 : public InstructionCodeGenerator {
@@ -311,7 +326,7 @@ class InstructionCodeGeneratorX86_64 : public InstructionCodeGenerator {
   // is the block to branch to if the suspend check is not needed, and after
   // the suspend call.
   void GenerateSuspendCheck(HSuspendCheck* instruction, HBasicBlock* successor);
-  void GenerateClassInitializationCheck(SlowPathCode* slow_path, CpuRegister class_reg);
+  void GenerateClassInitializationCheck(SlowPathCodeX86_64* slow_path, CpuRegister class_reg);
   void GenerateBitstringTypeCheckCompare(HTypeCheckInstruction* check, CpuRegister temp);
   void HandleBitwiseOperation(HBinaryOperation* operation);
   void GenerateRemFP(HRem* rem);
@@ -412,6 +427,8 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   size_t RestoreCoreRegister(size_t stack_index, uint32_t reg_id) override;
   size_t SaveFloatingPointRegister(size_t stack_index, uint32_t reg_id) override;
   size_t RestoreFloatingPointRegister(size_t stack_index, uint32_t reg_id) override;
+  size_t SaveVectorRegister(size_t stack_index, Location loc);
+  size_t RestoreVectorRegister(size_t stack_index, Location loc);
 
   // Generate code to invoke a runtime entry point.
   void InvokeRuntime(QuickEntrypointEnum entrypoint,
@@ -441,8 +458,10 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   }
 
   size_t GetSIMDRegisterWidth() const override {
-    return 2 * kX86_64WordSize;
+    return GetInstructionSetFeatures().HasAVX2() ? 4 * kX86_64WordSize : 2 * kX86_64WordSize;
   }
+
+  bool HasOverlappingFPVecRegisters() const override { return true; }
 
   HGraphVisitor* GetLocationBuilder() override {
     return &location_builder_;
@@ -545,6 +564,7 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   void RecordAppImageTypePatch(const DexFile& dex_file, dex::TypeIndex type_index);
   Label* NewTypeBssEntryPatch(HLoadClass* load_class);
   void RecordBootImageStringPatch(HLoadString* load_string);
+  void RecordAppImageStringPatch(HLoadString* load_string);
   Label* NewStringBssEntryPatch(HLoadString* load_string);
   Label* NewMethodTypeBssEntryPatch(HLoadMethodType* load_method_type);
   void RecordBootImageJniEntrypointPatch(HInvokeStaticOrDirect* invoke);
@@ -731,6 +751,8 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   // We will fix this up in the linker later to have the right value.
   static constexpr int32_t kPlaceholder32BitOffset = 256;
 
+  bool IsIntrinsicCallFree(HInvoke* invoke) const override;
+
  private:
   static RegisterSet ComputeCalleeSaves();
   static RegisterSet ComputeBlockedRegisters();
@@ -769,6 +791,8 @@ class CodeGeneratorX86_64 : public CodeGenerator {
   ArenaDeque<PatchInfo<Label>> package_type_bss_entry_patches_;
   // PC-relative String patch info for kBootImageLinkTimePcRelative.
   ArenaDeque<PatchInfo<Label>> boot_image_string_patches_;
+  // PC-relative String patch info for kAppImageRelRo.
+  ArenaDeque<PatchInfo<Label>> app_image_string_patches_;
   // PC-relative String patch info for kBssEntry.
   ArenaDeque<PatchInfo<Label>> string_bss_entry_patches_;
   // PC-relative MethodType patch info for kBssEntry.

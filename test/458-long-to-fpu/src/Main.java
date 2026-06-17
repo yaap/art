@@ -16,17 +16,17 @@
 
 public class Main {
   public static void main(String[] args) {
-    System.out.println($noinline$FloatConvert(false));
-    System.out.println($noinline$DoubleConvert(false));
+    System.out.println($noinline$FloatConvert());
+    System.out.println($noinline$DoubleConvert());
   }
 
-  public static long $noinline$FloatConvert(boolean flag) {
+  public static long $noinline$FloatConvert() {
     long l = myLong;
     myFloat = (float)l;
     return l;
   }
 
-  public static long $noinline$DoubleConvert(boolean flag) {
+  public static long $noinline$DoubleConvert() {
     long l = myLong;
     myDouble = (double)l;
     return l;

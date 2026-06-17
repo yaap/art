@@ -17,6 +17,7 @@
 #ifndef ART_RUNTIME_TRACE_PROFILE_H_
 #define ART_RUNTIME_TRACE_PROFILE_H_
 
+#include <functional>
 #include <unordered_set>
 
 #include "base/locks.h"
@@ -40,6 +41,7 @@ static constexpr size_t kLongRunningMethodThreshold = 1 << 23;
 enum class LowOverheadTraceType {
   kLongRunningMethods,
   kAllMethods,
+  kAllMethodsWithFlush,
   kNone
 };
 
@@ -195,13 +197,19 @@ class TraceProfiler {
   static bool IsTraceProfileInProgress() REQUIRES(Locks::trace_lock_);
 
   // Allocates a buffer for the specified thread.
-  static void AllocateBuffer(Thread* thread);
+  static void AllocateBuffer(Thread* thread) REQUIRES(Locks::trace_lock_);
+
+  // Performs a stack walk and records entry events for all methods currently on the thread stack.
+  static void ReportOnStackMethods(Thread* thread,
+                                   std::function<void(ArtMethod*, Thread*, bool)> record_event)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Used to flush the long running method buffer when it is full. This method flushes all methods
   // that have already seen an exit and records them into a string. If we don't have sufficient free
   // entries after this processing (for example: if we have a really deep call stack) then we record
   // a placeholder method exit event and flush all events.
-  static void FlushBufferAndRecordTraceEvent(ArtMethod* method, Thread* thread, bool is_entry);
+  static void RecordTraceEvent(ArtMethod* method, Thread* thread, bool is_entry);
+  static void RecordTraceEventIfNeeded(ArtMethod* method, Thread* thread, bool is_entry);
 
   static LowOverheadTraceType GetTraceType();
 

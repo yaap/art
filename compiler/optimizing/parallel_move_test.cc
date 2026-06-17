@@ -38,11 +38,11 @@ static void DumpRegisterForTest(std::ostream& os, int reg) {
 static void DumpLocationForTest(std::ostream& os, Location location) {
   if (location.IsConstant()) {
     os << "C";
-  } else if (location.IsPair()) {
+  } else if (location.IsRegisterPair()) {
     DumpRegisterForTest(os, location.low());
     os << ",";
     DumpRegisterForTest(os, location.high());
-  } else if (location.IsRegister()) {
+  } else if (location.IsCoreRegister()) {
     DumpRegisterForTest(os, location.reg());
   } else if (location.IsStackSlot()) {
     os << location.GetStackIndex() << "(sp)";
@@ -108,19 +108,19 @@ class TestParallelMoveResolverNoSwap : public ParallelMoveResolverNoSwap {
 
   Location AllocateScratchLocationFor(Location::Kind kind) override {
     if (kind == Location::kStackSlot || kind == Location::kFpuRegister ||
-        kind == Location::kRegister) {
-      kind = Location::kRegister;
+        kind == Location::kCoreRegister) {
+      kind = Location::kCoreRegister;
     } else {
       // Allocate register pair for double stack slot which simulates 32-bit backend's behavior.
-      kind = Location::kRegisterPair;
+      kind = Location::kCoreRegisterPair;
     }
     Location scratch = GetScratchLocation(kind);
     if (scratch.Equals(Location::NoLocation())) {
-      AddScratchLocation(Location::RegisterLocation(scratch_index_));
-      AddScratchLocation(Location::RegisterLocation(scratch_index_ + 1));
-      AddScratchLocation(Location::RegisterPairLocation(scratch_index_, scratch_index_ + 1));
-      scratch = (kind == Location::kRegister) ? Location::RegisterLocation(scratch_index_)
-          : Location::RegisterPairLocation(scratch_index_, scratch_index_ + 1);
+      AddScratchLocation(Location::CoreRegister(scratch_index_));
+      AddScratchLocation(Location::CoreRegister(scratch_index_ + 1));
+      AddScratchLocation(Location::CoreRegisterPair(scratch_index_, scratch_index_ + 1));
+      scratch = (kind == Location::kCoreRegister) ? Location::CoreRegister(scratch_index_)
+          : Location::CoreRegisterPair(scratch_index_, scratch_index_ + 1);
       scratch_index_ += 2;
     }
     return scratch;
@@ -158,8 +158,8 @@ static HParallelMove* BuildParallelMove(ArenaAllocator* allocator,
   HParallelMove* moves = new (allocator) HParallelMove(allocator);
   for (size_t i = 0; i < number_of_moves; ++i) {
     moves->AddMove(
-        Location::RegisterLocation(operands[i][0]),
-        Location::RegisterLocation(operands[i][1]),
+        Location::CoreRegister(operands[i][0]),
+        Location::CoreRegister(operands[i][1]),
         DataType::Type::kInt32,
         nullptr);
   }
@@ -265,12 +265,12 @@ TYPED_TEST(ParallelMoveTest, ConstantLast) {
   HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
   moves->AddMove(
       Location::ConstantLocation(new (&allocator) HIntConstant(0)),
-      Location::RegisterLocation(0),
+      Location::CoreRegister(0),
       DataType::Type::kInt32,
       nullptr);
   moves->AddMove(
-      Location::RegisterLocation(1),
-      Location::RegisterLocation(2),
+      Location::CoreRegister(1),
+      Location::CoreRegister(2),
       DataType::Type::kInt32,
       nullptr);
   resolver.EmitNativeCode(moves);
@@ -285,13 +285,13 @@ TYPED_TEST(ParallelMoveTest, Pairs) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterLocation(2),
-        Location::RegisterLocation(4),
+        Location::CoreRegister(2),
+        Location::CoreRegister(4),
         DataType::Type::kInt32,
         nullptr);
     moves->AddMove(
-        Location::RegisterPairLocation(0, 1),
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(0, 1),
+        Location::CoreRegisterPair(2, 3),
         DataType::Type::kInt64,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -302,13 +302,13 @@ TYPED_TEST(ParallelMoveTest, Pairs) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterPairLocation(0, 1),
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(0, 1),
+        Location::CoreRegisterPair(2, 3),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
-        Location::RegisterLocation(2),
-        Location::RegisterLocation(4),
+        Location::CoreRegister(2),
+        Location::CoreRegister(4),
         DataType::Type::kInt32,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -319,13 +319,13 @@ TYPED_TEST(ParallelMoveTest, Pairs) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterPairLocation(0, 1),
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(0, 1),
+        Location::CoreRegisterPair(2, 3),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
-        Location::RegisterLocation(2),
-        Location::RegisterLocation(0),
+        Location::CoreRegister(2),
+        Location::CoreRegister(0),
         DataType::Type::kInt32,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -339,18 +339,18 @@ TYPED_TEST(ParallelMoveTest, Pairs) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterLocation(2),
-        Location::RegisterLocation(7),
+        Location::CoreRegister(2),
+        Location::CoreRegister(7),
         DataType::Type::kInt32,
         nullptr);
     moves->AddMove(
-        Location::RegisterLocation(7),
-        Location::RegisterLocation(1),
+        Location::CoreRegister(7),
+        Location::CoreRegister(1),
         DataType::Type::kInt32,
         nullptr);
     moves->AddMove(
-        Location::RegisterPairLocation(0, 1),
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(0, 1),
+        Location::CoreRegisterPair(2, 3),
         DataType::Type::kInt64,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -365,18 +365,18 @@ TYPED_TEST(ParallelMoveTest, Pairs) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterLocation(2),
-        Location::RegisterLocation(7),
+        Location::CoreRegister(2),
+        Location::CoreRegister(7),
         DataType::Type::kInt32,
         nullptr);
     moves->AddMove(
-        Location::RegisterPairLocation(0, 1),
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(0, 1),
+        Location::CoreRegisterPair(2, 3),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
-        Location::RegisterLocation(7),
-        Location::RegisterLocation(1),
+        Location::CoreRegister(7),
+        Location::CoreRegister(1),
         DataType::Type::kInt32,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -391,18 +391,18 @@ TYPED_TEST(ParallelMoveTest, Pairs) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterPairLocation(0, 1),
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(0, 1),
+        Location::CoreRegisterPair(2, 3),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
-        Location::RegisterLocation(2),
-        Location::RegisterLocation(7),
+        Location::CoreRegister(2),
+        Location::CoreRegister(7),
         DataType::Type::kInt32,
         nullptr);
     moves->AddMove(
-        Location::RegisterLocation(7),
-        Location::RegisterLocation(1),
+        Location::CoreRegister(7),
+        Location::CoreRegister(1),
         DataType::Type::kInt32,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -416,13 +416,13 @@ TYPED_TEST(ParallelMoveTest, Pairs) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterPairLocation(0, 1),
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(0, 1),
+        Location::CoreRegisterPair(2, 3),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
-        Location::RegisterPairLocation(2, 3),
-        Location::RegisterPairLocation(0, 1),
+        Location::CoreRegisterPair(2, 3),
+        Location::CoreRegisterPair(0, 1),
         DataType::Type::kInt64,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -436,13 +436,13 @@ TYPED_TEST(ParallelMoveTest, Pairs) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterPairLocation(2, 3),
-        Location::RegisterPairLocation(0, 1),
+        Location::CoreRegisterPair(2, 3),
+        Location::CoreRegisterPair(0, 1),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
-        Location::RegisterPairLocation(0, 1),
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(0, 1),
+        Location::CoreRegisterPair(2, 3),
         DataType::Type::kInt64,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -473,18 +473,18 @@ TYPED_TEST(ParallelMoveTest, MultiCycles) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterPairLocation(0, 1),
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(0, 1),
+        Location::CoreRegisterPair(2, 3),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
-        Location::RegisterLocation(2),
-        Location::RegisterLocation(0),
+        Location::CoreRegister(2),
+        Location::CoreRegister(0),
         DataType::Type::kInt32,
         nullptr);
     moves->AddMove(
-        Location::RegisterLocation(3),
-        Location::RegisterLocation(1),
+        Location::CoreRegister(3),
+        Location::CoreRegister(1),
         DataType::Type::kInt32,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -499,18 +499,18 @@ TYPED_TEST(ParallelMoveTest, MultiCycles) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterLocation(2),
-        Location::RegisterLocation(0),
+        Location::CoreRegister(2),
+        Location::CoreRegister(0),
         DataType::Type::kInt32,
         nullptr);
     moves->AddMove(
-        Location::RegisterLocation(3),
-        Location::RegisterLocation(1),
+        Location::CoreRegister(3),
+        Location::CoreRegister(1),
         DataType::Type::kInt32,
         nullptr);
     moves->AddMove(
-        Location::RegisterPairLocation(0, 1),
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(0, 1),
+        Location::CoreRegisterPair(2, 3),
         DataType::Type::kInt64,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -527,18 +527,18 @@ TYPED_TEST(ParallelMoveTest, MultiCycles) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterLocation(10),
-        Location::RegisterLocation(5),
+        Location::CoreRegister(10),
+        Location::CoreRegister(5),
         DataType::Type::kInt32,
         nullptr);
     moves->AddMove(
-        Location::RegisterPairLocation(4, 5),
+        Location::CoreRegisterPair(4, 5),
         Location::DoubleStackSlot(32),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
         Location::DoubleStackSlot(32),
-        Location::RegisterPairLocation(10, 11),
+        Location::CoreRegisterPair(10, 11),
         DataType::Type::kInt64,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -560,18 +560,18 @@ TYPED_TEST(ParallelMoveTest, CyclesWith64BitsMoves) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterLocation(0),
-        Location::RegisterLocation(1),
+        Location::CoreRegister(0),
+        Location::CoreRegister(1),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
-        Location::RegisterLocation(1),
+        Location::CoreRegister(1),
         Location::StackSlot(48),
         DataType::Type::kInt32,
         nullptr);
     moves->AddMove(
         Location::StackSlot(48),
-        Location::RegisterLocation(0),
+        Location::CoreRegister(0),
         DataType::Type::kInt32,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -587,18 +587,18 @@ TYPED_TEST(ParallelMoveTest, CyclesWith64BitsMoves) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterPairLocation(0, 1),
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(0, 1),
+        Location::CoreRegisterPair(2, 3),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
-        Location::RegisterPairLocation(2, 3),
+        Location::CoreRegisterPair(2, 3),
         Location::DoubleStackSlot(32),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
         Location::DoubleStackSlot(32),
-        Location::RegisterPairLocation(0, 1),
+        Location::CoreRegisterPair(0, 1),
         DataType::Type::kInt64,
         nullptr);
     resolver.EmitNativeCode(moves);
@@ -619,18 +619,18 @@ TYPED_TEST(ParallelMoveTest, CyclesWith64BitsMoves2) {
     TypeParam resolver(&allocator);
     HParallelMove* moves = new (&allocator) HParallelMove(&allocator);
     moves->AddMove(
-        Location::RegisterLocation(0),
-        Location::RegisterLocation(3),
+        Location::CoreRegister(0),
+        Location::CoreRegister(3),
         DataType::Type::kInt32,
         nullptr);
     moves->AddMove(
-        Location::RegisterPairLocation(2, 3),
-        Location::RegisterPairLocation(0, 1),
+        Location::CoreRegisterPair(2, 3),
+        Location::CoreRegisterPair(0, 1),
         DataType::Type::kInt64,
         nullptr);
     moves->AddMove(
-        Location::RegisterLocation(7),
-        Location::RegisterLocation(2),
+        Location::CoreRegister(7),
+        Location::CoreRegister(2),
         DataType::Type::kInt32,
         nullptr);
     resolver.EmitNativeCode(moves);

@@ -288,8 +288,9 @@ uintptr_t JniIdManager::EncodeGenericId(ReflectiveHandle<ArtType> t) {
                 "Expected ArtField or ArtMethod");
   Runtime* runtime = Runtime::Current();
   JniIdType id_type = runtime->GetJniIdType();
-  if (id_type == JniIdType::kPointer || t == nullptr) {
-    return reinterpret_cast<uintptr_t>(t.Get());
+  DCHECK_NE(id_type, JniIdType::kPointer);
+  if (t == nullptr) {
+    return 0u;
   }
   Thread* self = Thread::Current();
   ScopedExceptionStorage ses(self);
@@ -314,7 +315,10 @@ uintptr_t JniIdManager::EncodeGenericId(ReflectiveHandle<ArtType> t) {
     // map. This seem incorrect. For example, if we are in ScopedEnableSuspendAllJniIdQueries
     // scope, we don't allocate ID arrays. We would then incorrectly return a
     // pointer here.
-    return reinterpret_cast<uintptr_t>(t.Get());
+    return std::is_same_v<ArtType, ArtField>
+        ? reinterpret_cast<uintptr_t>(EncodeArtField<false>(reinterpret_cast<ArtField*>(t.Get())))
+        : reinterpret_cast<uintptr_t>(
+              EncodeArtMethod<false>(reinterpret_cast<ArtMethod*>(t.Get())));
   }
   ObjPtr<mirror::Class> klass = t->GetDeclaringClass();
   ObjPtr<mirror::PointerArray> ids(GetIds(klass, t.Get()));

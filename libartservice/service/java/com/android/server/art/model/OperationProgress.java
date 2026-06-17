@@ -16,13 +16,12 @@
 
 package com.android.server.art.model;
 
-import static com.android.server.art.model.DexoptResult.PackageDexoptResult;
-
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
 
 import com.android.internal.annotations.Immutable;
+import com.android.server.art.model.DexoptResult.PackageDexoptResult;
 
 import com.google.auto.value.AutoValue;
 

@@ -21,7 +21,6 @@
 #include <string_view>
 
 #include "android-base/strings.h"
-
 #include "art_field-inl.h"
 #include "art_method-inl.h"
 #include "base/pointer_size.h"
@@ -35,8 +34,8 @@
 #include "experimental_flags.h"
 #include "gc/heap.h"
 #include "handle_scope-inl.h"
-#include "mirror/array-alloc-inl.h"
 #include "mirror/accessible_object.h"
+#include "mirror/array-alloc-inl.h"
 #include "mirror/call_site.h"
 #include "mirror/class-inl.h"
 #include "mirror/class_ext.h"
@@ -56,6 +55,7 @@
 #include "mirror/stack_trace_element.h"
 #include "mirror/string-inl.h"
 #include "mirror/var_handle.h"
+#include "mirror/virtual_thread_context.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread-current-inl.h"
 
@@ -577,7 +577,7 @@ struct ClassOffsets : public CheckOffsets<mirror::Class> {
     addOffset(OFFSETOF_MEMBER(mirror::Class, class_flags_), "classFlags");
     addOffset(OFFSETOF_MEMBER(mirror::Class, class_loader_), "classLoader");
     addOffset(OFFSETOF_MEMBER(mirror::Class, class_size_), "classSize");
-    addOffset(OFFSETOF_MEMBER(mirror::Class, clinit_thread_id_), "clinitThreadId");
+    addOffset(OFFSETOF_MEMBER(mirror::Class, clinit_thread_id_or_hash_), "clinitThreadIdOrHash");
     addOffset(OFFSETOF_MEMBER(mirror::Class, component_type_), "componentType");
     addOffset(OFFSETOF_MEMBER(mirror::Class, dex_cache_), "dexCache");
     addOffset(OFFSETOF_MEMBER(mirror::Class, dex_class_def_idx_), "dexClassDefIndex");
@@ -852,6 +852,40 @@ struct ByteBufferViewVarHandleOffsets : public CheckOffsets<mirror::ByteBufferVi
   }
 };
 
+struct MemorySegmentVarHandleOffsets : public CheckOffsets<mirror::MemorySegmentVarHandle> {
+  MemorySegmentVarHandleOffsets()
+      : CheckOffsets<mirror::MemorySegmentVarHandle>(false,
+                                                     "Ljava/lang/invoke/MemorySegmentVarHandle;") {
+    addOffset(OFFSETOF_MEMBER(mirror::MemorySegmentVarHandle, byte_alignment_), "byteAlignment");
+    addOffset(OFFSETOF_MEMBER(mirror::MemorySegmentVarHandle, native_byte_order_),
+              "nativeByteOrder");
+  }
+};
+
+struct VirtualThreadContextOffsets : public CheckOffsets<mirror::VirtualThreadContext> {
+  VirtualThreadContextOffsets()
+      : CheckOffsets<mirror::VirtualThreadContext>(false, "Ldalvik/system/VirtualThreadContext;") {
+    addOffset(OFFSETOF_MEMBER(mirror::VirtualThreadContext, carrier_name_), "carrierName");
+    addOffset(OFFSETOF_MEMBER(mirror::VirtualThreadContext, id_), "id");
+    addOffset(OFFSETOF_MEMBER(mirror::VirtualThreadContext, monitor_thread_id_), "monitorThreadId");
+    addOffset(OFFSETOF_MEMBER(mirror::VirtualThreadContext, monitor_thread_id_cleanable_),
+              "monitorThreadIdCleanable");
+    addOffset(OFFSETOF_MEMBER(mirror::VirtualThreadContext, parked_states_), "parkedStates");
+    addOffset(OFFSETOF_MEMBER(mirror::VirtualThreadContext, pinned_carrier_thread_),
+              "pinnedCarrierThread");
+    addOffset(OFFSETOF_MEMBER(mirror::VirtualThreadContext, target_), "target");
+  }
+};
+
+struct VirtualThreadFrameOffsets : public CheckOffsets<mirror::VirtualThreadFrame> {
+  VirtualThreadFrameOffsets()
+      : CheckOffsets<mirror::VirtualThreadFrame>(false, "Ldalvik/system/VirtualThreadFrame;") {
+    addOffset(OFFSETOF_MEMBER(mirror::VirtualThreadFrame, declaring_class_), "declaringClass");
+    addOffset(OFFSETOF_MEMBER(mirror::VirtualThreadFrame, frame_), "frame");
+    addOffset(OFFSETOF_MEMBER(mirror::VirtualThreadFrame, refs_), "refs");
+  }
+};
+
 // C++ fields must exactly match the fields in the Java classes. If this fails,
 // reorder the fields in the C++ class. Managed class fields are ordered by
 // ClassLinker::LinkFieldsHelper::LinkFields.
@@ -883,6 +917,9 @@ TEST_F(ClassLinkerTest, ValidateFieldOrderOfJavaCppUnionClasses) {
   EXPECT_TRUE(ByteArrayViewVarHandleOffsets().Check());
   EXPECT_TRUE(ByteBufferViewVarHandleOffsets().Check());
   EXPECT_TRUE(StackFrameInfoOffsets().Check());
+  EXPECT_TRUE(MemorySegmentVarHandleOffsets().Check());
+  EXPECT_TRUE(VirtualThreadContextOffsets().Check());
+  EXPECT_TRUE(VirtualThreadFrameOffsets().Check());
 }
 
 TEST_F(ClassLinkerTest, FindClassNonexistent) {
@@ -1513,6 +1550,7 @@ TEST_F(ClassLinkerTest, RegisterDexFileName) {
                                                                               arraysize(data),
                                                                               data)));
   const DexFile* old_dex_file = dex_cache->GetDexFile();
+  class_linker->RemoveDexFromCaches(*old_dex_file);
 
   auto container =
       std::make_shared<MemoryDexFileContainer>(old_dex_file->Begin(), old_dex_file->Size());

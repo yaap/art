@@ -932,17 +932,15 @@ jvmtiError ThreadUtil::SuspendSelf(art::Thread* self) {
   CHECK(self == art::Thread::Current());
   {
     art::MutexLock mu(self, *art::Locks::user_code_suspension_lock_);
+    // IncrementSuspendCount normally needs thread_list_lock_ to ensure the thread stays
+    // around. In this case we are the target thread, so we fake it.
+    art::FakeMutexLock fmu(*art::Locks::thread_list_lock_);
     art::MutexLock thread_list_mu(self, *art::Locks::thread_suspend_count_lock_);
     if (self->GetUserCodeSuspendCount() != 0) {
       // This can only happen if we race with another thread to suspend 'self' and we lose.
       return ERR(THREAD_SUSPENDED);
     }
-    {
-      // IncrementSuspendCount normally needs thread_list_lock_ to ensure the thread stays
-      // around. In this case we are the target thread, so we fake it.
-      art::FakeMutexLock fmu(*art::Locks::thread_list_lock_);
-      self->IncrementSuspendCount(self, nullptr, nullptr, art::SuspendReason::kForUserCode);
-    }
+    self->IncrementSuspendCount(self, nullptr, nullptr, art::SuspendReason::kForUserCode);
   }
   // Once we have requested the suspend we actually go to sleep. We need to do this after releasing
   // the suspend_lock to make sure we can be woken up. This call gains the mutator lock causing us

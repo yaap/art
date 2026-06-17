@@ -18,13 +18,11 @@ package com.android.ahat;
 
 import com.android.ahat.heapdump.AhatInstance;
 import com.android.ahat.heapdump.AhatSnapshot;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
+
 import java.io.IOException;
 import java.io.OutputStream;
-import java.io.PrintStream;
 
-class ArrayHandler implements HttpHandler {
+class ArrayHandler implements AhatDataHandler {
   private AhatSnapshot mSnapshot;
 
   public ArrayHandler(AhatSnapshot snapshot) {
@@ -32,35 +30,19 @@ class ArrayHandler implements HttpHandler {
   }
 
   @Override
-  public void handle(HttpExchange exchange) throws IOException {
-    try {
-      Query query = new Query(exchange.getRequestURI());
-      long id = query.getLong("id", 0);
-      AhatInstance inst = mSnapshot.findInstance(id);
-      byte[] bytes = inst.asByteArray();
+  public void handle(Response response, Query query) throws IOException {
+    long id = query.getLong("id", 0);
+    AhatInstance inst = mSnapshot.findInstance(id);
+    byte[] bytes = inst.asByteArray();
 
-      if (bytes == null) {
-          exchange.getResponseHeaders().add("Content-Type", "text/html");
-          exchange.sendResponseHeaders(404, 0);
-          PrintStream ps = new PrintStream(exchange.getResponseBody());
-          HtmlDoc doc = new HtmlDoc(ps, DocString.text("ahat"), DocString.uri("style.css"));
-          doc.big(DocString.text("No byte[] found for the given request."));
-          doc.close();
-          return;
-      }
-
-      exchange.getResponseHeaders().add("Content-Disposition",
-          String.format("attachment; filename=\"array-0x%08x.bin\"", id));
-      exchange.sendResponseHeaders(200, 0);
-      OutputStream os = exchange.getResponseBody();
-      os.write(bytes);
-      os.close();
-    } catch (RuntimeException e) {
-      // Print runtime exceptions to standard error for debugging purposes,
-      // because otherwise they are swallowed and not reported.
-      System.err.println("Exception when handling " + exchange.getRequestURI() + ": ");
-      e.printStackTrace();
-      throw e;
+    if (bytes == null) {
+      response.error("No byte[] found for the given request.");
+      return;
     }
+
+    OutputStream os =
+        response.attachment("application/octet-stream", String.format("array-0x%08x.bin", id));
+    os.write(bytes);
+    os.close();
   }
 }

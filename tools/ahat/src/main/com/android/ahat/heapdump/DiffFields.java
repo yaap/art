@@ -26,6 +26,8 @@ import java.util.List;
  * fields.
  */
 public class DiffFields {
+  private DiffFields() {}
+
   /**
    * Returns the result of diffing two collections of field values.
    *

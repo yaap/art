@@ -805,8 +805,7 @@ SuperblockCloner::SuperblockCloner(HGraph* graph,
     induction_range_(induction_range),
     outer_loop_(nullptr),
     outer_loop_bb_set_(arena_, orig_bb_set->GetSizeOf(), true, kArenaAllocSuperblockCloner),
-    live_outs_(std::less<HInstruction*>(),
-        graph->GetAllocator()->Adapter(kArenaAllocSuperblockCloner)) {
+    live_outs_(graph->GetAllocator()->Adapter(kArenaAllocSuperblockCloner)) {
   orig_bb_set_.Copy(orig_bb_set);
 }
 
@@ -834,8 +833,7 @@ bool SuperblockCloner::IsSubgraphClonable() const {
     }
   }
 
-  HInstructionMap live_outs(
-      std::less<HInstruction*>(), graph_->GetAllocator()->Adapter(kArenaAllocSuperblockCloner));
+  HInstructionMap live_outs(graph_->GetAllocator()->Adapter(kArenaAllocSuperblockCloner));
 
   if (!CollectLiveOutsAndCheckClonable(&live_outs)) {
     return false;
@@ -1167,8 +1165,7 @@ LoopClonerSimpleHelper::LoopClonerSimpleHelper(HLoopInformation* info,
                                                InductionVarRange* induction_range)
   : bb_map_(std::less<HBasicBlock*>(),
             info->GetHeader()->GetGraph()->GetAllocator()->Adapter(kArenaAllocSuperblockCloner)),
-    hir_map_(std::less<HInstruction*>(),
-             info->GetHeader()->GetGraph()->GetAllocator()->Adapter(kArenaAllocSuperblockCloner)),
+    hir_map_(info->GetHeader()->GetGraph()->GetAllocator()->Adapter(kArenaAllocSuperblockCloner)),
     helper_(info, &bb_map_, &hir_map_, induction_range) {}
 
 }  // namespace art

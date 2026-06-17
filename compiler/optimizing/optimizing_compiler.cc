@@ -280,9 +280,8 @@ class OptimizingCompiler final : public Compiler {
                   jit::JitMemoryRegion* region,
                   ArtMethod* method,
                   CompilationKind compilation_kind,
-                  jit::JitLogger* jit_logger)
-      override
-      REQUIRES_SHARED(Locks::mutator_lock_);
+                  jit::JitLogger* jit_logger,
+                  bool dynamic_instrumentation) override REQUIRES_SHARED(Locks::mutator_lock_);
 
  private:
   bool RunOptimizations(HGraph* graph,
@@ -346,6 +345,8 @@ class OptimizingCompiler final : public Compiler {
                        bool is_intrinsic,
                        const dex::CodeItem* item) const;
 
+  CompiledMethod* Emit(InstructionSet instruction_set, FastCompiler* compiler) const;
+
   // Try compiling a method and return the code generator used for
   // compiling it.
   // This method:
@@ -357,7 +358,8 @@ class OptimizingCompiler final : public Compiler {
                             const DexCompilationUnit& dex_compilation_unit,
                             ArtMethod* method,
                             CompilationKind compilation_kind,
-                            VariableSizedHandleScope* handles) const;
+                            VariableSizedHandleScope* handles,
+                            bool dynamic_instrumentation) const;
 
   CodeGenerator* TryCompileIntrinsic(ArenaAllocator* allocator,
                                      ArenaStack* arena_stack,
@@ -642,6 +644,9 @@ void OptimizingCompiler::RunOptimizations(HGraph* graph,
   static constexpr OptimizationDef optimizations[] = {
       // Initial optimizations.
       OptDef(OptimizationPass::kConstantFolding),
+      OptDef(OptimizationPass::kReferenceTypePropagation,
+             "reference_type_propagation$initial",
+             OptimizationPass::kConstantFolding),
       OptDef(OptimizationPass::kInstructionSimplifier),
       OptDef(OptimizationPass::kDeadCodeElimination,
              "dead_code_elimination$initial"),
@@ -685,6 +690,13 @@ void OptimizingCompiler::RunOptimizations(HGraph* graph,
       // Other high-level optimizations.
       OptDef(OptimizationPass::kLoadStoreElimination),
       OptDef(OptimizationPass::kCHAGuardOptimization),
+      // NB: Environment optimization pass shouldn't be before
+      // - Inliner
+      // - Bounds check elimination
+      // - CHA guard elimination
+      // - Loop optimization
+      // As these passes require full environment.
+      OptDef(OptimizationPass::kEnvironmentInputElimination),
       OptDef(OptimizationPass::kCodeSinking),
       // Simplification.
       OptDef(OptimizationPass::kConstantFolding,
@@ -752,60 +764,28 @@ CompiledMethod* OptimizingCompiler::Emit(ArenaAllocator* allocator,
   return compiled_method;
 }
 
-#ifdef ART_USE_RESTRICTED_MODE
-
-// This class acts as a filter and enables gradual enablement of ART Simulator work - we
-// compile (and hence simulate) only limited types of methods.
-class CompilationFilterForRestrictedMode
-    : public CRTPGraphVisitor<CompilationFilterForRestrictedMode> {
- public:
-  explicit CompilationFilterForRestrictedMode(HGraph* graph)
-      : CRTPGraphVisitor(graph),
-        has_unsupported_instructions_(false) {}
-
-  // Returns true if the graph contains instructions which are not currently supported in
-  // the restricted mode.
-  bool GraphRejected() const { return has_unsupported_instructions_; }
-
- private:
-  void VisitInstruction(HInstruction*) {
-    // Currently we don't support compiling methods unless they were annotated with $compile$.
-    RejectGraph();
-  }
-  void RejectGraph() {
-    has_unsupported_instructions_ = true;
-  }
-
-  bool has_unsupported_instructions_;
-
-  template <typename T> friend class CRTPGraphVisitor;
-};
-
-// Returns whether an ArtMethod, specified by a name, should be compiled. Used in restricted
-// mode.
-//
-// In restricted mode, the simulator will execute only those methods which are compiled; thus
-// this is going to be an effective filter for methods to be simulated.
-//
-// TODO(Simulator): compile and simulate all the methods as in regular host mode.
-bool ShouldMethodBeCompiled(HGraph* graph, const std::string& method_name) {
-  if (method_name.find("$compile$") != std::string::npos) {
-    return true;
-  }
-
-  CompilationFilterForRestrictedMode filter_visitor(graph);
-  filter_visitor.VisitReversePostOrder();
-
-  return !filter_visitor.GraphRejected();
+CompiledMethod* OptimizingCompiler::Emit(InstructionSet instruction_set,
+                                         FastCompiler* compiler) const {
+  ScopedArenaVector<uint8_t> stack_map = compiler->BuildStackMaps();
+  CompiledCodeStorage* storage = GetCompiledCodeStorage();
+  CompiledMethod* compiled_method = storage->CreateCompiledMethod(
+      instruction_set,
+      compiler->GetCode(),
+      ArrayRef<const uint8_t>(stack_map),
+      ArrayRef<const uint8_t>(compiler->GetCfiData()),
+      // TODO: Support linker patches for the fast compiler.
+      ArrayRef<const linker::LinkerPatch>(),
+      /* is_intrinsic= */ false);
+  return compiled_method;
 }
-#endif  // ART_USE_RESTRICTED_MODE
 
 CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
                                               ArenaStack* arena_stack,
                                               const DexCompilationUnit& dex_compilation_unit,
                                               ArtMethod* method,
                                               CompilationKind compilation_kind,
-                                              VariableSizedHandleScope* handles) const {
+                                              VariableSizedHandleScope* handles,
+                                              bool dynamic_instrumentation) const {
   MaybeRecordStat(compilation_stats_.get(), MethodCompilationStat::kAttemptBytecodeCompilation);
   const CompilerOptions& compiler_options = GetCompilerOptions();
   InstructionSet instruction_set = compiler_options.GetInstructionSet();
@@ -819,14 +799,9 @@ CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
 
   // Do not attempt to compile on architectures we do not support.
   if (!IsInstructionSetSupported(instruction_set)) {
+    SCOPED_TRACE << "Not compiling: unsupported ISA";
     MaybeRecordStat(compilation_stats_.get(),
                     MethodCompilationStat::kNotCompiledUnsupportedIsa);
-    return nullptr;
-  }
-
-  if (Compiler::IsPathologicalCase(*code_item, method_idx, dex_file)) {
-    SCOPED_TRACE << "Not compiling because of pathological case";
-    MaybeRecordStat(compilation_stats_.get(), MethodCompilationStat::kNotCompiledPathological);
     return nullptr;
   }
 
@@ -863,17 +838,18 @@ CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
     dead_reference_safe = false;
   }
 
-  HGraph* graph = new (allocator) HGraph(
-      allocator,
-      arena_stack,
-      handles,
-      dex_file,
-      method_idx,
-      compiler_options.GetInstructionSet(),
-      kInvalidInvokeType,
-      dead_reference_safe,
-      compiler_options.GetDebuggable(),
-      compilation_kind);
+  HGraph* graph = new (allocator) HGraph(allocator,
+                                         arena_stack,
+                                         handles,
+                                         dex_file,
+                                         method_idx,
+                                         compiler_options.GetInstructionSet(),
+                                         kInvalidInvokeType,
+                                         dead_reference_safe,
+                                         compiler_options.GetDebuggable(),
+                                         compilation_kind,
+                                         /* start_instruction_id= */ 0,
+                                         /* dynamic_instrumentation= */ dynamic_instrumentation);
 
   if (method != nullptr) {
     graph->SetArtMethod(method);
@@ -890,10 +866,14 @@ CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
                             compiler_options,
                             compilation_stats_.get()));
   if (codegen.get() == nullptr) {
+    SCOPED_TRACE << "Not compiling: no codegen";
     MaybeRecordStat(compilation_stats_.get(), MethodCompilationStat::kNotCompiledNoCodegen);
     return nullptr;
   }
   codegen->GetAssembler()->cfi().SetEnabled(compiler_options.GenerateAnyDebugInfo());
+  if (dynamic_instrumentation) {
+    codegen->SetRequiresCurrentMethod(true);
+  }
 
   PassObserver pass_observer(graph,
                              codegen.get(),
@@ -998,17 +978,6 @@ CodeGenerator* OptimizingCompiler::TryCompile(ArenaAllocator* allocator,
     return nullptr;
   }
 
-#ifdef ART_USE_RESTRICTED_MODE
-  // Check whether the method should be compiled according to the compilation filter. Note: this
-  // relies on a LocationSummary being available for each instruction so should take place after
-  // register allocation does liveness analysis.
-  // TODO(Simulator): support and compile all methods.
-  std::string method_name = dex_file.PrettyMethod(method_idx);
-  if (!ShouldMethodBeCompiled(graph, method_name)) {
-    return nullptr;
-  }
-#endif  // ART_USE_RESTRICTED_MODE
-
   codegen->Compile();
   pass_observer.DumpDisassembly();
 
@@ -1039,6 +1008,7 @@ CodeGenerator* OptimizingCompiler::TryCompileIntrinsic(
 
   // Do not attempt to compile on architectures we do not support.
   if (!IsInstructionSetSupported(instruction_set)) {
+    SCOPED_TRACE << "Not compiling: unsupported ISA";
     return nullptr;
   }
 
@@ -1063,6 +1033,7 @@ CodeGenerator* OptimizingCompiler::TryCompileIntrinsic(
                             compiler_options,
                             compilation_stats_.get()));
   if (codegen.get() == nullptr) {
+    SCOPED_TRACE << "Not compiling: no codegen";
     return nullptr;
   }
   codegen->GetAssembler()->cfi().SetEnabled(compiler_options.GenerateAnyDebugInfo());
@@ -1106,6 +1077,7 @@ CodeGenerator* OptimizingCompiler::TryCompileIntrinsic(
                     &pass_observer,
                     compilation_stats_.get());
   if (!codegen->IsLeafMethod()) {
+    SCOPED_TRACE << "Not compiling: intrinsic method is not leaf";
     VLOG(compiler) << "Intrinsic method is not leaf: " << method->GetIntrinsic()
         << " " << graph->PrettyMethod();
     return nullptr;
@@ -1137,6 +1109,13 @@ CompiledMethod* OptimizingCompiler::Compile(const dex::CodeItem* code_item,
   ArenaStack arena_stack(runtime->GetArenaPool());
   std::unique_ptr<CodeGenerator> codegen;
   bool compiled_intrinsic = false;
+
+  if (Compiler::IsPathologicalCase(*code_item, method_idx, dex_file)) {
+    SCOPED_TRACE << "Not compiling because of pathological case";
+    MaybeRecordStat(compilation_stats_.get(), MethodCompilationStat::kNotCompiledPathological);
+    return nullptr;
+  }
+
   {
     ScopedObjectAccess soa(Thread::Current());
     ArtMethod* method =
@@ -1174,15 +1153,30 @@ CompiledMethod* OptimizingCompiler::Compile(const dex::CodeItem* code_item,
       }
     }
     if (codegen == nullptr) {
-      codegen.reset(
-          TryCompile(&allocator,
-                     &arena_stack,
-                     dex_compilation_unit,
-                     method,
-                     compiler_options.IsBaseline()
-                        ? CompilationKind::kBaseline
-                        : CompilationKind::kOptimized,
-                     &handles));
+      if (compiler_options.IsFast()) {
+        std::unique_ptr<FastCompiler> fast_compiler =
+            FastCompiler::Compile(method,
+                                  &allocator,
+                                  &arena_stack,
+                                  &handles,
+                                  compiler_options,
+                                  dex_compilation_unit);
+        if (fast_compiler != nullptr) {
+          return Emit(compiler_options.GetInstructionSet(), fast_compiler.get());
+        } else {
+          SCOPED_TRACE
+            << "Fast compiler didn't compile the method, falling back to the optimizing compiler";
+          return nullptr;
+        }
+      }
+      codegen.reset(TryCompile(
+          &allocator,
+          &arena_stack,
+          dex_compilation_unit,
+          method,
+          compiler_options.IsBaseline() ? CompilationKind::kBaseline : CompilationKind::kOptimized,
+          &handles,
+          /* dynamic_instrumentation= */ false));
     }
   }
   if (codegen.get() != nullptr) {
@@ -1205,8 +1199,6 @@ CompiledMethod* OptimizingCompiler::Compile(const dex::CodeItem* code_item,
     }
   }
 
-  // TODO(Simulator): Check for $opt$ in method name and that such method is compiled.
-#ifndef ART_USE_RESTRICTED_MODE
   if (kIsDebugBuild &&
       compiler_options.CompileArtTest() &&
       IsInstructionSetSupported(compiler_options.GetInstructionSet())) {
@@ -1218,7 +1210,6 @@ CompiledMethod* OptimizingCompiler::Compile(const dex::CodeItem* code_item,
     bool shouldCompile = method_name.find("$opt$") != std::string::npos;
     DCHECK_IMPLIES(compiled_method == nullptr, !shouldCompile) << "Didn't compile " << method_name;
   }
-#endif  // #ifndef ART_USE_RESTRICTED_MODE
 
   return compiled_method;
 }
@@ -1320,7 +1311,8 @@ bool OptimizingCompiler::JitCompile(Thread* self,
                                     jit::JitMemoryRegion* region,
                                     ArtMethod* method,
                                     CompilationKind compilation_kind,
-                                    jit::JitLogger* jit_logger) {
+                                    jit::JitLogger* jit_logger,
+                                    bool dynamic_instrumentation) {
   const CompilerOptions& compiler_options = GetCompilerOptions();
   DCHECK(compiler_options.IsJitCompiler());
   DCHECK_EQ(compiler_options.IsJitCompilerForSharedCode(), code_cache->IsSharedRegion(*region));
@@ -1363,6 +1355,7 @@ bool OptimizingCompiler::JitCompile(Thread* self,
     // TODO(mythria): Add support for calling method entry / exit hooks in JITed stubs for critical
     // native methods too.
     if (compiler_options.GetDebuggable() && method->IsCriticalNative()) {
+      SCOPED_TRACE << "Not compiling: critical native method in debuggable runtime";
       DCHECK(compiler_options.IsJitCompiler());
       return false;
     }
@@ -1395,6 +1388,7 @@ bool OptimizingCompiler::JitCompile(Thread* self,
                              method,
                              /*out*/ &reserved_code,
                              /*out*/ &reserved_data)) {
+      SCOPED_TRACE << "Not compiling: JIT code cache reserve failure";
       MaybeRecordStat(compilation_stats_.get(), MethodCompilationStat::kJitOutOfMemoryForCommit);
       return false;
     }
@@ -1425,6 +1419,7 @@ bool OptimizingCompiler::JitCompile(Thread* self,
                             /* is_full_debug_info= */ compiler_options.GetGenerateDebugInfo(),
                             compilation_kind,
                             cha_single_implementation_list)) {
+      SCOPED_TRACE << "Not compiling: JIT code cache commit failure";
       code_cache->Free(self, region, reserved_code.data(), reserved_data.data());
       return false;
     }
@@ -1434,6 +1429,12 @@ bool OptimizingCompiler::JitCompile(Thread* self,
       jit_logger->WriteLog(code, jni_compiled_method.GetCode().size(), method);
     }
     return true;
+  }
+
+  if (Compiler::IsPathologicalCase(*code_item, method_idx, *dex_file)) {
+    SCOPED_TRACE << "Not compiling because of pathological case";
+    MaybeRecordStat(compilation_stats_.get(), MethodCompilationStat::kNotCompiledPathological);
+    return false;
   }
 
   ArenaStack arena_stack(runtime->GetJitArenaPool());
@@ -1464,9 +1465,11 @@ bool OptimizingCompiler::JitCompile(Thread* self,
                                             compiler_options,
                                             dex_compilation_unit);
       if (fast_compiler == nullptr) {
+        SCOPED_TRACE << "Not compiling: fast compiler unsuccessful";
         return false;
       }
     } else {
+      SCOPED_TRACE << "Not compiling: fast compiler is not supported for debuggable";
       return false;
     }
   }
@@ -1484,6 +1487,7 @@ bool OptimizingCompiler::JitCompile(Thread* self,
                              method,
                              /*out*/ &reserved_code,
                              /*out*/ &reserved_data)) {
+      SCOPED_TRACE << "Not compiling: JIT code cache reserve failure";
       MaybeRecordStat(compilation_stats_.get(), MethodCompilationStat::kJitOutOfMemoryForCommit);
       return false;
     }
@@ -1522,6 +1526,7 @@ bool OptimizingCompiler::JitCompile(Thread* self,
                             /* is_full_debug_info= */ compiler_options.GetGenerateDebugInfo(),
                             compilation_kind,
                             cha_single_implementation_list)) {
+      SCOPED_TRACE << "Not compiling: JIT code cache commit failure";
       code_cache->Free(self, region, reserved_code.data(), reserved_data.data());
       return false;
     }
@@ -1533,14 +1538,15 @@ bool OptimizingCompiler::JitCompile(Thread* self,
     {
       // Go to native so that we don't block GC during compilation.
       ScopedThreadSuspension sts(self, ThreadState::kNative);
-      codegen.reset(
-          TryCompile(&allocator,
-                     &arena_stack,
-                     dex_compilation_unit,
-                     method,
-                     compilation_kind,
-                     &handles));
+      codegen.reset(TryCompile(&allocator,
+                               &arena_stack,
+                               dex_compilation_unit,
+                               method,
+                               compilation_kind,
+                               &handles,
+                               dynamic_instrumentation));
       if (codegen.get() == nullptr) {
+        SCOPED_TRACE << "Not compiling: TryCompile failure";
         return false;
       }
     }
@@ -1556,6 +1562,7 @@ bool OptimizingCompiler::JitCompile(Thread* self,
                              method,
                              /*out*/ &reserved_code,
                              /*out*/ &reserved_data)) {
+      SCOPED_TRACE << "Not compiling: JIT code cache reserve failure";
       MaybeRecordStat(compilation_stats_.get(), MethodCompilationStat::kJitOutOfMemoryForCommit);
       return false;
     }
@@ -1605,6 +1612,7 @@ bool OptimizingCompiler::JitCompile(Thread* self,
                             /* is_full_debug_info= */ compiler_options.GetGenerateDebugInfo(),
                             compilation_kind,
                             codegen->GetGraph()->GetCHASingleImplementationList())) {
+      SCOPED_TRACE << "Not compiling: JIT code cache commit failure";
       CHECK_EQ(CodeInfo::HasShouldDeoptimizeFlag(stack_map.data()),
                codegen->GetGraph()->HasShouldDeoptimizeFlag());
       code_cache->Free(self, region, reserved_code.data(), reserved_data.data());

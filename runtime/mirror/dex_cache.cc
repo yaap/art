@@ -17,6 +17,7 @@
 #include "dex_cache-inl.h"
 
 #include "art_method-inl.h"
+#include "base/stl_util.h"
 #include "class_linker.h"
 #include "gc/accounting/card_table-inl.h"
 #include "gc/heap.h"
@@ -41,7 +42,7 @@ namespace mirror {
 static constexpr bool kEnableFullArraysAtStartup = false;
 
 void DexCache::Initialize(const DexFile* dex_file, ObjPtr<ClassLoader> class_loader) {
-  DCHECK(GetDexFile() == nullptr);
+  DCHECK(GetDexFile() == nullptr || GetDexFile() == dex_file);
   DCHECK(GetStrings() == nullptr);
   DCHECK(GetResolvedTypes() == nullptr);
   DCHECK(GetResolvedMethods() == nullptr);
@@ -248,6 +249,22 @@ void DexCache::SetResolvedType(dex::TypeIndex type_idx, ObjPtr<Class> resolved) 
       for (ArtField& current_field : resolved->GetFields()) {
         resolved_fields->Set(current_field.GetDexFieldIndex(), &current_field);
       }
+    }
+  }
+}
+
+void DexCache::ClearAllStrings() {
+  DCHECK(com::android::art::flags::weak_const_string());
+  auto* array = GetStringsArray();
+  if (array != nullptr) {
+    for (size_t index : Range(GetDexFile()->NumStringIds())) {
+      array->Set(index, nullptr);
+    }
+  }
+  auto* strings = GetStrings();
+  if (LIKELY(strings != nullptr)) {
+    for (size_t index : Range(kDexCacheStringCacheSize)) {
+      strings->Clear(index);
     }
   }
 }

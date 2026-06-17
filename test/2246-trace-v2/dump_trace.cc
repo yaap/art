@@ -18,6 +18,7 @@
 
 #include <map>
 #include <memory>
+#include <stack>
 
 #include "base/leb128.h"
 #include "base/os.h"
@@ -33,7 +34,7 @@ static const int kVersionDualClock = 0x05;
 static const int kThreadInfo = 0;
 static const int kMethodInfo = 1;
 static const int kTraceEntries = 2;
-static const int kTraceActionBits = 2;
+static const int kTraceActionMask = 3;
 static const int kSummary = 3;
 static const int kMethodEntry = 0;
 static const int kMethodExitNormal = 1;
@@ -86,6 +87,11 @@ bool MethodInIgnoreList(const std::string& method_name) {
     if (method_name.compare(ignored_method) == 0) {
       return true;
     }
+  }
+
+  // Also ignore clinit methods. Classes maybe pre-initialized if they are a part of the image.
+  if (method_name.find("<clinit>") != std::string::npos) {
+    return true;
   }
   return false;
 }
@@ -142,8 +148,10 @@ bool ProcessTraceEntries(std::unique_ptr<File>& file,
                          std::map<int64_t, int>& current_depth_map,
                          std::map<uint64_t, std::string>& thread_map,
                          std::map<uint64_t, std::string>& method_map,
+                         std::stack<uint64_t>& method_stack,
                          bool is_dual_clock,
                          const char* thread_name_filter,
+                         const char* method_name_filter,
                          std::map<uint64_t, std::string>& ignored_method_map,
                          std::map<int64_t, int>& ignored_method_depth_map) {
   uint8_t header[11];
@@ -180,31 +188,51 @@ bool ProcessTraceEntries(std::unique_ptr<File>& file,
 
   const uint8_t* current_buffer_ptr = buffer.get();
   int64_t prev_method_value = 0;
+  int64_t prev_timestamp_action_value = 0;
   for (int i = 0; i < num_records; i++) {
     int64_t diff = 0;
     if (!DecodeSignedLeb128Checked<int64_t>(
-            &current_buffer_ptr, buffer.get() + total_size - 1, &diff)) {
+            &current_buffer_ptr, buffer.get() + total_size, &diff)) {
       LOG(FATAL) << "Reading past the buffer???";
     }
-    int64_t curr_method_value = prev_method_value + diff;
-    prev_method_value = curr_method_value;
-    uint8_t event_type = curr_method_value & 0x3;
-    uint64_t method_id = (curr_method_value >> kTraceActionBits) << kTraceActionBits;
-    if (method_map.find(method_id) == method_map.end()) {
-      LOG(FATAL) << "No entry for method " << std::hex << method_id;
+    uint64_t curr_timestamp_action_value = prev_timestamp_action_value + diff;
+    prev_timestamp_action_value = curr_timestamp_action_value;
+
+    uint8_t event_type = curr_timestamp_action_value & kTraceActionMask;
+
+    if (is_dual_clock) {
+      DecodeUnsignedLeb128<uint64_t>(&current_buffer_ptr);
     }
-    if (print_thread_events) {
+
+    int64_t method_id;
+    if (event_type == 0) {
+      if (!DecodeSignedLeb128Checked<int64_t>(
+              &current_buffer_ptr, buffer.get() + total_size, &diff)) {
+        LOG(FATAL) << "Reading past the buffer Method???";
+      }
+      method_id = prev_method_value + diff;
+      if (method_map.find(method_id) == method_map.end()) {
+        LOG(FATAL) << "No entry for method " << std::hex << method_id;
+      }
+      prev_method_value = method_id;
+      method_stack.push(method_id);
+    } else {
+      CHECK(!method_stack.empty());
+      method_id = method_stack.top();
+      method_stack.pop();
+    }
+    std::string method_name = method_map[method_id];
+    bool print_method_events = true;
+    if (method_name_filter != nullptr) {
+      print_method_events = (method_name.find(method_name_filter) != std::string::npos);
+    }
+    if (print_thread_events && print_method_events) {
       PrintTraceEntry(thread_name,
-                      method_map[method_id],
+                      method_name,
                       event_type,
                       &current_depth,
                       ignored_method,
                       &ignored_method_depth);
-    }
-    // Read timestamps
-    DecodeUnsignedLeb128<uint64_t>(&current_buffer_ptr);
-    if (is_dual_clock) {
-      DecodeUnsignedLeb128<uint64_t>(&current_buffer_ptr);
     }
   }
   current_depth_map[thread_id] = current_depth;
@@ -218,14 +246,20 @@ bool ProcessTraceEntries(std::unique_ptr<File>& file,
 extern "C" JNIEXPORT void JNICALL Java_Main_dumpTrace(JNIEnv* env,
                                                       jclass,
                                                       jstring fileName,
-                                                      jstring threadName) {
+                                                      jstring threadName,
+                                                      jstring methodName) {
   const char* file_name = env->GetStringUTFChars(fileName, nullptr);
   const char* thread_name = env->GetStringUTFChars(threadName, nullptr);
+  const char* method_name_filter = nullptr;
+  if (methodName != nullptr) {
+    method_name_filter = env->GetStringUTFChars(methodName, nullptr);
+  }
   std::map<uint64_t, std::string> thread_map;
   std::map<uint64_t, std::string> method_map;
   std::map<uint64_t, std::string> ignored_method_map;
   std::map<int64_t, int> current_depth_map;
   std::map<int64_t, int> ignored_method_depth_map;
+  std::stack<uint64_t> method_stack;
 
   std::unique_ptr<File> file(OS::OpenFileForReading(file_name));
   if (file == nullptr) {
@@ -269,8 +303,10 @@ extern "C" JNIEXPORT void JNICALL Java_Main_dumpTrace(JNIEnv* env,
                             current_depth_map,
                             thread_map,
                             method_map,
+                            method_stack,
                             is_dual_clock,
                             thread_name,
+                            method_name_filter,
                             ignored_method_map,
                             ignored_method_depth_map);
         break;

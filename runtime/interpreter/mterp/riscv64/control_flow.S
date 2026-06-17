@@ -23,7 +23,6 @@
 %      get_vreg("a0", "t0")    #  a0 := fp[AA]
        // The method may return to compiled code, so also place result in fa0.
        fmv.w.x fa0, a0
-%#:
 
    CFI_REMEMBER_STATE
    ld sp, -8(xREFS)  // caller's interpreted frame pointer
@@ -96,7 +95,6 @@
      call NterpDoPackedSwitch  // args a0 (switchData), a1 (value)
 %  else:
      call NterpDoSparseSwitch  // args a0 (switchData), a1 (value)
-%#:
    BRANCH units=a0
 
 // sparse-switch vAA, +BBBBBBBB

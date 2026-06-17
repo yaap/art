@@ -115,7 +115,7 @@ public class Diff {
     /**
      * Return the key for the given instance.
      */
-    public static Key keyFor(AhatInstance inst) {
+    static Key keyFor(AhatInstance inst) {
       return new Key(inst);
     }
 
@@ -139,15 +139,15 @@ public class Diff {
   }
 
   private static class InstanceListPair {
-    public final List<AhatInstance> a;
-    public final List<AhatInstance> b;
+    final List<AhatInstance> a;
+    final List<AhatInstance> b;
 
-    public InstanceListPair() {
+    InstanceListPair() {
       this.a = new ArrayList<AhatInstance>();
       this.b = new ArrayList<AhatInstance>();
     }
 
-    public InstanceListPair(List<AhatInstance> a, List<AhatInstance> b) {
+    InstanceListPair(List<AhatInstance> a, List<AhatInstance> b) {
       this.a = a;
       this.b = b;
     }

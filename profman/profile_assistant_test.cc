@@ -40,6 +40,7 @@
 #include "profile/profile_test_helper.h"
 #include "profman/profman_result.h"
 #include "scoped_thread_state_change-inl.h"
+#include "synthetic_class_format_util.h"
 
 namespace art {
 
@@ -1778,11 +1779,11 @@ TEST_F(ProfileAssistantTest, MergeProfilesWithFilter) {
 
   ProfileCompilationInfo::ProfileLoadFilterFn filter_fn =
       [&d1, &d2](const std::string& dex_location, uint32_t checksum) -> bool {
-          return (dex_location == ProfileCompilationInfo::GetProfileDexFileBaseKey(d1.GetLocation())
-              && checksum == d1.GetLocationChecksum())
-              || (dex_location == ProfileCompilationInfo::GetProfileDexFileBaseKey(d2.GetLocation())
-              && checksum == d2.GetLocationChecksum());
-        };
+    return (dex_location == ProfileCompilationInfo::GetProfileDexFileBaseKey(&d1) &&
+            checksum == d1.GetLocationChecksum()) ||
+           (dex_location == ProfileCompilationInfo::GetProfileDexFileBaseKey(&d2) &&
+            checksum == d2.GetLocationChecksum());
+  };
 
   ProfileCompilationInfo info1_filter;
   ProfileCompilationInfo info2_filter;
@@ -2345,6 +2346,51 @@ TEST_F(ProfileAssistantTest, ForceMergeIgnoreProfilesItCannotLoad) {
     ASSERT_EQ(ProcessProfiles(profile_fds, reference_profile_fd, {"--boot-image-merge"}),
               ProfmanResult::kErrorBadProfiles);
   }
+}
+
+// Test --record-preloaded-classes-denylist option.
+TEST_F(ProfileAssistantTest, TestPreloadedClassesDenylist) {
+  // A few classes from core-oj in the profile (must be sorted).
+  static const std::string classes =
+      "Ljava/lang/Object;\n"
+      "Ljava/util/concurrent/ThreadLocalRandom;\n"
+      "Lsun/nio/fs/UnixChannelFactory;\n";
+  ScratchFile text_profile;
+  EXPECT_TRUE(text_profile.GetFile()->WriteFully(classes.c_str(), classes.length()));
+
+  // A few no-preload classes in the denylist that partially overlap with core-oj classes.
+  static const std::string denylist =
+      "android.content.AsyncTaskLoader$LoadTask\n"
+      "com.android.internal.util.LatencyTracker$SLatencyTrackerHolder\n"
+      "gov.nist.core.net.DefaultNetworkLayer\n"
+      "java.util.concurrent.ThreadLocalRandom\n"
+      "sun.nio.fs.UnixChannelFactory\n";
+  ScratchFile denylist_file;
+  EXPECT_TRUE(denylist_file.GetFile()->WriteFully(denylist.c_str(), denylist.length()));
+
+  // Create binary profile from the text profile and record no-preload classes.
+  ScratchFile binary_profile;
+  std::vector<std::string> argv_str;
+  argv_str.push_back(GetProfmanCmd());
+  argv_str.push_back("--output-profile-type=boot");
+  argv_str.push_back("--create-profile-from=" + text_profile.GetFilename());
+  argv_str.push_back("--reference-profile-file=" + binary_profile.GetFilename());
+  argv_str.push_back("--apk=" + GetLibCoreDexFileNames()[0]);
+  argv_str.push_back("--dex-location=" + GetLibCoreDexFileNames()[0]);
+  argv_str.push_back("--record-preloaded-classes-denylist");
+  argv_str.push_back("--preloaded-classes-denylist=" + denylist_file.GetFilename());
+  std::string error;
+  EXPECT_EQ(ExecAndReturnCode(argv_str, &error), 0) << error;
+
+  // Check that the expected no-preload classes are recorded.
+  static const std::string expect =
+      "\tclasses-no-preload: \n"
+      "\t\tjava.util.concurrent.ThreadLocalRandom\n"
+      "\t\tsun.nio.fs.UnixChannelFactory\n";
+  std::string output;
+  EXPECT_TRUE(DumpOnly(binary_profile.GetFilename(), &output));
+  const size_t offset = output.find(expect);
+  ASSERT_NE(offset, std::string::npos) << "cannot find no-preload classes in the profile";
 }
 
 }  // namespace art

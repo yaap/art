@@ -22,7 +22,6 @@ import java.util.List;
 
 class SuperRoot extends AhatInstance {
   private List<AhatInstance> mRoots = new ArrayList<AhatInstance>();
-  private Object mDominatorsComputationState;
 
   SuperRoot() {
     super(0);
@@ -43,7 +42,7 @@ class SuperRoot extends AhatInstance {
   }
 
   @Override
-  Iterable<Reference> getReferences() {
+  public Iterable<Reference> getReferences() {
     return new AbstractList<Reference>() {
       @Override
       public int size() {

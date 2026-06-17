@@ -350,6 +350,32 @@ class OptimizingUnitTestHelper {
     return {if_block, then_block, else_block};
   }
 
+  // Insert "switch_block", `num_entries` "case" blocks and a "default" block before a given
+  // `merge_block`. Return the switch block. Adds `HGoto` to "case" blocks and "default" block.
+  // Adds `HPackedSwitch` to the "switch_block" if the caller provides a `switch_input`.
+  HBasicBlock* CreateSwitchPattern(HBasicBlock* merge_block,
+                                   uint32_t num_entries,
+                                   HInstruction* switch_input = nullptr,
+                                   int32_t start_value = 0) {
+    HBasicBlock* switch_block = AddNewBlock();
+
+    HBasicBlock* predecessor = merge_block->GetSinglePredecessor();
+    predecessor->ReplaceSuccessor(merge_block, switch_block);
+
+    for ([[maybe_unused]] uint32_t i : Range(num_entries + /* default block */ 1u)) {
+      HBasicBlock* case_block = AddNewBlock();
+      switch_block->AddSuccessor(case_block);
+      case_block->AddSuccessor(merge_block);
+      MakeGoto(case_block);
+    }
+
+    if (switch_input != nullptr) {
+      MakePackedSwitch(switch_block, switch_input, start_value, num_entries);
+    }
+
+    return switch_block;
+  }
+
   // Insert "pre-header", "loop-header" and "loop-body" blocks before a given `loop_exit` block
   // and connect them in a `while (...) { ... }` loop pattern. Return the new blocks.
   // Adds `HGoto` to the "pre-header" and "loop-body" blocks but leaves the "loop-header" block
@@ -881,6 +907,43 @@ class OptimizingUnitTestHelper {
     return suspend_check;
   }
 
+  HLoadConstantTableEntry* MakeLoadConstantTableEntry(HBasicBlock* block,
+                                                      DataType::Type type,
+                                                      HInstruction* index,
+                                                      ArrayRef<const int64_t> entries,
+                                                      uint32_t dex_pc = kNoDexPc) {
+    HLoadConstantTableEntry* lcte = new (GetAllocator()) HLoadConstantTableEntry(
+        type, index, entries, GetAllocator(), dex_pc);
+    AddOrInsertInstruction(block, lcte);
+    return lcte;
+  }
+
+  template <typename T>
+  HLoadConstantTableEntry* MakeLoadConstantTableEntry(HBasicBlock* block,
+                                                      DataType::Type type,
+                                                      HInstruction* index,
+                                                      std::initializer_list<T> entries,
+                                                      uint32_t dex_pc = kNoDexPc) {
+    std::vector<int64_t> i64_entries;
+    auto copy_entries = [&](auto&& convert) {
+      for (T entry : entries) {
+        i64_entries.push_back(convert(entry));
+      }
+    };
+    if (std::is_same_v<T, double>) {
+      CHECK_EQ(type, DataType::Type::kFloat64);
+      copy_entries([](double e) { return bit_cast<int64_t, double>(e); });
+    } else if (std::is_same_v<T, float>) {
+      CHECK_EQ(type, DataType::Type::kFloat32);
+      copy_entries([](float e) { return bit_cast<uint32_t, float>(e); });
+    } else {
+      CHECK_IMPLIES(type != DataType::Type::kInt64, DataType::Kind(type) == DataType::Type::kInt32);
+      copy_entries([](T e) { return e; });
+    }
+    return MakeLoadConstantTableEntry(
+        block, type, index, ArrayRef<const int64_t>(i64_entries), dex_pc);
+  }
+
   void AddOrInsertInstruction(HBasicBlock* block, HInstruction* instruction) {
     CHECK(!instruction->IsControlFlow());
     if (block->GetLastInstruction() != nullptr && block->GetLastInstruction()->IsControlFlow()) {
@@ -894,6 +957,17 @@ class OptimizingUnitTestHelper {
     HIf* if_insn = new (GetAllocator()) HIf(cond, dex_pc);
     block->AddInstruction(if_insn);
     return if_insn;
+  }
+
+  HPackedSwitch* MakePackedSwitch(HBasicBlock* block,
+                                  HInstruction* input,
+                                  int32_t start_value,
+                                  uint32_t num_entries,
+                                  uint32_t dex_pc = kNoDexPc) {
+    HPackedSwitch* switch_insn =
+        new (GetAllocator()) HPackedSwitch(start_value, num_entries, input, dex_pc);
+    block->AddInstruction(switch_insn);
+    return switch_insn;
   }
 
   HGoto* MakeGoto(HBasicBlock* block, uint32_t dex_pc = kNoDexPc) {
@@ -929,6 +1003,31 @@ class OptimizingUnitTestHelper {
     }
     block->AddPhi(phi);
     return phi;
+  }
+
+  template <typename T>
+  HInstruction* GetConstant(DataType::Type type, T value) {
+    if constexpr (std::is_same_v<T, float>) {
+      DCHECK_EQ(type, DataType::Type::kFloat32);
+      return graph_->GetFloatConstant(value);
+    } else if constexpr (std::is_same_v<T, double>) {
+      DCHECK_EQ(type, DataType::Type::kFloat64);
+      return graph_->GetDoubleConstant(value);
+    } else {
+      DCHECK(!DataType::IsFloatingPointType(type));
+      return graph_->GetConstant(type, value);
+    }
+  }
+
+  HDeoptimize* MakeDeoptimize(HBasicBlock* block,
+                              HInstruction* cond,
+                              DeoptimizationKind kind,
+                              std::initializer_list<HInstruction*> env = {},
+                              uint32_t dex_pc = kNoDexPc) {
+    HDeoptimize* deoptimize = new (GetAllocator()) HDeoptimize(GetAllocator(), cond, kind, dex_pc);
+    block->AddInstruction(deoptimize);
+    ManuallyBuildEnvFor(deoptimize, env);
+    return deoptimize;
   }
 
   std::tuple<HPhi*, HAdd*> MakeLinearLoopVar(HBasicBlock* header,
@@ -994,7 +1093,11 @@ class OptimizingUnitTestHelper {
   // Creates a parameter. The instruction is automatically added to the entry-block.
   HParameterValue* MakeParam(DataType::Type type, std::optional<dex::TypeIndex> ti = std::nullopt) {
     HParameterValue* val = new (GetAllocator()) HParameterValue(
-        graph_->GetDexFile(), ti ? *ti : DefaultTypeIndexForType(type), param_count_++, type);
+        graph_->GetDexFile(),
+        ti ? *ti : DefaultTypeIndexForType(type),
+        param_input_vreg_index_,
+        type);
+    param_input_vreg_index_ += DataType::Is64BitType(type) ? 2u : 1u;
     AddOrInsertInstruction(graph_->GetEntryBlock(), val);
     return val;
   }
@@ -1042,7 +1145,7 @@ class OptimizingUnitTestHelper {
   HBasicBlock* entry_block_;
   HBasicBlock* exit_block_;
 
-  size_t param_count_ = 0;
+  size_t param_input_vreg_index_ = 0;
   size_t class_idx_ = 42;
   uint32_t method_idx_ = 100;
 

@@ -3892,6 +3892,59 @@ public class Main {
     return (byte) ((arg << 16) >>> 16);
   }
 
+  private static int[] $inline$createArray(int n) {
+    int[] a = new int[n];
+    return a;
+  }
+
+  /// CHECK-START: int Main.$noinline$testArrayLength(int) instruction_simplifier$after_loop_opt (before)
+  /// CHECK:                     ParameterValue
+  /// CHECK:     <<Array:l\d+>>  NewArray
+  /// CHECK:     <<Length:i\d+>> ArrayLength [<<Array>>]
+  /// CHECK:                     Return [<<Length>>]
+
+  /// CHECK-START: int Main.$noinline$testArrayLength(int) instruction_simplifier$after_loop_opt (after)
+  /// CHECK:     <<Param:i\d+>>  ParameterValue
+  /// CHECK:     <<Array:l\d+>>  NewArray
+  /// CHECK:                     ArrayLength [<<Array>>]
+  /// CHECK:                     Return [<<Param>>]
+
+  /// CHECK-START: int Main.$noinline$testArrayLength(int) dead_code_elimination$after_loop_opt (after)
+  /// CHECK-NOT:                 ArrayLength
+  private static int $noinline$testArrayLength(int n) {
+    int[] a = $inline$createArray(n);
+    return a.length;
+  }
+
+  /// CHECK-START: int[] Main.$noinline$testArrayLengthLoop(int) BCE (before)
+  /// CHECK:     <<Array:l\d+>>  NewArray
+  /// CHECK:                     ArrayLength [<<Array>>]
+  /// CHECK:                     BoundsCheck
+
+  /// CHECK-START: int[] Main.$noinline$testArrayLengthLoop(int) instruction_simplifier$after_loop_opt (before)
+  /// CHECK:                     ParameterValue
+  /// CHECK:     <<Array:l\d+>>  NewArray
+  /// CHECK:     <<Length:i\d+>> ArrayLength [<<Array>>]
+  /// CHECK:     <<Idx:i\d+>>    Phi
+  /// CHECK:                     GreaterThanOrEqual [<<Idx>>,<<Length>>]
+
+  /// CHECK-START: int[] Main.$noinline$testArrayLengthLoop(int) instruction_simplifier$after_loop_opt (after)
+  /// CHECK:     <<Param:i\d+>>  ParameterValue
+  /// CHECK:     <<Array:l\d+>>  NewArray
+  /// CHECK:                     ArrayLength [<<Array>>]
+  /// CHECK:     <<Idx:i\d+>>    Phi
+  /// CHECK:                     GreaterThanOrEqual [<<Idx>>,<<Param>>]
+
+  /// CHECK-START: int[] Main.$noinline$testArrayLengthLoop(int) dead_code_elimination$after_loop_opt (after)
+  /// CHECK-NOT:                 ArrayLength
+  private static int[] $noinline$testArrayLengthLoop(int n) {
+    int[] a = $inline$createArray(n);
+    for (int i = 0; i < a.length; i++) {
+      a[i] = i;
+    }
+    return a;
+  }
+
   public static void main(String[] args) throws Exception {
     Class smaliTests2 = Class.forName("SmaliTests2");
     Method $noinline$XorAllOnes = smaliTests2.getMethod("$noinline$XorAllOnes", int.class);
@@ -4328,6 +4381,15 @@ public class Main {
 
     assertIntEquals(0x0b, $noinline$testCharToCharToByte((char) 0xaa0b));
     assertIntEquals(0xffffffbb, $noinline$testCharToCharToByte((char) 0xaabb));
+
+    assertIntEquals(10, $noinline$testArrayLength(10));
+
+    int len = 10;
+    int[] a = $noinline$testArrayLengthLoop(len);
+
+    for (int i = 0; i < len; i++) {
+      assertIntEquals(a[i], i);
+    }
   }
 
   private static boolean $inline$true() { return true; }

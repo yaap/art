@@ -33,6 +33,8 @@ import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.pm.SigningInfo;
@@ -51,6 +53,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 
+import java.io.File;
 import java.util.List;
 
 @SmallTest
@@ -89,6 +92,8 @@ public class ArtManagedInstallFileHelperTest {
 
     @Test
     public void testFilterPathsForApk() throws Exception {
+        when(mInjector.needFixupForB460251001()).thenReturn(false);
+
         assertThat(ArtManagedInstallFileHelper.filterPathsForApk(
                            List.of("/foo/bar.dm", "/foo/bar.prof", "/foo/bar.apk.prof",
                                    "/foo/bar.sdm", "/foo/bar.x86_64.sdm", "/foo/bar.arm.sdm",
@@ -110,6 +115,58 @@ public class ArtManagedInstallFileHelperTest {
                                    "/foo/bar.arm64.sdm", "/foo/bar.abc", "/foo/baz.dm"),
                            "/quz/bar.apk"))
                 .isEmpty();
+    }
+
+    @Test
+    public void testFilterPathsForApkFixupForB460251001() throws Exception {
+        when(mInjector.needFixupForB460251001()).thenReturn(true);
+
+        when(mInjector.listFiles(new File("/old_dir")))
+                .thenReturn(new File[] {new File("/old_dir/base.apk"), new File("/old_dir/base.dm"),
+                        new File("/old_dir/base.arm64.sdm"), new File("/old_dir/base.digests"),
+                        new File("/old_dir/app.metadata"), new File("/old_dir/oat"),
+                        new File("/old_dir/lib")});
+
+        when(mInjector.isFile(new File("/old_dir/base.apk"))).thenReturn(true);
+        when(mInjector.isFile(new File("/old_dir/base.dm"))).thenReturn(true);
+        when(mInjector.isFile(new File("/old_dir/base.arm64.sdm"))).thenReturn(true);
+        when(mInjector.isFile(new File("/old_dir/base.digests"))).thenReturn(true);
+        when(mInjector.isFile(new File("/old_dir/app.metadata"))).thenReturn(true);
+        when(mInjector.isFile(new File("/old_dir/oat"))).thenReturn(false);
+        when(mInjector.isFile(new File("/old_dir/lib"))).thenReturn(false);
+
+        // From the files on disk.
+        assertThat(ArtManagedInstallFileHelper.filterPathsForApk(
+                           List.of("/new_dir/split_1.dm"), "/old_dir/base.apk"))
+                .containsExactly("/old_dir/base.dm", "/old_dir/base.arm64.sdm");
+
+        // From the provided list.
+        assertThat(ArtManagedInstallFileHelper.filterPathsForApk(
+                           List.of("/new_dir/split_1.dm"), "/new_dir/split_1.apk"))
+                .containsExactly("/new_dir/split_1.dm");
+    }
+
+    @Test
+    public void testFilterPathsForApkFixupForB460251001UnexpectedInputs() throws Exception {
+        when(mInjector.needFixupForB460251001()).thenReturn(true);
+
+        assertThat(ArtManagedInstallFileHelper.filterPathsForApk(
+                           List.of("/new_dir/split_1.dm"), "split\0_1.apk"))
+                .isEmpty();
+
+        assertThat(ArtManagedInstallFileHelper.filterPathsForApk(
+                           List.of("/new_dir/split_1.dm"), "split_1.apk"))
+                .isEmpty();
+
+        assertThat(ArtManagedInstallFileHelper.filterPathsForApk(
+                           List.of("/new_dir/split_1.dm"), "/new_dir/../split_1.apk"))
+                .isEmpty();
+
+        assertThat(
+                ArtManagedInstallFileHelper.filterPathsForApk(List.of("/new_dir/split_1.dm"), "/"))
+                .isEmpty();
+
+        verify(mInjector, never()).listFiles(any());
     }
 
     @Test

@@ -94,6 +94,10 @@ class HInstructionBuilder : public ValueObject {
   void InsertInstructionAtTop(HInstruction* instruction);
   void InitializeInstruction(HInstruction* instruction);
 
+  bool IsBuildingInlinedGraph() const {
+    return dex_compilation_unit_ != outer_compilation_unit_;
+  }
+
   void InitializeParameters();
 
   template<typename T>

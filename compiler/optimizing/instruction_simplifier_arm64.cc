@@ -26,6 +26,7 @@
 namespace art HIDDEN {
 
 using helpers::CanFitInShifterOperand;
+using helpers::CanShiftFitInShifterOperand;
 using helpers::HasShifterOperand;
 using helpers::IsBeforeInReversePostOrder;
 using helpers::IsSubRightSubLeftShl;
@@ -249,7 +250,7 @@ bool InstructionSimplifierArm64Visitor::TryMergingShifterOperand(HInstruction* u
 void InstructionSimplifierArm64Visitor::HandleShiftForShifterOperand(HBinaryOperation* shift) {
   DCHECK(shift->IsShl() || shift->IsShr() || shift->IsUShr());
   DCHECK_EQ(shift->GetRight()->IsConstant(), shift->GetRight()->IsIntConstant());
-  if (shift->GetRight()->IsIntConstant()) {
+  if (CanShiftFitInShifterOperand(shift)) {
     TryMarkingShifterOperand(shift);
   }
 }
@@ -326,8 +327,8 @@ void InstructionSimplifierArm64Visitor::VisitSub(HSub* instruction) {
   }
   if (IsSubRightSubLeftShl(instruction)) {
     HSub* right_sub = instruction->GetRight()->AsSub();
-    HInstruction* shl = right_sub->InputAt(0);
-    if (shl->InputAt(1)->IsConstant() && TryReplaceSubSubWithSubAdd(instruction)) {
+    HShl* shl = right_sub->InputAt(0)->AsShl();
+    if (CanShiftFitInShifterOperand(shl) && TryReplaceSubSubWithSubAdd(instruction)) {
       DCHECK(!instruction->IsInBlock());
       DCHECK(shl->IsInBlock());
       DCHECK(right_sub->IsInBlock());

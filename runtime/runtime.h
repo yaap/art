@@ -29,11 +29,13 @@
 #include <vector>
 
 #include "app_info.h"
+#include "arch/instruction_set.h"
 #include "base/length_prefixed_array.h"
 #include "base/locks.h"
 #include "base/macros.h"
 #include "base/mem_map.h"
 #include "base/metrics/metrics.h"
+#include "base/offsets.h"
 #include "base/os.h"
 #include "base/unix_file/fd_file.h"
 #include "compat_framework.h"
@@ -46,7 +48,6 @@
 #include "jni_id_type.h"
 #include "metrics/reporter.h"
 #include "obj_ptr.h"
-#include "offsets.h"
 #include "process_state.h"
 #include "quick/quick_method_frame_info.h"
 #include "reflective_value_visitor.h"
@@ -101,10 +102,12 @@ class ArtField;
 class ArtMethod;
 enum class CalleeSaveType: uint32_t;
 class ClassLinker;
+class CodeSimulatorContainer;
 class CompilerCallbacks;
 class Dex2oatImageTest;
 class DexFile;
 enum class InstructionSet;
+class InstructionSetFeatures;
 class InternTable;
 class IsMarkedVisitor;
 class JavaVMExt;
@@ -317,7 +320,7 @@ class Runtime {
   EXPORT void CallExitHook(jint status);
 
   // Detaches the current native thread from the runtime.
-  void DetachCurrentThread(bool should_run_callbacks = true) REQUIRES(!Locks::mutator_lock_);
+  EXPORT void DetachCurrentThread(bool should_run_callbacks = true) REQUIRES(!Locks::mutator_lock_);
 
   // If we are handling SIQQUIT return the time when we received it.
   std::optional<uint64_t> SigQuitNanoTime() const;
@@ -565,6 +568,16 @@ class Runtime {
 
   EXPORT void SetInstructionSet(InstructionSet instruction_set);
   void ClearInstructionSet();
+
+#ifdef ART_USE_SIMULATOR
+  // Returns whether the runtime is in simulator mode - able to simulate code.
+  static inline bool IsSimulatorMode() {
+    DCHECK_NE(kSimulatedISA, InstructionSet::kNone);
+    Runtime* runtime = Current();
+    // Disable simulator for compiler.
+    return runtime != nullptr && !runtime->IsCompiler();
+  }
+#endif
 
   EXPORT void SetCalleeSaveMethod(ArtMethod* method, CalleeSaveType type);
   void ClearCalleeSaveMethods();
@@ -906,6 +919,11 @@ class Runtime {
     return process_state_ == kProcessStateJankPerceptible;
   }
 
+  // Returns true if the process has ever been jank perceptible.
+  bool WasEverJankPerceptible() const {
+    return was_ever_jank_perceptible_;
+  }
+
   void RegisterSensitiveThread() const;
 
   void SetZygoteNoThreadSection(bool val) {
@@ -1001,6 +1019,10 @@ class Runtime {
   // suspended to call this function.
   EXPORT void SetJniIdType(JniIdType t);
 
+  const InstructionSetFeatures* GetRuntimeInstructionSetFeatures() const {
+    return runtime_instruction_set_features_.get();
+  }
+
   uint32_t GetVerifierLoggingThresholdMs() const {
     return verifier_logging_threshold_ms_;
   }
@@ -1093,14 +1115,21 @@ class Runtime {
   // Requests madvise `WILLNEED` for the given file mapping range.
   //
   // Returns the actual number of bytes that were madvise'd. This is determined
-  // not only by the provided limit, but also the map region and the current
-  // process state (e.g., madvise may be short-circuited for low-pri processes).
+  // not only by the provided limit, but also the map region.
   // This will always be `<= madvise_size_limit_bytes`.
+  //
+  // If provided and valid, the `optional_fd` may be used to optimize readahead behavior.
+  // TODO(b/309384435): Update callsites to provide the appropriate FD when available.
   static size_t MadviseFileForRange(size_t madvise_size_limit_bytes,
                                     size_t map_size_bytes,
                                     const uint8_t* map_begin,
                                     const uint8_t* map_end,
-                                    const std::string& file_name);
+                                    const std::string& file_name,
+                                    int optional_fd = -1);
+
+  // Whether to madvise runtime artifacts for the given dex location to optimize startup.
+  // We try to avoid madvise for 1) background process starts, and 2) secondary dex artifacts.
+  bool ShouldMadviseForAppStartup(const char* dex_location);
 
   const std::string& GetApexVersions() const {
     return apex_versions_;
@@ -1151,6 +1180,10 @@ class Runtime {
   bool AreMetricsInitialized() const { return metrics_reporter_ != nullptr; }
 
   std::optional<AssumeValueSignature> LookupAssumeValueSignature(ArtField* field) const;
+
+#ifdef ART_USE_SIMULATOR
+  CodeSimulatorContainer* GetCodeSimulatorContainer() { return simulator_container_.get(); }
+#endif
 
  private:
   static void InitPlatformSignalHandlers();
@@ -1535,6 +1568,8 @@ class Runtime {
   // Whether to allow compiling the boot classpath in memory when the given boot image is unusable.
   bool allow_in_memory_compilation_ = false;
 
+  bool was_ever_jank_perceptible_ = false;
+
   // Saved environment.
   class EnvSnapshot {
    public:
@@ -1594,9 +1629,16 @@ class Runtime {
 
   std::map<ArtField*, const AssumeValueSignature*> assume_value_field_signatures_;
 
+#ifdef ART_USE_SIMULATOR
+  std::unique_ptr<CodeSimulatorContainer> simulator_container_;
+#endif
+
+  std::unique_ptr<const InstructionSetFeatures> runtime_instruction_set_features_;
+
   // Note: See comments on GetFaultMessage.
   friend std::string GetFaultMessageForAbortLogging();
   friend class Dex2oatImageTest;
+  friend class RuntimeMadviseTest;
   friend class ScopedThreadPoolUsage;
   friend class OatFileAssistantTest;
   class SetupLinearAllocForZygoteFork;

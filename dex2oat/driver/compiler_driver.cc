@@ -54,6 +54,7 @@
 #include "dex/verification_results.h"
 #include "driver/compiler_options.h"
 #include "driver/dex_compilation_unit.h"
+#include "driver/image_class_map-inl.h"
 #include "gc/accounting/card_table-inl.h"
 #include "gc/accounting/heap_bitmap.h"
 #include "gc/space/image_space.h"
@@ -116,11 +117,6 @@ class CompilerDriver::AOTCompilationStats {
       : stats_lock_("AOT compilation statistics lock") {}
 
   void Dump() {
-    DumpStat(resolved_instance_fields_, unresolved_instance_fields_, "instance fields resolved");
-    DumpStat(resolved_local_static_fields_ + resolved_static_fields_, unresolved_static_fields_,
-             "static fields resolved");
-    DumpStat(resolved_local_static_fields_, resolved_static_fields_ + unresolved_static_fields_,
-             "static fields local to a class");
     DumpStat(safe_casts_, not_safe_casts_, "check-casts removed based on type information");
     // Note, the code below subtracts the stat value so that when added to the stat value we have
     // 100% of samples. TODO: clean this up.
@@ -175,31 +171,6 @@ class CompilerDriver::AOTCompilationStats {
 #define STATS_LOCK()
 #endif
 
-  void ResolvedInstanceField() REQUIRES(!stats_lock_) {
-    STATS_LOCK();
-    resolved_instance_fields_++;
-  }
-
-  void UnresolvedInstanceField() REQUIRES(!stats_lock_) {
-    STATS_LOCK();
-    unresolved_instance_fields_++;
-  }
-
-  void ResolvedLocalStaticField() REQUIRES(!stats_lock_) {
-    STATS_LOCK();
-    resolved_local_static_fields_++;
-  }
-
-  void ResolvedStaticField() REQUIRES(!stats_lock_) {
-    STATS_LOCK();
-    resolved_static_fields_++;
-  }
-
-  void UnresolvedStaticField() REQUIRES(!stats_lock_) {
-    STATS_LOCK();
-    unresolved_static_fields_++;
-  }
-
   // Indicate that type information from the verifier led to devirtualization.
   void PreciseTypeDevirtualization() REQUIRES(!stats_lock_) {
     STATS_LOCK();
@@ -227,12 +198,6 @@ class CompilerDriver::AOTCompilationStats {
  private:
   Mutex stats_lock_;
 
-  size_t resolved_instance_fields_ = 0u;
-  size_t unresolved_instance_fields_ = 0u;
-
-  size_t resolved_local_static_fields_ = 0u;
-  size_t resolved_static_fields_ = 0u;
-  size_t unresolved_static_fields_ = 0u;
   // Type based devirtualization for invoke interface and virtual.
   size_t type_based_devirtualization_ = 0u;
 
@@ -261,7 +226,7 @@ CompilerDriver::CompilerDriver(
       number_of_soft_verifier_failures_(0),
       had_hard_verifier_failure_(false),
       parallel_thread_count_(thread_count),
-      stats_(new AOTCompilationStats),
+      stats_(new AOTCompilationStats()),
       compiled_method_storage_(swap_fd),
       max_arena_alloc_(0) {
   DCHECK(compiler_options_ != nullptr);
@@ -279,20 +244,35 @@ CompilerDriver::~CompilerDriver() {
       });
 }
 
+#define CREATE_TRAMPOLINE_IMPL(isa, isa_features, type, abi, offset)                     \
+  if (Is64BitInstructionSet((isa))) {                                                    \
+    return CreateTrampoline64(                                                           \
+        (isa), (isa_features), abi, type##_ENTRYPOINT_OFFSET(PointerSize::k64, offset)); \
+  } else {                                                                               \
+    return CreateTrampoline32(                                                           \
+        (isa), (isa_features), abi, type##_ENTRYPOINT_OFFSET(PointerSize::k32, offset)); \
+  }
 
-#define CREATE_TRAMPOLINE(type, abi, offset)                                            \
-    if (Is64BitInstructionSet(GetCompilerOptions().GetInstructionSet())) {              \
-      return CreateTrampoline64(GetCompilerOptions().GetInstructionSet(),               \
-                                abi,                                                    \
-                                type ## _ENTRYPOINT_OFFSET(PointerSize::k64, offset));  \
-    } else {                                                                            \
-      return CreateTrampoline32(GetCompilerOptions().GetInstructionSet(),               \
-                                abi,                                                    \
-                                type ## _ENTRYPOINT_OFFSET(PointerSize::k32, offset));  \
-    }
+#define CREATE_TRAMPOLINE(type, abi, offset)                               \
+  CREATE_TRAMPOLINE_IMPL(GetCompilerOptions().GetInstructionSet(),         \
+                         GetCompilerOptions().GetInstructionSetFeatures(), \
+                         type,                                             \
+                         abi,                                              \
+                         offset)
 
-std::unique_ptr<const std::vector<uint8_t>> CompilerDriver::CreateJniDlsymLookupTrampoline() const {
-  CREATE_TRAMPOLINE(JNI, kJniAbi, pDlsymLookup)
+std::unique_ptr<const std::vector<uint8_t>>
+    CompilerDriver::CreateJniDlsymLookupTrampoline() const {
+#ifdef ART_USE_SIMULATOR
+  // In simulator mode the dlsymLookup trampoline is executed in native ISA, not quick code isa.
+  InstructionSet trampoline_isa = kRuntimeISA;
+  // Don't assume any specialized ISA features.
+  const InstructionSetFeatures* trampoline_isa_features = nullptr;
+#else
+  InstructionSet trampoline_isa = GetCompilerOptions().GetInstructionSet();
+  const InstructionSetFeatures* trampoline_isa_features =
+      GetCompilerOptions().GetInstructionSetFeatures();
+#endif
+  CREATE_TRAMPOLINE_IMPL(trampoline_isa, trampoline_isa_features, JNI, kJniAbi, pDlsymLookup)
 }
 
 std::unique_ptr<const std::vector<uint8_t>>
@@ -604,7 +584,8 @@ void CompilerDriver::CollectStringsForLinkerPatches(
       [&]([[maybe_unused]] const DexFileReference& ref, CompiledMethod* method) {
         if (method != nullptr) {
           for (const linker::LinkerPatch& patch : method->GetPatches()) {
-            if (patch.GetType() == linker::LinkerPatch::Type::kStringRelative) {
+            if (patch.GetType() == linker::LinkerPatch::Type::kStringRelative ||
+                patch.GetType() == linker::LinkerPatch::Type::kStringAppImageRelRo) {
               StringReference target_string = patch.TargetString();
               if (last_dex_file != target_string.dex_file) {
                 last_dex_file = target_string.dex_file;
@@ -751,7 +732,9 @@ static void InitializeTypeCheckBitstrings(CompilerDriver* driver,
         // primitive) classes. We may reconsider this in future if it's deemed to be beneficial.
         // And we cannot use it for classes outside the boot image as we do not know the runtime
         // value of their bitstring when compiling (it may not even get assigned at runtime).
-        if (descriptor[0] == 'L' && driver->GetCompilerOptions().IsImageClass(descriptor)) {
+        if (descriptor[0] == 'L' &&
+            driver->GetCompilerOptions().IsImageClass(TypeReference(&dex_file, type_index),
+                                                      /*array_dim=*/ 0u)) {
           ObjPtr<mirror::Class> klass =
               class_linker->LookupResolvedType(type_index,
                                                dex_cache.Get(),
@@ -878,7 +861,7 @@ class CreateConflictTablesVisitor : public ClassVisitor {
 void CompilerDriver::PreCompile(jobject class_loader,
                                 const std::vector<const DexFile*>& dex_files,
                                 TimingLogger* timings,
-                                /*inout*/ HashSet<std::string>* image_classes) {
+                                /*inout*/ ImageClassMap* image_classes) {
   CheckThreadPools();
 
   VLOG(compiler) << "Before precompile " << GetMemoryUsageString(false);
@@ -1224,36 +1207,65 @@ static inline bool CanIncludeInCurrentImage(ObjPtr<mirror::Class> klass)
 
 class RecordImageClassesVisitor : public ClassVisitor {
  public:
-  explicit RecordImageClassesVisitor(HashSet<std::string>* image_classes)
+  explicit RecordImageClassesVisitor(ImageClassMap* image_classes)
       : image_classes_(image_classes) {}
 
   bool operator()(ObjPtr<mirror::Class> klass) override REQUIRES_SHARED(Locks::mutator_lock_) {
     bool resolved = klass->IsResolved();
     DCHECK(resolved || klass->IsErroneousUnresolved());
     bool can_include_in_image = LIKELY(resolved) && CanIncludeInCurrentImage(klass);
-    std::string temp;
-    std::string_view descriptor(klass->GetDescriptor(&temp));
-    if (can_include_in_image) {
-      image_classes_->insert(std::string(descriptor));  // Does nothing if already present.
-    } else {
-      auto it = image_classes_->find(descriptor);
-      if (it != image_classes_->end()) {
-        VLOG(compiler) << "Removing " << (resolved ? "unsuitable" : "unresolved")
-            << " class from image classes: " << descriptor;
-        image_classes_->erase(it);
+    auto [component_type, array_dim] =
+        klass->GetInnermostComponentTypeAndArrayDim<kDefaultVerifyFlags, kWithoutReadBarrier>();
+    TypeReference type_ref(nullptr, dex::TypeIndex(DexFile::kDexNoIndex16));
+    if (component_type->IsPrimitive() || array_dim != 0u) {
+      DCHECK_EQ(can_include_in_image, resolved && CanIncludeInCurrentImage(component_type));
+      // Primitive classes are attributed to the first boot class path dex file.
+      const DexFile* dex_file = component_type->IsPrimitive()
+          ? Runtime::Current()->GetClassLinker()->GetBootClassPath().front()
+          : &component_type->GetDexFile();
+      std::string_view descriptor = component_type->IsPrimitive()
+          ? component_type->GetPrimitiveDescriptorView()
+          : component_type->GetDescriptorView();
+      // Use descriptor-based lookup to try and avoid searching for the `TypeId` in the dex file.
+      if (can_include_in_image == image_classes_->Contains(dex_file, descriptor, array_dim)) {
+        return true;
       }
+      const dex::TypeId* type_id = dex_file->FindTypeId(descriptor);
+      CHECK(type_id != nullptr);
+      type_ref = TypeReference(dex_file, dex_file->GetIndexForTypeId(*type_id));
+    } else {
+      type_ref = TypeReference(&component_type->GetDexFile(), component_type->GetDexTypeIndex());
+    }
+    if (can_include_in_image) {
+      image_classes_->Add(type_ref, array_dim);  // Does nothing if already present.
+    } else {
+      if (VLOG_IS_ON(compiler) && image_classes_->Contains(type_ref, /*array_dim=*/ 0u)) {
+        std::string temp;
+        LOG(INFO) << "Removing " << (resolved ? "unsuitable" : "unresolved")
+            << " class from image classes: " << component_type->GetDescriptor(&temp);
+      }
+      image_classes_->Remove(type_ref);  // Does nothing if not present.
     }
     return true;
   }
 
  private:
-  HashSet<std::string>* const image_classes_;
+  ImageClassMap* const image_classes_;
 };
 
 // Verify that classes which contain intrinsics methods are in the list of image classes.
-static void VerifyClassesContainingIntrinsicsAreImageClasses(HashSet<std::string>* image_classes) {
+static void VerifyClassesContainingIntrinsicsAreImageClasses(ImageClassMap* image_classes) {
+  Thread* self = Thread::Current();
+  ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
+  ScopedObjectAccess soa(self);
 #define CHECK_INTRINSIC_OWNER_CLASS(_, __, ___, ____, _____, ClassName, ______, _______) \
-  CHECK(image_classes->find(std::string_view(ClassName)) != image_classes->end());
+  {                                                                                      \
+    ObjPtr<mirror::Class> klass =                                                        \
+        class_linker->LookupClass(self, ClassName, /*class_loader=*/ nullptr);           \
+    CHECK(klass != nullptr);                                                             \
+    TypeReference type_ref(&klass->GetDexFile(), klass->GetDexTypeIndex());              \
+    CHECK(image_classes->Contains(type_ref, /*array_dim=*/ 0u));                         \
+  }
 
   ART_INTRINSICS_LIST(CHECK_INTRINSIC_OWNER_CLASS)
 #undef CHECK_INTRINSIC_OWNER_CLASS
@@ -1261,24 +1273,27 @@ static void VerifyClassesContainingIntrinsicsAreImageClasses(HashSet<std::string
 
 // We need to put classes required by app class loaders to the boot image,
 // otherwise we would not be able to store app class loaders in app images.
-static void AddClassLoaderClasses(/* out */ HashSet<std::string>* image_classes) {
+static void AddClassLoaderClasses(/* out */ ImageClassMap* image_classes) {
   ScopedObjectAccess soa(Thread::Current());
   // Well known classes have been loaded and shall be added to image classes
   // by the `RecordImageClassesVisitor`. However, there are fields with array
   // types which we need to add to the image classes explicitly.
-  ArtField* class_loader_array_fields[] = {
-      WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoaders,
+  std::pair<ArtField*, ObjPtr<mirror::Class>> class_loader_array_fields[] = {
+      { WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoaders,
+        WellKnownClasses::java_lang_ClassLoader.Get() },
       // BaseDexClassLoader.sharedLibraryLoadersAfter has the same array type as above.
-      WellKnownClasses::dalvik_system_DexPathList_dexElements,
+      { WellKnownClasses::dalvik_system_DexPathList_dexElements,
+        WellKnownClasses::dalvik_system_DexPathList__Element.Get() },
   };
-  for (ArtField* field : class_loader_array_fields) {
-    const char* field_type_descriptor = field->GetTypeDescriptor();
-    DCHECK_EQ(field_type_descriptor[0], '[');
-    image_classes->insert(field_type_descriptor);
+  for (auto [array_field, component_type] : class_loader_array_fields) {
+    DCHECK(array_field->GetTypeDescriptorView().starts_with('['));
+    DCHECK_EQ(array_field->GetTypeDescriptorView().substr(1u), component_type->GetDescriptorView());
+    TypeReference type_ref(&component_type->GetDexFile(), component_type->GetDexTypeIndex());
+    image_classes->Add(type_ref, /*array_dim=*/ 1u);
   }
 }
 
-static void VerifyClassLoaderClassesAreImageClasses(/* out */ HashSet<std::string>* image_classes) {
+static void VerifyClassLoaderClassesAreImageClasses(/* out */ ImageClassMap* image_classes) {
   ScopedObjectAccess soa(Thread::Current());
   ScopedAssertNoThreadSuspension sants(__FUNCTION__);
   ObjPtr<mirror::Class> class_loader_classes[] = {
@@ -1294,30 +1309,42 @@ static void VerifyClassLoaderClassesAreImageClasses(/* out */ HashSet<std::strin
       WellKnownClasses::java_lang_ClassLoader.Get(),
   };
   for (ObjPtr<mirror::Class> klass : class_loader_classes) {
-    std::string temp;
-    std::string_view descriptor = klass->GetDescriptor(&temp);
-    CHECK(image_classes->find(descriptor) != image_classes->end());
+    TypeReference type_ref(&klass->GetDexFile(), klass->GetDexTypeIndex());
+    CHECK(image_classes->Contains(type_ref, /*array_dim=*/ 0u));
   }
-  ArtField* class_loader_fields[] = {
-      WellKnownClasses::dalvik_system_BaseDexClassLoader_pathList,
-      WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoaders,
-      WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoadersAfter,
-      WellKnownClasses::dalvik_system_DexFile_cookie,
-      WellKnownClasses::dalvik_system_DexFile_fileName,
-      WellKnownClasses::dalvik_system_DexPathList_dexElements,
-      WellKnownClasses::dalvik_system_DexPathList__Element_dexFile,
-      WellKnownClasses::java_lang_ClassLoader_parent,
+  std::pair<ArtField*, ObjPtr<mirror::Class>> class_loader_fields[] = {
+      { WellKnownClasses::dalvik_system_BaseDexClassLoader_pathList,
+        WellKnownClasses::dalvik_system_DexPathList.Get() },
+      { WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoaders,
+        WellKnownClasses::java_lang_ClassLoader.Get() },
+      { WellKnownClasses::dalvik_system_BaseDexClassLoader_sharedLibraryLoadersAfter,
+        WellKnownClasses::java_lang_ClassLoader.Get() },
+      { WellKnownClasses::dalvik_system_DexFile_cookie,
+        GetClassRoot<mirror::Object>() },
+      { WellKnownClasses::dalvik_system_DexFile_fileName,
+        GetClassRoot<mirror::String>() },
+      { WellKnownClasses::dalvik_system_DexPathList_dexElements,
+        WellKnownClasses::dalvik_system_DexPathList__Element.Get() },
+      { WellKnownClasses::dalvik_system_DexPathList__Element_dexFile,
+        WellKnownClasses::dalvik_system_DexFile.Get() },
+      { WellKnownClasses::java_lang_ClassLoader_parent,
+        WellKnownClasses::java_lang_ClassLoader.Get() },
   };
-  for (ArtField* field : class_loader_fields) {
+  for (auto [field, component_type] : class_loader_fields) {
     std::string_view field_type_descriptor = field->GetTypeDescriptor();
-    CHECK(image_classes->find(field_type_descriptor) != image_classes->end());
+    size_t array_dim = field_type_descriptor.find_first_not_of('[');
+    CHECK_NE(array_dim, std::string_view::npos);
+    field_type_descriptor.remove_prefix(array_dim);
+    CHECK_EQ(field_type_descriptor, component_type->GetDescriptorView());
+    TypeReference type_ref(&component_type->GetDexFile(), component_type->GetDexTypeIndex());
+    CHECK(image_classes->Contains(type_ref, array_dim));
   }
 }
 
 // Make a list of descriptors for classes to include in the image
 void CompilerDriver::LoadImageClasses(TimingLogger* timings,
                                       jobject class_loader,
-                                      /*inout*/ HashSet<std::string>* image_classes) {
+                                      /*inout*/ ImageClassMap* image_classes) {
   CHECK(timings != nullptr);
   if (!GetCompilerOptions().IsGeneratingImage()) {
     return;
@@ -1339,17 +1366,36 @@ void CompilerDriver::LoadImageClasses(TimingLogger* timings,
   Handle<mirror::ClassLoader> loader = hs.NewHandle(soa.Decode<mirror::ClassLoader>(class_loader));
   ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
   CHECK(image_classes != nullptr);
-  for (auto it = image_classes->begin(), end = image_classes->end(); it != end;) {
-    const std::string& descriptor(*it);
+  std::vector<TypeReference> to_remove;
+  // NO_THREAD_SAFETY_ANALYSIS: `ImageClassMap::ForEach<>()` does not propagate locking info.
+  image_classes->ForEach([&](TypeReference type_ref, size_t array_dim) NO_THREAD_SAFETY_ANALYSIS {
+    uint32_t utf16_length;
+    const char* descriptor = type_ref.dex_file->GetStringDataAndUtf16Length(
+        type_ref.dex_file->GetTypeId(type_ref.TypeIndex()).descriptor_idx_, &utf16_length);
+    size_t descriptor_length = DexFile::Utf8Length(descriptor, utf16_length);
     ObjPtr<mirror::Class> klass =
-        class_linker->FindClass(self, descriptor.c_str(), descriptor.length(), loader);
+        class_linker->FindClass(self, descriptor, descriptor_length, loader);
     if (klass == nullptr) {
       VLOG(compiler) << "Failed to find class " << descriptor;
-      it = image_classes->erase(it);  // May cause some descriptors to be revisited.
       self->ClearException();
-    } else {
-      ++it;
+      to_remove.push_back(type_ref);  // May cause some descriptors to be revisited.
+    } else if (array_dim != 0u) {
+      std::string array_descriptor(array_dim, '[');
+      array_descriptor.append(descriptor, descriptor_length);
+      ObjPtr<mirror::Class> array_class = class_linker->FindClass(
+          self, array_descriptor.c_str(), array_descriptor.length(), loader);
+      if (UNLIKELY(array_class == nullptr)) {
+        // Element class has been resolved but we run out of memory for the array class.
+        // If we later find the memory to allocate the array class, it can still make it
+        // to the image.
+        // TODO: Should we abort `dex2oat` for OOME?
+        LOG(ERROR) << "Out of memory while allocating array class " << array_descriptor;
+        self->ClearException();
+      }
     }
+  });
+  for (TypeReference type_ref : to_remove) {
+    image_classes->Remove(type_ref);
   }
 
   // Resolve exception classes referenced by the loaded classes. The catch logic assumes
@@ -1376,7 +1422,7 @@ void CompilerDriver::LoadImageClasses(TimingLogger* timings,
 
 static void MaybeAddToImageClasses(Thread* self,
                                    ObjPtr<mirror::Class> klass,
-                                   HashSet<std::string>* image_classes)
+                                   ImageClassMap* image_classes)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   DCHECK_EQ(self, Thread::Current());
   DCHECK(klass->IsResolved());
@@ -1387,15 +1433,33 @@ static void MaybeAddToImageClasses(Thread* self,
     // in the boot image we're compiling against.
     return;
   }
+  size_t array_dim;
+  std::tie(klass, array_dim) = klass->GetInnermostComponentTypeAndArrayDim();
+  if (klass->IsPrimitive()) {
+    // Primitive classes are attributed to the first boot class path dex file.
+    const DexFile* dex_file = Runtime::Current()->GetClassLinker()->GetBootClassPath().front();
+    const dex::TypeId* type_id = dex_file->FindTypeId(klass->GetPrimitiveDescriptorView());
+    CHECK(type_id != nullptr);
+    TypeReference type_ref(dex_file, dex_file->GetIndexForTypeId(*type_id));
+    image_classes->Add(type_ref, array_dim);  // Does nothing if already present.
+    // No superclasses, interfaces or copied methods' classes to add.
+    // Lower dimensions are implicitly added above.
+    return;
+  }
   const PointerSize pointer_size = runtime->GetClassLinker()->GetImagePointerSize();
-  std::string temp;
   while (!klass->IsObjectClass()) {
-    const char* descriptor = klass->GetDescriptor(&temp);
-    if (image_classes->find(std::string_view(descriptor)) != image_classes->end()) {
+    TypeReference type_ref(&klass->GetDexFile(), klass->GetDexTypeIndex());
+    if (image_classes->Contains(type_ref, array_dim)) {
       break;  // Previously inserted.
     }
-    image_classes->insert(descriptor);
-    VLOG(compiler) << "Adding " << descriptor << " to image classes";
+    bool contains_component_type =
+        (array_dim != 0u) && image_classes->Contains(type_ref, /*array_dim=*/ 0u);
+    image_classes->Add(type_ref, array_dim);
+    if (contains_component_type) {
+      break;
+    }
+    VLOG(compiler) << "Added " << type_ref.dex_file->GetTypeDescriptorView(type_ref.TypeIndex())
+                   << " to image classes";
     for (size_t i = 0, num_interfaces = klass->NumDirectInterfaces(); i != num_interfaces; ++i) {
       ObjPtr<mirror::Class> interface = klass->GetDirectInterface(i);
       DCHECK(interface != nullptr);
@@ -1404,10 +1468,12 @@ static void MaybeAddToImageClasses(Thread* self,
     for (auto& m : klass->GetCopiedMethods(pointer_size)) {
       MaybeAddToImageClasses(self, m.GetDeclaringClass(), image_classes);
     }
-    if (klass->IsArrayClass()) {
-      MaybeAddToImageClasses(self, klass->GetComponentType(), image_classes);
-    }
     klass = klass->GetSuperClass();
+    array_dim = 0u;
+  }
+  if (klass->IsObjectClass() && array_dim > 0) {
+    TypeReference type_ref(&klass->GetDexFile(), klass->GetDexTypeIndex());
+    image_classes->Add(type_ref, array_dim);
   }
 }
 
@@ -1415,12 +1481,12 @@ static void MaybeAddToImageClasses(Thread* self,
 // Note: we can use object pointers because we suspend all threads.
 class ClinitImageUpdate {
  public:
-  ClinitImageUpdate(HashSet<std::string>* image_class_descriptors,
+  ClinitImageUpdate(ImageClassMap* image_classes,
                     Thread* self) REQUIRES_SHARED(Locks::mutator_lock_)
       : hs_(self),
-        image_class_descriptors_(image_class_descriptors),
+        image_classes_(image_classes),
         self_(self) {
-    CHECK(image_class_descriptors != nullptr);
+    CHECK(image_classes != nullptr);
 
     // Make sure nobody interferes with us.
     old_cause_ = self->StartAssertNoThreadSuspension("Boot image closure");
@@ -1457,12 +1523,12 @@ class ClinitImageUpdate {
     Runtime::Current()->GetClassLinker()->VisitClasses(&visitor);
 
     // Use the initial classes as roots for a search.
-    for (Handle<mirror::Class> klass_root : image_classes_) {
+    for (Handle<mirror::Class> klass_root : image_class_handles_) {
       VisitClinitClassesObject(klass_root.Get());
     }
     ScopedAssertNoThreadSuspension ants(__FUNCTION__);
     for (Handle<mirror::Class> h_klass : to_insert_) {
-      MaybeAddToImageClasses(self_, h_klass.Get(), image_class_descriptors_);
+      MaybeAddToImageClasses(self_, h_klass.Get(), image_classes_);
     }
   }
 
@@ -1477,16 +1543,35 @@ class ClinitImageUpdate {
       DCHECK(resolved || klass->IsErroneousUnresolved());
       bool can_include_in_image =
           LIKELY(resolved) && LIKELY(!klass->IsErroneous()) && CanIncludeInCurrentImage(klass);
-      std::string temp;
-      std::string_view descriptor(klass->GetDescriptor(&temp));
-      auto it = data_->image_class_descriptors_->find(descriptor);
-      if (it != data_->image_class_descriptors_->end()) {
+      auto [component_type, array_dim] =
+          klass->GetInnermostComponentTypeAndArrayDim<kDefaultVerifyFlags, kWithoutReadBarrier>();
+      DCHECK_EQ(
+          can_include_in_image,
+          resolved && !component_type->IsErroneous() && CanIncludeInCurrentImage(component_type));
+      TypeReference type_ref(nullptr, dex::TypeIndex(DexFile::kDexNoIndex16));
+      if (component_type->IsPrimitive()) {
+        // Primitive classes are attributed to the first boot class path dex file.
+        const DexFile* dex_file = Runtime::Current()->GetClassLinker()->GetBootClassPath().front();
+        std::string_view descriptor = component_type->GetPrimitiveDescriptorView();
+        // Use descriptor-based lookup to try and avoid searching for the `TypeId` in the dex file.
+        if (can_include_in_image ==
+            data_->image_classes_->Contains(dex_file, descriptor, array_dim)) {
+          return true;
+        }
+        const dex::TypeId* type_id = dex_file->FindTypeId(descriptor);
+        CHECK(type_id != nullptr);
+        type_ref = TypeReference(dex_file, dex_file->GetIndexForTypeId(*type_id));
+      } else {
+        type_ref = TypeReference(&component_type->GetDexFile(), component_type->GetDexTypeIndex());
+      }
+      if (data_->image_classes_->Contains(type_ref, array_dim)) {
         if (can_include_in_image) {
-          data_->image_classes_.push_back(data_->hs_.NewHandle(klass));
+          data_->image_class_handles_.push_back(data_->hs_.NewHandle(klass));
         } else {
           VLOG(compiler) << "Removing " << (resolved ? "unsuitable" : "unresolved")
-              << " class from image classes: " << descriptor;
-          data_->image_class_descriptors_->erase(it);
+              << " class from image classes: "
+              << type_ref.dex_file->GetTypeDescriptorView(type_ref.TypeIndex());
+          data_->image_classes_->Remove(type_ref);
         }
       } else if (can_include_in_image) {
         // Check whether the class is initialized and has a clinit or static fields.
@@ -1496,7 +1581,7 @@ class ClinitImageUpdate {
           if (klass->FindClassInitializer(pointer_size) != nullptr || klass->HasStaticFields()) {
             DCHECK(!Runtime::Current()->GetHeap()->ObjectIsInBootImageSpace(klass->GetDexCache()))
                 << klass->PrettyDescriptor();
-            data_->image_classes_.push_back(data_->hs_.NewHandle(klass));
+            data_->image_class_handles_.push_back(data_->hs_.NewHandle(klass));
           }
         }
       }
@@ -1536,8 +1621,8 @@ class ClinitImageUpdate {
   mutable VariableSizedHandleScope hs_;
   mutable std::vector<Handle<mirror::Class>> to_insert_;
   mutable HashSet<mirror::Object*> marked_objects_;
-  HashSet<std::string>* const image_class_descriptors_;
-  std::vector<Handle<mirror::Class>> image_classes_;
+  ImageClassMap* const image_classes_;
+  std::vector<Handle<mirror::Class>> image_class_handles_;
   Thread* const self_;
   const char* old_cause_;
 
@@ -1545,7 +1630,7 @@ class ClinitImageUpdate {
 };
 
 void CompilerDriver::UpdateImageClasses(TimingLogger* timings,
-                                        /*inout*/ HashSet<std::string>* image_classes) {
+                                        /*inout*/ ImageClassMap* image_classes) {
   DCHECK(GetCompilerOptions().IsGeneratingImage());
   TimingLogger::ScopedTiming t("UpdateImageClasses", timings);
 
@@ -1556,66 +1641,6 @@ void CompilerDriver::UpdateImageClasses(TimingLogger* timings,
 
   // Do the marking.
   update.Walk();
-}
-
-void CompilerDriver::ProcessedInstanceField(bool resolved) {
-  if (!resolved) {
-    stats_->UnresolvedInstanceField();
-  } else {
-    stats_->ResolvedInstanceField();
-  }
-}
-
-void CompilerDriver::ProcessedStaticField(bool resolved, bool local) {
-  if (!resolved) {
-    stats_->UnresolvedStaticField();
-  } else if (local) {
-    stats_->ResolvedLocalStaticField();
-  } else {
-    stats_->ResolvedStaticField();
-  }
-}
-
-ArtField* CompilerDriver::ComputeInstanceFieldInfo(uint32_t field_idx,
-                                                   const DexCompilationUnit* mUnit,
-                                                   bool is_put,
-                                                   const ScopedObjectAccess& soa) {
-  // Try to resolve the field and compiling method's class.
-  ArtField* resolved_field;
-  ObjPtr<mirror::Class> referrer_class;
-  Handle<mirror::DexCache> dex_cache(mUnit->GetDexCache());
-  {
-    Handle<mirror::ClassLoader> class_loader = mUnit->GetClassLoader();
-    resolved_field = ResolveField(soa, dex_cache, class_loader, field_idx, /* is_static= */ false);
-    referrer_class = resolved_field != nullptr
-        ? ResolveCompilingMethodsClass(soa, dex_cache, class_loader, mUnit) : nullptr;
-  }
-  bool can_link = false;
-  if (resolved_field != nullptr && referrer_class != nullptr) {
-    std::pair<bool, bool> fast_path = IsFastInstanceField(
-        dex_cache.Get(), referrer_class, resolved_field, field_idx);
-    can_link = is_put ? fast_path.second : fast_path.first;
-  }
-  ProcessedInstanceField(can_link);
-  return can_link ? resolved_field : nullptr;
-}
-
-bool CompilerDriver::ComputeInstanceFieldInfo(uint32_t field_idx, const DexCompilationUnit* mUnit,
-                                              bool is_put, MemberOffset* field_offset,
-                                              bool* is_volatile) {
-  ScopedObjectAccess soa(Thread::Current());
-  ArtField* resolved_field = ComputeInstanceFieldInfo(field_idx, mUnit, is_put, soa);
-
-  if (resolved_field == nullptr) {
-    // Conservative defaults.
-    *is_volatile = true;
-    *field_offset = MemberOffset(static_cast<size_t>(-1));
-    return false;
-  } else {
-    *is_volatile = resolved_field->IsVolatile();
-    *field_offset = resolved_field->GetOffset();
-    return true;
-  }
 }
 
 class CompilationVisitor {
@@ -1964,7 +1989,8 @@ bool CompilerDriver::FastVerify(jobject jclass_loader,
       } else {
         if (is_generating_image &&
             status == ClassStatus::kVerifiedNeedsAccessChecks &&
-            GetCompilerOptions().IsImageClass(accessor.GetDescriptor())) {
+            GetCompilerOptions().IsImageClass(TypeReference(dex_file, accessor.GetClassIdx()),
+                                              /*array_dim=*/ 0u)) {
           // If the class will be in the image, we can rely on the ArtMethods
           // telling that they need access checks.
           VLOG(compiler) << "Promoting "
@@ -2376,7 +2402,8 @@ class InitializeClassVisitor : public CompilationVisitor {
         if (!klass->IsInitialized() &&
             (is_app_image || is_boot_image || is_boot_image_extension) &&
             try_initialize_with_superclasses && !too_many_encoded_fields &&
-            compiler_options.IsImageClass(descriptor) &&
+            compiler_options.IsImageClass(TypeReference(&dex_file, class_def->class_idx_),
+                                          /*array_dim=*/ 0u) &&
             // TODO(b/274077782): remove this test.
             (have_profile || !is_boot_image_extension)) {
           bool can_init_static_fields = false;
@@ -2503,9 +2530,8 @@ class InitializeClassVisitor : public CompilationVisitor {
       self->GetJniEnv()->AssertLocalsEmpty();
     }
 
-    if (!klass->IsInitialized() &&
-        (is_boot_image || is_boot_image_extension) &&
-        !compiler_options.IsPreloadedClass(PrettyDescriptor(descriptor))) {
+    if (!klass->IsInitialized() && (is_boot_image || is_boot_image_extension) &&
+        compiler_options.IsNoPreloadClass(klass)) {
       klass->SetInBootImageAndNotInPreloadedClasses();
     }
 

@@ -17,10 +17,10 @@
 import java.lang.reflect.Method;
 
 public class Main {
-  public static void main(String[] args) throws Exception {
-    Class<?> c = Class.forName("BogusInterface");
-  }
+    public static void main(String[] args) throws Exception {
+        Class<?> c = Class.forName("BogusInterface");
+    }
 
-  public static void method() {
-  }
+    public static void method() {
+    }
 }

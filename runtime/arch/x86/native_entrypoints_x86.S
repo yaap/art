@@ -85,3 +85,8 @@ DEFINE_FUNCTION art_jni_dlsym_lookup_stub
 .Lno_native_code_found:
     ret
 END_FUNCTION art_jni_dlsym_lookup_stub
+
+DEFINE_FUNCTION art_quick_generic_jni_trampoline_simulator
+    // Simulator is supported only on x86_64 hosts.
+    UNREACHABLE
+END_FUNCTION art_quick_generic_jni_trampoline_simulator

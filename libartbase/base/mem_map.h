@@ -435,6 +435,10 @@ class MemMap {
                                const MemMap& reservation,
                                /*out*/std::string* error_msg);
 
+  // Formats the requested debug name into a variant suitable for the current
+  // environment, e.g., narrowing to system limits.
+  static std::string FormatDebugName(const char* name);
+
   std::string name_;
   uint8_t* begin_ = nullptr;    // Start of data. May be changed by AlignBy.
   size_t size_ = 0u;            // Length of data.
@@ -475,6 +479,7 @@ class MemMap {
 #endif
 
   friend class MemMapTest;  // To allow access to base_begin_ and base_size_.
+  ART_FRIEND_TEST(MemMapTest, FormatDebugName);
 };
 
 inline void swap(MemMap& lhs, MemMap& rhs) {

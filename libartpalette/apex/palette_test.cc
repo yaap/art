@@ -56,10 +56,11 @@ bool PaletteSetTaskProfilesIsSupported(palette_status_t res) {
 bool PaletteDebugStoreIsSupported() { return android::modules::sdklevel::IsAtLeastB(); }
 
 bool PaletteMapPriorityIsSupported() {
-  // TODO: Switch to android::modules::sdklevel::IsAtLeastC
+  if (android::modules::sdklevel::IsAtLeastC()) {
+    return true;
+  }
   int dummy_result;
-  return android_get_device_api_level() >= 37 ||
-         PaletteMapPriority(6, &dummy_result) != PALETTE_STATUS_NOT_SUPPORTED;
+  return PaletteMapPriority(6, &dummy_result) != PALETTE_STATUS_NOT_SUPPORTED;
 }
 
 #else  // !ART_TARGET_ANDROID

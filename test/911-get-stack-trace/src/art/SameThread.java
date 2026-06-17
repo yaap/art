@@ -17,20 +17,20 @@
 package art;
 
 public class SameThread {
-  public static void doTest() throws Exception {
-    System.out.println("###################");
-    System.out.println("### Same thread ###");
-    System.out.println("###################");
-    System.out.println("From top");
-    Recurse.foo(4, 0, 25, null);
-    Recurse.foo(4, 1, 25, null);
-    Recurse.foo(4, 0, 5, null);
-    Recurse.foo(4, 2, 5, null);
-    Recurse.foo(4, 2, 1, null);
+    public static void doTest() throws Exception {
+        System.out.println("###################");
+        System.out.println("### Same thread ###");
+        System.out.println("###################");
+        System.out.println("From top");
+        Recurse.foo(4, 0, 25, null);
+        Recurse.foo(4, 1, 25, null);
+        Recurse.foo(4, 0, 5, null);
+        Recurse.foo(4, 2, 5, null);
+        Recurse.foo(4, 2, 1, null);
 
-    System.out.println("From bottom");
-    Recurse.foo(4, -1, 25, null);
-    Recurse.foo(4, -5, 5, null);
-    Recurse.foo(4, -7, 5, null);
-  }
+        System.out.println("From bottom");
+        Recurse.foo(4, -1, 25, null);
+        Recurse.foo(4, -5, 5, null);
+        Recurse.foo(4, -7, 5, null);
+    }
 }

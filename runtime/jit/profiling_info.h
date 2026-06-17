@@ -20,10 +20,10 @@
 #include <vector>
 
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "base/value_object.h"
 #include "gc_root.h"
 #include "interpreter/mterp/nterp.h"
-#include "offsets.h"
 
 namespace art HIDDEN {
 

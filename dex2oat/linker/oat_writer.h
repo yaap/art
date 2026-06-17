@@ -251,6 +251,10 @@ class OatWriter {
     return bss_roots_offset_;
   }
 
+  size_t GetBssStringsOffset() const {
+    return bss_strings_offset_;
+  }
+
   size_t GetVdexSize() const {
     return vdex_size_;
   }
@@ -372,8 +376,10 @@ class OatWriter {
   bool RecordOatDataOffset(OutputStream* out);
   void InitializeTypeLookupTables(
       const std::vector<std::unique_ptr<const DexFile>>& opened_dex_files);
-  bool WriteDexLayoutSections(OutputStream* oat_rodata,
-                              const std::vector<const DexFile*>& opened_dex_files);
+  void InitializeDexProfileMetadata(
+      const std::vector<std::unique_ptr<const DexFile>>& opened_dex_files);
+  bool WriteDexProfileMetadata(OutputStream* oat_rodata,
+                               const std::vector<const DexFile*>& opened_dex_files);
   bool WriteCodeAlignment(OutputStream* out, uint32_t aligned_code_delta);
   bool WriteUpTo16BytesAlignment(OutputStream* out, uint32_t size, uint32_t* stat);
   void SetMultiOatRelativePatcherAdjustment();
@@ -481,6 +487,9 @@ class OatWriter {
   // The offset of the GC roots in .bss section.
   size_t bss_roots_offset_;
 
+  // The offset of the strings in .bss section.
+  size_t bss_strings_offset_;
+
   // OatFile's information regarding the bss metadata for BCP DexFiles. Empty for boot image
   // compiles.
   std::vector<BssMappingInfo> bcp_bss_info_;
@@ -501,33 +510,40 @@ class OatWriter {
   // Map for recording references to package GcRoot<mirror::Class> entries in .bss.
   SafeMap<const DexFile*, BitVector> bss_package_type_entry_references_;
 
-  // Map for recording references to GcRoot<mirror::String> entries in .bss.
-  SafeMap<const DexFile*, BitVector> bss_string_entry_references_;
-
   // Map for recording references to GcRoot<mirror::MethodType> entries in .bss.
   SafeMap<const DexFile*, BitVector> bss_method_type_entry_references_;
 
+  // Map for recording references to GcRoot<mirror::String> entries in .bss.
+  SafeMap<const DexFile*, BitVector> bss_string_entry_references_;
+
   // Map for allocating app image ArtMethod entries in .data.img.rel.ro. Indexed by MethodReference
-  // for the target method in the dex file with the "method reference value comparator" for
-  // deduplication. The value is the target offset for patching, starting at
-  // `data_img_rel_ro_start_`.
+  // for the target method in the dex file. The value is the target offset for patching, starting
+  // at `data_img_rel_ro_start_`.
   BssMap<MethodReference> app_image_rel_ro_method_entries_;
   // Vector containing iterators to `app_image_rel_ro_method_entries_`, sorted using
   // MethodReferenceValueComparator.
   std::vector<BssMap<MethodReference>::iterator> app_image_rel_ro_method_entries_sorted_;
 
+  // Map for allocating app image Class entries in .data.img.rel.ro. Indexed by TypeReference for
+  // the source type in the dex file. The value is the target offset for patching, starting at
+  // `data_img_rel_ro_start_`.
+  BssMap<TypeReference> app_image_rel_ro_type_entries_;
+  // Vector containing iterators to `app_image_rel_ro_type_entries_`, sorted using
+  // TypeReferenceValueComparator.
+  std::vector<BssMap<TypeReference>::iterator> app_image_rel_ro_type_entries_sorted_;
+
+  // Map for allocating app image String entries in .data.img.rel.ro. Indexed by StringReference
+  // for the source string in the dex file. The value is the target offset for patching, starting
+  // at `data_img_rel_ro_start_`.
+  BssMap<StringReference> app_image_rel_ro_string_entries_;
+  // Vector containing iterators to `app_image_rel_ro_string_entries_`, sorted using
+  // StringReferenceValueComparator.
+  std::vector<BssMap<StringReference>::iterator> app_image_rel_ro_string_entries_sorted_;
+
   // Map for allocating ArtMethod entries in .bss. Indexed by MethodReference for the target
   // method in the dex file with the "method reference value comparator" for deduplication.
   // The value is the target offset for patching, starting at `bss_start_ + bss_methods_offset_`.
   BssMap<MethodReference> bss_method_entries_;
-
-  // Map for allocating app image Class entries in .data.img.rel.ro. Indexed by TypeReference for
-  // the source type in the dex file with the "type value comparator" for deduplication. The value
-  // is the target offset for patching, starting at `data_img_rel_ro_start_`.
-  BssMap<TypeReference> app_image_rel_ro_type_entries_;
-  // Vector containing iterators to `app_image_rel_ro_type_entries_sorted_`, sorted using
-  // TypeReferenceValueComparator.
-  std::vector<BssMap<TypeReference>::iterator> app_image_rel_ro_type_entries_sorted_;
 
   // Map for allocating Class entries in .bss. Indexed by TypeReference for the source
   // type in the dex file with the "type value comparator" for deduplication. The value
@@ -544,15 +560,15 @@ class OatWriter {
   // is the target offset for patching, starting at `bss_start_ + bss_roots_offset_`.
   BssMap<TypeReference> bss_package_type_entries_;
 
-  // Map for allocating String entries in .bss. Indexed by StringReference for the source
-  // string in the dex file with the "string value comparator" for deduplication. The value
-  // is the target offset for patching, starting at `bss_start_ + bss_roots_offset_`.
-  BssMap<StringReference> bss_string_entries_;
-
   // Map for allocating MethodType entries in .bss. Indexed by ProtoReference for the source
   // proto in the dex file with the "proto value comparator" for deduplication. The value
   // is the target offset for patching, starting at `bss_start_ + bss_roots_offset_`.
   BssMap<ProtoReference> bss_method_type_entries_;
+
+  // Map for allocating String entries in .bss. Indexed by StringReference for the source
+  // string in the dex file with the "string value comparator" for deduplication. The value
+  // is the target offset for patching, starting at `bss_start_ + bss_roots_offset_`.
+  BssMap<StringReference> bss_string_entries_;
 
   // Offset of the oat data from the start of the mmapped region of the elf file.
   size_t oat_data_offset_;
@@ -612,9 +628,9 @@ class OatWriter {
   uint32_t size_oat_dex_file_offset_ = 0;
   uint32_t size_oat_dex_file_class_offsets_offset_ = 0;
   uint32_t size_oat_dex_file_lookup_table_offset_ = 0;
-  uint32_t size_oat_dex_file_dex_layout_sections_offset_ = 0;
-  uint32_t size_oat_dex_file_dex_layout_sections_ = 0;
-  uint32_t size_oat_dex_file_dex_layout_sections_alignment_ = 0;
+  uint32_t size_oat_dex_file_dex_profile_metadata_offset_ = 0;
+  uint32_t size_oat_dex_file_dex_profile_metadata_ = 0;
+  uint32_t size_oat_dex_file_dex_profile_metadata_alignment_ = 0;
   uint32_t size_oat_dex_file_method_bss_mapping_offset_ = 0;
   uint32_t size_oat_dex_file_type_bss_mapping_offset_ = 0;
   uint32_t size_oat_dex_file_public_type_bss_mapping_offset_ = 0;

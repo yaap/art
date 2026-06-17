@@ -27,10 +27,6 @@ TEST(AconfigFlagsTest, TestFlag) { EXPECT_TRUE(com::android::art::flags::test())
 
 TEST(AconfigFlagsTest, TestLibcoreVApisFlag) { EXPECT_TRUE(com::android::libcore::v_apis()); }
 
-TEST(AconfigFlagsTest, TestRwFlag) {
-  // EXPECT_TRUE when this flag is fully ramped.
-  // EXPECT_TRUE(is_test_rw_flag_enabled());
-  is_test_rw_flag_enabled();
-}
+TEST(AconfigFlagsTest, TestRwFlag) { EXPECT_TRUE(is_test_rw_flag_enabled()); }
 
 }  // namespace art

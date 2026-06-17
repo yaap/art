@@ -119,7 +119,7 @@ void CodeInfo::DecodeDexRegisterMap(uint32_t stack_map_index,
     if (mask_index == StackMap::kNoValue) {
       continue;  // Nothing changed at this stack map.
     }
-    BitMemoryRegion mask = dex_register_masks_.GetBitMemoryRegion(mask_index);
+    BitMemoryRegion mask = dex_register_masks_.GetBitMemoryRegion</*kColumn=*/0>(mask_index);
     if (mask.size_in_bits() <= first_dex_register) {
       continue;  // Nothing changed after the first register we are interested in.
     }
@@ -142,7 +142,8 @@ void CodeInfo::DecodeDexRegisterMap(uint32_t stack_map_index,
       while (bits != 0) {
         uint32_t bit = CTZ(bits);
         if (regs[reg + bit].GetKind() == DexRegisterLocation::Kind::kInvalid) {
-          regs[reg + bit] = GetDexRegisterCatalogEntry(dex_register_maps_.Get(map_index));
+          regs[reg + bit] =
+              GetDexRegisterCatalogEntry(dex_register_maps_.Get</*kColumn=*/0>(map_index));
           remaining_registers--;
         }
         map_index++;
@@ -174,12 +175,14 @@ void CodeInfo::CollectSizeStats(const uint8_t* code_info_data, /*out*/ Stats& st
       table_stats.AddBits(region.size_in_bits());
       table_stats["Header"].AddBits(region.size_in_bits() - table->DataBitSize());
       const char* const* column_names = table->GetColumnNames();
-      for (size_t c = 0; c < table->NumColumns(); c++) {
-        if (table->NumColumnBits(c) > 0) {
+      table->ForEachColumnIndex([&](auto c_const) {
+        constexpr size_t c = c_const;
+        if (table->template NumColumnBits<c>() > 0) {
           Stats& column_stats = table_stats[column_names[c]];
-          column_stats.AddBits(table->NumRows() * table->NumColumnBits(c), table->NumRows());
+          column_stats.AddBits(table->NumRows() * table->template NumColumnBits<c>(),
+                               table->NumRows());
         }
-      }
+      });
     }
   });
   stats.AddBytes(BitsToBytesRoundUp(num_bits));
@@ -216,27 +219,30 @@ void CodeInfo::Dump(VariableIndentationOutputStream* vios,
       vios->Stream() << table.GetName() << " BitSize=" << table.DataBitSize();
       vios->Stream() << " Rows=" << table.NumRows() << " Bits={";
       const char* const* column_names = table.GetColumnNames();
-      for (size_t c = 0; c < table.NumColumns(); c++) {
+      table.ForEachColumnIndex([&](auto c_const) {
+        constexpr size_t c = c_const;
         vios->Stream() << (c != 0 ? " " : "");
-        vios->Stream() << column_names[c] << "=" << table.NumColumnBits(c);
-      }
+        vios->Stream() << column_names[c] << "=" << table.template NumColumnBits<c>();
+      });
       vios->Stream() << "}\n";
       if (verbose) {
         ScopedIndentation indent1(vios);
         for (size_t r = 0; r < table.NumRows(); r++) {
           vios->Stream() << "[" << std::right << std::setw(3) << r << "]={";
-          for (size_t c = 0; c < table.NumColumns(); c++) {
+          table.ForEachColumnIndex([&](auto c_const) {
+            constexpr size_t c = c_const;
             vios->Stream() << (c != 0 ? " " : "");
             if (&table == static_cast<const void*>(&stack_masks_) ||
                 &table == static_cast<const void*>(&dex_register_masks_)) {
-              BitMemoryRegion bits = table.GetBitMemoryRegion(r, c);
+              BitMemoryRegion bits = table.template GetBitMemoryRegion<c>(r);
               for (size_t b = 0, e = bits.size_in_bits(); b < e; b++) {
                 vios->Stream() << bits.LoadBit(e - b - 1);
               }
             } else {
-              vios->Stream() << std::right << std::setw(8) << static_cast<int32_t>(table.Get(r, c));
+              vios->Stream() << std::right << std::setw(8)
+                             << static_cast<int32_t>(table.template Get<c>(r));
             }
-          }
+          });
           vios->Stream() << "}\n";
         }
       }

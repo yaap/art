@@ -18,6 +18,8 @@
 #include "base/macros.h"
 #include "nodes.h"
 #include "optimizing_unit_test.h"
+#include "code_generator.h"
+#include "driver/compiler_options.h"
 
 namespace art HIDDEN {
 
@@ -387,6 +389,126 @@ TEST_F(NodesVectorTest, VectorKindMattersOnReduce) {
 
   EXPECT_FALSE(v1->Equals(v2));  // different kinds
   EXPECT_FALSE(v1->Equals(v3));
+}
+
+TEST_F(NodesVectorTest, IgnoreVecLenForLocationEquals) {
+  auto loc0 = Location::FpuRegister(0);
+  auto loc0_16 = Location::FpuRegister(0, 16);
+  auto loc0_32 = Location::FpuRegister(0, 32);
+  auto loc1 = Location::FpuRegister(1);
+  auto loc1_32 = Location::FpuRegister(1, 32);
+
+  EXPECT_TRUE(loc0.Equals(loc0_16));
+  EXPECT_TRUE(loc0.Equals(loc0_32));
+  EXPECT_FALSE(loc0.Equals(loc1));
+  EXPECT_FALSE(loc0.Equals(loc1_32));
+}
+
+TEST_F(NodesVectorTest, OverlappingFPVecRegisterAllocation) {
+  std::unique_ptr<CompilerOptions> compiler_options =
+      CommonCompilerTest::CreateCompilerOptions(kRuntimeISA, "default");
+  CHECK(compiler_options != nullptr);
+  std::unique_ptr<CodeGenerator> codegen = CodeGenerator::Create(graph_, *compiler_options);
+  CHECK(codegen != nullptr);
+  if (!codegen->HasOverlappingFPVecRegisters()) {
+    GTEST_SKIP() << "Codegen does not have overlapping FP Vec registers";
+  }
+
+  HInstruction* array_ref = MakeParam(DataType::Type::kReference);
+  HInstruction* index0 = MakeParam(DataType::Type::kInt32);
+
+  HBasicBlock* main_block = AddNewBlock();
+  graph_->GetEntryBlock()->AddSuccessor(main_block);
+  main_block->AddSuccessor(graph_->GetExitBlock());
+
+  // 1. Load 256 bits into a vector register (256-bit register)
+  HVecLoad* load_256 =
+      new (GetAllocator()) HVecLoad(GetAllocator(),
+                                    array_ref,
+                                    index0,
+                                    DataType::Type::kFloat64,
+                                    SideEffects::ArrayReadOfType(DataType::Type::kFloat64),
+                                    /*vector_length=*/4,
+                                    /*is_string_char_at=*/false,
+                                    kNoDexPc);
+  // 2. Store the lower 128 bits of the 256-bit register.
+  // The vector length is explicitly different, to verify that
+  // Equals(Location(FpuRegister(R, 32)), Location(FpuRegister(R, 16))) is true
+  HVecStore* store_128 =
+      new (GetAllocator()) HVecStore(GetAllocator(),
+                                     array_ref,
+                                     index0,
+                                     load_256,
+                                     DataType::Type::kFloat64,
+                                     SideEffects::ArrayWriteOfType(DataType::Type::kFloat64),
+                                     /*vector_length=*/2,
+                                     kNoDexPc);
+  // 3. 256-bit Add: Perform a 256-bit addition using the result of the original load_256.
+  HVecAdd* add_256 = new (GetAllocator()) HVecAdd(GetAllocator(),
+                                                  load_256,
+                                                  load_256,
+                                                  DataType::Type::kFloat64,
+                                                  /*vector_length=*/4,
+                                                  kNoDexPc);
+  // 4. Store the 256-bit result.
+  HVecStore* store_256 =
+      new (GetAllocator()) HVecStore(GetAllocator(),
+                                     array_ref,
+                                     index0,
+                                     add_256,
+                                     DataType::Type::kFloat64,
+                                     SideEffects::ArrayWriteOfType(DataType::Type::kFloat64),
+                                     /*vector_length=*/4,
+                                     kNoDexPc);
+  // 5. Load 128 bits into a vector register (128-bit register)
+  HVecLoad* load_128 =
+      new (GetAllocator()) HVecLoad(GetAllocator(),
+                                    array_ref,
+                                    index0,
+                                    DataType::Type::kFloat64,
+                                    SideEffects::ArrayReadOfType(DataType::Type::kFloat64),
+                                    /*vector_length=*/2,
+                                    /*is_string_char_at=*/false,
+                                    kNoDexPc);
+
+  // Add all instructions to main block
+  main_block->AddInstruction(load_256);
+  main_block->AddInstruction(store_128);
+  main_block->AddInstruction(add_256);
+  main_block->AddInstruction(store_256);
+  main_block->AddInstruction(load_128);
+
+  // Do register allocation
+  GraphAnalysisResult result = graph_->BuildDominatorTree();
+  ASSERT_EQ(result, kAnalysisSuccess);
+  SsaLivenessAnalysis liveness(graph_, codegen.get(), GetScopedAllocator());
+  liveness.Analyze();
+  std::unique_ptr<RegisterAllocator> register_allocator =
+      RegisterAllocator::Create(GetScopedAllocator(), codegen.get(), liveness);
+  register_allocator->AllocateRegisters();
+  ASSERT_TRUE(register_allocator->Validate(false));
+
+  // Check for the allocation of FpuVec registers with vector length
+  Location load_256_loc = load_256->GetLocations()->Out();
+  Location store_128_in_loc = store_128->GetLocations()->InAt(2);
+  Location add_256_loc = add_256->GetLocations()->Out();
+  Location store_256_in_loc = store_256->GetLocations()->InAt(2);
+  Location load_128_loc = load_128->GetLocations()->Out();
+
+  EXPECT_TRUE(load_256_loc.IsFpuVecRegister());
+  EXPECT_EQ(load_256_loc.GetVecLen(), 32U);
+  EXPECT_TRUE(store_128_in_loc.IsFpuVecRegister());
+  EXPECT_EQ(store_128_in_loc.GetVecLen(), 32U);
+  // Ensure no parallel moves were introduced
+  EXPECT_TRUE(load_256_loc.Equals(store_128_in_loc));
+  EXPECT_TRUE(add_256_loc.IsFpuVecRegister());
+  EXPECT_EQ(add_256_loc.GetVecLen(), 32U);
+  EXPECT_TRUE(store_256_in_loc.IsFpuVecRegister());
+  EXPECT_EQ(store_256_in_loc.GetVecLen(), 32U);
+  EXPECT_TRUE(store_256_in_loc.Equals(add_256_loc));
+  // Verify correct vector length
+  EXPECT_TRUE(load_128_loc.IsFpuVecRegister());
+  EXPECT_EQ(load_128_loc.GetVecLen(), 16U);
 }
 
 }  // namespace art

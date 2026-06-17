@@ -24,6 +24,7 @@ namespace art HIDDEN {
 bool TryCombineAndNot(HAnd* instruction);
 bool TryGenerateResetLeastSetBit(HAnd* instruction);
 bool TryGenerateMaskUptoLeastSetBit(HXor* instruction);
+bool TryLoadEffectiveAddressSimplification(HBinaryOperation* instruction);
 bool AreLeastSetBitInputs(HInstruction* to_test, HInstruction* other);
 
 }  // namespace art

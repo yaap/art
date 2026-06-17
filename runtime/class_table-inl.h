@@ -31,7 +31,9 @@ namespace art HIDDEN {
 inline ClassTable::TableSlot::TableSlot(ObjPtr<mirror::Class> klass)
     : TableSlot(klass, klass->DescriptorHash()) {}
 
-inline uint32_t ClassTable::ClassDescriptorHash::operator()(const TableSlot& slot) const {
+// NO_THREAD_SAFETY_ANALYSIS: Needs mutator lock, but used from unannotated `HashSet<>` functions.
+inline uint32_t ClassTable::ClassDescriptorHash::operator()(const TableSlot& slot) const
+    NO_THREAD_SAFETY_ANALYSIS {
   // No read barriers needed, we're reading a chain of constant references
   // for comparison with null and retrieval of constant primitive data.
   // See `ReadBarrierOption` and `Class::DescriptorHash()`.

@@ -16,8 +16,12 @@
 
 package com.android.ahat;
 
+import com.google.errorprone.annotations.FormatMethod;
+import com.google.errorprone.annotations.FormatString;
+
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.time.Duration;
 
 /**
  * A class representing a small string of document content consisting of text,
@@ -41,7 +45,8 @@ class DocString {
   /**
    * Construct a new DocString, initialized with the given formatted text.
    */
-  public static DocString format(String format, Object... args) {
+  @FormatMethod
+  public static DocString format(@FormatString String format, Object... args) {
     DocString doc = new DocString();
     return doc.appendFormat(format, args);
   }
@@ -74,7 +79,8 @@ class DocString {
    * Append formatted text to the given doc string.
    * Returns this object.
    */
-  public DocString appendFormat(String format, Object... args) {
+  @FormatMethod
+  public DocString appendFormat(@FormatString String format, Object... args) {
     append(String.format(format, args));
     return this;
   }
@@ -173,6 +179,58 @@ class DocString {
     return this;
   }
 
+  /**
+   * Standard formatted DocString for describing a duration.
+   *
+   * @param durationMs The duration in milliseconds.
+   * @return A formatted string representation of the duration.
+   */
+  public static DocString duration(long durationMs) {
+    if (durationMs == 0) {
+      return DocString.text("0 ms");
+    }
+
+    StringBuilder sb = new StringBuilder();
+    if (durationMs < 0) {
+      sb.append("-");
+      durationMs = -durationMs;
+    } else { // durationMs > 0
+      sb.append("+");
+    }
+
+    Duration duration = Duration.ofMillis(durationMs);
+    long hours = duration.toHours();
+    duration = duration.minusHours(hours);
+    long minutes = duration.toMinutes();
+    duration = duration.minusMinutes(minutes);
+    long seconds = duration.toSeconds();
+    duration = duration.minusSeconds(seconds);
+    long millis = duration.toMillis();
+
+    boolean hasLargerUnits = false;
+    if (hours > 0) {
+      sb.append(String.format("%,d h ", hours));
+      hasLargerUnits = true;
+    }
+
+    if (minutes > 0) {
+      sb.append(String.format("%,d m ", minutes));
+      hasLargerUnits = true;
+    }
+
+    if (seconds > 0) {
+      sb.append(String.format("%,d s ", seconds));
+      hasLargerUnits = true;
+    }
+
+    // Always show millis if no other unit was shown, or if millis > 0.
+    if (millis > 0 || !hasLargerUnits) {
+      sb.append(String.format("%,d ms", millis));
+    }
+
+    return DocString.text(sb.toString().trim());
+  }
+
   public DocString appendLink(URI uri, DocString content) {
     mStringBuilder.append("<a href=\"");
     mStringBuilder.append(uri.toASCIIString());
@@ -216,7 +274,8 @@ class DocString {
    * Convenience function for constructing a URI from a formatted string with
    * a uri known to be valid.
    */
-  public static URI formattedUri(String format, Object... args) {
+  @FormatMethod
+  public static URI formattedUri(@FormatString String format, Object... args) {
     return uri(String.format(format, args));
   }
 
@@ -233,12 +292,17 @@ class DocString {
   }
 
   @Override
+  public int hashCode() {
+    return html().hashCode();
+  }
+
+  @Override
   public boolean equals(Object obj) {
     if (this == obj) {
       return true;
     }
 
-    if (obj == null || getClass() != obj.getClass()) {
+    if (!(obj instanceof DocString)) {
       return false;
     }
 

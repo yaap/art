@@ -24,7 +24,9 @@
 
 namespace art {
 
-HiddenApi::HiddenApi(const char* filename, const ApiListFilter& api_list_filter)
+HiddenApi::HiddenApi(const char* filename,
+                     const char* flagged_apis_file,
+                     const ApiListFilter& api_list_filter)
     : api_list_filter_(api_list_filter) {
   CHECK(filename != nullptr);
 
@@ -64,6 +66,32 @@ HiddenApi::HiddenApi(const char* filename, const ApiListFilter& api_list_filter)
     }
   }
   CHECK(!errors) << "Errors encountered while parsing file " << filename;
+
+  if (flagged_apis_file != nullptr) {
+    std::ifstream flagged_in(flagged_apis_file);
+    if (flagged_in.fail()) {
+      LOG(WARNING) << "Could not open flagged apis file: " << flagged_apis_file;
+      return;
+    }
+
+    for (std::string str; std::getline(flagged_in, str);) {
+      // the input string is formatted as "signature,flag"
+      std::vector<std::string> values = android::base::Split(str, ",");
+      if (values.size() < 2) {
+        LOG(WARNING) << "Invalid line in flagged apis file: " << str;
+        continue;
+      }
+
+      // Remove the last semicolon if exist.
+      // We are using the prefix matching with the flagged apis to match with
+      // inner classes.
+      std::string& key = values[0];
+      if (!key.empty() && key.back() == ';') {
+        key.pop_back();
+      }
+      flagged_apis_.emplace(std::move(key), std::move(values[1]));
+    }
+  }
 }
 
 void HiddenApi::AddSignatureToApiList(const std::string& signature, hiddenapi::ApiList membership) {

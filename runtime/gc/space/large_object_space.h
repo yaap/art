@@ -66,7 +66,8 @@ class LargeObjectSpace : public DiscontinuousSpace, public AllocSpace {
     MutexLock mu(Thread::Current(), lock_);
     return total_objects_allocated_;
   }
-  size_t FreeList(Thread* self, size_t num_ptrs, mirror::Object** ptrs) override;
+  size_t FreeList(Thread* self, size_t num_ptrs, mirror::Object** ptrs) override
+      REQUIRES_SHARED(Locks::mutator_lock_);
   // LargeObjectSpaces don't have thread local state.
   size_t RevokeThreadLocalBuffers(art::Thread*) override {
     return 0U;
@@ -131,7 +132,8 @@ class LargeObjectSpace : public DiscontinuousSpace, public AllocSpace {
  protected:
   explicit LargeObjectSpace(const std::string& name, uint8_t* begin, uint8_t* end,
                             const char* lock_name);
-  static void SweepCallback(size_t num_ptrs, mirror::Object** ptrs, void* arg);
+  static void SweepCallback(size_t num_ptrs, mirror::Object** ptrs, void* arg)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Used to ensure mutual exclusion when the allocation spaces data structures,
   // including the allocation counters below, are being modified.
@@ -170,7 +172,9 @@ class LargeObjectMapSpace : public LargeObjectSpace {
   mirror::Object* Alloc(Thread* self, size_t num_bytes, size_t* bytes_allocated,
                         size_t* usable_size, size_t* bytes_tl_bulk_allocated) override
       REQUIRES(!lock_);
-  size_t Free(Thread* self, mirror::Object* ptr) override REQUIRES(!lock_);
+  size_t Free(Thread* self, mirror::Object* ptr) override
+      REQUIRES(!lock_)
+      REQUIRES_SHARED(Locks::mutator_lock_);
   void Walk(DlMallocSpace::WalkCallback, void* arg) override REQUIRES(!lock_);
   // TODO: disabling thread safety analysis as this may be called when we already hold lock_.
   bool Contains(const mirror::Object* obj) const override NO_THREAD_SAFETY_ANALYSIS;
@@ -199,7 +203,11 @@ class LargeObjectMapSpace : public LargeObjectSpace {
 class FreeListSpace final : public LargeObjectSpace {
  public:
   virtual ~FreeListSpace();
-  static FreeListSpace* Create(const std::string& name, size_t capacity);
+  // Creates this space by mapping 'capacity' sized region, preferably starting
+  // at 'hint_addr' and then calling the ctor.
+  static FreeListSpace* Create(const std::string& name,
+                               size_t capacity,
+                               uint8_t* hint_addr = nullptr);
   size_t AllocationSize(mirror::Object* obj, size_t* usable_size) override
       REQUIRES(lock_);
   mirror::Object* Alloc(Thread* self, size_t num_bytes, size_t* bytes_allocated,

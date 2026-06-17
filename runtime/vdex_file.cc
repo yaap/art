@@ -65,13 +65,10 @@ VdexFile::VdexFileHeader::VdexFileHeader([[maybe_unused]] bool has_dex_section)
   DCHECK(IsVdexVersionValid());
 }
 
-std::unique_ptr<VdexFile> VdexFile::OpenAtAddress(uint8_t* mmap_addr,
-                                                  size_t mmap_size,
-                                                  bool mmap_reuse,
-                                                  const std::string& vdex_filename,
-                                                  bool low_4gb,
-                                                  std::string* error_msg) {
-  ScopedTrace trace(("VdexFile::OpenAtAddress " + vdex_filename).c_str());
+std::unique_ptr<VdexFile> VdexFile::Open(const std::string& vdex_filename,
+                                         bool low_4gb,
+                                         std::string* error_msg) {
+  ScopedTrace trace(("VdexFile::Open " + vdex_filename).c_str());
   if (!OS::FileExists(vdex_filename.c_str())) {
     *error_msg = "File " + vdex_filename + " does not exist.";
     return nullptr;
@@ -89,45 +86,29 @@ std::unique_ptr<VdexFile> VdexFile::OpenAtAddress(uint8_t* mmap_addr,
     return nullptr;
   }
 
-  return OpenAtAddress(mmap_addr,
-                       mmap_size,
-                       mmap_reuse,
-                       vdex_file->Fd(),
-                       /*start=*/0,
-                       vdex_length,
-                       vdex_filename,
-                       low_4gb,
-                       error_msg);
+  return Open(vdex_file->Fd(),
+              /*start=*/0,
+              vdex_length,
+              vdex_filename,
+              low_4gb,
+              error_msg);
 }
 
-std::unique_ptr<VdexFile> VdexFile::OpenAtAddress(uint8_t* mmap_addr,
-                                                  size_t mmap_size,
-                                                  bool mmap_reuse,
-                                                  int file_fd,
-                                                  off_t start,
-                                                  size_t vdex_length,
-                                                  const std::string& vdex_filename,
-                                                  bool low_4gb,
-                                                  std::string* error_msg) {
-  if (mmap_addr != nullptr && mmap_size < vdex_length) {
-    *error_msg = StringPrintf("Insufficient pre-allocated space to mmap vdex: %zu and %zu",
-                              mmap_size,
-                              vdex_length);
-    return nullptr;
-  }
-  CHECK_IMPLIES(mmap_reuse, mmap_addr != nullptr);
+std::unique_ptr<VdexFile> VdexFile::Open(int file_fd,
+                                         off_t start,
+                                         size_t vdex_length,
+                                         const std::string& vdex_filename,
+                                         bool low_4gb,
+                                         std::string* error_msg) {
   // Start as PROT_WRITE so we can mprotect back to it if we want to.
-  MemMap mmap = MemMap::MapFileAtAddress(mmap_addr,
-                                         vdex_length,
-                                         PROT_READ | PROT_WRITE,
-                                         MAP_PRIVATE,
-                                         file_fd,
-                                         start,
-                                         low_4gb,
-                                         vdex_filename.c_str(),
-                                         mmap_reuse,
-                                         /*reservation=*/nullptr,
-                                         error_msg);
+  MemMap mmap = MemMap::MapFile(vdex_length,
+                                PROT_READ | PROT_WRITE,
+                                MAP_PRIVATE,
+                                file_fd,
+                                start,
+                                low_4gb,
+                                vdex_filename.c_str(),
+                                error_msg);
   if (!mmap.IsValid()) {
     *error_msg = "Failed to mmap file " + vdex_filename + " : " + *error_msg;
     return nullptr;
@@ -143,7 +124,16 @@ std::unique_ptr<VdexFile> VdexFile::OpenAtAddress(uint8_t* mmap_addr,
 }
 
 std::unique_ptr<VdexFile> VdexFile::OpenFromDm(const std::string& filename,
-                                               const ZipArchive& archive,
+                                               std::string* error_msg) {
+  std::unique_ptr<ZipArchive> archive(ZipArchive::Open(filename.c_str(), error_msg));
+  if (archive == nullptr) {
+    return nullptr;
+  }
+  return OpenFromDm(*archive, filename, error_msg);
+}
+
+std::unique_ptr<VdexFile> VdexFile::OpenFromDm(const ZipArchive& archive,
+                                               const std::string& filename,
                                                std::string* error_msg) {
   std::unique_ptr<ZipEntry> zip_entry(archive.Find(VdexFile::kVdexNameInDmFile, error_msg));
   if (zip_entry == nullptr) {
@@ -166,39 +156,6 @@ std::unique_ptr<VdexFile> VdexFile::OpenFromDm(const std::string& filename,
   if (vdex_file->HasDexSection()) {
     *error_msg = "The dex metadata is not allowed to contain dex files";
     android_errorWriteLog(0x534e4554, "178055795");  // Report to SafetyNet.
-    return nullptr;
-  }
-  return vdex_file;
-}
-
-std::unique_ptr<VdexFile> VdexFile::OpenFromDm(const std::string& filename,
-                                               uint8_t* vdex_begin_,
-                                               uint8_t* vdex_end_,
-                                               std::string* error_msg) {
-  std::string vdex_filename = filename + OatFile::kZipSeparator + kVdexNameInDmFile;
-  // This overload of `OpenFromDm` is for loading both odex and vdex. We need to map the vdex at the
-  // address required by the odex, so the vdex must be uncompressed and page-aligned.
-  // To load vdex only, use the other overload.
-  FileWithRange vdex_file_with_range = OS::OpenFileDirectlyOrFromZip(
-      vdex_filename, OatFile::kZipSeparator, /*alignment=*/MemMap::GetPageSize(), error_msg);
-  if (vdex_file_with_range.file == nullptr) {
-    return nullptr;
-  }
-  std::unique_ptr<VdexFile> vdex_file =
-      VdexFile::OpenAtAddress(vdex_begin_,
-                              vdex_end_ - vdex_begin_,
-                              /*mmap_reuse=*/vdex_begin_ != nullptr,
-                              vdex_file_with_range.file->Fd(),
-                              vdex_file_with_range.start,
-                              vdex_file_with_range.length,
-                              vdex_filename,
-                              /*low_4gb=*/false,
-                              error_msg);
-  if (vdex_file == nullptr) {
-    return nullptr;
-  }
-  if (vdex_file->HasDexSection()) {
-    *error_msg = "The dex metadata is not allowed to contain dex files";
     return nullptr;
   }
   return vdex_file;
@@ -442,19 +399,13 @@ static const uint32_t* GetExtraStringsOffsets(const DexFile& dex_file,
   return reinterpret_cast<const uint32_t*>(strings_data_start + sizeof(uint32_t));
 }
 
-ClassStatus VdexFile::ComputeClassStatus(Thread* self, Handle<mirror::Class> cls) const {
+ClassStatus VdexFile::ComputeClassStatus(Thread* self,
+                                         Handle<mirror::Class> cls,
+                                         uint32_t index) const {
   const DexFile& dex_file = cls->GetDexFile();
   uint16_t class_def_index = cls->GetDexClassDefIndex();
-
-  // Find which dex file index from within the vdex file.
-  uint32_t index = 0;
-  for (; index < GetNumberOfDexFiles(); ++index) {
-    if (dex_file.GetLocationChecksum() == GetLocationChecksum(index)) {
-      break;
-    }
-  }
-
-  DCHECK_NE(index, GetNumberOfDexFiles());
+  DCHECK_LT(index, GetNumberOfDexFiles());
+  DCHECK_EQ(dex_file.GetLocationChecksum(), GetDexChecksumAt(index));
 
   const uint8_t* verifier_deps = GetVerifierDepsData().data();
   const uint32_t* dex_file_class_defs = GetDexFileClassDefs(verifier_deps, index);

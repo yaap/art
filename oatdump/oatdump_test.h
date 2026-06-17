@@ -252,6 +252,9 @@ class OatDumpTest : public CommonRuntimeTest, public ::testing::WithParamInterfa
     if ((args & kArgMethodAndOffsetAsJson) != 0) {
       exec_argv.push_back("--dump-method-and-offset-as-json");
     }
+    if (::android::base::GetBoolProperty("dalvik.vm.allow_profile_code", false)) {
+      exec_argv.push_back("--allow-profile-code");
+    }
     exec_argv.insert(exec_argv.end(), extra_args.begin(), extra_args.end());
 
     std::vector<bool> found(expected_prefixes.size(), false);

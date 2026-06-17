@@ -28,6 +28,7 @@ message PreRebootStats {
         STATUS_UNKNOWN = 0;
         STATUS_SCHEDULED = 1;
         STATUS_STARTED = 2;
+        STATUS_PARTIALLY_FINISHED = 9;
         STATUS_FAILED = 3;
         // The job is either finished or cancelled. The server will determine the case based on the
         // package counts.
@@ -74,6 +75,7 @@ message PreRebootStats {
         JOB_TYPE_OTA = 1;
         JOB_TYPE_MAINLINE = 2;
     }
+
     optional JobType job_type = 9;
 
     // The reason for the failure. Only applicable when `status` is `STATUS_FAILED`.
@@ -89,4 +91,14 @@ message PreRebootStats {
     }
 
     optional FailureReason failure_reason = 10;
+
+    // The synchronicity of the job.
+    enum JobSynchronicity {
+        JOB_SYNCHRONICITY_UNSPECIFIED = 0;
+        JOB_SYNCHRONICITY_SYNC = 1;
+        JOB_SYNCHRONICITY_ASYNC = 2;
+        JOB_SYNCHRONICITY_HYBRID = 3;
+    }
+
+    optional JobSynchronicity job_synchronicity = 11;
 }

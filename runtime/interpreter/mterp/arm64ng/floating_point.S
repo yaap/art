@@ -14,9 +14,9 @@
     $instr                              // s0<- op
     lsr     w1, wINST, #8               // r1<- AA
     FETCH_ADVANCE_INST 2                // advance rPC, load rINST
-    GET_INST_OPCODE ip                  // extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
     SET_VREG_FLOAT s0, w1
-    GOTO_OPCODE ip                      // jump to next instruction
+    GOTO_OPCODE                         // jump to next instruction
 
 %def fbinopWide(instr="fadd d0, d1, d2", result="d0", r1="d1", r2="d2"):
     /*
@@ -31,9 +31,9 @@
     GET_VREG_DOUBLE $r1, w1             // w1<- vBB
     FETCH_ADVANCE_INST 2                // advance rPC, load rINST
     $instr                              // $result<- op, w0-w4 changed
-    GET_INST_OPCODE ip                  // extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
     SET_VREG_DOUBLE $result, w4         // vAA<- $result
-    GOTO_OPCODE ip                      // jump to next instruction
+    GOTO_OPCODE                         // jump to next instruction
 
 %def fbinop2addr(instr=""):
     /*
@@ -50,9 +50,9 @@
     GET_VREG s0, w9
     $instr                              // s2<- op
     FETCH_ADVANCE_INST 1                // advance rPC, load rINST
-    GET_INST_OPCODE ip                  // extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
     SET_VREG_FLOAT s2, w9
-    GOTO_OPCODE ip                      // jump to next instruction
+    GOTO_OPCODE                         // jump to next instruction
 
 %def fbinopWide2addr(instr="fadd d0, d0, d1", r0="d0", r1="d1"):
     /*
@@ -65,9 +65,9 @@
     GET_VREG_DOUBLE $r0, w2             // x0<- vA
     FETCH_ADVANCE_INST 1                // advance rPC, load rINST
     $instr                              // result<- op
-    GET_INST_OPCODE ip                  // extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
     SET_VREG_DOUBLE $r0, w2             // vAA<- result
-    GOTO_OPCODE ip                      // jump to next instruction
+    GOTO_OPCODE                         // jump to next instruction
 
 %def fcmp(r1="s1", r2="s2", cond="lt"):
     /*
@@ -76,27 +76,26 @@
      */
     /* op vAA, vBB, vCC */
     FETCH w0, 1                         // w0<- CCBB
-%  if r1.startswith("d"):
-    LOAD_SCALED_VREG_MASK w5, 0xff      // w4<- ff * sizeof(vreg)
-    lsr     w4, wINST, #8               // w4<- AA
-    EXTRACT_SCALED_VREG w2, w5, w0, 0   // w2<- BB * sizeof(vreg)
-    EXTRACT_SCALED_VREG w3, w5, w0, 8   // w3<- CC * sizeof(vreg)
-    GET_VREG_DOUBLE_PRESCALED $r1, w2
-    GET_VREG_DOUBLE_PRESCALED $r2, w3
-%  else:
-    lsr     w4, wINST, #8               // w4<- AA
-    and     w2, w0, #255                // w2<- BB
-    lsr     w3, w0, #8                  // w3<- CC
-    GET_VREG $r1, w2
-    GET_VREG $r2, w3
-%  #endif
+%   if r1.startswith("d"):
+      LOAD_SCALED_VREG_MASK w5, 0xff      // w4<- ff * sizeof(vreg)
+      lsr     w4, wINST, #8               // w4<- AA
+      EXTRACT_SCALED_VREG w2, w5, w0, 0   // w2<- BB * sizeof(vreg)
+      EXTRACT_SCALED_VREG w3, w5, w0, 8   // w3<- CC * sizeof(vreg)
+      GET_VREG_DOUBLE_PRESCALED $r1, w2
+      GET_VREG_DOUBLE_PRESCALED $r2, w3
+%   else:
+      lsr     w4, wINST, #8               // w4<- AA
+      and     w2, w0, #255                // w2<- BB
+      lsr     w3, w0, #8                  // w3<- CC
+      GET_VREG $r1, w2
+      GET_VREG $r2, w3
     fcmp $r1, $r2
     cset w0, ne
     cneg w0, w0, $cond
     FETCH_ADVANCE_INST 2                // advance rPC, load rINST
-    GET_INST_OPCODE ip                  // extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
     SET_VREG w0, w4                     // vAA<- w0
-    GOTO_OPCODE ip                      // jump to next instruction
+    GOTO_OPCODE                         // jump to next instruction
 
 %def funopNarrow(srcreg="s0", tgtreg="d0", instr=""):
     /*
@@ -112,9 +111,9 @@
     GET_VREG $srcreg, w3
     FETCH_ADVANCE_INST 1                // advance rPC, load wINST
     $instr                              // d0<- op
-    GET_INST_OPCODE ip                  // extract opcode from wINST
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
     SET_VREG_FLOAT $tgtreg, w4          // vA<- d0
-    GOTO_OPCODE ip                      // jump to next instruction
+    GOTO_OPCODE                         // jump to next instruction
 
 %def funopNarrower(srcreg="s0", tgtreg="d0", instr=""):
     /*
@@ -126,16 +125,15 @@
     /* unop vA, vB */
     lsr     w3, wINST, #12              // w3<- B
     ubfx    w4, wINST, #8, #4           // w4<- A
-%  if srcreg.startswith("d"):
-    GET_VREG_DOUBLE $srcreg, w3
-%  else:
-    GET_VREG_WIDE $srcreg, w3
-%  #endif
+%   if srcreg.startswith("d"):
+      GET_VREG_DOUBLE $srcreg, w3
+%   else:
+      GET_VREG_WIDE $srcreg, w3
     FETCH_ADVANCE_INST 1                // advance rPC, load wINST
     $instr                              // d0<- op
-    GET_INST_OPCODE ip                  // extract opcode from wINST
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
     SET_VREG_FLOAT $tgtreg, w4          // vA<- d0
-    GOTO_OPCODE ip                      // jump to next instruction
+    GOTO_OPCODE                         // jump to next instruction
 
 %def funopWide(srcreg="s0", tgtreg="d0", instr=""):
     /*
@@ -147,20 +145,18 @@
     /* unop vA, vB */
     lsr     w3, wINST, #12              // w3<- B
     ubfx    w4, wINST, #8, #4           // w4<- A
-%  if srcreg.startswith("d"):
-    GET_VREG_DOUBLE $srcreg, w3
-%  else:
-    GET_VREG_WIDE $srcreg, w3
-%  #endif
+%   if srcreg.startswith("d"):
+      GET_VREG_DOUBLE $srcreg, w3
+%   else:
+      GET_VREG_WIDE $srcreg, w3
     FETCH_ADVANCE_INST 1                // advance rPC, load wINST
     $instr                              // d0<- op
-    GET_INST_OPCODE ip                  // extract opcode from wINST
-%  if tgtreg.startswith("d"):
-    SET_VREG_DOUBLE $tgtreg, w4         // vA<- d0
-%  else:
-    SET_VREG_WIDE $tgtreg, w4           // vA<- d0
-%  #endif
-    GOTO_OPCODE ip                      // jump to next instruction
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
+%   if tgtreg.startswith("d"):
+      SET_VREG_DOUBLE $tgtreg, w4       // vA<- d0
+%   else:
+      SET_VREG_WIDE $tgtreg, w4         // vA<- d0
+    GOTO_OPCODE                         // jump to next instruction
 
 %def funopWider(srcreg="s0", tgtreg="d0", instr=""):
     /*
@@ -175,9 +171,9 @@
     GET_VREG $srcreg, w3
     FETCH_ADVANCE_INST 1                // advance rPC, load wINST
     $instr                              // d0<- op
-    GET_INST_OPCODE ip                  // extract opcode from wINST
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
     SET_VREG_WIDE $tgtreg, w4           // vA<- d0
-    GOTO_OPCODE ip                      // jump to next instruction
+    GOTO_OPCODE                         // jump to next instruction
 
 %def op_add_double():
 %  fbinopWide(instr="fadd d0, d1, d2", result="d0", r1="d1", r2="d2")
@@ -273,9 +269,9 @@
     bl  fmod
     lsr     w4, wINST, #8               // w4<- AA
     FETCH_ADVANCE_INST 2                // advance rPC, load rINST
-    GET_INST_OPCODE ip                  // extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
     SET_VREG_WIDE d0, w4                // vAA<- result
-    GOTO_OPCODE ip                      // jump to next instruction
+    GOTO_OPCODE                         // jump to next instruction
     /* 11-14 instructions */
 
 %def op_rem_double_2addr():
@@ -287,9 +283,9 @@
     bl fmod
     ubfx    w2, wINST, #8, #4           // w2<- A (need to reload - killed across call)
     FETCH_ADVANCE_INST 1                // advance rPC, load rINST
-    GET_INST_OPCODE ip                  // extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
     SET_VREG_WIDE d0, w2                // vAA<- result
-    GOTO_OPCODE ip                      // jump to next instruction
+    GOTO_OPCODE                         // jump to next instruction
     /* 10-13 instructions */
 
 %def op_rem_float():
@@ -305,9 +301,9 @@
     bl  fmodf
     ubfx    w9, wINST, #8, #4           // w9<- A
     FETCH_ADVANCE_INST 1                // advance rPC, load rINST
-    GET_INST_OPCODE ip                  // extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
     SET_VREG_FLOAT s0, w9
-    GOTO_OPCODE ip                      // jump to next instruction
+    GOTO_OPCODE                         // jump to next instruction
 
 %def op_sub_double():
 %  fbinopWide(instr="fsub d0, d1, d2", result="d0", r1="d1", r2="d2")

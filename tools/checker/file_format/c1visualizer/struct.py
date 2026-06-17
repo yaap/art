@@ -24,8 +24,12 @@ class C1visualizerFile(PrintableMixin):
     self.base_file_name = os.path.basename(filename)
     self.full_file_name = filename
     self.passes = []
+    self.isa = ""
     self.instruction_set_features = ImmutableDict()
     self.read_barrier_type = "none"
+
+  def set_isa(self, isa):
+    self.isa = isa
 
   def set_isa_features(self, features):
     self.instruction_set_features = ImmutableDict(features)

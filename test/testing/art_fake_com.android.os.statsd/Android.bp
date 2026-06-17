@@ -24,7 +24,7 @@ cc_defaults {
     min_sdk_version: "30",
     stl: "none",
     apex_available: ["art_fake_com.android.os.statsd"],
-    visibility: ["//visibility:private"],
+    visibility: ["//art:__subpackages__"],
 }
 
 cc_library_shared {

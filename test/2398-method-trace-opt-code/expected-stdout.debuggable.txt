@@ -1,0 +1,6 @@
+JNI_OnLoad called
+***** streaming test - wall clock *******
+Exception java.lang.reflect.InvocationTargetException
+.>> TestThread2246 Main lambda$testTracing$0 (Ljava/lang/reflect/Method;LMain;ILBaseTraceParser;I)V Main.java
+..>> TestThread2246 Main $noinline$doSomeWorkJIT (Ljava/io/FileDescriptor;I)V Main.java
+..<<E TestThread2246 Main $noinline$doSomeWorkJIT (Ljava/io/FileDescriptor;I)V Main.java

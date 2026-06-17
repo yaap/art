@@ -431,7 +431,7 @@ void JniCompilerTest::AssertCallerObjectLocked(JNIEnv* env) {
         sp + frame_size + static_cast<size_t>(kRuntimePointerSize));
     lock = this_ref->AsMirrorPtr();
   }
-  CHECK_EQ(Monitor::GetLockOwnerThreadId(lock), self->GetThreadId());
+  CHECK(lock->IsLockOwnedByMe(self));
 }
 
 LockWord JniCompilerTest::GetLockWord(jobject obj) {

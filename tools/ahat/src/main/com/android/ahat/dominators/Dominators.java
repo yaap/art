@@ -28,6 +28,8 @@ import java.util.Queue;
  * any directed graph data structure that implements the
  * {@link Dominators.Graph} interface and has some root node with no incoming
  * edges.
+ *
+ * @param <Node> the type of nodes in the graph
  */
 public class Dominators<Node> {
   private final Graph<Node> graph;
@@ -52,6 +54,8 @@ public class Dominators<Node> {
    * <li>Setting the computed dominator for a node using the
    *     {@link #setDominator setDominator} method.
    * </ul>
+   *
+   * @param <Node> the type of nodes in the graph
    */
   public interface Graph<Node> {
     /**
@@ -106,7 +110,7 @@ public class Dominators<Node> {
    *
    * @param graph the graph to compute the dominators of
    */
-  public Dominators(Graph graph) {
+  public Dominators(Graph<Node> graph) {
     this.graph = graph;
   }
 
@@ -117,7 +121,7 @@ public class Dominators<Node> {
    * @param numNodes an upper bound on the number of nodes in the graph
    * @return this Dominators object
    */
-  public Dominators progress(Progress progress, long numNodes) {
+  public Dominators<Node> progress(Progress progress, long numNodes) {
     this.progress = progress;
     this.numNodes = numNodes;
     return this;
@@ -126,27 +130,27 @@ public class Dominators<Node> {
   // NodeS is information associated with a particular node for the
   // purposes of computing dominators.
   // By convention we use the suffix 'S' to name instances of NodeS.
-  private static class NodeS {
+  private static class NodeS<Node> {
     // The node that this NodeS is associated with.
-    public Object node;
+    Node node;
 
     // Unique identifier for this node, in increasing order based on the order
     // this node was visited in a depth first search from the root. In
     // particular, given nodes A and B, if A.id > B.id, then A cannot be a
     // dominator of B.
-    public long id;
+    long id;
 
     // The largest id of all nodes reachable from this node.
     // If foo.id > this.maxReachableId, then foo is not reachable from this
     // node.
-    public long maxReachableId;
+    long maxReachableId;
 
     // The set of ids of nodes that have references to this node.
-    public IdSet inRefIds = new IdSet();
+    IdSet inRefIds = new IdSet();
 
     // The current candidate dominator for this node.
     // The true immediate dominator of this node must have id <= domS.id.
-    public NodeS domS;
+    NodeS<Node> domS;
 
     // The previous candidate dominator for this node.
     // Invariant:
@@ -160,11 +164,11 @@ public class Dominators<Node> {
     // revisited. We could replace it with a boolean to save space, but it
     // probably doesn't save that much space and it's easier to explain the
     // algorithm if we can refer to this field.
-    public NodeS oldDomS;
+    NodeS<Node> oldDomS;
 
     // The set of nodes that this node is the candidate immediate dominator
     // of. More precisely, the set of nodes xS such that xS.domS == this.
-    public NodeSet dominated = new NodeSet();
+    NodeSet<Node> dominated = new NodeSet<>();
 
     // The set of nodes that this node is the old candidate immediate
     // dominator of that need to be revisited. Specifically, the set of nodes
@@ -176,20 +180,20 @@ public class Dominators<Node> {
     // Invariant:
     //   If revisit != null, this node is on the global list of nodes to be
     //   revisited.
-    public NodeSet revisit = null;
+    NodeSet<Node> revisit = null;
 
     // Distance from the root to this node. Used for purposes of tracking
     // progress only.
-    public long depth;
+    long depth;
   }
 
   // A collection of node ids.
   private static class IdSet {
-    private int size = 0;
-    private long[] ids = new long[4];
+    int size = 0;
+    long[] ids = new long[4];
 
     // Adds an id to the set.
-    public void add(long id) {
+    void add(long id) {
       if (size == ids.length) {
         ids = Arrays.copyOf(ids, size * 2);
       }
@@ -198,14 +202,14 @@ public class Dominators<Node> {
 
     // Returns the most recent id added to the set. Behavior is undefined if
     // the set is empty.
-    public long last() {
+    long last() {
       assert size != 0;
       return ids[size - 1];
     }
 
     // Returns true if the set contains an id in the range [low, high]
     // inclusive, false otherwise.
-    public boolean hasIdInRange(long low, long high) {
+    boolean hasIdInRange(long low, long high) {
       for (int i = 0; i < size; ++i) {
         if (low <= ids[i] && ids[i] <= high) {
           return true;
@@ -219,27 +223,32 @@ public class Dominators<Node> {
   // over elements. The bulk of the time spent in the dominators algorithm is
   // iterating over these sets. Using an array to store the set provides
   // noticable performance improvements over ArrayList or a linked list.
-  private static class NodeSet {
-    public int size = 0;
-    public NodeS[] nodes = new NodeS[4];
+  private static class NodeSet<Node> {
+    int size = 0;
+    NodeS<Node>[] nodes;
 
-    public void add(NodeS nodeS) {
+    @SuppressWarnings("unchecked") // Generic array creation
+    NodeSet() {
+      nodes = (NodeS<Node>[]) new NodeS[4];
+    }
+
+    void add(NodeS<Node> node) {
       if (size == nodes.length) {
         nodes = Arrays.copyOf(nodes, size * 2);
       }
-      nodes[size++] = nodeS;
+      nodes[size++] = node;
     }
 
-    public void remove(NodeS nodeS) {
+    void remove(NodeS<Node> node) {
       for (int i = 0; i < size; ++i) {
-        if (nodes[i] == nodeS) {
+        if (nodes[i] == node) {
           remove(i);
           break;
         }
       }
     }
 
-    public void remove(int index) {
+    void remove(int index) {
       nodes[index] = nodes[--size];
       nodes[size] = null;
     }
@@ -252,18 +261,18 @@ public class Dominators<Node> {
   // completed for a node. In that case, srcS is the node depth-first
   // traversal has been completed for, and dst will be set to null.
   private static class Link<Node> {
-    public final NodeS srcS;
-    public final Node dst;
+    final NodeS<Node> srcS;
+    final Node dst;
 
     // Constructor for a reference from srcS to dst.
-    public Link(NodeS srcS, Node dst) {
+    Link(NodeS<Node> srcS, Node dst) {
       this.srcS = srcS;
       this.dst = dst;
     }
 
     // Constructor for a marker indicating depth-first traversal has been
     // completed for srcS.
-    public Link(NodeS srcS) {
+    Link(NodeS<Node> srcS) {
       this.srcS = srcS;
       this.dst = null;
     }
@@ -285,19 +294,19 @@ public class Dominators<Node> {
     // Use a Queue instead of a Set because performance will be better. We
     // avoid adding nodes already on the queue by checking
     // xS == null before adding the node to the queue.
-    Queue<NodeS> revisit = new ArrayDeque<NodeS>();
+    Queue<NodeS<Node>> revisit = new ArrayDeque<>();
 
     // Set up the root node specially.
-    NodeS rootS = new NodeS();
+    NodeS<Node> rootS = new NodeS<>();
     rootS.node = root;
     rootS.id = id++;
     rootS.depth = 0;
     graph.setDominatorsComputationState(root, rootS);
 
-    Deque<Link<Node>> dfs = new ArrayDeque<Link<Node>>();
-    dfs.push(new Link(rootS));
+    Deque<Link<Node>> dfs = new ArrayDeque<>();
+    dfs.push(new Link<Node>(rootS));
     for (Node child : graph.getReferencesForDominators(root)) {
-      dfs.push(new Link(rootS, child));
+      dfs.push(new Link<Node>(rootS, child));
     }
 
     // workBound is an upper bound on the amount of work required in the
@@ -317,11 +326,12 @@ public class Dominators<Node> {
         link.srcS.maxReachableId = id - 1;
         progress.advance();
       } else {
-        NodeS dstS = (NodeS)graph.getDominatorsComputationState(link.dst);
+        @SuppressWarnings("unchecked") // Safe cast since we only ever store NodeS<Node> objects
+        NodeS<Node> dstS = (NodeS<Node>)graph.getDominatorsComputationState(link.dst);
         if (dstS == null) {
           // We are seeing the destination node for the first time.
           // The candidate dominator is the source node.
-          dstS = new NodeS();
+          dstS = new NodeS<>();
           graph.setDominatorsComputationState(link.dst, dstS);
 
           dstS.node = link.dst;
@@ -332,9 +342,9 @@ public class Dominators<Node> {
           dstS.oldDomS = link.srcS;
           dstS.depth = link.srcS.depth + 1;
 
-          dfs.push(new Link<>(dstS));
+          dfs.push(new Link<Node>(dstS));
           for (Node child : graph.getReferencesForDominators(link.dst)) {
-            dfs.push(new Link<>(dstS, child));
+            dfs.push(new Link<Node>(dstS, child));
           }
         } else {
           // We have seen the destination node before. Update the state based
@@ -348,7 +358,7 @@ public class Dominators<Node> {
 
           // Go up the dominator chain until we reach a node we haven't already
           // seen with a path to dstS.
-          NodeS xS = link.srcS;
+          NodeS<Node> xS = link.srcS;
           while (xS.id > seenid) {
             xS = xS.domS;
           }
@@ -361,7 +371,7 @@ public class Dominators<Node> {
             // Mark the node as needing to be revisited.
             if (dstS.domS == dstS.oldDomS) {
               if (dstS.oldDomS.revisit == null) {
-                dstS.oldDomS.revisit = new NodeSet();
+                dstS.oldDomS.revisit = new NodeSet<>();
                 revisit.add(dstS.oldDomS);
               }
               dstS.oldDomS.revisit.add(dstS);
@@ -383,10 +393,10 @@ public class Dominators<Node> {
     // that domS.id == oldDomS.id.
     progress.start("Resolving dominators", workBound);
     while (!revisit.isEmpty()) {
-      NodeS oldDomS = revisit.poll();
+      NodeS<Node> oldDomS = revisit.poll();
       assert oldDomS.revisit != null;
 
-      NodeSet nodes = oldDomS.revisit;
+      NodeSet<Node> nodes = oldDomS.revisit;
       oldDomS.revisit = null;
 
       // Search for pairs of nodes nodeS, xS for which
@@ -403,15 +413,15 @@ public class Dominators<Node> {
       //   because we have a path of increasing ids from nodeS to xS, none of
       //   which can have an id smaller than nodeS as xS.domS does.
       for (int i = 0; i < oldDomS.dominated.size; ++i) {
-        NodeS xS = oldDomS.dominated.nodes[i];
+        NodeS<Node> xS = oldDomS.dominated.nodes[i];
         for (int j = 0; j < nodes.size; ++j) {
-          NodeS nodeS = nodes.nodes[j];
+          NodeS<Node> nodeS = nodes.nodes[j];
           assert nodeS.oldDomS == oldDomS;
           if (isReachableAscending(nodeS, xS)) {
             // Update the dominator for xS.
             if (xS.domS == xS.oldDomS) {
               if (xS.oldDomS.revisit == null) {
-                xS.oldDomS.revisit = new NodeSet();
+                xS.oldDomS.revisit = new NodeSet<>();
                 revisit.add(xS.oldDomS);
               }
               xS.oldDomS.revisit.add(xS);
@@ -427,11 +437,11 @@ public class Dominators<Node> {
       // We can now safely update oldDomS for each of the nodes nodeS while
       // preserving the oldDomS invariant.
       for (int i = 0; i < nodes.size; ++i) {
-        NodeS nodeS = nodes.nodes[i];
+        NodeS<Node> nodeS = nodes.nodes[i];
         nodeS.oldDomS = oldDomS.oldDomS;
         if (nodeS.oldDomS != nodeS.domS) {
           if (nodeS.oldDomS.revisit == null) {
-            nodeS.oldDomS.revisit = new NodeSet();
+            nodeS.oldDomS.revisit = new NodeSet<>();
             revisit.add(nodeS.oldDomS);
           }
           nodeS.oldDomS.revisit.add(nodeS);
@@ -447,13 +457,13 @@ public class Dominators<Node> {
     assert revisit.isEmpty();
     revisit.add(rootS);
     while (!revisit.isEmpty()) {
-      NodeS nodeS = revisit.poll();
+      NodeS<Node> nodeS = revisit.poll();
       assert nodeS.domS == nodeS.oldDomS;
       assert nodeS.revisit == null;
-      graph.setDominatorsComputationState((Node)nodeS.node, null);
+      graph.setDominatorsComputationState(nodeS.node, null);
       for (int i = 0; i < nodeS.dominated.size; ++i) {
-        NodeS xS = nodeS.dominated.nodes[i];
-        graph.setDominator((Node)xS.node, (Node)nodeS.node);
+        NodeS<Node> xS = nodeS.dominated.nodes[i];
+        graph.setDominator(xS.node, nodeS.node);
         revisit.add(xS);
       }
     }

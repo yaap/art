@@ -465,7 +465,7 @@ class MatchFiles_Test(unittest.TestCase):
     self.assertMatches("/// CHECK-EVAL: 1 + 2 == 3", "foo")
     self.assertDoesNotMatch("/// CHECK-EVAL: 1 + 2 == 4", "foo")
 
-    twoVarTestCase = """
+    twoVarTestCase = r"""
                        /// CHECK-DAG: <<X:\d+>> <<Y:\d+>>
                        /// CHECK-EVAL: <<X>> > <<Y>>
                      """
@@ -820,7 +820,7 @@ class MatchFiles_Test(unittest.TestCase):
 
   def test_VariablesInBranches(self):
     self.assertMatches(
-      """
+      r"""
         /// CHECK-IF: True
         ///   CHECK: foo<<VarA:\d+>>
         /// CHECK-FI:
@@ -830,7 +830,7 @@ class MatchFiles_Test(unittest.TestCase):
       foo12
       """)
     self.assertDoesNotMatch(
-      """
+      r"""
         /// CHECK-IF: True
         ///   CHECK: foo<<VarA:\d+>>
         /// CHECK-FI:
@@ -840,7 +840,7 @@ class MatchFiles_Test(unittest.TestCase):
       foo12
       """)
     self.assertMatches(
-      """
+      r"""
         /// CHECK-IF: True
         ///   CHECK: foo<<VarA:\d+>>
         ///   CHECK-IF: <<VarA>> == 12
@@ -854,7 +854,7 @@ class MatchFiles_Test(unittest.TestCase):
       barM
       """)
     self.assertMatches(
-      """
+      r"""
         /// CHECK-IF: False
         ///   CHECK: foo<<VarA:\d+>>
         /// CHECK-ELIF: True

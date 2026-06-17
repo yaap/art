@@ -22,6 +22,9 @@
 #include <cstring>
 #include <atomic>
 
+#include "base/atomic.h"
+#include "base/bit_utils.h"
+#include "base/globals.h"
 #include "jni.h"
 #include "nativehelper/jni_macros.h"
 
@@ -34,6 +37,7 @@
 #include "mirror/object-inl.h"
 #include "art_field-inl.h"
 #include "native_util.h"
+#include "runtime_globals.h"
 #include "scoped_fast_native_object_access-inl.h"
 #include "well_known_classes-inl.h"
 
@@ -51,37 +55,51 @@ namespace {
     ThrowRuntimeException("Bad size: %" PRIu64, size);
     return false;
   }
+
+  // Javadoc for Unsafe.get/set methods says "No defined exceptions are thrown".
+  template<class T>
+  void AccessIsWithinObjectDcheck(ObjPtr<mirror::Object> obj, jlong offset)
+      REQUIRES_SHARED(Locks::mutator_lock_) {
+    if (kIsDebugBuild && obj != nullptr) {
+      mirror::Class* obj_class = obj->GetClass();
+      if (!obj_class->IsVariableSize()) {
+        CHECK_GE(offset, mirror::Object::InstanceSize()) << "Offset should be positive"
+            << " and outside of object's header";
+        uint32_t aligned_size = RoundUp(obj_class->GetObjectSize(), kObjectAlignment);
+        CHECK_GE(aligned_size, (uint32_t) offset + sizeof(T))
+            << "Attempted to access an instance of " << obj_class->PrettyDescriptor()
+            << " at offset " << offset
+            << " (instance size = " << obj_class->GetObjectSize()
+            << ", access size = " << sizeof(T) << ")";
+      }
+    }
+  }
 }  // namespace
 
 static jboolean Unsafe_compareAndSetInt(JNIEnv* env, jobject, jobject javaObj, jlong offset,
                                         jint expectedValue, jint newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  bool success = obj->CasField32<false>(MemberOffset(offset),
-                                        expectedValue,
-                                        newValue,
-                                        CASMode::kStrong,
-                                        std::memory_order_seq_cst);
-  return success ? JNI_TRUE : JNI_FALSE;
-}
+  AccessIsWithinObjectDcheck<int32_t>(obj, offset);
 
-static jboolean Unsafe_compareAndSwapInt(JNIEnv* env, jobject obj, jobject javaObj, jlong offset,
-                                         jint expectedValue, jint newValue) {
-  // compareAndSetInt has the same semantics as compareAndSwapInt, except for
-  // being strict (volatile). Since this was implemented in a strict mode it can
-  // just call the volatile version unless it gets relaxed.
-  return Unsafe_compareAndSetInt(env, obj, javaObj, offset, expectedValue, newValue);
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+  AtomicInteger* atomic_addr = reinterpret_cast<AtomicInteger*>(raw_addr);
+
+  bool success = atomic_addr->CompareAndSetStrongSequentiallyConsistent(expectedValue, newValue);
+
+  return success ? JNI_TRUE : JNI_FALSE;
 }
 
 static jboolean Unsafe_compareAndSetLong(JNIEnv* env, jobject, jobject javaObj, jlong offset,
                                          jlong expectedValue, jlong newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  bool success = obj->CasFieldStrongSequentiallyConsistent64<false>(MemberOffset(offset),
-                                                                    expectedValue,
-                                                                    newValue);
+  AccessIsWithinObjectDcheck<int64_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+  Atomic<int64_t>* atomic_addr = reinterpret_cast<Atomic<int64_t>*>(raw_addr);
+  bool success = atomic_addr->CompareAndSetStrongSequentiallyConsistent(expectedValue, newValue);
+
   return success ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -89,17 +107,15 @@ static jlong Unsafe_compareAndExchangeLong(
     JNIEnv* env, jobject, jobject javaObj, jlong offset, jlong expectedValue, jlong newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  return obj->CaeFieldStrongSequentiallyConsistent64<false>(
-      MemberOffset(offset), expectedValue, newValue);
-}
+  AccessIsWithinObjectDcheck<int64_t>(obj, offset);
 
-static jboolean Unsafe_compareAndSwapLong(JNIEnv* env, jobject obj, jobject javaObj, jlong offset,
-                                          jlong expectedValue, jlong newValue) {
-  // compareAndSetLong has the same semantics as compareAndSwapLong, except for
-  // being strict (volatile). Since this was implemented in a strict mode it can
-  // just call the volatile version unless it gets relaxed.
-  return Unsafe_compareAndSetLong(env, obj, javaObj, offset, expectedValue, newValue);
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+  Atomic<int64_t>* atomic_addr = reinterpret_cast<Atomic<int64_t>*>(raw_addr);
+
+  int64_t found_value =
+      atomic_addr->CompareAndExchangeStrongSequentiallyConsistent(expectedValue, newValue);
+
+  return found_value;
 }
 
 static jboolean Unsafe_compareAndSetReference(JNIEnv* env,
@@ -134,85 +150,86 @@ static jboolean Unsafe_compareAndSetReference(JNIEnv* env,
   return success ? JNI_TRUE : JNI_FALSE;
 }
 
-static jboolean Unsafe_compareAndSwapObject(JNIEnv* env, jobject obj, jobject javaObj, jlong offset,
-                                            jobject javaExpectedValue, jobject javaNewValue) {
-  // compareAndSetReference has the same semantics as compareAndSwapObject, except for
-  // being strict (volatile). Since this was implemented in a strict mode it can
-  // just call the volatile version unless it gets relaxed.
-  return Unsafe_compareAndSetReference(env, obj, javaObj, offset, javaExpectedValue, javaNewValue);
-}
-
 static jint Unsafe_getInt(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetField32(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<int32_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<const Atomic<int32_t>*>(raw_addr)->LoadJavaData();
 }
 
 static jint Unsafe_getIntVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetField32Volatile(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<int32_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<const Atomic<int32_t>*>(raw_addr)->load(std::memory_order_seq_cst);
 }
 
 static void Unsafe_putInt(JNIEnv* env, jobject, jobject javaObj, jlong offset, jint newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  obj->SetField32<false>(MemberOffset(offset), newValue);
+  AccessIsWithinObjectDcheck<int32_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  reinterpret_cast<AtomicInteger*>(raw_addr)->StoreJavaData(newValue);
 }
 
 static void Unsafe_putIntVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset,
                                   jint newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  obj->SetField32Volatile<false>(MemberOffset(offset), newValue);
-}
+  AccessIsWithinObjectDcheck<int32_t>(obj, offset);
 
-static void Unsafe_putOrderedInt(JNIEnv* env, jobject, jobject javaObj, jlong offset,
-                                 jint newValue) {
-  ScopedFastNativeObjectAccess soa(env);
-  ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // TODO: A release store is likely to be faster on future processors.
-  std::atomic_thread_fence(std::memory_order_release);
-  // JNI must use non transactional mode.
-  obj->SetField32<false>(MemberOffset(offset), newValue);
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  reinterpret_cast<AtomicInteger*>(raw_addr)->store(newValue, std::memory_order_seq_cst);
 }
 
 static jlong Unsafe_getLong(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetField64(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<int64_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<const Atomic<int64_t>*>(raw_addr)->LoadJavaData();
 }
 
 static jlong Unsafe_getLongVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetField64Volatile(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<int64_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<const Atomic<int64_t>*>(raw_addr)->load(std::memory_order_seq_cst);
 }
 
 static void Unsafe_putLong(JNIEnv* env, jobject, jobject javaObj, jlong offset, jlong newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  obj->SetField64<false>(MemberOffset(offset), newValue);
+  AccessIsWithinObjectDcheck<int64_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  reinterpret_cast<Atomic<int64_t>*>(raw_addr)->StoreJavaData(newValue);
 }
 
 static void Unsafe_putLongVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset,
                                    jlong newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  obj->SetField64Volatile<false>(MemberOffset(offset), newValue);
-}
+  AccessIsWithinObjectDcheck<int64_t>(obj, offset);
 
-static void Unsafe_putOrderedLong(JNIEnv* env, jobject, jobject javaObj, jlong offset,
-                                  jlong newValue) {
-  ScopedFastNativeObjectAccess soa(env);
-  ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  std::atomic_thread_fence(std::memory_order_release);
-  // JNI must use non transactional mode.
-  obj->SetField64<false>(MemberOffset(offset), newValue);
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  reinterpret_cast<Atomic<int64_t>*>(raw_addr)->store(newValue, std::memory_order_seq_cst);
 }
 
 static jobject Unsafe_getReferenceVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
@@ -245,16 +262,6 @@ static void Unsafe_putReferenceVolatile(
   ObjPtr<mirror::Object> newValue = soa.Decode<mirror::Object>(javaNewValue);
   // JNI must use non transactional mode.
   obj->SetFieldObjectVolatile<false>(MemberOffset(offset), newValue);
-}
-
-static void Unsafe_putOrderedObject(JNIEnv* env, jobject, jobject javaObj, jlong offset,
-                                    jobject javaNewValue) {
-  ScopedFastNativeObjectAccess soa(env);
-  ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  ObjPtr<mirror::Object> newValue = soa.Decode<mirror::Object>(javaNewValue);
-  std::atomic_thread_fence(std::memory_order_release);
-  // JNI must use non transactional mode.
-  obj->SetFieldObject<false>(MemberOffset(offset), newValue);
 }
 
 static jint Unsafe_getArrayBaseOffsetForComponentType(JNIEnv* env, jclass, jclass component_class) {
@@ -393,178 +400,262 @@ static void Unsafe_copyMemory0(JNIEnv* env,
 static jboolean Unsafe_getBoolean(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetFieldBoolean(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<uint8_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<Atomic<uint8_t>*>(raw_addr)->LoadJavaData();
 }
 
 static jboolean Unsafe_getBooleanVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetFieldBooleanVolatile(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<uint8_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<Atomic<uint8_t>*>(raw_addr)->load(std::memory_order_seq_cst);
 }
 
 static void Unsafe_putBoolean(JNIEnv* env, jobject, jobject javaObj, jlong offset,
                               jboolean newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode (SetField8 is non-transactional).
-  obj->SetFieldBoolean<false>(MemberOffset(offset), newValue);
+  AccessIsWithinObjectDcheck<uint8_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  reinterpret_cast<Atomic<uint8_t>*>(raw_addr)->StoreJavaData(newValue);
 }
 
 static void Unsafe_putBooleanVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset,
                                       jboolean newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode (SetField8 is non-transactional).
-  obj->SetFieldBooleanVolatile<false>(MemberOffset(offset), newValue);
+  AccessIsWithinObjectDcheck<uint8_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<Atomic<uint8_t>*>(raw_addr)->store(newValue, std::memory_order_seq_cst);
 }
 
 static jbyte Unsafe_getByte(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetFieldByte(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<int8_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<Atomic<int8_t>*>(raw_addr)->LoadJavaData();
 }
 
 static jbyte Unsafe_getByteVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetFieldByteVolatile(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<int8_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<Atomic<int8_t>*>(raw_addr)->load(std::memory_order_seq_cst);
 }
 
 static void Unsafe_putByte(JNIEnv* env, jobject, jobject javaObj, jlong offset, jbyte newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  obj->SetFieldByte<false>(MemberOffset(offset), newValue);
+  AccessIsWithinObjectDcheck<int8_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  reinterpret_cast<Atomic<int8_t>*>(raw_addr)->StoreJavaData(newValue);
 }
 
 static void Unsafe_putByteVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset,
                                    jbyte newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  obj->SetFieldByteVolatile<false>(MemberOffset(offset), newValue);
+  AccessIsWithinObjectDcheck<int8_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  reinterpret_cast<Atomic<int8_t>*>(raw_addr)->store(newValue, std::memory_order_seq_cst);
 }
 
 static jchar Unsafe_getChar(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetFieldChar(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<uint16_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<Atomic<uint16_t>*>(raw_addr)->LoadJavaData();
 }
 
 static jchar Unsafe_getCharVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetFieldCharVolatile(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<uint16_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<Atomic<uint16_t>*>(raw_addr)->load(std::memory_order_seq_cst);
 }
 
 static void Unsafe_putChar(JNIEnv* env, jobject, jobject javaObj, jlong offset, jchar newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  obj->SetFieldChar<false>(MemberOffset(offset), newValue);
+  AccessIsWithinObjectDcheck<uint16_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  reinterpret_cast<Atomic<uint16_t>*>(raw_addr)->StoreJavaData(newValue);
 }
 
 static void Unsafe_putCharVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset, jchar newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  obj->SetFieldCharVolatile<false>(MemberOffset(offset), newValue);
+  AccessIsWithinObjectDcheck<uint16_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  reinterpret_cast<Atomic<uint16_t>*>(raw_addr)->store(newValue, std::memory_order_seq_cst);
 }
 
 static jshort Unsafe_getShort(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetFieldShort(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<int16_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<Atomic<int16_t>*>(raw_addr)->LoadJavaData();
 }
 
 static jshort Unsafe_getShortVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  return obj->GetFieldShortVolatile(MemberOffset(offset));
+  AccessIsWithinObjectDcheck<int16_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  return reinterpret_cast<Atomic<int16_t>*>(raw_addr)->load(std::memory_order_seq_cst);
 }
 
 static void Unsafe_putShort(JNIEnv* env, jobject, jobject javaObj, jlong offset, jshort newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  obj->SetFieldShort<false>(MemberOffset(offset), newValue);
+  AccessIsWithinObjectDcheck<int16_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  reinterpret_cast<Atomic<int16_t>*>(raw_addr)->StoreJavaData(newValue);
 }
 
 static void Unsafe_putShortVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset,
                                     jshort newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
-  // JNI must use non transactional mode.
-  obj->SetFieldShortVolatile<false>(MemberOffset(offset), newValue);
+  AccessIsWithinObjectDcheck<int16_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
+  reinterpret_cast<Atomic<int16_t>*>(raw_addr)->store(newValue, std::memory_order_seq_cst);
 }
 
 static jfloat Unsafe_getFloat(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
+  AccessIsWithinObjectDcheck<int32_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
   union {int32_t val; jfloat converted;} conv;
-  conv.val = obj->GetField32(MemberOffset(offset));
+  conv.val = reinterpret_cast<Atomic<int32_t>*>(raw_addr)->LoadJavaData();
   return conv.converted;
 }
 
 static jfloat Unsafe_getFloatVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
+  AccessIsWithinObjectDcheck<int32_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
   union {int32_t val; jfloat converted;} conv;
-  conv.val = obj->GetField32Volatile(MemberOffset(offset));
+  conv.val = reinterpret_cast<Atomic<int32_t>*>(raw_addr)->load(std::memory_order_seq_cst);
   return conv.converted;
 }
 
 static void Unsafe_putFloat(JNIEnv* env, jobject, jobject javaObj, jlong offset, jfloat newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
+  AccessIsWithinObjectDcheck<int32_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
   union {int32_t converted; jfloat val;} conv;
   conv.val = newValue;
-  // JNI must use non transactional mode.
-  obj->SetField32<false>(MemberOffset(offset), conv.converted);
+  reinterpret_cast<Atomic<int32_t>*>(raw_addr)->StoreJavaData(conv.converted);
 }
 
 static void Unsafe_putFloatVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset,
                                     jfloat newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
+  AccessIsWithinObjectDcheck<int32_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
   union {int32_t converted; jfloat val;} conv;
   conv.val = newValue;
-  // JNI must use non transactional mode.
-  obj->SetField32Volatile<false>(MemberOffset(offset), conv.converted);
+  reinterpret_cast<Atomic<int32_t>*>(raw_addr)->store(conv.converted, std::memory_order_seq_cst);
 }
 
 static jdouble Unsafe_getDouble(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
+  AccessIsWithinObjectDcheck<int64_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
   union {int64_t val; jdouble converted;} conv;
-  conv.val = obj->GetField64(MemberOffset(offset));
+  conv.val = reinterpret_cast<Atomic<int64_t>*>(raw_addr)->LoadJavaData();
   return conv.converted;
 }
 
 static jdouble Unsafe_getDoubleVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
+  AccessIsWithinObjectDcheck<int64_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
   union {int64_t val; jdouble converted;} conv;
-  conv.val = obj->GetField64Volatile(MemberOffset(offset));
+  conv.val = reinterpret_cast<Atomic<int64_t>*>(raw_addr)->load(std::memory_order_seq_cst);
   return conv.converted;
 }
 
 static void Unsafe_putDouble(JNIEnv* env, jobject, jobject javaObj, jlong offset, jdouble newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
+  AccessIsWithinObjectDcheck<int64_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
   union {int64_t converted; jdouble val;} conv;
   conv.val = newValue;
-  // JNI must use non transactional mode.
-  obj->SetField64<false>(MemberOffset(offset), conv.converted);
+  reinterpret_cast<Atomic<int64_t>*>(raw_addr)->StoreJavaData(conv.converted);
 }
 
 static void Unsafe_putDoubleVolatile(JNIEnv* env, jobject, jobject javaObj, jlong offset, jdouble newValue) {
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> obj = soa.Decode<mirror::Object>(javaObj);
+  AccessIsWithinObjectDcheck<int64_t>(obj, offset);
+
+  uint8_t* raw_addr = reinterpret_cast<uint8_t*>(obj.Ptr()) + offset;
+
   union {int64_t converted; jdouble val;} conv;
   conv.val = newValue;
-  // JNI must use non transactional mode.
-  obj->SetField64Volatile<false>(MemberOffset(offset), conv.converted);
+  reinterpret_cast<Atomic<int64_t>*>(raw_addr)->store(conv.converted, std::memory_order_seq_cst);
 }
 
 static void Unsafe_loadFence(JNIEnv*, jobject) {
@@ -613,10 +704,6 @@ static jobject Unsafe_allocateInstance(JNIEnv* env, jobject, jclass cls) {
 }
 
 static JNINativeMethod gMethods[] = {
-    FAST_NATIVE_METHOD(Unsafe, compareAndSwapInt, "(Ljava/lang/Object;JII)Z"),
-    FAST_NATIVE_METHOD(Unsafe, compareAndSwapLong, "(Ljava/lang/Object;JJJ)Z"),
-    FAST_NATIVE_METHOD(
-        Unsafe, compareAndSwapObject, "(Ljava/lang/Object;JLjava/lang/Object;Ljava/lang/Object;)Z"),
     FAST_NATIVE_METHOD(Unsafe, compareAndSetInt, "(Ljava/lang/Object;JII)Z"),
     FAST_NATIVE_METHOD(Unsafe, compareAndSetLong, "(Ljava/lang/Object;JJJ)Z"),
     FAST_NATIVE_METHOD(Unsafe, compareAndExchangeLong, "(Ljava/lang/Object;JJJ)J"),
@@ -643,13 +730,10 @@ static JNINativeMethod gMethods[] = {
     FAST_NATIVE_METHOD(Unsafe, putReferenceVolatile, "(Ljava/lang/Object;JLjava/lang/Object;)V"),
     FAST_NATIVE_METHOD(Unsafe, getInt, "(Ljava/lang/Object;J)I"),
     FAST_NATIVE_METHOD(Unsafe, putInt, "(Ljava/lang/Object;JI)V"),
-    FAST_NATIVE_METHOD(Unsafe, putOrderedInt, "(Ljava/lang/Object;JI)V"),
     FAST_NATIVE_METHOD(Unsafe, getLong, "(Ljava/lang/Object;J)J"),
     FAST_NATIVE_METHOD(Unsafe, putLong, "(Ljava/lang/Object;JJ)V"),
-    FAST_NATIVE_METHOD(Unsafe, putOrderedLong, "(Ljava/lang/Object;JJ)V"),
     FAST_NATIVE_METHOD(Unsafe, getReference, "(Ljava/lang/Object;J)Ljava/lang/Object;"),
     FAST_NATIVE_METHOD(Unsafe, putReference, "(Ljava/lang/Object;JLjava/lang/Object;)V"),
-    FAST_NATIVE_METHOD(Unsafe, putOrderedObject, "(Ljava/lang/Object;JLjava/lang/Object;)V"),
     FAST_NATIVE_METHOD(Unsafe, getArrayBaseOffsetForComponentType, "(Ljava/lang/Class;)I"),
     FAST_NATIVE_METHOD(Unsafe, getArrayIndexScaleForComponentType, "(Ljava/lang/Class;)I"),
     FAST_NATIVE_METHOD(Unsafe, addressSize, "()I"),

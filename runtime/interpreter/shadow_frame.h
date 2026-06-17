@@ -72,6 +72,16 @@ class ShadowFrame {
     // reported when we reach the catch block after an exception was thrown. These events have to
     // be reported after the DexPCMoveEvent if enabled.
     kNotifyExceptionHandledEvent = 1 << 6,
+    // Mark that we already notified method exit event for tracing. Jvmti method exit handlers are
+    // used to implement ForceEarlyReturn and PopFrame and are expected to be called multiple times.
+    // Trace listeners that are used for method tracing are expected to be called only once. We
+    // maintain a flag in the shadow frame to indicate if a method exit is already reported to the
+    // trace listeners.
+    kSkipTraceMethodExitEvent = 1 << 7,
+    // For low-overhead tracing, we don't report entry events for inlined methods. If there was a
+    // deoptimization and we execute the method in the interpreter we should skip exit events for
+    // those methods. The flag indicates if the frame was corresponding to an inlined frame.
+    kSkipLowOverheadTraceEvent = 1 << 8,
   };
 
  public:
@@ -351,6 +361,22 @@ class ShadowFrame {
 
   void SetNotifyExceptionHandledEvent(bool enable) {
     UpdateFrameFlag(enable, FrameFlags::kNotifyExceptionHandledEvent);
+  }
+
+  bool GetSkipTraceMethodExitEvent() const {
+    return GetFrameFlag(FrameFlags::kSkipTraceMethodExitEvent);
+  }
+
+  void SetSkipTraceMethodExitEvent(bool enable) {
+    UpdateFrameFlag(enable, FrameFlags::kSkipTraceMethodExitEvent);
+  }
+
+  bool GetSkipLowOverheadTraceEvent() const {
+    return GetFrameFlag(FrameFlags::kSkipLowOverheadTraceEvent);
+  }
+
+  void SetSkipLowOverheadTraceEvent(bool enable) {
+    UpdateFrameFlag(enable, FrameFlags::kSkipLowOverheadTraceEvent);
   }
 
   void CheckConsistentVRegs() const {

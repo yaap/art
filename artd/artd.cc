@@ -141,7 +141,7 @@ using ::android::base::unique_fd;
 using ::android::base::WriteStringToFd;
 using ::android::base::WriteStringToFile;
 using ::android::fs_mgr::FstabEntry;
-using ::art::service::ValidateClassLoaderContext;
+using ::art::service::FlattenAndValidateClassLoaderContext;
 using ::art::service::ValidateDexPath;
 using ::art::tools::CmdlineBuilder;
 using ::art::tools::Fatal;
@@ -150,6 +150,7 @@ using ::art::tools::NonFatal;
 using ::ndk::ScopedAStatus;
 using ::ndk::ScopedFileDescriptor;
 
+using DexoptComparator = DexoptTrigger::DexoptComparator;
 using PrimaryCurProfilePath = ProfilePath::PrimaryCurProfilePath;
 using TmpProfilePath = ProfilePath::TmpProfilePath;
 using WritableProfilePath = ProfilePath::WritableProfilePath;
@@ -211,24 +212,53 @@ Result<CompilerFilter::Filter> ParseCompilerFilter(const std::string& compiler_f
   return compiler_filter;
 }
 
-OatFileAssistant::DexOptTrigger DexOptTriggerFromAidl(int32_t aidl_value) {
-  OatFileAssistant::DexOptTrigger trigger{};
-  if ((aidl_value & static_cast<int32_t>(DexoptTrigger::COMPILER_FILTER_IS_BETTER)) != 0) {
-    trigger.targetFilterIsBetter = true;
+Result<OatFileAssistant::DexoptTrigger> DexoptTriggerFromAidl(const DexoptTrigger& aidl_value) {
+  if (aidl_value.dexoptComparators.empty()) {
+    return Errorf("No dexopt comparators provided");
   }
-  if ((aidl_value & static_cast<int32_t>(DexoptTrigger::COMPILER_FILTER_IS_SAME)) != 0) {
-    trigger.targetFilterIsSame = true;
+  constexpr std::array kPrimaryComparators = {
+      DexoptComparator::COMPARING_COMPILER_FILTER,
+      DexoptComparator::COMPARING_COMPILER_FILTER_REVERSED,
+      DexoptComparator::CUSTOM_TARGET_IS_BETTER_THAN_CURRENT,
+      DexoptComparator::CUSTOM_TARGET_IS_WORSE_THAN_CURRENT};
+  if (std::ranges::find(kPrimaryComparators, aidl_value.dexoptComparators[0]) ==
+      kPrimaryComparators.end()) {
+    return Errorf("The first comparator must be a primary comparator");
   }
-  if ((aidl_value & static_cast<int32_t>(DexoptTrigger::COMPILER_FILTER_IS_WORSE)) != 0) {
-    trigger.targetFilterIsWorse = true;
+
+  std::vector<OatFileAssistant::DexoptComparator> comparators;
+  for (const DexoptComparator& aidl_comparator : aidl_value.dexoptComparators) {
+    switch (aidl_comparator) {
+      case DexoptComparator::COMPARING_COMPILER_FILTER:
+        comparators.push_back(OatFileAssistant::DexoptComparator::kComparingCompilerFilter);
+        continue;
+      case DexoptComparator::COMPARING_COMPILER_FILTER_REVERSED:
+        comparators.push_back(OatFileAssistant::DexoptComparator::kComparingCompilerFilterReversed);
+        continue;
+      case DexoptComparator::COMPARING_PRIMARY_BOOT_IMAGE_STATUS:
+        comparators.push_back(OatFileAssistant::DexoptComparator::kComparingPrimaryBootImageStatus);
+        continue;
+      case DexoptComparator::COMPARING_EXTRACTION_STATUS:
+        comparators.push_back(OatFileAssistant::DexoptComparator::kComparingExtractionStatus);
+        continue;
+      case DexoptComparator::CUSTOM_TARGET_IS_BETTER_THAN_CURRENT:
+        if (!aidl_value.customComparatorReason.has_value()) {
+          return Errorf("No custom comparator reason provided");
+        }
+        comparators.push_back(OatFileAssistant::DexoptComparator::kCustomTargetIsBetterThanCurrent);
+        continue;
+      case DexoptComparator::CUSTOM_TARGET_IS_WORSE_THAN_CURRENT:
+        if (!aidl_value.customComparatorReason.has_value()) {
+          return Errorf("No custom comparator reason provided");
+        }
+        comparators.push_back(OatFileAssistant::DexoptComparator::kCustomTargetIsWorseThanCurrent);
+        continue;
+        // No default. All cases should be explicitly handled, or the compilation will fail.
+    }
+    // This should never happen. Just in case we get a non-enumerator value.
+    LOG(FATAL) << "Unexpected comparator " << static_cast<int>(aidl_comparator);
   }
-  if ((aidl_value & static_cast<int32_t>(DexoptTrigger::PRIMARY_BOOT_IMAGE_BECOMES_USABLE)) != 0) {
-    trigger.primaryBootImageBecomesUsable = true;
-  }
-  if ((aidl_value & static_cast<int32_t>(DexoptTrigger::NEED_EXTRACTION)) != 0) {
-    trigger.needExtraction = true;
-  }
-  return trigger;
+  return OatFileAssistant::DexoptTrigger{std::move(comparators), aidl_value.customComparatorReason};
 }
 
 ArtifactsLocation ArtifactsLocationToAidl(OatFileAssistant::Location location) {
@@ -306,9 +336,9 @@ Result<FileVisibility> GetFileVisibility(const std::string& file) {
   }
 
   return (status.permissions() & std::filesystem::perms::others_read) !=
-                 std::filesystem::perms::none ?
-             FileVisibility::OTHER_READABLE :
-             FileVisibility::NOT_OTHER_READABLE;
+                 std::filesystem::perms::none
+             ? FileVisibility::OTHER_READABLE
+             : FileVisibility::NOT_OTHER_READABLE;
 }
 
 Result<ArtdCancellationSignal*> ToArtdCancellationSignal(IArtdCancellationSignal* input) {
@@ -680,6 +710,12 @@ ScopedAStatus Artd::isAlive(bool* _aidl_return) {
   return ScopedAStatus::ok();
 }
 
+ScopedAStatus Artd::stop() {
+  RETURN_FATAL_IF_NOT_PRE_REBOOT(options_);
+  LOG(INFO) << "Stopping artd";
+  exit(0);
+}
+
 ScopedAStatus Artd::deleteArtifacts(const ArtifactsPath& in_artifactsPath, int64_t* _aidl_return) {
   RETURN_FATAL_IF_PRE_REBOOT(options_);
   RETURN_FATAL_IF_ARG_IS_PRE_REBOOT(in_artifactsPath, "artifactsPath");
@@ -918,11 +954,19 @@ ndk::ScopedAStatus Artd::getProfileVisibility(const ProfilePath& in_profile,
   return ScopedAStatus::ok();
 }
 
-ndk::ScopedAStatus Artd::getArtifactsVisibility(const ArtifactsPath& in_artifactsPath,
-                                                FileVisibility* _aidl_return) {
+ndk::ScopedAStatus Artd::getOdexVisibility(const ArtifactsPath& in_artifactsPath,
+                                           FileVisibility* _aidl_return) {
   // `in_artifactsPath` can be either a Pre-reboot path or an ordinary one.
   std::string oat_path = OR_RETURN_FATAL(BuildArtifactsPath(in_artifactsPath)).oat_path;
   *_aidl_return = OR_RETURN_NON_FATAL(GetFileVisibility(oat_path));
+  return ScopedAStatus::ok();
+}
+
+ndk::ScopedAStatus Artd::getVdexVisibility(const ArtifactsPath& in_artifactsPath,
+                                           FileVisibility* _aidl_return) {
+  // `in_artifactsPath` can be either a Pre-reboot path or an ordinary one.
+  std::string vdex_path = OR_RETURN_FATAL(BuildArtifactsPath(in_artifactsPath)).vdex_path;
+  *_aidl_return = OR_RETURN_NON_FATAL(GetFileVisibility(vdex_path));
   return ScopedAStatus::ok();
 }
 
@@ -1058,8 +1102,8 @@ ndk::ScopedAStatus Artd::mergeProfiles(const std::vector<ProfilePath>& in_profil
   }
 
   ProfmanResult::ProcessingResult expected_result =
-      (in_options.dumpOnly || in_options.dumpClassesAndMethods) ? ProfmanResult::kSuccess :
-                                                                  ProfmanResult::kCompile;
+      (in_options.dumpOnly || in_options.dumpClassesAndMethods) ? ProfmanResult::kSuccess
+                                                                : ProfmanResult::kCompile;
   if (result.value() != expected_result) {
     return NonFatal(ART_FORMAT("profman returned an unexpected code: {}", result.value()));
   }
@@ -1075,7 +1119,8 @@ ndk::ScopedAStatus Artd::getDexoptNeeded(const std::string& in_dexFile,
                                          const std::string& in_instructionSet,
                                          const std::optional<std::string>& in_classLoaderContext,
                                          const std::string& in_compilerFilter,
-                                         int32_t in_dexoptTrigger,
+                                         const DexoptTrigger& in_dexoptTrigger,
+                                         const ScopedFileDescriptor& in_loggingFd,
                                          GetDexoptNeededResult* _aidl_return) {
   Result<OatFileAssistantContext*> ofa_context = GetOatFileAssistantContext();
   if (!ofa_context.ok()) {
@@ -1095,11 +1140,14 @@ ndk::ScopedAStatus Artd::getDexoptNeeded(const std::string& in_dexFile,
   if (oat_file_assistant == nullptr) {
     return NonFatal("Failed to create OatFileAssistant: " + error_msg);
   }
+  ArtLogger logger =
+      in_loggingFd.get() >= 0 ? ArtLogger::FromFd(in_loggingFd.get()) : ArtLogger::Default();
+  oat_file_assistant->SetLogger(std::move(logger));
 
   OatFileAssistant::DexOptStatus status;
   _aidl_return->isDexoptNeeded =
       oat_file_assistant->GetDexOptNeeded(OR_RETURN_FATAL(ParseCompilerFilter(in_compilerFilter)),
-                                          DexOptTriggerFromAidl(in_dexoptTrigger),
+                                          OR_RETURN_FATAL(DexoptTriggerFromAidl(in_dexoptTrigger)),
                                           &status);
   _aidl_return->isVdexUsable = status.IsVdexUsable();
   _aidl_return->artifactsLocation = ArtifactsLocationToAidl(status.GetLocation());
@@ -1155,7 +1203,7 @@ ndk::ScopedAStatus Artd::maybeCreateSdc(const OutputSecureDexMetadataCompanion& 
   }
 
   std::unique_ptr<NewFile> sdc_file = OR_RETURN_NON_FATAL(
-      NewFile::Create(sdc_path, in_outputSdc.permissionSettings.fileFsPermission));
+      NewFile::Create(sdc_path, in_outputSdc.permissionSettings.odexFileFsPermission));
   SdcWriter writer(File(DupCloexec(sdc_file->Fd()), sdc_file->TempPath(), /*check_usage=*/true));
 
   writer.SetSdmTimestampNs(TimeSpecToNs(sdm_st.st_mtim));
@@ -1187,14 +1235,17 @@ ndk::ScopedAStatus Artd::dexopt(
   _aidl_return->cancelled = false;
 
   RETURN_FATAL_IF_PRE_REBOOT_MISMATCH(options_, in_outputArtifacts, "outputArtifacts");
+  ArtLogger logger =
+      in_loggingFd.get() >= 0 ? ArtLogger::FromFd(in_loggingFd.get()) : ArtLogger::Default();
+
   RawArtifactsPath artifacts_path =
       OR_RETURN_FATAL(BuildArtifactsPath(in_outputArtifacts.artifactsPath));
   OR_RETURN_FATAL(ValidateDexPath(in_dexFile));
   // `in_profile` can be either a Pre-reboot profile or an ordinary one.
   std::optional<std::string> profile_path =
-      in_profile.has_value() ?
-          std::make_optional(OR_RETURN_FATAL(BuildProfileOrDmPath(in_profile.value()))) :
-          std::nullopt;
+      in_profile.has_value()
+          ? std::make_optional(OR_RETURN_FATAL(BuildProfileOrDmPath(in_profile.value())))
+          : std::nullopt;
   ArtdCancellationSignal* cancellation_signal =
       OR_RETURN_FATAL(ToArtdCancellationSignal(in_cancellationSignal.get()));
 
@@ -1228,42 +1279,48 @@ ndk::ScopedAStatus Artd::dexopt(
   CmdlineBuilder args;
   args.Add(OR_RETURN_FATAL(GetDex2Oat()));
 
-  const FsPermission& fs_permission = in_outputArtifacts.permissionSettings.fileFsPermission;
+  const FsPermission& odex_fs_permission =
+      in_outputArtifacts.permissionSettings.odexFileFsPermission;
+  const FsPermission& vdex_fs_permission =
+      in_outputArtifacts.permissionSettings.vdexFileFsPermission;
 
   std::unique_ptr<File> dex_file = OR_RETURN_NON_FATAL(OpenFileForReading(in_dexFile));
   args.Add("--zip-fd=%d", dex_file->Fd()).Add("--zip-location=%s", in_dexFile);
   fd_logger.Add(*dex_file);
+  // Check if the dex file is other-readable compared to the given fs_permission.
   struct stat dex_st = OR_RETURN_NON_FATAL(injector_->Fstat(*dex_file));
-  if ((dex_st.st_mode & S_IROTH) == 0) {
-    if (fs_permission.isOtherReadable) {
-      return NonFatal(ART_FORMAT(
-          "Outputs cannot be other-readable because the dex file '{}' is not other-readable",
-          dex_file->GetPath()));
-    }
-    // Negative numbers mean no `chown`. 0 means root.
-    // Note: this check is more strict than it needs to be. For example, it doesn't allow the
-    // outputs to belong to a group that is a subset of the dex file's group. This is for
-    // simplicity, and it's okay as we don't have to handle such complicated cases in practice.
-    if ((fs_permission.uid > 0 && static_cast<uid_t>(fs_permission.uid) != dex_st.st_uid) ||
-        (fs_permission.gid > 0 && static_cast<gid_t>(fs_permission.gid) != dex_st.st_uid &&
-         static_cast<gid_t>(fs_permission.gid) != dex_st.st_gid)) {
-      return NonFatal(ART_FORMAT(
-          "Outputs' owner doesn't match the dex file '{}' (outputs: {}:{}, dex file: {}:{})",
-          dex_file->GetPath(),
-          fs_permission.uid,
-          fs_permission.gid,
-          dex_st.st_uid,
-          dex_st.st_gid));
+  for (const auto& fs_permission : {odex_fs_permission, vdex_fs_permission}) {
+    if ((dex_st.st_mode & S_IROTH) == 0) {
+      if (fs_permission.isOtherReadable) {
+        return NonFatal(ART_FORMAT(
+            "Outputs cannot be other-readable because the dex file '{}' is not other-readable",
+            dex_file->GetPath()));
+      }
+      // Negative numbers mean no `chown`. 0 means root.
+      // Note: this check is more strict than it needs to be. For example, it doesn't allow the
+      // outputs to belong to a group that is a subset of the dex file's group. This is for
+      // simplicity, and it's okay as we don't have to handle such complicated cases in practice.
+      if ((fs_permission.uid > 0 && static_cast<uid_t>(fs_permission.uid) != dex_st.st_uid) ||
+          (fs_permission.gid > 0 && static_cast<gid_t>(fs_permission.gid) != dex_st.st_uid &&
+           static_cast<gid_t>(fs_permission.gid) != dex_st.st_gid)) {
+        return NonFatal(ART_FORMAT(
+            "Outputs' owner doesn't match the dex file '{}' (outputs: {}:{}, dex file: {}:{})",
+            dex_file->GetPath(),
+            fs_permission.uid,
+            fs_permission.gid,
+            dex_st.st_uid,
+            dex_st.st_gid));
+      }
     }
   }
 
   std::unique_ptr<NewFile> oat_file =
-      OR_RETURN_NON_FATAL(NewFile::Create(artifacts_path.oat_path, fs_permission));
+      OR_RETURN_NON_FATAL(NewFile::Create(artifacts_path.oat_path, odex_fs_permission));
   args.Add("--oat-fd=%d", oat_file->Fd()).Add("--oat-location=%s", artifacts_path.oat_path);
   fd_logger.Add(*oat_file);
 
   std::unique_ptr<NewFile> vdex_file =
-      OR_RETURN_NON_FATAL(NewFile::Create(artifacts_path.vdex_path, fs_permission));
+      OR_RETURN_NON_FATAL(NewFile::Create(artifacts_path.vdex_path, vdex_fs_permission));
   args.Add("--output-vdex-fd=%d", vdex_file->Fd());
   fd_logger.Add(*vdex_file);
 
@@ -1272,7 +1329,7 @@ ndk::ScopedAStatus Artd::dexopt(
 
   std::unique_ptr<NewFile> art_file = nullptr;
   if (in_dexoptOptions.generateAppImage) {
-    art_file = OR_RETURN_NON_FATAL(NewFile::Create(artifacts_path.art_path, fs_permission));
+    art_file = OR_RETURN_NON_FATAL(NewFile::Create(artifacts_path.art_path, odex_fs_permission));
     args.Add("--app-image-fd=%d", art_file->Fd());
     args.AddIfNonEmpty("--image-format=%s", props_->GetOrEmpty("dalvik.vm.appimageformat"));
     fd_logger.Add(*art_file);
@@ -1331,9 +1388,9 @@ ndk::ScopedAStatus Artd::dexopt(
     args.Add("--profile-file-fd=%d", profile_file->Fd());
     fd_logger.Add(*profile_file);
     struct stat profile_st = OR_RETURN_NON_FATAL(injector_->Fstat(*profile_file));
-    if (fs_permission.isOtherReadable && (profile_st.st_mode & S_IROTH) == 0) {
+    if (odex_fs_permission.isOtherReadable && (profile_st.st_mode & S_IROTH) == 0) {
       return NonFatal(ART_FORMAT(
-          "Outputs cannot be other-readable because the profile '{}' is not other-readable",
+          "Odex file cannot be other-readable because the profile '{}' is not other-readable",
           profile_file->GetPath()));
     }
     // TODO(b/260228411): Check uid and gid.
@@ -1368,8 +1425,8 @@ ndk::ScopedAStatus Artd::dexopt(
 
   art_exec_args.Add("--keep-fds=%s", fd_logger.GetFds()).Add("--").Concat(std::move(args));
 
-  LOG(INFO) << "Running dex2oat: " << Join(art_exec_args.Get(), /*separator=*/" ")
-            << "\nOpened FDs: " << fd_logger;
+  LOG_TO(logger, INFO) << "Running dex2oat: " << Join(art_exec_args.Get(), /*separator=*/" ")
+                       << "\nOpened FDs: " << fd_logger;
 
   ProcessStat stat;
   std::string error_msg;
@@ -1394,7 +1451,7 @@ ndk::ScopedAStatus Artd::dexopt(
     return NonFatal(ART_FORMAT("Failed to run dex2oat: {} {}", error_msg, result_info));
   }
 
-  LOG(INFO) << ART_FORMAT("dex2oat returned code {}", result.exit_code);
+  LOG_TO(logger, INFO) << ART_FORMAT("dex2oat returned code {}", result.exit_code);
 
   if (result.exit_code != 0) {
     return NonFatal(
@@ -1421,9 +1478,10 @@ ScopedAStatus ArtdCancellationSignal::cancel() {
   std::lock_guard<std::mutex> lock(mu_);
   is_cancelled_ = true;
   for (pid_t pid : pids_) {
-    // Kill the whole process group.
-    int res = injector_->Kill(-pid, SIGKILL);
+    int res = injector_->Kill(pid, SIGKILL);
     DCHECK_EQ(res, 0);
+    // Kill the whole process group.
+    injector_->Kill(-pid, SIGKILL);
   }
   return ScopedAStatus::ok();
 }
@@ -1441,8 +1499,11 @@ ExecCallbacks ArtdCancellationSignal::CreateExecCallbacks() {
             pids_.insert(pid);
             // Handle cancellation signals sent before the process starts.
             if (is_cancelled_) {
-              int res = injector_->Kill(-pid, SIGKILL);
+              // Kill the whole process and then kill process group since there is no knowledge if
+              // there yet exist one forked process or already created process group.
+              int res = injector_->Kill(pid, SIGKILL);
               DCHECK_EQ(res, 0);
+              injector_->Kill(-pid, SIGKILL);
             }
           },
       .on_end =
@@ -1664,6 +1725,20 @@ ScopedAStatus Artd::initProfileSaveNotification(const PrimaryCurProfilePath& in_
 
   *_aidl_return = ndk::SharedRefBase::make<ArtdNotification>(
       injector_.get(), path, std::move(inotify_fd), std::move(pidfd));
+  return ScopedAStatus::ok();
+}
+
+ScopedAStatus Artd::hasAllClcDexFiles(const std::string& in_dexFile,
+                                      const std::string& in_classLoaderContext,
+                                      bool* _aidl_return) {
+  *_aidl_return = true;
+  for (const std::string& path :
+       OR_RETURN_FATAL(FlattenAndValidateClassLoaderContext(in_dexFile, in_classLoaderContext))) {
+    if (OR_RETURN_NON_FATAL(GetFileVisibility(path)) == FileVisibility::NOT_FOUND) {
+      *_aidl_return = false;
+      break;
+    }
+  }
   return ScopedAStatus::ok();
 }
 
@@ -1928,6 +2003,28 @@ Result<const std::vector<std::string>*> Artd::GetBootImageLocations() {
   return &cached_boot_image_locations_.value();
 }
 
+Result<BootClasspathFds> Artd::OpenBootClasspathFds(const std::vector<std::string>& bcp_jars) {
+  BootClasspathFds result;
+  for (const std::string& jar : bcp_jars) {
+    // Special treatment for Compilation OS.  When we pass in files to CompOS we also need to pass
+    // in the verity digest for those files. Verity digests are only cheaply provided if the file
+    // resides in a partition that supports fs-verity or has an accompanying `fsv_meta` file.
+    // Since APEXes do not have fs-verity enabled nor are fsv_meta files provided the verity digest
+    // would need to computed at runtime, which is slow.
+    // Since all the APEXes that contain BCP jars are mounted within the VM's file system we set
+    // the fd to -1 to indicate that the compiler should search for the BCP jars and open up the
+    // files itself.
+    if (jar.starts_with("/apex/")) {
+      result.fds.push_back(-1);
+    } else {
+      std::unique_ptr<File> jar_file = OR_RETURN(OpenFileForReading(jar.c_str()));
+      result.fds.push_back(jar_file->Fd());
+      result.files.push_back(std::move(jar_file));
+    }
+  }
+  return result;
+}
+
 Result<const std::vector<std::string>*> Artd::GetBootClassPath() {
   std::lock_guard<std::mutex> lock(cache_mu_);
 
@@ -2036,9 +2133,9 @@ bool Artd::ShouldUseDebugBinaries() {
 }
 
 Result<std::string> Artd::GetDex2Oat() {
-  std::string binary_name = ShouldUseDebugBinaries() ?
-                                (ShouldUseDex2Oat64() ? "dex2oatd64" : "dex2oatd32") :
-                                (ShouldUseDex2Oat64() ? "dex2oat64" : "dex2oat32");
+  std::string binary_name = ShouldUseDebugBinaries()
+                                ? (ShouldUseDex2Oat64() ? "dex2oatd64" : "dex2oatd32")
+                                : (ShouldUseDex2Oat64() ? "dex2oat64" : "dex2oat32");
   return BuildArtBinPath(binary_name);
 }
 
@@ -2125,8 +2222,8 @@ void Artd::AddPerfConfigFlags(PriorityClass priority_class,
 
   if (priority_class < PriorityClass::BOOT) {
     art_exec_args
-        .Add(priority_class <= PriorityClass::BACKGROUND ? "--set-task-profile=Dex2OatBackground" :
-                                                           "--set-task-profile=Dex2OatBootComplete")
+        .Add(priority_class <= PriorityClass::BACKGROUND ? "--set-task-profile=Dex2OatBackground"
+                                                         : "--set-task-profile=Dex2OatBootComplete")
         .Add("--set-priority=background");
   }
 
@@ -2322,6 +2419,20 @@ Result<void> Artd::PreRebootInitDeriveClasspath(const std::string& path) {
 
 Result<bool> Artd::PreRebootInitBootImages(ArtdCancellationSignal* cancellation_signal) {
   CmdlineBuilder args = OR_RETURN(GetArtExecCmdlineBuilder());
+
+  // A clean view of the new system partition prepared by dexopt_chroot_setup, disregarding the
+  // /system/etc overrides, to make sure odrefresh gets the new boot image profile and other files
+  // in /system/etc.
+  unique_fd new_system_dir;
+  if (OS::DirectoryExists("/mnt/new_system")) {
+    // odrefresh doesn't have the SELinux permission to find files under `/mnt` in chroot, so we
+    // open the directory and pass it as a dirfd to odrefresh.
+    new_system_dir = OR_RETURN_WITH_CONTEXT(OpenDirectory("/mnt/new_system"),
+                                            "Failed to open the clean system view");
+    args.Add("--env=ANDROID_ROOT=/proc/self/fd/%d", new_system_dir.get())
+        .Add("--keep-fds=%d", new_system_dir.get());
+  }
+
   args.Add("--")
       .Add(OR_RETURN(BuildArtBinPath("odrefresh")))
       .Add("--only-boot-images")
@@ -2363,7 +2474,8 @@ ScopedAStatus Artd::validateClassLoaderContext(const std::string& in_dexFile,
                                                const std::string& in_classLoaderContext,
                                                std::optional<std::string>* _aidl_return) {
   RETURN_FATAL_IF_NOT_PRE_REBOOT(options_);
-  if (Result<void> result = ValidateClassLoaderContext(in_dexFile, in_classLoaderContext);
+  if (Result<std::vector<std::string>> result =
+          FlattenAndValidateClassLoaderContext(in_dexFile, in_classLoaderContext);
       !result.ok()) {
     *_aidl_return = result.error().message();
   } else {

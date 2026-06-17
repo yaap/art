@@ -399,7 +399,7 @@ jvmtiError Redefiner::CanRedefineClass(art::Handle<art::mirror::Class> klass,
     // It's only a problem to try to retransform/redefine a unprepared class if it's happening on
     // the same thread as the class-linking process. If it's on another thread we will be able to
     // wait for the preparation to finish and continue from there.
-    if (klass->GetLockOwnerThreadId() == self->GetThreadId()) {
+    if (klass->IsLockOwnedByMe(self)) {
       *error_msg = "Modification of class " + klass->PrettyClass() +
           " from within the classes ClassLoad callback is not supported to prevent deadlocks." +
           " Please use ClassFileLoadHook directly instead.";
@@ -2891,13 +2891,19 @@ void Redefiner::ClassRedefinition::UpdateClassStructurally(const RedefinitionDat
         return f;
       },
       [&](art::ArtMethod* m, const auto& info) REQUIRES(art::Locks::mutator_lock_) {
-        DCHECK(m != nullptr) << info;
-        auto it = method_map.find(m);
+        // For Constructor objects constructed via serializationCopy ArtMethod can be a nullptr.
+        if (m == nullptr) {
+          return static_cast<art::ArtMethod*>(nullptr);
+        }
+
         if (UNLIKELY(could_change_resolution_of(m, info))) {
           // Dex-cache Resolution might change. Just clear the resolved value.
           VLOG(plugin) << "Clearing resolution " << info << " for (method) " << m->PrettyMethod();
           return static_cast<art::ArtMethod*>(nullptr);
-        } else if (it != method_map.end()) {
+        }
+
+        auto it = method_map.find(m);
+        if (it != method_map.end()) {
           VLOG(plugin) << "Updating " << info << " object for (method) "
                       << it->second->PrettyMethod();
           return it->second;

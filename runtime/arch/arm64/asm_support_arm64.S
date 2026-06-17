@@ -42,6 +42,75 @@
 // Implicit suspend check register.
 #define xSUSPEND x21
 
+#ifdef ART_USE_RESTRICTED_MODE
+// Load the absolute address of a symbol using the R_X86_64_PC64 (PC relative)
+// relocation type into the register "reg".
+//
+// Clobbers xIP1.
+//
+.macro LOAD_PC_REL_ADDRESS reg, symbol
+    // Load address of reloc_addr following R_X86_64_PC64 relocation type.
+    adr \reg, reloc_addr\@
+    ldr xIP1, reloc_addr\@
+    add \reg, \reg, xIP1
+
+    // Jump over the literal.
+    b .Lload_pc_rel_address_done\@
+
+    .global \symbol
+#ifdef ART_USE_SIMULATOR
+    // R_AARCH64_NONE will be replaced by R_X86_64_PC64 in simulator mode.
+    .reloc reloc_addr\@, R_AARCH64_NONE, \symbol
+#else
+    .reloc reloc_addr\@, R_AARCH64_PREL64, \symbol
+#endif    // ART_USE_SIMULATOR
+reloc_addr\@:
+    .dword 0x0000000000000000
+.Lload_pc_rel_address_done\@:
+.endm
+
+// Note: xIP0 and xIP1 will be clobbered and shouldn't ever be expected to retain values pre/post
+// branch to symbol as the Arm AAPCS prohibts it.
+
+// Call a symbol (e.g: "bl symbol").
+.macro CALL_SYMBOL symbol
+    LOAD_PC_REL_ADDRESS xIP0, \symbol
+    blr xIP0
+.endm
+
+// Branch to a symbol without link (e.g: "b symbol")
+.macro BRANCH_SYMBOL symbol
+    LOAD_PC_REL_ADDRESS xIP0, \symbol
+    br xIP0
+.endm
+
+// Branch to a symbol if register is not equal to zero (e.g: "cbz reg, symbol").
+.macro BRANCH_SYMBOL_CBZ reg, symbol
+    cbnz \reg, .Lbranch_not_zero\@
+    BRANCH_SYMBOL \symbol
+
+.Lbranch_not_zero\@:
+    nop
+.endm
+
+// Branch to a symbol if not equal (e.g: "b.ne symbol").
+.macro BRANCH_SYMBOL_NE symbol
+    b.eq .Lbranch_equal\@
+    BRANCH_SYMBOL \symbol
+
+.Lbranch_equal\@:
+    nop
+.endm
+
+// Branch to a symbol if not equal (e.g: "b.eq symbol").
+.macro BRANCH_SYMBOL_EQ symbol
+    b.ne .Lbranch_not_equal\@
+    BRANCH_SYMBOL \symbol
+
+.Lbranch_not_equal\@:
+    nop
+.endm
+#else
 .macro LOAD_PC_REL_ADDRESS reg, symbol
     adr \reg, \symbol
 .endm
@@ -65,6 +134,7 @@
 .macro BRANCH_SYMBOL_EQ symbol
     b.eq \symbol
 .endm
+#endif    // ART_USE_RESTRICTED_MODE
 
 .macro CFI_EXPRESSION_BREG n, b, offset
     .if (-0x40 <= (\offset)) && ((\offset) < 0x40)
@@ -227,14 +297,24 @@
     .cfi_adjust_cfa_offset -(ALL_ARGS_SIZE + \extra_space)
 .endm
 
+#ifdef ART_USE_RESTRICTED_MODE
+.macro LOAD_RUNTIME_INSTANCE reg
+    LOAD_PC_REL_ADDRESS \reg, _ZN3art7Runtime9instance_E
+
+    // _ZN3art7Runtime9instance_E is a pointer to the runtime instance so
+    // dereference it.
+    ldr \reg, [\reg, #0]
+.endm
+#else
 .macro LOAD_RUNTIME_INSTANCE reg
 #if __has_feature(hwaddress_sanitizer)
     adrp \reg, :pg_hi21_nc:_ZN3art7Runtime9instance_E
 #else
     adrp \reg, _ZN3art7Runtime9instance_E
-#endif
+#endif  // __has_feature(hwaddress_sanitizer)
     ldr \reg, [\reg, #:lo12:_ZN3art7Runtime9instance_E]
 .endm
+#endif  // ART_USE_RESTRICTED_MODE
 
 // Macro to refresh the Marking Register (W20).
 //
@@ -460,16 +540,24 @@
 .endm
 
 // Locking is needed for both managed code and JNI stubs.
-.macro LOCK_OBJECT_FAST_PATH obj, slow_lock, can_be_null
-    // Use scratch registers x8-x11 as temporaries.
+.macro LOCK_OBJECT_FAST_PATH obj, slow_lock, can_be_null, use_lse
+    .if \use_lse
+        .arch_extension lse
+    .endif
+    // Use scratch registers x8-x11 (x12 for LSE) as temporaries.
     ldr    w9, [xSELF, #THREAD_ID_OFFSET]
     .if \can_be_null
         BRANCH_SYMBOL_CBZ \obj, \slow_lock
     .endif
                                       // Exclusive load/store has no immediate anymore.
     add    x8, \obj, #MIRROR_OBJECT_LOCK_WORD_OFFSET
+    .if \use_lse
+        ldr    w10, [x8]              // With LSE we only need a simple one-time load.
+    .endif
 1:
-    ldaxr  w10, [x8]                  // Acquire needed only in most common case.
+    .if !\use_lse
+        ldaxr  w10, [x8]              // Without LSE, acquire needed only in most common case.
+    .endif
     eor    w11, w10, w9               // Prepare the value to store if unlocked
                                       //   (thread id, count of 0 and preserved read barrier bits),
                                       // or prepare to compare thread id for recursive lock check
@@ -477,8 +565,15 @@
     tst    w10, #LOCK_WORD_GC_STATE_MASK_SHIFTED_TOGGLED  // Test the non-gc bits.
     b.ne   2f                         // Check if unlocked.
     // Unlocked case - store w11: original lock word plus thread id, preserved read barrier bits.
-    stxr   w10, w11, [x8]
-    cbnz   w10, 1b                    // If the store failed, retry.
+    .if \use_lse
+        mov    w12, w10               // Remember old value for comparison.
+        casa   w10, w11, [x8]         // CAS Acquire: w10 (expected) -> w11 (new)
+        cmp    w10, w12
+        b.ne   1b                     // Retry
+    .else
+        stxr   w10, w11, [x8]
+        cbnz   w10, 1b                // If the store failed, retry.
+    .endif
     ret
 2:  // w10: original lock word, w9: thread id, w11: w10 ^ w9
                                       // Check lock word state and thread id together,
@@ -488,13 +583,26 @@
     tst    w11, #LOCK_WORD_THIN_LOCK_COUNT_MASK_SHIFTED  // Test the new thin lock count.
     BRANCH_SYMBOL_EQ \slow_lock                 // Zero as the new count indicates overflow, go
                                                 // slow path.
-    stxr   w10, w11, [x8]
-    cbnz   w10, 1b                    // If the store failed, retry.
+    .if \use_lse
+        mov    w12, w10               // Remember old value for comparison.
+        cas    w10, w11, [x8]         // CAS: w10 (expected) -> w11 (new). Relaxed ordering.
+        cmp    w10, w12
+        b.ne   1b                     // Retry
+    .else
+        stxr   w10, w11, [x8]
+        cbnz   w10, 1b                // If the store failed, retry.
+    .endif
     ret
+    .if \use_lse
+        .arch_extension nolse
+    .endif
 .endm
 
 // Unlocking is needed for both managed code and JNI stubs.
-.macro UNLOCK_OBJECT_FAST_PATH obj, slow_unlock, can_be_null
+.macro UNLOCK_OBJECT_FAST_PATH obj, slow_unlock, can_be_null, use_lse
+    .if \use_lse
+        .arch_extension lse
+    .endif
     // Use scratch registers x8-x11 as temporaries.
     ldr    w9, [xSELF, #THREAD_ID_OFFSET]
     .if \can_be_null
@@ -502,38 +610,58 @@
     .endif
                                       // Exclusive load/store has no immediate anymore.
     add    x8, \obj, #MIRROR_OBJECT_LOCK_WORD_OFFSET
-1:
 #ifndef USE_READ_BARRIER
     ldr    w10, [x8]
 #else
-    ldxr   w10, [x8]                  // Need to use atomic instructions for read barrier.
+    .if \use_lse
+        ldr    w10, [x8]              // With LSE, we still need a simple load to check ownership.
+    .else
+1:                                    // This path is only retaken for non-LSE paths.
+        ldxr   w10, [x8]              // Without LSE, we need an exclusive load.
+    .endif
 #endif
+
     eor    w11, w10, w9               // Prepare the value to store if simply locked
                                       //   (mostly 0s, and preserved read barrier bits),
                                       // or prepare to compare thread id for recursive lock check
                                       //   (lock_word.ThreadId() ^ self->ThreadId()).
     tst    w11, #LOCK_WORD_GC_STATE_MASK_SHIFTED_TOGGLED  // Test the non-gc bits.
     b.ne   2f                         // Locked recursively or by other thread?
+
     // Transition to unlocked.
 #ifndef USE_READ_BARRIER
     stlr   w11, [x8]
 #else
-    stlxr  w10, w11, [x8]             // Need to use atomic instructions for read barrier.
-    cbnz   w10, 1b                    // If the store failed, retry.
+    .if \use_lse
+        // Memory: [ID | RB]  ^  w9: [ID | 0]  -> Result: [0 | RB]
+        steorl w9, [x8]               // Atomically clear thread id but preserve read barrier.
+    .else
+        stlxr  w10, w11, [x8]         // Need to use atomic instructions for read barrier.
+        cbnz   w10, 1b                // If the store failed, retry.
+    .endif
 #endif
     ret
 2:
                                       // Check lock word state and thread id together.
     tst    w11, #(LOCK_WORD_STATE_MASK_SHIFTED | LOCK_WORD_THIN_LOCK_OWNER_MASK_SHIFTED)
     BRANCH_SYMBOL_NE \slow_unlock
-    sub    w11, w10, #LOCK_WORD_THIN_LOCK_COUNT_ONE  // decrement count
 #ifndef USE_READ_BARRIER
+    sub    w11, w10, #LOCK_WORD_THIN_LOCK_COUNT_ONE  // decrement count
     str    w11, [x8]
 #else
-    stxr   w10, w11, [x8]             // Need to use atomic instructions for read barrier.
-    cbnz   w10, 1b                    // If the store failed, retry.
+    .if \use_lse
+        mov    w11, #-LOCK_WORD_THIN_LOCK_COUNT_ONE
+        stadd  w11, [x8]              // Atomically decrement count field but preserve read barrier.
+    .else
+        sub    w11, w10, #LOCK_WORD_THIN_LOCK_COUNT_ONE  // decrement count
+        stxr   w10, w11, [x8]         // Need to use atomic instructions for read barrier.
+        cbnz   w10, 1b                // If the store failed, retry.
+    .endif
 #endif
     ret
+    .if \use_lse
+        .arch_extension nolse
+    .endif
 .endm
 
 #endif  // ART_RUNTIME_ARCH_ARM64_ASM_SUPPORT_ARM64_S_

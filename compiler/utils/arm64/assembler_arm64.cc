@@ -16,9 +16,9 @@
 
 #include "arch/arm64/instruction_set_features_arm64.h"
 #include "assembler_arm64.h"
+#include "base/offsets.h"
 #include "entrypoints/quick/quick_entrypoints.h"
 #include "heap_poisoning.h"
-#include "offsets.h"
 #include "thread.h"
 
 using namespace vixl::aarch64;  // NOLINT(build/namespaces)
@@ -32,38 +32,39 @@ namespace arm64 {
 #define ___   vixl_masm_.
 #endif
 
-// Sets vixl::CPUFeatures according to ART instruction set features.
-static void SetVIXLCPUFeaturesFromART(vixl::aarch64::MacroAssembler* vixl_masm_,
-                                      const Arm64InstructionSetFeatures* art_features) {
-  // Retrieve already initialized default features of vixl.
-  vixl::CPUFeatures* features = vixl_masm_->GetCPUFeatures();
-
-  DCHECK(features->Has(vixl::CPUFeatures::kFP));
-  DCHECK(features->Has(vixl::CPUFeatures::kNEON));
-  DCHECK(art_features != nullptr);
-  if (art_features->HasCRC()) {
-    features->Combine(vixl::CPUFeatures::kCRC32);
-  }
-  if (art_features->HasDotProd()) {
-    features->Combine(vixl::CPUFeatures::kDotProduct);
-  }
-  if (art_features->HasFP16()) {
-    features->Combine(vixl::CPUFeatures::kFPHalf);
-    features->Combine(vixl::CPUFeatures::kNEONHalf);
-  }
-  if (art_features->HasLSE()) {
-    features->Combine(vixl::CPUFeatures::kAtomics);
-  }
-  if (art_features->HasSVE()) {
-    features->Combine(vixl::CPUFeatures::kSVE);
-  }
-}
-
 Arm64Assembler::Arm64Assembler(ArenaAllocator* allocator,
                                const Arm64InstructionSetFeatures* art_features)
     : Assembler(allocator) {
+  // Retrieve already initialized default features of vixl.
+  vixl::CPUFeatures* features = vixl_masm_.GetCPUFeatures();
+
+  // These features should always be available.
+  DCHECK(features->Has(vixl::CPUFeatures::kFP));
+  DCHECK(features->Has(vixl::CPUFeatures::kNEON));
+
+  // The default vixl features should never assume atomics. We instead rely entirely on the ART
+  // feature definitions to allow atomic usage (via LSE), as there may be chipset variants where LSE
+  // is technically supported but better avoided  in production.
+  DCHECK(!features->Has(vixl::CPUFeatures::kAtomics));
+
+  // Configure vixl::CPUFeatures according to ART instruction set features.
   if (art_features != nullptr) {
-    SetVIXLCPUFeaturesFromART(&vixl_masm_, art_features);
+    if (art_features->HasCRC()) {
+      features->Combine(vixl::CPUFeatures::kCRC32);
+    }
+    if (art_features->HasDotProd()) {
+      features->Combine(vixl::CPUFeatures::kDotProduct);
+    }
+    if (art_features->HasFP16()) {
+      features->Combine(vixl::CPUFeatures::kFPHalf);
+      features->Combine(vixl::CPUFeatures::kNEONHalf);
+    }
+    if (art_features->HasLSE()) {
+      features->Combine(vixl::CPUFeatures::kAtomics);
+    }
+    if (art_features->HasSVE()) {
+      features->Combine(vixl::CPUFeatures::kSVE);
+    }
   }
 }
 

@@ -20,12 +20,12 @@
 #include "base/scoped_arena_containers.h"
 #include "base/macros.h"
 #include "base/mutex.h"
+#include "base/offsets.h"
 #include "base/safe_map.h"
 #include "base/value_object.h"
 #include "dex/dex_file_types.h"
 #include "dex/primitive.h"
 #include "gc_root.h"
-#include "offsets.h"
 
 #include <list>
 #include <map>

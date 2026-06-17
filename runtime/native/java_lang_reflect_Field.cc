@@ -34,6 +34,7 @@
 #include "mirror/object_array-alloc-inl.h"
 #include "native_util.h"
 #include "reflection-inl.h"
+#include "runtime.h"
 #include "scoped_fast_native_object_access-inl.h"
 #include "well_known_classes.h"
 
@@ -340,12 +341,29 @@ ALWAYS_INLINE inline static void SetFieldValue(ObjPtr<mirror::Object> o,
   }
 }
 
+static bool IsUnmodifiable(ObjPtr<mirror::Field> field) REQUIRES_SHARED(Locks::mutator_lock_) {
+  return field->GetArtField()->IsUnmodifiable([field]() REQUIRES_SHARED(Locks::mutator_lock_) {
+    DCHECK(field->GetType() != nullptr);
+    return field->GetType();
+  });
+}
+
 ALWAYS_INLINE inline static bool ThrowIAEIfFieldIsNotOverwritable(ObjPtr<mirror::Field> field)
     REQUIRES_SHARED(Locks::mutator_lock_) {
+  ArtField* art_field = field->GetArtField();
+
+  if (UNLIKELY(art_field->IsStatic() && art_field->IsFinal())) {
+    if (art_field->GetDeclaringClass()->IsBootStrapClassLoaded()) {
+      Runtime::Current()->GetMetrics()->BcpStaticFinalFieldOverwrite()->AddOne();
+    } else {
+      Runtime::Current()->GetMetrics()->AppStaticFinalFieldOverwrite()->AddOne();
+    }
+  }
+
   // Write-protected fields can be modified via System.setIn/setOut/setErr methods only.
   // However, before Android C, reflection and JNI APIs were allowed to modify them.
-  if (field->IsWriteProtected()) {
-    // See Field::IsMonotonic.
+  if (art_field->IsWriteProtected()) {
+    // See `ArtField::IsUnmodifiable()`.
     uint32_t target_sdk_version = Runtime::Current()->GetTargetSdkVersion();
     if (IsSdkVersionSetAndAtMost(target_sdk_version, SdkVersion::kB)) {
       return false;
@@ -355,15 +373,15 @@ ALWAYS_INLINE inline static bool ThrowIAEIfFieldIsNotOverwritable(ObjPtr<mirror:
     if (IsSdkVersionSetAndAtMost(sdk_version, SdkVersion::kB)) {
       return false;
     }
-  } else if (!field->IsMonotonic()) {
+  } else if (!IsUnmodifiable(field)) {
     return false;
   }
-  ThrowIllegalAccessException(
-          StringPrintf("Cannot set %s field %s of class %s",
-              PrettyJavaAccessFlags(field->GetAccessFlags()).c_str(),
-              ArtField::PrettyField(field->GetArtField()).c_str(),
-              field->GetDeclaringClass()->PrettyClass().c_str()).c_str());
 
+  ThrowIllegalAccessException(
+      StringPrintf("Cannot set %s field %s of class %s",
+          PrettyJavaAccessFlags(art_field->GetAccessFlags()).c_str(),
+          ArtField::PrettyField(art_field).c_str(),
+          field->GetDeclaringClass()->PrettyClass().c_str()).c_str());
   return true;
 }
 
@@ -557,11 +575,11 @@ static jboolean Field_isAnnotationPresentNative(JNIEnv* env,
   return annotations::IsFieldAnnotationPresent(field, klass);
 }
 
-static jboolean Field_isMonotonic0(JNIEnv* env, jobject javaField) {
+static jboolean Field_isUnmodifiable0(JNIEnv* env, jobject javaField) {
   ScopedObjectAccess soa(env);
   ObjPtr<mirror::Field> f = soa.Decode<mirror::Field>(javaField);
 
-  return f->IsMonotonic();
+  return IsUnmodifiable(f);
 }
 
 static JNINativeMethod gMethods[] = {
@@ -581,7 +599,7 @@ static JNINativeMethod gMethods[] = {
   FAST_NATIVE_METHOD(Field, getNameInternal, "()Ljava/lang/String;"),
   FAST_NATIVE_METHOD(Field, getShort,   "(Ljava/lang/Object;)S"),
   FAST_NATIVE_METHOD(Field, isAnnotationPresentNative, "(Ljava/lang/Class;)Z"),
-  NATIVE_METHOD(Field,      isMonotonic0, "()Z"),
+  NATIVE_METHOD(Field,      isUnmodifiable0, "()Z"),
   FAST_NATIVE_METHOD(Field, set,        "(Ljava/lang/Object;Ljava/lang/Object;)V"),
   FAST_NATIVE_METHOD(Field, setBoolean, "(Ljava/lang/Object;Z)V"),
   FAST_NATIVE_METHOD(Field, setByte,    "(Ljava/lang/Object;B)V"),

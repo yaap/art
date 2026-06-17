@@ -18,18 +18,42 @@ import subprocess
 import sys
 import pkgutil
 import tempfile
-import stat
+
+def get_base_dir():
+    # Soong binary sets the script path to argv[0]
+    script_path = os.path.abspath(sys.argv[0])
+    if os.path.isfile(script_path):
+        return os.path.dirname(script_path)
+    return os.path.dirname(os.path.abspath(__file__))
 
 def get_resource_path(resource_name, mode=0o644):
-    """Retrieves a resource from the package and writes it to a temporary file.
+    """Retrieves a resource path.
+
+    Checks the script's directory first. If not found, retrieves it from the
+    package resources and writes it to a temporary file.
 
     Args:
         resource_name: The name of the resource.
         mode: File permissions mode (default is 0o644).
     """
+    script_dir = get_base_dir()
+    local_path = os.path.join(script_dir, resource_name)
+    if os.path.exists(local_path):
+        print("Use local resource:", resource_name)
+        return local_path
+
     data = pkgutil.get_data(__name__, resource_name)
+    if data is None:
+        raise FileNotFoundError(f"Resource not found in package: {resource_name}")
+
     if not data:
-        raise FileNotFoundError(f"Resource not found: {resource_name}")
+        msg = f"Resource '{resource_name}' is empty."
+        if resource_name == "hiddenapi-flags.csv" or resource_name == "hiddenapi-flagged-apis.csv":
+            msg += (" This usually happens in 'eng' builds where hidden API checks "
+                    "are disabled by default. Please rebuild with "
+                    "'ENABLE_HIDDENAPI_FLAGS=true m appcompat'.")
+        raise RuntimeError(msg)
+
     with tempfile.NamedTemporaryFile(delete=False) as temp_file:
         temp_file.write(data)
         resource_path = temp_file.name
@@ -41,9 +65,9 @@ def main():
     print("API uses that do not execute at runtime, and reflection uses")
     print("that do not exist. It can also miss on reflection uses.")
 
-    script_dir = os.path.dirname(os.path.realpath(__file__))
     veridex_path = get_resource_path("veridex", 0o755)
     hiddenapi_flags_path = get_resource_path("hiddenapi-flags.csv")
+    flagged_apis_path = get_resource_path("hiddenapi-flagged-apis.csv")
     system_stubs_path = get_resource_path("system-stubs.zip")
     http_legacy_stubs_path = get_resource_path("org.apache.http.legacy-stubs.zip")
 
@@ -51,6 +75,7 @@ def main():
         veridex_path,
         f"--core-stubs={system_stubs_path}:{http_legacy_stubs_path}",
         f"--api-flags={hiddenapi_flags_path}",
+        f"--flagged-apis={flagged_apis_path}",
         "--exclude-api-lists=sdk,invalid",
     ] + sys.argv[1:]
 

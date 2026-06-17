@@ -510,3 +510,80 @@
 
     return v0
 .end method
+
+## CHECK-START: int TestCmp.CompareSameValue(int) constant_folding (before)
+## CHECK: <<Param:i\d+>> ParameterValue
+## CHECK:                Compare [<<Param>>,<<Param>>]
+
+## CHECK-START: int TestCmp.CompareSameValue(int) constant_folding (after)
+## CHECK-NOT:            Compare
+.method public static CompareSameValue(I)I
+    .registers 2
+    invoke-static {p0, p0}, Ljava/lang/Integer;->compare(II)I
+    move-result v0
+    return v0
+.end method
+
+## CHECK-START: int TestCmp.CompareSameValue_Long(long) constant_folding (before)
+## CHECK: <<Param:j\d+>> ParameterValue
+## CHECK:                Compare [<<Param>>,<<Param>>]
+
+## CHECK-START: int TestCmp.CompareSameValue_Long(long) constant_folding (after)
+## CHECK-NOT:            Compare
+.method public static CompareSameValue_Long(J)I
+    .registers 4
+    cmp-long v0, p0, p0
+    return v0
+.end method
+
+## CHECK-START: int TestCmp.CompareSameValue_Float_Gt(float) constant_folding (before)
+## CHECK: <<Param:f\d+>> ParameterValue
+## CHECK:                Compare [<<Param>>,<<Param>>] bias:gt
+
+## CHECK-START: int TestCmp.CompareSameValue_Float_Gt(float) constant_folding (after)
+## CHECK: <<Param:f\d+>> ParameterValue
+## CHECK:                Compare [<<Param>>,<<Param>>] bias:gt
+.method public static CompareSameValue_Float_Gt(F)I
+    .registers 2
+    cmpg-float v0, p0, p0
+    return v0
+.end method
+
+## CHECK-START: int TestCmp.CompareSameValue_Float_Lt(float) constant_folding (before)
+## CHECK: <<Param:f\d+>> ParameterValue
+## CHECK:                Compare [<<Param>>,<<Param>>] bias:lt
+
+## CHECK-START: int TestCmp.CompareSameValue_Float_Lt(float) constant_folding (after)
+## CHECK: <<Param:f\d+>> ParameterValue
+## CHECK:                Compare [<<Param>>,<<Param>>] bias:lt
+.method public static CompareSameValue_Float_Lt(F)I
+    .registers 2
+    cmpl-float v0, p0, p0
+    return v0
+.end method
+
+## CHECK-START: int TestCmp.CompareSameValue_Double_Gt(double) constant_folding (before)
+## CHECK: <<Param:d\d+>> ParameterValue
+## CHECK:                Compare [<<Param>>,<<Param>>] bias:gt
+
+## CHECK-START: int TestCmp.CompareSameValue_Double_Gt(double) constant_folding (after)
+## CHECK: <<Param:d\d+>> ParameterValue
+## CHECK:                Compare [<<Param>>,<<Param>>] bias:gt
+.method public static CompareSameValue_Double_Gt(D)I
+    .registers 4
+    cmpg-double v0, p0, p0
+    return v0
+.end method
+
+## CHECK-START: int TestCmp.CompareSameValue_Double_Lt(double) constant_folding (before)
+## CHECK: <<Param:d\d+>> ParameterValue
+## CHECK:                Compare [<<Param>>,<<Param>>] bias:lt
+
+## CHECK-START: int TestCmp.CompareSameValue_Double_Lt(double) constant_folding (after)
+## CHECK: <<Param:d\d+>> ParameterValue
+## CHECK:                Compare [<<Param>>,<<Param>>] bias:lt
+.method public static CompareSameValue_Double_Lt(D)I
+    .registers 4
+    cmpl-double v0, p0, p0
+    return v0
+.end method

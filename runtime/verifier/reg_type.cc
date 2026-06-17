@@ -188,6 +188,10 @@ Primitive::Type RegType::GetPrimitiveType() const {
   }
 }
 
+bool RegType::IsNonArrayFinalClass() const {
+  return HasClass() && GetClass()->IsFinal() && !GetClass()->IsArrayClass();
+}
+
 bool RegType::IsObjectArrayTypes() const {
   if (IsUnresolvedMergedReference()) {
     return down_cast<const UnresolvedMergedReferenceType&>(*this).IsObjectArrayTypesImpl();

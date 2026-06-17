@@ -109,7 +109,7 @@ TEST_F(SuperblockClonerTest, CloneBasicBlocks) {
   ArenaBitVector orig_bb_set(
       arena, graph_->GetBlocks().size(), false, kArenaAllocSuperblockCloner);
   HBasicBlockMap bb_map(std::less<HBasicBlock*>(), arena->Adapter(kArenaAllocSuperblockCloner));
-  HInstructionMap hir_map(std::less<HInstruction*>(), arena->Adapter(kArenaAllocSuperblockCloner));
+  HInstructionMap hir_map(arena->Adapter(kArenaAllocSuperblockCloner));
 
   HLoopInformation* loop_info = header->GetLoopInformation();
   orig_bb_set.Union(&loop_info->GetBlockMask());
@@ -244,8 +244,7 @@ TEST_F(SuperblockClonerTest, LoopPeeling) {
 
   HBasicBlockMap bb_map(
       std::less<HBasicBlock*>(), graph_->GetAllocator()->Adapter(kArenaAllocSuperblockCloner));
-  HInstructionMap hir_map(
-      std::less<HInstruction*>(), graph_->GetAllocator()->Adapter(kArenaAllocSuperblockCloner));
+  HInstructionMap hir_map(graph_->GetAllocator()->Adapter(kArenaAllocSuperblockCloner));
 
   HLoopInformation* loop_info = header->GetLoopInformation();
   LoopClonerHelper helper(loop_info, &bb_map, &hir_map, /* induction_range= */ nullptr);
@@ -278,8 +277,7 @@ TEST_F(SuperblockClonerTest, LoopUnrolling) {
 
   HBasicBlockMap bb_map(
       std::less<HBasicBlock*>(), graph_->GetAllocator()->Adapter(kArenaAllocSuperblockCloner));
-  HInstructionMap hir_map(
-      std::less<HInstruction*>(), graph_->GetAllocator()->Adapter(kArenaAllocSuperblockCloner));
+  HInstructionMap hir_map(graph_->GetAllocator()->Adapter(kArenaAllocSuperblockCloner));
 
   HLoopInformation* loop_info = header->GetLoopInformation();
   LoopClonerHelper helper(loop_info, &bb_map, &hir_map, /* induction_range= */ nullptr);
@@ -521,7 +519,7 @@ TEST_F(SuperblockClonerTest, FastCaseCheck) {
   remap_incoming.insert(HEdge(preheader->GetSinglePredecessor(), preheader));
 
   HBasicBlockMap bb_map(std::less<HBasicBlock*>(), arena->Adapter(kArenaAllocSuperblockCloner));
-  HInstructionMap hir_map(std::less<HInstruction*>(), arena->Adapter(kArenaAllocSuperblockCloner));
+  HInstructionMap hir_map(arena->Adapter(kArenaAllocSuperblockCloner));
 
   SuperblockCloner cloner(graph_,
                           &orig_bb_set,

@@ -15,92 +15,92 @@
  */
 
 class Main {
-  public static void main(String[] args) {
-    testIntShiftRight();
-    testIntShiftLeft();
-    testIntUnsignedShiftRight();
-    testLongShiftRight();
-    testLongShiftLeft();
-    testLongUnsignedShiftRight();
-  }
+    public static void main(String[] args) {
+        testIntShiftRight();
+        testIntShiftLeft();
+        testIntUnsignedShiftRight();
+        testLongShiftRight();
+        testLongShiftLeft();
+        testLongUnsignedShiftRight();
+    }
 
-  public static void testIntShiftLeft() {
-    int a = myField;
-    int b = myOtherField << a;
-    if (b != -2147483648) {
-      throw new Error("Expected -2147483648, got " + b);
+    public static void testIntShiftLeft() {
+        int a = myField;
+        int b = myOtherField << a;
+        if (b != -2147483648) {
+            throw new Error("Expected -2147483648, got " + b);
+        }
+        if (a != 0xFFF) {
+            throw new Error("Expected 0xFFF, got " + a);
+        }
     }
-    if (a != 0xFFF) {
-      throw new Error("Expected 0xFFF, got " + a);
-    }
-  }
 
-  public static void testIntShiftRight() {
-    int a = myField;
-    int b = myOtherField >> a;
-    if (b != 0) {
-      throw new Error("Expected 0, got " + b);
+    public static void testIntShiftRight() {
+        int a = myField;
+        int b = myOtherField >> a;
+        if (b != 0) {
+            throw new Error("Expected 0, got " + b);
+        }
+        if (a != 0xFFF) {
+            throw new Error("Expected 0xFFF, got " + a);
+        }
     }
-    if (a != 0xFFF) {
-      throw new Error("Expected 0xFFF, got " + a);
-    }
-  }
 
-  public static void testIntUnsignedShiftRight() {
-    int a = myField;
-    int b = myOtherField >>> a;
-    if (b != 0) {
-      throw new Error("Expected 0, got " + b);
+    public static void testIntUnsignedShiftRight() {
+        int a = myField;
+        int b = myOtherField >>> a;
+        if (b != 0) {
+            throw new Error("Expected 0, got " + b);
+        }
+        if (a != 0xFFF) {
+            throw new Error("Expected 0xFFF, got " + a);
+        }
     }
-    if (a != 0xFFF) {
-      throw new Error("Expected 0xFFF, got " + a);
-    }
-  }
 
-  public static void testLongShiftLeft() {
-    long a = myLongField;
-    long b = myOtherLongField << a;
-    if (b != 0x2468ACF13579BDEL) {
-      throw new Error("Expected 0x2468ACF13579BDEL, got " + b);
+    public static void testLongShiftLeft() {
+        long a = myLongField;
+        long b = myOtherLongField << a;
+        if (b != 0x2468ACF13579BDEL) {
+            throw new Error("Expected 0x2468ACF13579BDEL, got " + b);
+        }
+        // The int conversion will be GVN'ed with the one required
+        // by Java specification of long shift left.
+        if ((int)a != 0x41) {
+            throw new Error("Expected 0x41, got " + a);
+        }
     }
-    // The int conversion will be GVN'ed with the one required
-    // by Java specification of long shift left.
-    if ((int)a != 0x41) {
-      throw new Error("Expected 0x41, got " + a);
-    }
-  }
 
-  public static void testLongShiftRight() {
-    long a = myLongField;
-    long b = myOtherLongField >> a;
-    if (b != 0x91A2B3C4D5E6F7L) {
-      throw new Error("Expected 0x91A2B3C4D5E6F7L, got " + b);
+    public static void testLongShiftRight() {
+        long a = myLongField;
+        long b = myOtherLongField >> a;
+        if (b != 0x91A2B3C4D5E6F7L) {
+            throw new Error("Expected 0x91A2B3C4D5E6F7L, got " + b);
+        }
+        // The int conversion will be GVN'ed with the one required
+        // by Java specification of long shift right.
+        if ((int)a != 0x41) {
+            throw new Error("Expected 0x41, got " + a);
+        }
     }
-    // The int conversion will be GVN'ed with the one required
-    // by Java specification of long shift right.
-    if ((int)a != 0x41) {
-      throw new Error("Expected 0x41, got " + a);
-    }
-  }
 
-  public static void testLongUnsignedShiftRight() {
-    long a = myLongField;
-    long b = myOtherLongField >>> a;
-    if (b != 0x91A2B3C4D5E6F7L) {
-      throw new Error("Expected 0x91A2B3C4D5E6F7L, got " + b);
+    public static void testLongUnsignedShiftRight() {
+        long a = myLongField;
+        long b = myOtherLongField >>> a;
+        if (b != 0x91A2B3C4D5E6F7L) {
+            throw new Error("Expected 0x91A2B3C4D5E6F7L, got " + b);
+        }
+        // The int conversion will be GVN'ed with the one required
+        // by Java specification of long shift right.
+        if ((int)a != 0x41) {
+            throw new Error("Expected 0x41, got " + a);
+        }
     }
-    // The int conversion will be GVN'ed with the one required
-    // by Java specification of long shift right.
-    if ((int)a != 0x41) {
-      throw new Error("Expected 0x41, got " + a);
-    }
-  }
 
-  static int myField = 0xFFF;
-  static int myOtherField = 0x1;
+    static int myField = 0xFFF;
+    static int myOtherField = 0x1;
 
-  // Use a value that will need to be masked before doing the shift.
-  // The maximum shift is 0x3F.
-  static long myLongField = 0x41;
-  static long myOtherLongField = 0x123456789abcdefL;
+    // Use a value that will need to be masked before doing the shift.
+    // The maximum shift is 0x3F.
+    static long myLongField = 0x41;
+    static long myOtherLongField = 0x123456789abcdefL;
 }

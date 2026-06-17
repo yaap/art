@@ -21,8 +21,8 @@
 #include "base/bit_utils.h"
 #include "base/macros.h"
 #include "base/mutex.h"
+#include "base/offsets.h"
 #include "obj_ptr.h"
-#include "offsets.h"
 
 namespace art HIDDEN {
 

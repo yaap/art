@@ -16,9 +16,6 @@
 
 package com.android.server.art.prereboot;
 
-import static com.android.server.art.model.DexoptResult.PackageDexoptResult;
-import static com.android.server.art.proto.PreRebootStats.Status;
-
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
@@ -30,15 +27,18 @@ import androidx.annotation.RequiresApi;
 
 import com.android.server.LocalManagerRegistry;
 import com.android.server.art.ArtManagerLocal;
-import com.android.server.art.ArtdRefCache;
-import com.android.server.art.AsLog;
 import com.android.server.art.ReasonMapping;
-import com.android.server.art.Utils;
 import com.android.server.art.model.ArtFlags;
 import com.android.server.art.model.BatchDexoptParams;
 import com.android.server.art.model.DexoptResult;
+import com.android.server.art.model.DexoptResult.PackageDexoptResult;
 import com.android.server.art.model.OperationProgress;
 import com.android.server.art.proto.BatchDexoptParamsProto;
+import com.android.server.art.proto.PreRebootStats.Status;
+import com.android.server.art.utils.ArtdRefCache;
+import com.android.server.art.utils.AsLog;
+import com.android.server.art.utils.AsyncExecutor;
+import com.android.server.art.utils.Utils;
 import com.android.server.pm.PackageManagerLocal;
 
 import com.google.protobuf.InvalidProtocolBufferException;
@@ -78,6 +78,17 @@ public class PreRebootManager implements PreRebootManagerInterface {
             @NonNull Context context, @NonNull CancellationSignal cancellationSignal,
             @NonNull PackageManagerLocal.FilteredSnapshot snapshot,
             @Nullable byte[] batchDexoptParamsProto) {
+        run(artModuleServiceManager, context, cancellationSignal, snapshot, batchDexoptParamsProto,
+                ReasonMapping.REASON_PRE_REBOOT_DEXOPT);
+    }
+
+    public void run(@NonNull ArtModuleServiceManager artModuleServiceManager,
+            @NonNull Context context, @NonNull CancellationSignal cancellationSignal,
+            @NonNull PackageManagerLocal.FilteredSnapshot snapshot,
+            @Nullable byte[] batchDexoptParamsProto, @NonNull String reason) {
+        Utils.check(reason == ReasonMapping.REASON_PRE_REBOOT_DEXOPT
+                || reason == ReasonMapping.REASON_PRE_REBOOT_DEXOPT_SYNC);
+
         ExecutorService callbackExecutor = Executors.newSingleThreadExecutor();
         try {
             if (!PreRebootGlobalInjector.init(
@@ -134,15 +145,17 @@ public class PreRebootManager implements PreRebootManagerInterface {
                 throw new IllegalArgumentException(e);
             }
 
-            artManagerLocal.dexoptPackagesWithParams(snapshot,
-                    ReasonMapping.REASON_PRE_REBOOT_DEXOPT, cancellationSignal, callbackExecutor,
-                    Map.of(ArtFlags.PASS_MAIN, progressCallback), params);
+            artManagerLocal.dexoptPackagesWithParams(snapshot, reason, cancellationSignal,
+                    callbackExecutor, Map.of(ArtFlags.PASS_MAIN, progressCallback), params);
         } finally {
-            ArtdRefCache.getInstance().reset();
+            // Stop the `artd` service proactively, to ensure a successful and fast teardown.
+            PreRebootGlobalInjector.getInstance().stopArtd();
             callbackExecutor.shutdown();
+            AsyncExecutor.getInstance().shutdown();
             try {
                 // Make sure we have no running threads when we tear down.
                 callbackExecutor.awaitTermination(5, TimeUnit.SECONDS);
+                AsyncExecutor.getInstance().awaitTermination(5000);
             } catch (InterruptedException e) {
                 AsLog.wtf("Interrupted", e);
             }

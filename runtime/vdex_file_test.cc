@@ -31,7 +31,8 @@ TEST_F(VdexFileTest, OpenEmptyVdex) {
   ScratchFile tmp;
   std::string error_msg;
   std::unique_ptr<VdexFile> vdex = VdexFile::Open(tmp.GetFd(),
-                                                  0,
+                                                  /*start=*/0,
+                                                  /*vdex_length=*/0,
                                                   tmp.GetFilename(),
                                                   /*low_4gb=*/false,
                                                   &error_msg);

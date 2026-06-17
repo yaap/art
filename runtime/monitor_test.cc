@@ -16,18 +16,22 @@
 
 #include "monitor.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 
 #include "base/atomic.h"
 #include "barrier.h"
+#include "base/mutex.h"
 #include "base/time_utils.h"
 #include "class_linker-inl.h"
 #include "common_runtime_test.h"
+#include "gtest/gtest.h"
 #include "handle_scope-inl.h"
 #include "jni/java_vm_ext.h"
 #include "mirror/class-inl.h"
 #include "mirror/string-inl.h"  // Strings are easiest to allocate
+#include "monitor-inl.h"
 #include "object_lock.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread_pool.h"
@@ -391,5 +395,109 @@ TEST_F(MonitorTest, TestTryLock) {
   thread_pool->StopWorkers(self);
 }
 
+class ScopedVirtualThreadId {
+ public:
+  ScopedVirtualThreadId(): id_(AllocThreadId()) {}
+  ~ScopedVirtualThreadId() {
+    ThreadList* thread_list = Runtime::Current()->GetThreadList();
+    thread_list->ReleaseVirtualThreadSuspendCount(id_);
+    thread_list->ReleaseThreadId(Thread::Current(), id_);
+  }
+  uint32_t GetId() const {
+    return id_;
+  }
+ private:
+  static uint32_t AllocThreadId() {
+    ThreadList* thread_list = Runtime::Current()->GetThreadList();
+    Thread* self = Thread::Current();
+    uint32_t id = thread_list->AllocThreadId(self);
+    thread_list->AllocVirtualThreadSuspendCount(id);
+    return id;
+  }
+ private:
+  const uint32_t id_;
+};
+
+class VirtualThreadMounter {
+ public:
+  explicit VirtualThreadMounter(MountedVirtualThreadData* mounted_data)
+      REQUIRES_SHARED(Locks::mutator_lock_) {
+    Thread* self = Thread::Current();
+    self->TrySetMountedVirtualThreadData(mounted_data);
+  }
+  ~VirtualThreadMounter() {
+    Thread* self = Thread::Current();
+    self->TryClearMountedVirtualThreadData();
+  }
+};
+
+TEST_F(MonitorTest, TestMonitorOwner) {
+  ASSERT_TRUE(Runtime::Current() != nullptr);
+  Thread* self = Thread::Current();
+  pid_t tid = self->GetTid();
+  uint32_t carrier_id = self->GetThreadId();
+
+  {
+    // thread_list_lock_ is needed for the thread safety analysis of GetThreadId().
+    MutexLock mu(self, *Locks::thread_list_lock_);
+    // Case 1: platform thread
+    MonitorOwner owner = MonitorOwner::FromThread(self);
+    EXPECT_EQ(carrier_id, owner.GetThreadId());
+    EXPECT_FALSE(owner.IsVirtualThread());
+    EXPECT_EQ(tid, owner.GetMutexOwnerId());
+    EXPECT_TRUE(owner.IsOwner(self));
+    EXPECT_TRUE(owner == self);
+    EXPECT_FALSE(owner.IsNull());
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(self), owner.getStorageValue());
+
+    MonitorOwner owner2 = MonitorOwner::FromPlatformThread(self);
+    EXPECT_EQ(carrier_id, owner2.GetThreadId());
+    EXPECT_EQ(owner.getStorageValue(), owner.getStorageValue());
+    EXPECT_TRUE(owner == owner2);
+
+    // Case 2: null value.
+    owner = MonitorOwner();
+    EXPECT_EQ(ThreadList::kInvalidThreadId, owner.GetThreadId());
+    EXPECT_FALSE(owner.IsVirtualThread());
+    EXPECT_EQ(0, owner.GetMutexOwnerId());
+    EXPECT_FALSE(owner.IsOwner(self));
+    EXPECT_FALSE(owner == self);
+    EXPECT_TRUE(owner.IsNull());
+    EXPECT_EQ(0, owner.getStorageValue());
+  }
+
+
+  if (!kIsVirtualThreadEnabled) {
+    return;
+  }
+
+  ScopedVirtualThreadId virtual_thread_id_holder;
+  uint32_t virtual_thread_id = virtual_thread_id_holder.GetId();
+  EXPECT_NE(virtual_thread_id, carrier_id);
+
+  MountedVirtualThreadData mounted_data(virtual_thread_id, carrier_id, 0);
+  ScopedObjectAccess soa(self);
+  VirtualThreadMounter virtual_thread_mounter(&mounted_data);
+
+  {
+    // thread_list_lock_ is needed for the thread safety analysis of GetThreadId().
+    MutexLock mu(self, *Locks::thread_list_lock_);
+    // Case 3: virtual thread
+    MonitorOwner owner = MonitorOwner::FromVirtualThreadId(virtual_thread_id);
+    EXPECT_TRUE(owner.IsVirtualThread());
+    EXPECT_EQ(virtual_thread_id, owner.GetVirtualThreadId());
+    EXPECT_EQ(virtual_thread_id, owner.GetThreadId());
+    EXPECT_EQ(virtual_thread_id | MonitorMutex::kVTFlag, owner.GetMutexOwnerId());
+    EXPECT_TRUE(owner.IsOwner(self));
+    EXPECT_TRUE(owner == self);
+    EXPECT_FALSE(owner.IsNull());
+    EXPECT_EQ(virtual_thread_id << 1 | 1, owner.getStorageValue());
+
+    MonitorOwner owner2 = MonitorOwner::FromThread(self);
+    EXPECT_EQ(virtual_thread_id, owner2.GetThreadId());
+    EXPECT_EQ(owner.getStorageValue(), owner.getStorageValue());
+    EXPECT_TRUE(owner == owner2);
+  }
+}
 
 }  // namespace art

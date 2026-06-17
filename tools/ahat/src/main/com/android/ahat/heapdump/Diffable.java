@@ -20,6 +20,8 @@ package com.android.ahat.heapdump;
  * An interface for instances/sites/heaps/etc in a heap dump that can be
  * related to corresponding instances/sites/heaps/etc in a second heap dump
  * when the two heap dumps have been diffed.
+ *
+ * @param <T> the type of object to be diffed against
  */
 public interface Diffable<T> {
   /**

@@ -16,19 +16,23 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
-import static com.android.server.art.DexUseManagerLocal.DexLoader;
-import static com.android.server.art.model.DexoptStatus.DexContainerFileDexoptStatus;
-
 import android.annotation.NonNull;
 import android.os.Build;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
+import android.util.Pair;
 
 import androidx.annotation.RequiresApi;
 
+import com.android.art.rw.flags.Flags;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalManagerRegistry;
+import com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
+import com.android.server.art.DexUseManagerLocal.DexLoader;
+import com.android.server.art.model.DexoptStatus.DexContainerFileDexoptStatus;
+import com.android.server.art.utils.IndentingPrintWriter;
+import com.android.server.art.utils.Utils;
+import com.android.server.art.utils.Utils.Clock;
 import com.android.server.pm.PackageManagerLocal;
 import com.android.server.pm.pkg.PackageState;
 
@@ -72,7 +76,14 @@ public class DumpHelper {
                 .stream()
                 .sorted(Comparator.comparing(PackageState::getPackageName))
                 .forEach(pkgState -> dumpPackage(pw, snapshot, pkgState));
-        pw.printf("\nCurrent GC: %s\n", ArtJni.getGarbageCollector());
+        var ipw = new IndentingPrintWriter(pw);
+        if (Flags.hybridPreRebootDexopt()) {
+            ipw.printf("\nPackage Usage Scores:\n");
+            ipw.increaseIndent();
+            dumpPackageScores(ipw, snapshot);
+            ipw.decreaseIndent();
+        }
+        ipw.printf("\nCurrent GC: %s\n", ArtJni.getGarbageCollector());
     }
 
     /**
@@ -97,8 +108,9 @@ public class DumpHelper {
                         .getDexContainerFileDexoptStatuses();
         Map<String, CheckedSecondaryDexInfo> secondaryDexInfoByDexPath =
                 mInjector.getDexUseManager()
-                        .getCheckedSecondaryDexInfo(
-                                packageName, false /* excludeObsoleteDexesAndLoaders */)
+                        .getCheckedSecondaryDexInfo(packageName,
+                                false /* excludeObsoleteDexesAndLoaders */,
+                                true /* excludeObsoleteClcs */)
                         .stream()
                         .collect(Collectors.toMap(
                                 CheckedSecondaryDexInfo::dexPath, Function.identity()));
@@ -217,6 +229,24 @@ public class DumpHelper {
         }
     }
 
+    private void dumpPackageScores(@NonNull IndentingPrintWriter ipw,
+            @NonNull PackageManagerLocal.FilteredSnapshot snapshot) {
+        long now = mInjector.getClock().currentTimeMillis();
+        ipw.printf("Current Time (ms): %d\n", now);
+        snapshot.getPackageStates()
+                .values()
+                .stream()
+                .filter(pkgState -> !pkgState.isApex() && pkgState.getAndroidPackage() != null)
+                .map(pkgState
+                        -> Pair.create(pkgState.getPackageName(),
+                                mInjector.getDexUseManager().calculateDecayedPackageScore(
+                                        pkgState.getPackageName(), now)))
+                .sorted(Comparator.<Pair<String, Double>>comparingDouble(pair -> pair.second)
+                                .reversed()
+                                .thenComparing(pair -> pair.first))
+                .forEach(pair -> ipw.printf("%s - %.4f\n", pair.first, pair.second));
+    }
+
     @NonNull
     private String getLoaderState(
             @NonNull PackageManagerLocal.FilteredSnapshot snapshot, @NonNull DexLoader loader) {
@@ -251,6 +281,10 @@ public class DumpHelper {
         @NonNull
         public DexUseManagerLocal getDexUseManager() {
             return GlobalInjector.getInstance().getDexUseManager();
+        }
+
+        public Clock getClock() {
+            return Clock.DEFAULT;
         }
     }
 }

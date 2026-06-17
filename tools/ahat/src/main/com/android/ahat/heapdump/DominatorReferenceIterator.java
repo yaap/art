@@ -20,18 +20,35 @@ import java.util.Iterator;
 import java.util.NoSuchElementException;
 
 /**
- * Reference iterator used for the dominators computation.
+ * Reference iterable used for the dominators computation.
  * This visits only retained references.
  */
-class DominatorReferenceIterator implements Iterator<AhatInstance>,
-                                            Iterable<AhatInstance> {
+class DominatorReferenceIterable implements Iterable<AhatInstance> {
   private final Reachability mRetained;
-  private Iterator<Reference> mIter;
+  private final Iterable<Reference> mRefs;
+
+  public DominatorReferenceIterable(Reachability retained, Iterable<Reference> refs) {
+    mRetained = retained;
+    mRefs = refs;
+  }
+
+  @Override
+  public Iterator<AhatInstance> iterator() {
+    return new DominatorReferenceIterator(mRetained, mRefs.iterator());
+  }
+}
+
+/**
+ * Reference iterator used for the dominators computation.
+ */
+class DominatorReferenceIterator implements Iterator<AhatInstance> {
+  private final Reachability mRetained;
+  private final Iterator<Reference> mIter;
   private AhatInstance mNext;
 
-  public DominatorReferenceIterator(Reachability retained, Iterable<Reference> iter) {
+  public DominatorReferenceIterator(Reachability retained, Iterator<Reference> iter) {
     mRetained = retained;
-    mIter = iter.iterator();
+    mIter = iter;
     mNext = null;
   }
 
@@ -54,10 +71,5 @@ class DominatorReferenceIterator implements Iterator<AhatInstance>,
       return next;
     }
     throw new NoSuchElementException();
-  }
-
-  @Override
-  public Iterator<AhatInstance> iterator() {
-    return this;
   }
 }

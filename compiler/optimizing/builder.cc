@@ -58,7 +58,7 @@ HGraphBuilder::HGraphBuilder(HGraph* graph,
       dex_file_(&graph->GetDexFile()),
       code_item_accessor_(accessor),
       dex_compilation_unit_(dex_compilation_unit),
-      outer_compilation_unit_(nullptr),
+      outer_compilation_unit_(dex_compilation_unit),
       code_generator_(nullptr),
       compilation_stats_(nullptr),
       return_type_(return_type) {}

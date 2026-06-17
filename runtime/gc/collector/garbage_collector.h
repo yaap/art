@@ -78,7 +78,7 @@ class GarbageCollector : public RootVisitor, public IsMarkedVisitor, public Mark
   virtual GcType GetGcType() const = 0;
   virtual CollectorType GetCollectorType() const = 0;
   // Run the garbage collector.
-  void Run(GcCause gc_cause, bool clear_soft_references) REQUIRES(!pause_histogram_lock_);
+  void Run(GcCause gc_cause, bool clear_soft_references) REQUIRES(!histogram_lock_);
   Heap* GetHeap() const {
     return heap_;
   }
@@ -94,7 +94,7 @@ class GarbageCollector : public RootVisitor, public IsMarkedVisitor, public Mark
   uint64_t GetTotalCpuTime() const {
     return total_thread_cpu_time_ns_;
   }
-  uint64_t GetTotalPausedTimeNs() REQUIRES(!pause_histogram_lock_);
+  uint64_t GetTotalPausedTimeNs() REQUIRES(!histogram_lock_);
   int64_t GetTotalFreedBytes() const {
     return total_freed_bytes_;
   }
@@ -105,7 +105,7 @@ class GarbageCollector : public RootVisitor, public IsMarkedVisitor, public Mark
     return total_scanned_bytes_;
   }
   // Reset the cumulative timings and pause histogram.
-  void ResetMeasurements() REQUIRES(!pause_histogram_lock_);
+  void ResetMeasurements() REQUIRES(!histogram_lock_);
   // Returns mean cpu-time in nanoseconds.
   double GetMeanCpuTime() const;
   // Returns the estimated throughput in bytes / second.
@@ -124,10 +124,11 @@ class GarbageCollector : public RootVisitor, public IsMarkedVisitor, public Mark
   void RecordFree(const ObjectBytePair& freed);
   // Record a free of large objects.
   void RecordFreeLOS(const ObjectBytePair& freed);
-  virtual void DumpPerformanceInfo(std::ostream& os) REQUIRES(!pause_histogram_lock_);
+  virtual void DumpPerformanceInfo(std::ostream& os) REQUIRES(!histogram_lock_);
 
   // Extract RSS for GC-specific memory ranges using mincore().
-  uint64_t ExtractRssFromMincore(std::list<std::pair<void*, void*>>* gc_ranges);
+  uint64_t ExtractRssFromMincore(std::list<std::pair<void*, void*>>* gc_ranges)
+      REQUIRES(!histogram_lock_);
 
   // Helper functions for querying if objects are marked. These are used for processing references,
   // and will be used for reading system weaks while the GC is running.
@@ -175,9 +176,9 @@ class GarbageCollector : public RootVisitor, public IsMarkedVisitor, public Mark
   Heap* const heap_;
   std::string name_;
   // Cumulative statistics.
-  Histogram<uint64_t> pause_histogram_ GUARDED_BY(pause_histogram_lock_);
-  Histogram<uint64_t> rss_histogram_;
-  Histogram<size_t> freed_bytes_histogram_;
+  Histogram<uint64_t> pause_histogram_ GUARDED_BY(histogram_lock_);
+  Histogram<uint64_t> rss_histogram_ GUARDED_BY(histogram_lock_);
+  Histogram<size_t> freed_bytes_histogram_ GUARDED_BY(histogram_lock_);
   metrics::MetricsBase<int64_t>* gc_time_histogram_;
   metrics::MetricsBase<uint64_t>* metrics_gc_count_;
   metrics::MetricsBase<uint64_t>* metrics_gc_count_delta_;
@@ -198,7 +199,7 @@ class GarbageCollector : public RootVisitor, public IsMarkedVisitor, public Mark
   int64_t total_freed_bytes_;
   uint64_t total_scanned_bytes_;
   CumulativeLogger cumulative_timings_;
-  mutable Mutex pause_histogram_lock_ DEFAULT_MUTEX_ACQUIRED_AFTER;
+  mutable Mutex histogram_lock_ DEFAULT_MUTEX_ACQUIRED_AFTER;
   bool is_transaction_active_;
   // The garbage collector algorithms will either have all the metrics pointers
   // (above) initialized, or none of them. So instead of checking each time, we

@@ -211,6 +211,10 @@ class ScopedHiddenApiEnforcementPolicySetting {
 
 void InitializeCorePlatformApiPrivateFields() REQUIRES(!Locks::mutator_lock_);
 
+// TODO(b/377676642): Replace this with an inline android_get_device_api_level()
+// >= 37 check once the flag is fully ramped.
+bool EnableHiddenapiPlatformEnforcement();
+
 template <typename T>
 bool ShouldDenyJniAccessToMember(T* member,
                                  Thread* self,
@@ -394,9 +398,6 @@ ALWAYS_INLINE inline uint32_t GetRuntimeFlags(ArtMethod* method)
       case Intrinsics::kUnsafeStoreFence:
       case Intrinsics::kUnsafeFullFence:
       case Intrinsics::kJdkUnsafeArrayBaseOffset:
-      case Intrinsics::kJdkUnsafeCASInt:
-      case Intrinsics::kJdkUnsafeCASLong:
-      case Intrinsics::kJdkUnsafeCASObject:
       case Intrinsics::kJdkUnsafeCompareAndSetInt:
       case Intrinsics::kJdkUnsafeCompareAndSetLong:
       case Intrinsics::kJdkUnsafeCompareAndSetReference:
@@ -411,11 +412,8 @@ ALWAYS_INLINE inline uint32_t GetRuntimeFlags(ArtMethod* method)
       case Intrinsics::kJdkUnsafeGetReferenceAcquire:
       case Intrinsics::kJdkUnsafeGetVolatile:
       case Intrinsics::kJdkUnsafeGetAcquire:
-      case Intrinsics::kJdkUnsafePutLongOrdered:
       case Intrinsics::kJdkUnsafePutLongVolatile:
       case Intrinsics::kJdkUnsafePutLongRelease:
-      case Intrinsics::kJdkUnsafePutOrderedInt:
-      case Intrinsics::kJdkUnsafePutOrderedObject:
       case Intrinsics::kJdkUnsafePutReferenceVolatile:
       case Intrinsics::kJdkUnsafePutReferenceRelease:
       case Intrinsics::kJdkUnsafePutVolatile:

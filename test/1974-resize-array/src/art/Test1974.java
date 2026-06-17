@@ -464,7 +464,7 @@ public class Test1974 {
       }
     } else {
       if (!Arrays.stream(obsoletes_freed).anyMatch((l) -> l == globalID + 1)) {
-        System.out.println("Didn't see a free of the obsolete id");
+        System.out.println("Didn't see a free of the obsolete id but object was freed");
       } else {
         DbgPrintln("Saw a free of obsolete id!");
         System.out.println("Everything looks good WRT obsolete object!");

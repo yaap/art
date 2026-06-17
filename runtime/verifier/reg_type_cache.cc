@@ -256,7 +256,7 @@ const RegType& RegTypeCache::FromClass(ObjPtr<mirror::Class> klass) {
         kIsDebugBuild ? hs->NewHandle(klass) : Handle<mirror::Class>();
     const RegType& reg_type = FromTypeIndex(klass->GetDexTypeIndex());
     DCHECK(reg_type.IsReference());
-    DCHECK(reg_type.GetClass() == h_class.Get());
+    DCHECK_EQ(reg_type.GetClass(), h_class.Get());
     return reg_type;
   }
   for (auto& pair : klass_entries_) {

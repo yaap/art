@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 
+#include "membarrier.h"
+
 #include <gtest/gtest.h>
 
-#include "membarrier.h"
+namespace {
 
 class ScopedErrnoCleaner {
  public:
@@ -29,6 +31,61 @@ bool HasMembarrier(art::MembarrierCommand cmd) {
   int supported_cmds = art::membarrier(art::MembarrierCommand::kQuery);
   return (supported_cmds > 0) && ((supported_cmds & static_cast<int>(cmd)) != 0);
 }
+
+// The membarrier registration APIs modify process state and cannot be undone.
+// As such, it is useful to test these APIs in a child process.
+// WARNING: This helper can only be safely used in single threaded tests.
+class ForkHelper {
+ public:
+  ForkHelper() {}
+  ~ForkHelper() {}
+
+  template <class Callback>
+  pid_t RunInForkedProcess(Callback action) {
+    pid_t pid = fork();
+    EXPECT_GE(pid, 0) << "fork";
+    if (pid == 0) {
+      // Child process.
+      action();
+      _exit(testing::Test::HasFailure());
+    }
+    child_ = pid;
+    return pid;
+  }
+
+  testing::AssertionResult WaitForChild() {
+    while (true) {
+      int wstatus = 0;
+      pid_t pid = wait(&wstatus);
+      if (pid == -1) {
+        if (errno == EINTR) {
+          continue;
+        }
+        if (errno == ECHILD) {
+          // Done!
+          return testing::AssertionSuccess();
+        }
+        // Unexpected result.
+        return testing::AssertionFailure() << "wait error: " << strerror(errno);
+      }
+      if (pid != child_) {
+        return testing::AssertionFailure() << "unexpected pid: " << pid;
+      }
+      if (!WIFEXITED(wstatus) || WEXITSTATUS(wstatus) != 0) {
+        return testing::AssertionFailure()
+               << "unexpected exit status: "
+               << "wait_status: WIFEXITED(wstatus) = " << WIFEXITED(wstatus)
+               << ", WEXITSTATUS(wstatus) = " << WEXITSTATUS(wstatus)
+               << ", WTERMSIG(wstatus) = " << WTERMSIG(wstatus);
+      }
+    }
+  }
+
+ private:
+  pid_t child_{0};
+};
+
+}  // namespace
 
 TEST(membarrier, query) {
   ScopedErrnoCleaner errno_cleaner;
@@ -49,7 +106,9 @@ TEST(membarrier, global_barrier) {
 }
 
 static const char* MembarrierCommandToName(art::MembarrierCommand cmd) {
-#define CASE_VALUE(x) case (x): return #x;
+#define CASE_VALUE(x) \
+  case (x):           \
+    return #x;
   switch (cmd) {
     CASE_VALUE(art::MembarrierCommand::kQuery);
     CASE_VALUE(art::MembarrierCommand::kGlobal);
@@ -66,12 +125,12 @@ static void TestRegisterAndBarrierCommands(art::MembarrierCommand membarrier_cmd
                                            art::MembarrierCommand membarrier_cmd_barrier) {
   if (!HasMembarrier(membarrier_cmd_register)) {
     GTEST_LOG_(INFO) << MembarrierCommandToName(membarrier_cmd_register)
-        << " not supported, skipping test.";
+                     << " not supported, skipping test.";
     return;
   }
   if (!HasMembarrier(membarrier_cmd_barrier)) {
     GTEST_LOG_(INFO) << MembarrierCommandToName(membarrier_cmd_barrier)
-        << " not supported, skipping test.";
+                     << " not supported, skipping test.";
     return;
   }
 
@@ -101,11 +160,19 @@ TEST(membarrier, global_expedited) {
 }
 
 TEST(membarrier, private_expedited) {
-  TestRegisterAndBarrierCommands(art::MembarrierCommand::kRegisterPrivateExpedited,
-                                 art::MembarrierCommand::kPrivateExpedited);
+  ForkHelper helper;
+  helper.RunInForkedProcess([]() {
+    TestRegisterAndBarrierCommands(art::MembarrierCommand::kRegisterPrivateExpedited,
+                                   art::MembarrierCommand::kPrivateExpedited);
+  });
+  ASSERT_TRUE(helper.WaitForChild());
 }
 
 TEST(membarrier, private_expedited_sync_core) {
-  TestRegisterAndBarrierCommands(art::MembarrierCommand::kRegisterPrivateExpeditedSyncCore,
-                                 art::MembarrierCommand::kPrivateExpeditedSyncCore);
+  ForkHelper helper;
+  helper.RunInForkedProcess([]() {
+    TestRegisterAndBarrierCommands(art::MembarrierCommand::kRegisterPrivateExpeditedSyncCore,
+                                   art::MembarrierCommand::kPrivateExpeditedSyncCore);
+  });
+  ASSERT_TRUE(helper.WaitForChild());
 }

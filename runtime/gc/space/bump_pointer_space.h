@@ -71,7 +71,7 @@ class EXPORT BumpPointerSpace final : public ContinuousMemMapAllocSpace {
   }
 
   // NOPS unless we support free lists.
-  size_t Free(Thread*, mirror::Object*) override {
+  size_t Free(Thread*, mirror::Object*) override REQUIRES_SHARED(Locks::mutator_lock_) {
     return 0;
   }
 

@@ -8667,7 +8667,8 @@ TEST_F(AssemblerRISCV64Test, Csrci) {
       "Csrci", "csrci {csr}, {uimm}", [&](uint32_t csr, uint32_t uimm) { __ Csrci(csr, uimm); });
 }
 
-TEST_F(AssemblerRISCV64Test, LoadConst32) {
+// FIXME: Failing after toolchain update. Many instances of ADDI/ADDIW mismatch.
+TEST_F(AssemblerRISCV64Test, DISABLED_LoadConst32) {
   ScopedCSuppression scs(this);
   // `LoadConst32()` emits the same code sequences as `Li()` for 32-bit values.
   ScratchRegisterScope srs(GetAssembler());
@@ -8685,7 +8686,9 @@ TEST_F(AssemblerRISCV64Test, DISABLED_LoadConst64) {
                   [&](XRegister rd, int64_t value) { __ LoadConst64(rd, value); });
 }
 
-TEST_F(AssemblerRISCV64Test, AddConst32) {
+// FIXME: Failing after toolchain update.
+// Binary differs, disassembly comparison fails (OOM for 32-bit, killed for 64-bit).
+TEST_F(AssemblerRISCV64Test, DISABLED_AddConst32) {
   ScopedCSuppression scs(this);
   auto emit_op = [&](XRegister rd, XRegister rs1, int64_t value) {
     __ AddConst32(rd, rs1, dchecked_integral_cast<int32_t>(value));
@@ -8693,7 +8696,9 @@ TEST_F(AssemblerRISCV64Test, AddConst32) {
   TestAddConst("AddConst32", /*bits=*/32, /*suffix=*/ "w", emit_op);
 }
 
-TEST_F(AssemblerRISCV64Test, AddConst64) {
+// FIXME: Failing after toolchain update.
+// Binary differs, disassembly comparison fails (OOM for 32-bit, killed for 64-bit).
+TEST_F(AssemblerRISCV64Test, DISABLED_AddConst64) {
   ScopedZbaZbbAndCSuppression scs(this);
   auto emit_op = [&](XRegister rd, XRegister rs1, int64_t value) {
     __ AddConst64(rd, rs1, value);

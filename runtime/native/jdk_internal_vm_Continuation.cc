@@ -22,6 +22,8 @@
 #include "jni.h"
 #include "mirror/object.h"
 #include "mirror/throwable.h"
+#include "mirror/virtual_thread_context-inl.h"
+#include "mirror/virtual_thread_context.h"
 #include "native/native_util.h"
 #include "nativehelper/jni_macros.h"
 #include "obj_ptr-inl.h"
@@ -40,10 +42,11 @@ static jint Continuation_doYieldNative([[maybe_unused]] JNIEnv* env,
                                        jobject v_context,
                                        jobject parked_states,
                                        jobject vm_error) {
+  CHECK(kIsVirtualThreadEnabled);
   ScopedObjectAccess soa(env);
 
   PinningReason reason = kNoReason;
-  bool success = VirtualThreadPark(soa.Decode<mirror::Object>(v_context),
+  bool success = VirtualThreadPark(soa.Decode<mirror::VirtualThreadContext>(v_context),
                                    soa.Decode<mirror::Object>(parked_states),
                                    soa.Decode<mirror::Throwable>(vm_error),
                                    /* is_continuation_api= */ true,
@@ -60,16 +63,19 @@ static jint Continuation_doYieldNative([[maybe_unused]] JNIEnv* env,
 
 static void Continuation_enterSpecial(
     JNIEnv* env, jobject, jobject cont, jboolean j_is_continue, jboolean j_is_virtual_thread) {
+  CHECK(kIsVirtualThreadEnabled);
   Thread* self = Thread::Current();
   DCHECK(j_is_virtual_thread);
-  DCHECK(!self->AreVirtualThreadFlagsEnabled(kIsVirtual));
+  DCHECK(!self->IsVirtualThreadMounted());
 
   ScopedObjectAccess soa(env);
-  ObjPtr<mirror::Object> continuation = soa.Decode<mirror::Object>(cont);
-  ObjPtr<mirror::Object> v_context =
-      WellKnownClasses::jdk_internal_vm_Continuation_virtualThreadContext->GetObject(continuation);
-  ObjPtr<mirror::Object> parked_states =
-      WellKnownClasses::dalvik_system_VirtualThreadContext_parkedStates->GetObject(v_context);
+  StackHandleScope<2> hs(self);
+  Handle<mirror::Object> continuation = hs.NewHandle(soa.Decode<mirror::Object>(cont));
+  Handle<mirror::VirtualThreadContext> v_context = hs.NewHandle(
+    ObjPtr<mirror::VirtualThreadContext>::DownCast(
+      WellKnownClasses::jdk_internal_vm_Continuation_virtualThreadContext->GetObject(
+        continuation.Get())));
+  ObjPtr<mirror::Object> parked_states = v_context->GetParkedStates();
 
   bool is_continue = j_is_continue;
   DCHECK_NE(parked_states.IsNull(), is_continue) << "Likely a bug in the Continuation.java";
@@ -80,11 +86,15 @@ static void Continuation_enterSpecial(
     return;
   }
 
-  uint8_t flags_mask = kIsVirtual | kContinuation | (is_continue ? kUnparking : 0);
-  self->SetVirtualThreadFlags(flags_mask, true);
+  uint8_t flags = kContinuation | (is_continue ? kUnparking : 0);
+  uint32_t thin_lock_id = v_context->GetMonitorThreadId();
+  DCHECK_GT(thin_lock_id, 0u);
+  MountedVirtualThreadData mounted_data((uint32_t)thin_lock_id, self->GetThreadId(), flags);
+  bool mounted = self->TrySetMountedVirtualThreadData(&mounted_data);
+  DCHECK(mounted) << mounted_data;
 
   WellKnownClasses::jdk_internal_vm_Continuation_enter->InvokeStatic<'V', 'L', 'Z'>(
-      self, continuation, is_continue);
+      self, continuation.Get(), is_continue);
 
   // When a virtual thread is parked, clear the VirtualThreadParkingError used to
   // unwind the native stack.
@@ -95,7 +105,8 @@ static void Continuation_enterSpecial(
     self->ClearException();
   }
 
-  self->SetVirtualThreadFlags(kIsVirtual | kContinuation | kParking, false);
+  bool unmounted = self->TryClearMountedVirtualThreadData();
+  DCHECK(unmounted) << mounted_data;
 }
 
 static JNINativeMethod gMethods[] = {

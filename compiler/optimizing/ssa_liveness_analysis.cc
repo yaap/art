@@ -338,8 +338,7 @@ void SsaLivenessAnalysis::ComputeLiveRanges() {
              phi_it.Advance()) {
           HInstruction* phi = phi_it.Current();
           HInstruction* input = phi->InputAt(phi_input_index);
-          if (com::android::art::flags::reg_alloc_spill_slot_reuse() &&
-              input->GetLiveInterval()->GetUses().empty()) {
+          if (input->GetLiveInterval()->GetUses().empty()) {
             // If the `input` has no recorded uses yet, the `phi` use shall be its last use
             // (we visit blocks in reverse linear order) and the `input` dies at the end of
             // the `block`. Record the `phi` interval as a hint to try using the same spill
@@ -434,7 +433,7 @@ void SsaLivenessAnalysis::ComputeLiveRanges() {
       if (kIsDebugBuild) {
         CheckNoLiveInIrreducibleLoop(*block);
       }
-      size_t last_position = block->GetLoopInformation()->GetLifetimeEnd();
+      size_t last_position = GetLoopLifetimeEnd(block->GetLoopInformation());
       // For all live_in instructions at the loop header, we need to create a range
       // that covers the full loop.
       for (uint32_t idx : live_in.Indexes()) {
@@ -500,6 +499,15 @@ void SsaLivenessAnalysis::DoCheckNoLiveInIrreducibleLoop(const HBasicBlock& bloc
     DCHECK(instruction->IsCurrentMethod() || instruction->IsConstant())
         << instruction->DebugName();
   }
+}
+
+size_t SsaLivenessAnalysis::GetLoopLifetimeEnd(const HLoopInformation* loop_info) {
+  DCHECK(loop_info != nullptr);
+  size_t last_position = 0;
+  for (HBasicBlock* back_edge : loop_info->GetBackEdges()) {
+    last_position = std::max(back_edge->GetLifetimeEnd(), last_position);
+  }
+  return last_position;
 }
 
 template <bool kEnvironmentUse>
@@ -595,7 +603,8 @@ LiveInterval* LiveInterval::SplitAt(size_t position) {
     return nullptr;
   }
 
-  LiveInterval* new_interval = new (allocator_) LiveInterval(allocator_, type_, IsPair());
+  LiveInterval* new_interval =
+      new (allocator_) LiveInterval(allocator_, type_, is_pair_, defined_by_);
 
   new_interval->next_sibling_ = next_sibling_;
   next_sibling_ = new_interval;
@@ -675,38 +684,8 @@ void LiveInterval::Dump(std::ostream& stream) const {
     stream << " ";
   }
   stream << "}";
-  stream << " is_fixed: " << is_fixed_ << ", is_split: " << IsSplit();
-  stream << " is_pair: " << IsPair();
-}
-
-void LiveInterval::DumpWithContext(std::ostream& stream,
-                                   const CodeGenerator& codegen) const {
-  Dump(stream);
-  if (IsFixed()) {
-    if (HasRegisters()) {
-      stream << ", registers:0x" << GetRegisters() << std::dec << "(";
-      const char* delim = "";
-      for (uint32_t reg : LowToHighBits(GetRegisters())) {
-        stream << delim;
-        delim = ",";
-        if (IsFloatingPoint()) {
-          codegen.DumpFloatingPointRegister(stream, reg);
-        } else {
-          codegen.DumpCoreRegister(stream, reg);
-        }
-      }
-      stream << ")";
-    } else {
-      stream << ", registers:none";
-    }
-  } else {
-    stream << ", spill slot:" << GetSpillSlot();
-  }
-  stream << ", requires_register:" << (GetDefinedBy() != nullptr && RequiresRegister());
-  if (GetParent()->GetDefinedBy() != nullptr) {
-    stream << ", defined_by:" << GetParent()->GetDefinedBy()->GetKind();
-    stream << "(" << GetParent()->GetDefinedBy()->GetLifetimePosition() << ")";
-  }
+  stream << " fixed:" << is_fixed_ << " temp:" << IsTemp() << " split:" << IsSplit();
+  stream << " pair:" << IsPair();
 }
 
 bool LiveInterval::SameRegisterKind(Location other) const {
@@ -718,18 +697,20 @@ bool LiveInterval::SameRegisterKind(Location other) const {
     }
   } else {
     if (IsPair()) {
-      return other.IsRegisterPair();
+      return other.IsCoreRegisterPair();
     } else {
-      return other.IsRegister();
+      return other.IsCoreRegister();
     }
   }
 }
 
 size_t LiveInterval::NumberOfSpillSlotsNeeded() const {
+  DCHECK(!IsFixed());
   // For a SIMD operation, compute the number of needed spill slots.
   // TODO: do through vector type?
-  HInstruction* definition = GetParent()->GetDefinedBy();
-  if (definition != nullptr && HVecOperation::ReturnsSIMDValue(definition)) {
+  HInstruction* definition = GetDefinedBy();
+  DCHECK(definition != nullptr);
+  if (HVecOperation::ReturnsSIMDValue(definition)) {
     if (definition->IsPhi()) {
       definition = definition->InputAt(1);  // SIMD always appears on back-edge
     }
@@ -774,7 +755,7 @@ void LiveInterval::AddBackEdgeUses(const HBasicBlock& block_at_use) {
     // all back edges is not necessary: anything used in the loop will have its use at the
     // last back edge. If we want branches in a loop to have better register allocation than
     // another branch, then it is the linear order we should change.
-    size_t back_edge_use_position = current->GetLifetimeEnd();
+    size_t back_edge_use_position = SsaLivenessAnalysis::GetLoopLifetimeEnd(current);
     if ((old_begin != uses_.end()) && (old_begin->GetPosition() <= back_edge_use_position)) {
       // There was a use already seen in this loop. Therefore the previous call to `AddUse`
       // already inserted the backedge use. We can stop going outward.

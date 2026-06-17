@@ -22,46 +22,46 @@ import dalvik.system.PathClassLoader;
 // ClassLoader not delegating for non java. packages.
 class DelegateLastPathClassLoader extends PathClassLoader {
 
-  public DelegateLastPathClassLoader(String dexPath, ClassLoader parent) {
-    super(dexPath, parent);
-  }
-
-  @Override
-  protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-    if (!name.startsWith("java.")) {
-      try {
-        return findClass(name);
-      } catch (ClassNotFoundException ignore) {
-        // Ignore and fall through to parent class loader.
-      }
+    public DelegateLastPathClassLoader(String dexPath, ClassLoader parent) {
+        super(dexPath, parent);
     }
-    return super.loadClass(name, resolve);
-  }
+
+    @Override
+    protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+        if (!name.startsWith("java.")) {
+            try {
+                return findClass(name);
+            } catch (ClassNotFoundException ignore) {
+                // Ignore and fall through to parent class loader.
+            }
+        }
+        return super.loadClass(name, resolve);
+    }
 }
 
 public class Main {
 
-   private static Class<?> classFromDifferentLoader() throws Exception {
-     final String DEX_FILE = System.getenv("DEX_LOCATION") + "/612-jit-dex-cache-ex.jar";
-     ClassLoader loader = new DelegateLastPathClassLoader(DEX_FILE, Main.class.getClassLoader());
-     return loader.loadClass("LoadedByAppClassLoader");
-  }
-
-  public static void main(String[] args) throws Exception {
-    System.loadLibrary(args[0]);
-    Class<?> cls = classFromDifferentLoader();
-    Method m = cls.getDeclaredMethod("letMeInlineYou", A.class);
-    B b = new B();
-    // Invoke the method enough times to get an inline cache and get JITted.
-    for (int i = 0; i < 10000; ++i) {
-      m.invoke(null, b);
+    private static Class<?> classFromDifferentLoader() throws Exception {
+        final String DEX_FILE = System.getenv("DEX_LOCATION") + "/612-jit-dex-cache-ex.jar";
+        ClassLoader loader = new DelegateLastPathClassLoader(DEX_FILE, Main.class.getClassLoader());
+        return loader.loadClass("LoadedByAppClassLoader");
     }
-    m = cls.getDeclaredMethod("areYouB", null);
-    ClassLoader loader = (ClassLoader) m.invoke(null);
-    if (loader != cls.getClassLoader()) {
-      throw new Error("Wrong class loader");
-    }
-  }
 
-  public static native void ensureJitCompiled(Class<?> cls, String method_name);
+    public static void main(String[] args) throws Exception {
+        System.loadLibrary(args[0]);
+        Class<?> cls = classFromDifferentLoader();
+        Method m = cls.getDeclaredMethod("letMeInlineYou", A.class);
+        B b = new B();
+        // Invoke the method enough times to get an inline cache and get JITted.
+        for (int i = 0; i < 10000; ++i) {
+            m.invoke(null, b);
+        }
+        m = cls.getDeclaredMethod("areYouB", null);
+        ClassLoader loader = (ClassLoader) m.invoke(null);
+        if (loader != cls.getClassLoader()) {
+            throw new Error("Wrong class loader");
+        }
+    }
+
+    public static native void ensureJitCompiled(Class<?> cls, String method_name);
 }

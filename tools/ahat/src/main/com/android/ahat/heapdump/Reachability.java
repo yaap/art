@@ -76,6 +76,6 @@ public enum Reachability {
    * @return true if this reachability is not weaker than <code>other</code>
    */
   public boolean notWeakerThan(Reachability other) {
-    return ordinal() <= other.ordinal();
+    return compareTo(other) <= 0;
   }
 }

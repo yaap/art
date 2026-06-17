@@ -29,6 +29,11 @@ python_binary_host {
     ],
 }
 
+python_binary_host {
+    name: "transform_arm64_to_x86_64",
+    srcs: ["transform_arm64_to_x86_64.py"],
+}
+
 cc_binary {
     name: "art_boot",
     defaults: ["art_defaults"],

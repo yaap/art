@@ -16,7 +16,7 @@
 
 set -e
 
-export ASM_JAR="${ANDROID_BUILD_TOP}/prebuilts/misc/common/asm/asm-9.6.jar"
+export ASM_JAR="${ANDROID_BUILD_TOP}/out/soong/.intermediates/external/ow2-asm/ow2-asm/android_common/javac/ow2-asm.jar"
 
 # Move original classes to intermediate location.
 mv classes intermediate-classes

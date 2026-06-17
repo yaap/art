@@ -40,7 +40,11 @@ IGNORE : Dict[str, List[str]] = {
     # Starts with non-zero offset at the start of the method.
     "art_quick_throw_null_pointer_exception_from_signal": ARCHES,
     # Pops stack without static control flow past the opcode.
-    "nterp_op_return": ["arm", "aarch64", "i386", "x86_64", "riscv64"],
+    "nterp_op_return": ["arm", "i386", "x86_64", "riscv64"],
+    "nterp0_op_return": ["aarch64"],
+    "nterp1_op_return": ["aarch64"],
+    "nterp2_op_return": ["aarch64"],
+    "nterp3_op_return": ["aarch64"],
 }
 
 SP = {"arm": "SP", "aarch64": "WSP", "i386": "ESP", "x86_64": "RSP", "riscv64": "X2"}

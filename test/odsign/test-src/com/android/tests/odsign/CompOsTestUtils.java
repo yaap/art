@@ -24,9 +24,12 @@ import static org.junit.Assume.assumeTrue;
 import com.android.tradefed.device.DeviceNotAvailableException;
 import com.android.tradefed.device.ITestDevice;
 import com.android.tradefed.device.TestDevice;
+import com.android.tradefed.log.LogUtil.CLog;
 import com.android.tradefed.util.CommandResult;
 
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class CompOsTestUtils {
 
@@ -62,11 +65,16 @@ public class CompOsTestUtils {
     public void runCompilationJobEarlyAndWait() throws Exception {
         waitForJobToBeScheduled();
 
+        // Get the device's timestamp before we start the job.
+        long timeSinceEpochMillis = mDevice.getDeviceDate();
+        CLog.i("Compilation job starting time (epoch in milliseconds): " + timeSinceEpochMillis);
+
         assertCommandSucceeds("cmd jobscheduler run -f android " + JOB_ID);
         // It takes time. Just don't spam.
         TimeUnit.SECONDS.sleep(SECONDS_BEFORE_PROGRESS_CHECK);
         // The job runs asynchronously. To wait until it completes.
         waitForJobExit(VM_ODREFRESH_MAX_SECONDS - SECONDS_BEFORE_PROGRESS_CHECK);
+        checkCompOsCompilationResult(timeSinceEpochMillis);
     }
 
     public String checksumDirectoryContentPartial(String path) throws Exception {
@@ -132,9 +140,69 @@ public class CompOsTestUtils {
         assumeTrue(product != null && !product.startsWith("vsoc_"));
     }
 
+    // These constants are from `com.android.server.compos.IsolatedCompilationMetrics`. They are
+    // hardcoded here because the class is not accessible from this test code.
+    private static final int RESULT_SUCCESS = 1;
+    private static final int RESULT_UNKNOWN_FAILURE = 2;
+    private static final int RESULT_FAILED_TO_START = 3;
+    private static final int RESULT_JOB_CANCELED = 4;
+    private static final int RESULT_COMPILATION_FAILED = 5;
+    private static final int RESULT_UNEXPECTED_COMPILATION_RESULT = 6;
+    private static final int RESULT_COMPOSD_DIED = 7;
+    private static final int RESULT_FAILED_TO_ENABLE_FSVERITY = 8;
+
     private String assertCommandSucceeds(String command) throws DeviceNotAvailableException {
         CommandResult result = mDevice.executeShellV2Command(command);
         assertWithMessage(result.toString()).that(result.getExitCode()).isEqualTo(0);
         return result.getStdout().trim();
+    }
+
+    private void checkCompOsCompilationResult(long timeSinceEpochMillis) throws Exception {
+        String startTimestamp = String.format("%.3f", timeSinceEpochMillis / 1000.0);
+        String command = "logcat -d -T " + startTimestamp + " -s IsolatedCompilationMetrics"
+                + " | grep ISOLATED_COMPILATION_ENDED | tail -n 1";
+        String lastMatchingLine = mDevice.executeShellCommand(command).trim();
+
+        if (lastMatchingLine.isEmpty()) {
+            // This can happen if compilation is skipped for some reason. The test should
+            // handle it if it's unexpected.
+            CLog.w("No CompOS compilation metrics log line found");
+            return;
+        }
+
+        CLog.i("CompOS compilation metrics log line: '%s'", lastMatchingLine);
+
+        // The result code is extracted here.
+        Pattern resultCodePattern = Pattern.compile("ISOLATED_COMPILATION_ENDED: (\\d+),");
+        Matcher resultCodeMatcher = resultCodePattern.matcher(lastMatchingLine);
+        if (!resultCodeMatcher.find()) {
+            fail("Could not parse result code from log line");
+        }
+        Integer resultCode = Integer.parseInt(resultCodeMatcher.group(1));
+        if (resultCode != RESULT_SUCCESS) {
+            fail("CompOS compilation failed: " + getCompilationResultMessage(resultCode));
+        }
+    }
+
+    private String getCompilationResultMessage(int resultCode) {
+        switch (resultCode) {
+            case RESULT_SUCCESS:
+                return "Success";
+            case RESULT_FAILED_TO_START:
+                return "VM failed to start";
+            case RESULT_COMPOSD_DIED:
+                return "composd died";
+            case RESULT_FAILED_TO_ENABLE_FSVERITY:
+                return "Failed to enable fsverity";
+            case RESULT_COMPILATION_FAILED:
+                return "Failed to finish the compilation in the VM";
+            case RESULT_UNEXPECTED_COMPILATION_RESULT:
+                return "Unexpected compilation result";
+            case RESULT_JOB_CANCELED:
+                return "Job canceled";
+            case RESULT_UNKNOWN_FAILURE:
+            default:
+                return "UNKNOWN_FAILURE (resultCode=" + resultCode + ")";
+        }
     }
 }

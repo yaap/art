@@ -33,6 +33,15 @@ public class Test908 {
     run(l);
 
     enableGcTracking(false);
+
+    // Run a blocking GC before doing the next run to ensure that if any concurrent GC was in
+    // flight when we disabled GC-tracking, then it finishes and the gc-thread would not spuriously
+    // increment gc-finish count.
+    Runtime.getRuntime().gc();
+    // Fetch gc counts as that also resets them.
+    getGcStarts();
+    getGcFinishes();
+
     run(l);
   }
 

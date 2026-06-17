@@ -725,7 +725,6 @@ inline CodeItemDebugInfoAccessor ArtMethod::DexInstructionDebugInfo() {
 
 inline bool ArtMethod::CounterHasChanged(uint16_t threshold) {
   DCHECK(!IsAbstract());
-  DCHECK_EQ(threshold, Runtime::Current()->GetJITOptions()->GetWarmupThreshold());
   return hotness_count_ != threshold;
 }
 
@@ -736,7 +735,6 @@ inline void ArtMethod::ResetCounter(uint16_t new_value) {
   if (IsMemorySharedMethod()) {
     return;
   }
-  DCHECK_EQ(new_value, Runtime::Current()->GetJITOptions()->GetWarmupThreshold());
   // Avoid dirtying the value if possible.
   if (hotness_count_ != new_value) {
     hotness_count_ = new_value;

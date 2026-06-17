@@ -1,0 +1,1 @@
+Smali test to make sure we don't crash during control_flow_simplifier

@@ -106,10 +106,9 @@ void MonitorPool::FreeInternal() {
 }
 
 Monitor* MonitorPool::CreateMonitorInPool(Thread* self,
-                                          Thread* owner,
+                                          MonitorOwner owner,
                                           ObjPtr<mirror::Object> obj,
-                                          int32_t hash_code)
-    REQUIRES_SHARED(Locks::mutator_lock_) {
+                                          int32_t hash_code) REQUIRES_SHARED(Locks::mutator_lock_) {
   // We are gonna allocate, so acquire the writer lock.
   MutexLock mu(self, *Locks::allocated_monitor_ids_lock_);
 

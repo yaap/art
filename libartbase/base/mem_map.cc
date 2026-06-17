@@ -276,6 +276,33 @@ void* MemMap::TryMemMapLow4GB(void* ptr,
 }
 #endif
 
+std::string MemMap::FormatDebugName(const char* name) {
+  // If the combined debug name exceeds the kernel limit, we ellipsize the
+  // name interior; we want to keep the end of the name to ensure preservation
+  // of any file extensions that might be used in bookkeeping.
+  // TODO(b/494278476): Also sanitize any invalid characters (e.g., `\`, `$`).
+  static constexpr std::string_view kPrefix = "dalvik-";
+  static constexpr std::string_view kEllipsis = "...";
+  static constexpr size_t kMaxKernelLen = 79;  // 80 bytes total - 1 for '\0'
+  static constexpr size_t kHeadLen = 20;
+  static constexpr size_t kTailLen =
+      kMaxKernelLen - kPrefix.length() - kEllipsis.length() - kHeadLen;
+
+  const std::string_view name_sv = (name != nullptr) ? name : "";
+  std::string debug_friendly_name;
+  if (kPrefix.length() + name_sv.length() <= kMaxKernelLen) {
+    debug_friendly_name.reserve(kPrefix.length() + name_sv.length());
+    debug_friendly_name.append(kPrefix).append(name_sv);
+  } else {
+    debug_friendly_name.reserve(kMaxKernelLen);
+    debug_friendly_name.append(kPrefix)
+        .append(name_sv.substr(0, kHeadLen))
+        .append(kEllipsis)
+        .append(name_sv.substr(name_sv.length() - kTailLen));
+  }
+  return debug_friendly_name;
+}
+
 void MemMap::SetDebugName(void* map_ptr, const char* name, size_t size) {
   // Debug naming is only used for Android target builds. For Linux targets,
   // we'll still call prctl but it wont do anything till we upstream the prctl.
@@ -283,11 +310,10 @@ void MemMap::SetDebugName(void* map_ptr, const char* name, size_t size) {
     return;
   }
 
+  const std::string debug_friendly_name = FormatDebugName(name);
+
   // lock as std::map is not thread-safe
   std::lock_guard<std::mutex> mu(*mem_maps_lock_);
-
-  std::string debug_friendly_name("dalvik-");
-  debug_friendly_name += name;
   auto it = debugStrMap.find(debug_friendly_name);
 
   if (it == debugStrMap.end()) {
@@ -1123,7 +1149,7 @@ void* MemMap::MapInternalArtLow4GBAllocator(size_t length,
       return actual;
     }
 
-    if (4U * GB - ptr < length) {
+    if (4U * GB - ptr <= length) {
       // Not enough memory until 4GB.
       if (first_run) {
         // Try another time from the bottom;
@@ -1149,11 +1175,10 @@ void* MemMap::MapInternalArtLow4GBAllocator(size_t length,
       }
     }
 
-    next_mem_pos_ = tail_ptr;  // update early, as we break out when we found and mapped a region
-
     if (safe == true) {
       actual = TryMemMapLow4GB(reinterpret_cast<void*>(ptr), length, prot, flags, fd, offset);
       if (actual != MAP_FAILED) {
+        next_mem_pos_ = tail_ptr;
         return actual;
       }
     } else {
@@ -1163,7 +1188,7 @@ void* MemMap::MapInternalArtLow4GBAllocator(size_t length,
   }
 
   if (actual == MAP_FAILED) {
-    LOG(ERROR) << "Could not find contiguous low-memory space.";
+    LOG(ERROR) << "Could not find contiguous " << PrettySize(length) << " low-memory space.";
     errno = ENOMEM;
   }
   return actual;

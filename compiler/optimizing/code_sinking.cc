@@ -26,6 +26,7 @@
 #include "base/logging.h"
 #include "base/scoped_arena_allocator.h"
 #include "base/scoped_arena_containers.h"
+#include "com_android_art_rw_flags.h"
 #include "common_dominator.h"
 #include "nodes.h"
 
@@ -38,7 +39,9 @@ bool CodeSinking::Run() {
   }
 
   UncommonBranchSinking();
-  ReturnSinking();
+  if (!com::android::art::rw::flags::packed_switch_simplification()) {
+    ReturnSinking();
+  }
   return true;
 }
 
@@ -89,7 +92,10 @@ static bool IsInterestingInstruction(HInstruction* instruction) {
   }
 
   // Check allocations and strings first, as they can throw, but it is safe to move them.
-  if (instruction->IsNewInstance() || instruction->IsNewArray() || instruction->IsLoadString()) {
+  if (instruction->IsNewInstance() ||
+      instruction->IsNewArray() ||
+      instruction->IsLoadString() ||
+      instruction->IsStringBuilderAppend()) {
     return true;
   }
 

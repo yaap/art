@@ -203,15 +203,16 @@ void RegisterAllocationResolver::Resolve(ArrayRef<HInstruction* const> safepoint
     LocationSummary* locations = at->GetLocations();
     switch (temp->GetType()) {
       case DataType::Type::kInt32:
-        locations->SetTempAt(temp_index, Location::RegisterLocation(reg));
+        locations->SetTempAt(temp_index, Location::CoreRegister(reg));
         break;
 
       case DataType::Type::kFloat64:
         if (codegen_->NeedsTwoRegisters(DataType::Type::kFloat64)) {
-          Location location = Location::FpuRegisterPairLocation(reg, temp->GetHighRegister());
+          Location location = Location::FpuRegisterPair(reg, temp->GetHighRegister());
           locations->SetTempAt(temp_index, location);
         } else {
-          locations->SetTempAt(temp_index, Location::FpuRegisterLocation(reg));
+          DCHECK(temp->HasRegisters());
+          locations->SetTempAt(temp_index, GetLocation(temp));
         }
         break;
 
@@ -224,10 +225,15 @@ void RegisterAllocationResolver::Resolve(ArrayRef<HInstruction* const> safepoint
 
 void RegisterAllocationResolver::UpdateSafepointLiveRegisters(
     ArrayRef<HInstruction* const> safepoints) {
+  // If the codegen has overlapping FPVec registers, we may want to update both the FP and Vec
+  // registers as live
+  bool has_overlapping_fp_vec_registers = codegen_->HasOverlappingFPVecRegisters();
   for (HInstruction* instruction : liveness_.GetInstructionsFromSsaIndexes()) {
     size_t remaining_safepoints = instruction->GetLiveInterval()->GetNumSafepointsAfter();
     uint32_t RegisterSet::* register_field_accessor =
-        RegisterSet::GetRegisterFieldAccessor(instruction->GetLiveInterval()->IsFloatingPoint());
+        instruction->GetLiveInterval()->IsFloatingPoint()
+            ? RegisterSet::GetFpuRegisterSetAccessor()
+            : RegisterSet::GetCoreRegisterSetAccessor();
     for (LiveInterval* current = instruction->GetLiveInterval();
          current != nullptr;
          current = current->GetNextSibling()) {
@@ -235,14 +241,28 @@ void RegisterAllocationResolver::UpdateSafepointLiveRegisters(
         continue;
       }
       uint32_t register_mask = current->GetRegisters();
-      remaining_safepoints = current->ForCoveredSafepoints(
-          safepoints,
-          remaining_safepoints,
-          [register_field_accessor, register_mask](HInstruction* safepoint) ALWAYS_INLINE {
-            RegisterSet* live_registers = safepoint->GetLocations()->GetLiveRegisters();
-            (live_registers->*register_field_accessor) |= register_mask;
-            return true;
-          });
+      if (!has_overlapping_fp_vec_registers ||
+          current->NumberOfSpillSlotsNeeded() <= 2) {
+        remaining_safepoints = current->ForCoveredSafepoints(
+            safepoints,
+            remaining_safepoints,
+            [register_field_accessor, register_mask](HInstruction* safepoint) ALWAYS_INLINE {
+              RegisterSet* live_registers = safepoint->GetLocations()->GetLiveRegisters();
+              (live_registers->*register_field_accessor) |= register_mask;
+              return true;
+            });
+      } else {
+        remaining_safepoints = current->ForCoveredSafepoints(
+            safepoints,
+            remaining_safepoints,
+            [register_mask](
+                HInstruction* safepoint) ALWAYS_INLINE {
+              RegisterSet* live_registers = safepoint->GetLocations()->GetLiveRegisters();
+              live_registers->AddFpuRegisterSet(register_mask);
+              live_registers->AddVecRegisterSet(register_mask);
+              return true;
+            });
+      }
     }
   }
 }
@@ -370,7 +390,7 @@ void RegisterAllocationResolver::ConnectSiblings(LiveInterval* interval,
             if (current->GetParent()->HasSpillSlot()) {
               locations->SetStackBit(current->GetParent()->GetSpillSlot() / kVRegSize);
             }
-            if (source.GetKind() == Location::kRegister) {
+            if (source.GetKind() == Location::kCoreRegister) {
               locations->SetRegisterBit(source.reg());
             }
             return true;
@@ -471,8 +491,8 @@ void RegisterAllocationResolver::ConnectSplitSiblings(LiveInterval* interval,
 }
 
 static bool IsValidDestination(Location destination) {
-  return destination.IsRegister()
-      || destination.IsRegisterPair()
+  return destination.IsCoreRegister()
+      || destination.IsCoreRegisterPair()
       || destination.IsFpuRegister()
       || destination.IsFpuRegisterPair()
       || destination.IsStackSlot()
@@ -679,24 +699,33 @@ void RegisterAllocationResolver::InsertMoveAfter(HInstruction* instruction,
   AddMove(move, source, destination, instruction, instruction->GetType());
 }
 
-Location RegisterAllocationResolver::GetLocation(LiveInterval* interval) {
+Location RegisterAllocationResolver::GetLocation(LiveInterval* interval) const {
+  DCHECK(!interval->IsFixed());
   if (interval->HasRegisters()) {
     uint32_t reg = interval->GetRegisterOrLowRegister();
     if (interval->IsFloatingPoint()) {
       if (interval->IsPair()) {
-        return Location::FpuRegisterPairLocation(reg, interval->GetHighRegister());
+        return Location::FpuRegisterPair(reg, interval->GetHighRegister());
       } else {
-        return Location::FpuRegisterLocation(reg);
+        if (codegen_->HasOverlappingFPVecRegisters()) {
+          // For vector operation we want to embedd the vector length in the Location info
+          // Determine if location is a vector by getting needed spill slots
+          size_t needed_spill_slots = interval->NumberOfSpillSlotsNeeded();
+          needed_spill_slots = (needed_spill_slots > 2) ? needed_spill_slots : 0;
+          return Location::FpuRegister(reg, needed_spill_slots * kVRegSize);
+        }
+        return Location::FpuRegister(reg);
       }
     } else {
       if (interval->IsPair()) {
-        return Location::RegisterPairLocation(reg, interval->GetHighRegister());
+        return Location::CoreRegisterPair(reg, interval->GetHighRegister());
       } else {
-        return Location::RegisterLocation(reg);
+        return Location::CoreRegister(reg);
       }
     }
   } else {
-    HInstruction* defined_by = interval->GetParent()->GetDefinedBy();
+    DCHECK(!interval->IsTemp());
+    HInstruction* defined_by = interval->GetDefinedBy();
     if (defined_by->IsConstant()) {
       return defined_by->GetLocations()->Out();
     } else if (interval->GetParent()->HasSpillSlot()) {

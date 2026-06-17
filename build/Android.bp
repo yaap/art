@@ -24,9 +24,10 @@ bootstrap_go_package {
     ],
     srcs: [
         "art.go",
-        "art_gob_enc.go",
+        "art_enc.go",
         "codegen.go",
         "makevars.go",
+        "test_suite_data.go",
     ],
     pluginFor: ["soong_build"],
 }
@@ -83,6 +84,10 @@ art_global_defaults {
     // Additional flags are computed by art.go
 
     name: "art_defaults",
+
+    // Our hand-written assembler doesn't have BTI support,
+    // so ignore the fact that basically everything we build has no BTI.
+    defaults: ["no_bti"],
 
     // This is the default visibility for the //art package, but we repeat it
     // here so that it gets merged with other visibility rules in modules

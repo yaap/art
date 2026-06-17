@@ -584,8 +584,8 @@ void UpdateNeedsDexPcEventsOnStack(Thread* thread) REQUIRES(Locks::mutator_lock_
   visitor.WalkStack(true);
 }
 
-void ReportMethodEntryForOnStackMethods(InstrumentationListener* listener, Thread* thread)
-    REQUIRES(Locks::mutator_lock_) {
+void Instrumentation::ReportMethodEntryForOnStackMethods(InstrumentationListener* listener,
+                                                         Thread* thread) {
   Locks::mutator_lock_->AssertExclusiveHeld(Thread::Current());
 
   struct InstallStackVisitor final : public StackVisitor {
@@ -771,9 +771,9 @@ static void PotentiallyAddListenerTo(Instrumentation::InstrumentationEvent event
 
 void Instrumentation::AddListener(InstrumentationListener* listener,
                                   uint32_t events,
-                                  bool is_trace_listener) {
+                                  ListenerType listener_type) {
   Locks::mutator_lock_->AssertExclusiveHeld(Thread::Current());
-  if (is_trace_listener) {
+  if (listener_type == ListenerType::kFastTraceListener) {
     PotentiallyAddListenerTo(kMethodEntered,
                              events,
                              method_entry_fast_trace_listeners_,
@@ -788,13 +788,20 @@ void Instrumentation::AddListener(InstrumentationListener* listener,
                              &have_method_entry_listeners_,
                              kSlowMethodEntryExitListeners);
   }
-  if (is_trace_listener) {
+  if (listener_type == ListenerType::kFastTraceListener) {
     PotentiallyAddListenerTo(kMethodExited,
                              events,
                              method_exit_fast_trace_listeners_,
                              listener,
                              &have_method_exit_listeners_,
                              kFastTraceListeners);
+  } else if (listener_type == ListenerType::kSlowTraceListener) {
+    PotentiallyAddListenerTo(kMethodExited,
+                             events,
+                             method_exit_slow_trace_listeners_,
+                             listener,
+                             &have_method_exit_listeners_,
+                             kSlowTraceListeners);
   } else {
     PotentiallyAddListenerTo(kMethodExited,
                              events,
@@ -902,9 +909,9 @@ static void PotentiallyRemoveListenerFrom(Instrumentation::InstrumentationEvent 
 
 void Instrumentation::RemoveListener(InstrumentationListener* listener,
                                      uint32_t events,
-                                     bool is_trace_listener) {
+                                     ListenerType listener_type) {
   Locks::mutator_lock_->AssertExclusiveHeld(Thread::Current());
-  if (is_trace_listener) {
+  if (listener_type == ListenerType::kFastTraceListener) {
     PotentiallyRemoveListenerFrom(kMethodEntered,
                                   events,
                                   method_entry_fast_trace_listeners_,
@@ -919,13 +926,20 @@ void Instrumentation::RemoveListener(InstrumentationListener* listener,
                                   &have_method_entry_listeners_,
                                   kSlowMethodEntryExitListeners);
   }
-  if (is_trace_listener) {
+  if (listener_type == ListenerType::kFastTraceListener) {
     PotentiallyRemoveListenerFrom(kMethodExited,
                                   events,
                                   method_exit_fast_trace_listeners_,
                                   listener,
                                   &have_method_exit_listeners_,
                                   kFastTraceListeners);
+  } else if (listener_type == ListenerType::kSlowTraceListener) {
+    PotentiallyRemoveListenerFrom(kMethodExited,
+                                  events,
+                                  method_exit_slow_trace_listeners_,
+                                  listener,
+                                  &have_method_exit_listeners_,
+                                  kSlowTraceListeners);
   } else {
     PotentiallyRemoveListenerFrom(kMethodExited,
                                   events,
@@ -1463,25 +1477,38 @@ template <>
 void Instrumentation::MethodExitEventImpl(Thread* thread,
                                           ArtMethod* method,
                                           OptionalFrame frame,
-                                          MutableHandle<mirror::Object>& return_value) const {
+                                          MutableHandle<mirror::Object>& return_value,
+                                          bool skip_trace_listeners) const {
   if (HasMethodExitListeners()) {
     for (InstrumentationListener* listener : method_exit_slow_listeners_) {
       if (listener != nullptr) {
         listener->MethodExited(thread, method, frame, return_value);
       }
     }
-    for (InstrumentationListener* listener : method_exit_fast_trace_listeners_) {
-      if (listener != nullptr) {
-        listener->MethodExited(thread, method, frame, return_value);
+    if (!skip_trace_listeners) {
+      // For implementing pop frame and force return features, we rely on method exit listeners
+      // calling multiple times. However we should not notify the trace listeners with these
+      // multiple exit callbacks. We should only report the method exit once.
+      for (InstrumentationListener* listener : method_exit_fast_trace_listeners_) {
+        if (listener != nullptr) {
+          listener->MethodExited(thread, method, frame, return_value);
+        }
+      }
+      for (InstrumentationListener* listener : method_exit_slow_trace_listeners_) {
+        if (listener != nullptr) {
+          listener->MethodExited(thread, method, frame, return_value);
+        }
       }
     }
   }
 }
 
-template<> void Instrumentation::MethodExitEventImpl(Thread* thread,
-                                                     ArtMethod* method,
-                                                     OptionalFrame frame,
-                                                     JValue& return_value) const {
+template <>
+void Instrumentation::MethodExitEventImpl(Thread* thread,
+                                          ArtMethod* method,
+                                          OptionalFrame frame,
+                                          JValue& return_value,
+                                          bool skip_trace_listeners) const {
   if (HasMethodExitListeners()) {
     Thread* self = Thread::Current();
     StackHandleScope<1> hs(self);
@@ -1492,14 +1519,24 @@ template<> void Instrumentation::MethodExitEventImpl(Thread* thread,
           listener->MethodExited(thread, method, frame, return_value);
         }
       }
-      for (InstrumentationListener* listener : method_exit_fast_trace_listeners_) {
-        if (listener != nullptr) {
-          listener->MethodExited(thread, method, frame, return_value);
+      if (!skip_trace_listeners) {
+        // For implementing pop frame and force return features, we rely on method exit listeners
+        // calling multiple times. However we should not notify the trace listeners with these
+        // multiple exit callbacks. We should only report the method exit once.
+        for (InstrumentationListener* listener : method_exit_fast_trace_listeners_) {
+          if (listener != nullptr) {
+            listener->MethodExited(thread, method, frame, return_value);
+          }
+        }
+        for (InstrumentationListener* listener : method_exit_slow_trace_listeners_) {
+          if (listener != nullptr) {
+            listener->MethodExited(thread, method, frame, return_value);
+          }
         }
       }
     } else {
       MutableHandle<mirror::Object> ret(hs.NewHandle(return_value.GetL()));
-      MethodExitEventImpl(thread, method, frame, ret);
+      MethodExitEventImpl(thread, method, frame, ret, skip_trace_listeners);
       return_value.SetL(ret.Get());
     }
   }

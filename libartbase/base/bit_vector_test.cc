@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <cstdint>
 #include <memory>
 #include <random>
 #include <vector>
@@ -621,6 +622,45 @@ TEST(BitVector, CopyTo) {
     bv.CopyTo(buf, sizeof(buf));
     EXPECT_EQ(0x80040000U, buf[0]);
     EXPECT_EQ(0x00000000U, buf[1]);
+  }
+}
+
+TEST(BitVector, GetLowestBitCleared) {
+  uint32_t storage_size = 3;
+  {
+    uint32_t storage[] = {0u, 0u, 0u};
+    BitVector bv(false, Allocator::GetNoopAllocator(), storage_size, storage);
+    EXPECT_EQ(0u, bv.GetLowestBitCleared());
+  }
+
+  {
+    uint32_t storage[] = {UINT32_MAX, UINT32_MAX, UINT32_MAX};
+    BitVector bv(false, Allocator::GetNoopAllocator(), storage_size, storage);
+    EXPECT_EQ(-1, bv.GetLowestBitCleared());
+  }
+
+  {
+    uint32_t storage[] = {UINT32_MAX, 0u, 0u};
+    BitVector bv(false, Allocator::GetNoopAllocator(), storage_size, storage);
+    EXPECT_EQ(32, bv.GetLowestBitCleared());
+  }
+
+  {
+    uint32_t storage[] = {0x1, 0u, 0u};
+    BitVector bv(false, Allocator::GetNoopAllocator(), storage_size, storage);
+    EXPECT_EQ(1, bv.GetLowestBitCleared());
+  }
+
+  {
+    uint32_t storage[] = {0x5, 0u, 0u};
+    BitVector bv(false, Allocator::GetNoopAllocator(), storage_size, storage);
+    EXPECT_EQ(1, bv.GetLowestBitCleared());
+  }
+
+  {
+    uint32_t storage[] = {UINT32_MAX, 0x5, 0u};
+    BitVector bv(false, Allocator::GetNoopAllocator(), storage_size, storage);
+    EXPECT_EQ(33, bv.GetLowestBitCleared());
   }
 }
 

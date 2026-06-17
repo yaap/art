@@ -75,10 +75,6 @@ class DexFileContainer {
   virtual const uint8_t* End() const = 0;
   size_t Size() const { return End() - Begin(); }
 
-  // TODO: Remove. This is only used by dexlayout to override the data section of the dex header,
-  //       and redirect it to intermediate memory buffer at completely unrelated memory location.
-  virtual ArrayRef<const uint8_t> Data() const { return {}; }
-
   bool IsZip() const { return is_zip_; }
   void SetIsZip() { is_zip_ = true; }
   virtual bool IsFileMap() const { return false; }
@@ -128,7 +124,8 @@ class DexFile {
   using Magic = std::array<uint8_t, 8>;
 
   struct Sha1 : public std::array<uint8_t, kSha1DigestSize> {
-    std::string ToString() const;
+    std::array<char, kSha1DigestSize * 2 + 1> ToHex() const;
+    std::string ToString() const { return std::string(DexFile::Sha1::ToHex().data()); }
   };
 
   static_assert(std::is_standard_layout_v<Sha1>);
@@ -905,6 +902,22 @@ class DexFile {
   static size_t Utf8Length(const char* utf8_data, size_t utf16_length);
   static std::string_view StringViewFromUtf16Length(const char* utf8_data, size_t utf16_length);
 
+  static constexpr size_t DataBeginOffset() {
+    return OFFSETOF_MEMBER(DexFile, data_) + decltype(data_)::ArrayOffset();
+  }
+
+  static constexpr size_t StringIdsOffset() {
+    return OFFSETOF_MEMBER(DexFile, string_ids_);
+  }
+
+  static constexpr size_t MethodIdsOffset() {
+    return OFFSETOF_MEMBER(DexFile, method_ids_);
+  }
+
+  static constexpr size_t ProtoIdsOffset() {
+    return OFFSETOF_MEMBER(DexFile, proto_ids_);
+  }
+
  protected:
   // First Dex format version supporting default methods.
   static constexpr uint32_t kDefaultMethodsVersion = 37;
@@ -946,6 +959,11 @@ class DexFile {
   // Can also be a path to a multidex container (typically apk), followed by
   // DexFileLoader.kMultiDexSeparator (i.e. '!') and the file inside the
   // container.
+  //
+  // When dex2oat runs this may be a canonical location where the file is
+  // supposed to be (coming from -Xbootclasspath-locations), rather than where
+  // it actually is. In such cases they won't incorporate a prefix from
+  // ANDROID_ROOT and other path environment variables.
   //
   // On host this may not be an absolute path.
   //

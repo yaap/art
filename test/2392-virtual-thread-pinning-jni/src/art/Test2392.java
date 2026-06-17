@@ -50,10 +50,11 @@ public class Test2392 {
         }
 
         Thread carrier2 = Thread.unparkVirtual(context);
-        carrier2.join();
+        carrier2.join(2000L);
     }
 
-    private static VirtualThreadContext startVirtualThreadAndVerifyPinning() {
+    private static VirtualThreadContext startVirtualThreadAndVerifyPinning()
+            throws InterruptedException {
         VirtualThreadContext context = startVirtualThreadAndGetParkedContext();
         Thread carrier = context.pinnedCarrierThread;
         if (carrier == null) {
@@ -71,6 +72,7 @@ public class Test2392 {
         if (carrier != carrier2) {
             throw new AssertionError("The carrier thread should be the same");
         }
+        carrier2.join(2000L);
         return context;
     }
 

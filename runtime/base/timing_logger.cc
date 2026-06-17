@@ -20,6 +20,7 @@
 
 #include <android-base/logging.h>
 
+#include "base/inlined_vector.h"
 #include "base/mutex.h"
 #include "base/stl_util.h"
 #include "base/systrace.h"
@@ -108,15 +109,17 @@ void CumulativeLogger::DumpAverages(std::ostream &os) const {
   // Create an array of pointers to cumulative timers on stack and sort it in
   // decreasing order of accumulated timer so that the most time consuming
   // timer is printed first.
-  const CumulativeTime* sorted_timers[timers_sz];
+  static constexpr size_t kMaxStackEntries = 16;
+  InlinedVector<const CumulativeTime*, kMaxStackEntries> sorted_timers_vector;
+  sorted_timers_vector.reserve(timers_sz);
   for (size_t i = 0; i < timers_sz; i++) {
-    sorted_timers[i] = cumulative_timers_.data() + i;
+    sorted_timers_vector.push_back(cumulative_timers_.data() + i);
   }
-  std::sort(sorted_timers,
-            sorted_timers + timers_sz,
+  ArrayRef<const CumulativeTime*> sorted_timers = sorted_timers_vector.GetArray();
+  std::sort(sorted_timers.begin(),
+            sorted_timers.end(),
             [](const CumulativeTime* a, const CumulativeTime* b) { return a->Sum() > b->Sum(); });
-  for (size_t i = 0; i < timers_sz; i++) {
-    const CumulativeTime *timer = sorted_timers[i];
+  for (const CumulativeTime* timer : sorted_timers) {
     uint64_t total_time_ns = timer->Sum() * kAdjust;
     os << timer->Name()
        << ":\tSum: " << PrettyDuration(total_time_ns)

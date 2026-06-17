@@ -52,8 +52,14 @@ public interface PreRebootManagerInterface {
     void run(@NonNull ArtModuleServiceManager artModuleServiceManager, @NonNull Context context,
             @NonNull CancellationSignal cancellationSignal) throws SystemRequirementException;
 
+    /** Since Android B. For backward compatibility only. */
+    void run(@NonNull ArtModuleServiceManager artModuleServiceManager, @NonNull Context context,
+            @NonNull CancellationSignal cancellationSignal,
+            @NonNull PackageManagerLocal.FilteredSnapshot snapshot,
+            @Nullable byte[] batchDexoptParamsProto) throws SystemRequirementException;
+
     /**
-     * Since Android B. The current API.
+     * Since Android C. The current API.
      *
      * @param snapshot The snapshot that {@code batchDexoptParamsProto} is created with.
      * @param batchDexoptParamsProto {@link BatchDexoptParamsProto}, in binary format.
@@ -61,7 +67,8 @@ public interface PreRebootManagerInterface {
     void run(@NonNull ArtModuleServiceManager artModuleServiceManager, @NonNull Context context,
             @NonNull CancellationSignal cancellationSignal,
             @NonNull PackageManagerLocal.FilteredSnapshot snapshot,
-            @Nullable byte[] batchDexoptParamsProto) throws SystemRequirementException;
+            @Nullable byte[] batchDexoptParamsProto, @NonNull String reason)
+            throws SystemRequirementException;
 
     public static class SystemRequirementException extends Exception {
         public SystemRequirementException(@NonNull String message) {

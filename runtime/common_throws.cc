@@ -16,6 +16,7 @@
 
 #include "common_throws.h"
 
+#include <cstdint>
 #include <sstream>
 
 #include <android-base/logging.h>
@@ -341,6 +342,12 @@ void ThrowIncompatibleClassChangeErrorForMethodConflict(ArtMethod* method) {
 void ThrowIndexOutOfBoundsException(int index, int length) {
   ThrowException("Ljava/lang/IndexOutOfBoundsException;", nullptr,
                  StringPrintf("length=%d; index=%d", length, index).c_str());
+}
+
+void ThrowIndexOutOfBoundsException(int64_t index, int64_t length)
+  REQUIRES_SHARED(Locks::mutator_lock_) {
+  ThrowException("Ljava/lang/IndexOutOfBoundsException;", nullptr,
+                 StringPrintf("length=%" PRId64 "; index=%" PRId64, length, index).c_str());
 }
 
 // InternalError
@@ -831,6 +838,9 @@ void ThrowStackOverflowError(Thread* self) {
 
 // Explicit instantiations to keep this definition separate to the declaration.
 template void ThrowStackOverflowError<StackType::kHardware>(Thread* self);
+#ifdef ART_USE_SIMULATOR
+template void ThrowStackOverflowError<StackType::kSimulated>(Thread* self);
+#endif
 
 // StringIndexOutOfBoundsException
 

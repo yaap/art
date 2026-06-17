@@ -65,4 +65,15 @@ android::base::Result<void> EnsureNoProcessInDir(const std::string& dir,
 }  // namespace tools
 }  // namespace art
 
+#define OR_RETURN_WITH_CONTEXT(expr, msg_prefix)                                             \
+  ({                                                                                         \
+    decltype(expr)&& __or_return_with_context_tmp = (expr);                                  \
+    if (!__or_return_with_context_tmp.ok()) {                                                \
+      return android::base::ResultError(                                                     \
+          std::format("{}: {}", msg_prefix, __or_return_with_context_tmp.error().message()), \
+          __or_return_with_context_tmp.error().code());                                      \
+    }                                                                                        \
+    std::move(__or_return_with_context_tmp).value();                                         \
+  })
+
 #endif  // ART_LIBARTTOOLS_INCLUDE_TOOLS_TOOLS_H_

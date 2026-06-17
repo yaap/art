@@ -48,10 +48,6 @@ constexpr bool kGenerateSortedSymbol = true;
 constexpr const char kSortedSymbolName[] = "$android.symtab.sorted";
 constexpr size_t kSortedSymbolMinCount = 100;  // Don't bother if the table is very small (JIT).
 
-// Magic name for .symtab symbols which enumerate dex files used
-// by this ELF file (currently mmapped inside the .dex section).
-constexpr const char* kDexFileSymbolName = "$dexfile";
-
 // Return common parts of method names; shared by all methods in the given set.
 // (e.g. "[DEDUPED] ?.<init>" or "com.android.icu.charset.CharsetEncoderICU.?")
 static void GetDedupedName(const std::vector<const MethodDebugInfo*>& methods, std::string* out) {
@@ -156,16 +152,6 @@ static void WriteDebugSymbols(ElfBuilder<ElfTypes>* builder,
     // Add in code delta, e.g., thumb bit 0 for Thumb2 code.
     address += GetInstructionSetEntryPointAdjustment(info.isa);
     symtab->Add(name_offset, text, address, info.code_size, STB_GLOBAL, STT_FUNC);
-  }
-  // Add symbols for dex files.
-  if (!debug_info.dex_files.empty() && builder->GetDex()->Exists()) {
-    auto dex = builder->GetDex();
-    for (auto it : debug_info.dex_files) {
-      uint64_t dex_address = dex->GetAddress() + it.first /* offset within the section */;
-      const DexFile* dex_file = it.second;
-      typename ElfTypes::Word dex_name = strtab->Write(kDexFileSymbolName);
-      symtab->Add(dex_name, dex, dex_address, dex_file->Size(), STB_GLOBAL, STT_FUNC);
-    }
   }
   strtab->End();
 

@@ -58,7 +58,7 @@ class ElfWriter {
                                      size_t bss_size,
                                      size_t bss_methods_offset,
                                      size_t bss_roots_offset,
-                                     size_t dex_section_size) = 0;
+                                     size_t bss_strings_offset) = 0;
   virtual std::unique_ptr<ThreadPool> PrepareDebugInfo(const debug::DebugInfo& debug_info) = 0;
   virtual OutputStream* StartRoData() = 0;
   virtual void EndRoData(OutputStream* rodata) = 0;

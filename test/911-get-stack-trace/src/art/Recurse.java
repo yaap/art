@@ -17,44 +17,45 @@
 package art;
 
 public class Recurse {
-  public static int foo(int x, int start, int max, ControlData data) {
-    bar(x, start, max, data);
-    return 0;
-  }
-
-  private static long bar(int x, int start, int max, ControlData data) {
-    baz(x, start, max, data);
-    return 0;
-  }
-
-  private static Object baz(int x, int start, int max, ControlData data) {
-    if (x == 0) {
-      printOrWait(start, max, data);
-    } else {
-      foo(x - 1, start, max, data);
+    public static int foo(int x, int start, int max, ControlData data) {
+        bar(x, start, max, data);
+        return 0;
     }
-    return null;
-  }
 
-  private static void printOrWait(int start, int max, ControlData data) {
-    if (data == null) {
-      PrintThread.print(Thread.currentThread(), start, max);
-    } else {
-      if (data.waitFor != null) {
-        synchronized (data.waitFor) {
-          data.reached.countDown();
-          try {
-            data.waitFor.wait();  // Use wait() as it doesn't have a "hidden" Java call-graph.
-          } catch (Throwable t) {
-            throw new RuntimeException(t);
-          }
-        }
-      } else {
-        data.reached.countDown();
-        while (!data.stop) {
-          // Busy-loop.
-        }
-      }
+    private static long bar(int x, int start, int max, ControlData data) {
+        baz(x, start, max, data);
+        return 0;
     }
-  }
+
+    private static Object baz(int x, int start, int max, ControlData data) {
+        if (x == 0) {
+            printOrWait(start, max, data);
+        } else {
+            foo(x - 1, start, max, data);
+        }
+        return null;
+    }
+
+    private static void printOrWait(int start, int max, ControlData data) {
+        if (data == null) {
+            PrintThread.print(Thread.currentThread(), start, max);
+        } else {
+            if (data.waitFor != null) {
+                synchronized (data.waitFor) {
+                    data.reached.countDown();
+                    try {
+                        // Use wait() as it doesn't have a "hidden" Java call-graph.
+                        data.waitFor.wait();
+                    } catch (Throwable t) {
+                        throw new RuntimeException(t);
+                    }
+                }
+            } else {
+                data.reached.countDown();
+                while (!data.stop) {
+                    // Busy-loop.
+                }
+            }
+        }
+    }
 }

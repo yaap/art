@@ -284,10 +284,10 @@ ALWAYS_INLINE static JValue GetFieldValue(const ShadowFrame& shadow_frame, uint3
 }
 
 LIBART_PROTECTED
-extern "C" size_t NterpGetStaticField(Thread* self,
-                                      ArtMethod* caller,
-                                      const uint16_t* dex_pc_ptr,
-                                      size_t resolve_field_type);
+extern "C" uint64_t NterpGetStaticField(Thread* self,
+                                        ArtMethod* caller,
+                                        const uint16_t* dex_pc_ptr,
+                                        size_t resolve_field_type);
 
 LIBART_PROTECTED
 extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
@@ -300,35 +300,35 @@ static inline void GetFieldInfo(Thread* self,
                                 const uint16_t* dex_pc_ptr,
                                 bool is_static,
                                 bool resolve_field_type,
-                                ArtField** field,
+                                mirror::Class** cls,
                                 bool* is_volatile,
                                 MemberOffset* offset)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  size_t tls_value = 0u;
-  if (!self->GetInterpreterCache()->Get(self, dex_pc_ptr, &tls_value)) {
-    if (is_static) {
+  uint64_t tls_value = 0u;
+  if (is_static) {
+    if (!self->GetInterpreterCache()->GetInt64(self, dex_pc_ptr, &tls_value)) {
       tls_value = NterpGetStaticField(
           self, shadow_frame.GetMethod(), dex_pc_ptr, resolve_field_type);
-    } else {
+    }
+  } else {
+    if (!self->GetInterpreterCache()->Get(
+            self, dex_pc_ptr, reinterpret_cast<size_t*>(&tls_value))) {
       tls_value = NterpGetInstanceFieldOffset(self,
                                               shadow_frame.GetMethod(),
                                               dex_pc_ptr,
                                               shadow_frame.GetVRegAddr(0));
     }
-
-    if (self->IsExceptionPending()) {
-      return;
-    }
   }
 
+  if (self->IsExceptionPending()) {
+    return;
+  }
+
+  *is_volatile = (static_cast<int32_t>(tls_value) < 0);
+  *offset = MemberOffset(std::abs(static_cast<int32_t>(tls_value)));
   if (is_static) {
-    DCHECK_NE(tls_value, 0u);
-    *is_volatile = ((tls_value & 1) != 0);
-    *field = reinterpret_cast<ArtField*>(tls_value & ~static_cast<size_t>(1u));
-    *offset = (*field)->GetOffset();
-  } else {
-    *is_volatile = (static_cast<int32_t>(tls_value) < 0);
-    *offset = MemberOffset(std::abs(static_cast<int32_t>(tls_value)));
+    mirror::Class* temp = reinterpret_cast<mirror::Class*>(tls_value >> 32);
+    *cls = ReadBarrier::BarrierForRoot(&temp);
   }
 }
 

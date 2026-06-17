@@ -314,7 +314,7 @@ class HGraphVisualizerPrinter final : public CRTPGraphVisitor<HGraphVisualizerPr
 
   void DumpLocation(std::ostream& stream, const Location& location) {
     DCHECK(codegen_ != nullptr);
-    if (location.IsRegister()) {
+    if (location.IsCoreRegister()) {
       codegen_->DumpCoreRegister(stream, location.reg());
     } else if (location.IsFpuRegister()) {
       codegen_->DumpFloatingPointRegister(stream, location.reg());
@@ -340,7 +340,7 @@ class HGraphVisualizerPrinter final : public CRTPGraphVisitor<HGraphVisualizerPr
       codegen_->DumpFloatingPointRegister(stream, location.low());
       stream << "|";
       codegen_->DumpFloatingPointRegister(stream, location.high());
-    } else if (location.IsRegisterPair()) {
+    } else if (location.IsCoreRegisterPair()) {
       codegen_->DumpCoreRegister(stream, location.low());
       stream << "|";
       codegen_->DumpCoreRegister(stream, location.high());
@@ -420,6 +420,12 @@ class HGraphVisualizerPrinter final : public CRTPGraphVisitor<HGraphVisualizerPr
         << std::boolalpha << load_class->MustGenerateClinitCheck() << std::noboolalpha;
     StartAttributeStream("needs_access_check") << std::boolalpha
         << load_class->NeedsAccessCheck() << std::noboolalpha;
+  }
+
+  void VisitClinitCheck(HClinitCheck* clinit_check) {
+    HLoadClass* load_class = clinit_check->GetLoadClass();
+    StartAttributeStream("class_name")
+        << load_class->GetDexFile().PrettyType(load_class->GetTypeIndex());
   }
 
   void VisitLoadMethodHandle(HLoadMethodHandle* load_method_handle) {
@@ -678,7 +684,7 @@ class HGraphVisualizerPrinter final : public CRTPGraphVisitor<HGraphVisualizerPr
 #endif
 
   bool IsPass(const char* name) {
-    return strcmp(pass_name_, name) == 0;
+    return strstr(pass_name_, name) == pass_name_;
   }
 
   bool IsDebugDump() {
@@ -770,6 +776,7 @@ class HGraphVisualizerPrinter final : public CRTPGraphVisitor<HGraphVisualizerPr
     // For the builder and the inliner, we want to add extra information on HInstructions
     // that have reference types, and also HInstanceOf/HCheckcast.
     if ((IsPass(HGraphBuilder::kBuilderPassName)
+        || IsPass(ReferenceTypePropagation::kReferenceTypePropagationPassName)
         || IsPass(HInliner::kInlinerPassName)
         || IsDebugDump())
         && (instruction->GetType() == DataType::Type::kReference ||

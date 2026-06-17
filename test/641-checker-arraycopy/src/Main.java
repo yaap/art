@@ -16,15 +16,14 @@
 
 public class Main {
 
-  // Note that this is testing we haven't intrinsified the byte[] arraycopy version.
-  // Once we eventually start doing it, we will need to re-adjust this test.
-
   /// CHECK-START-X86: void Main.typedCopy(java.lang.Object, byte[]) disassembly (after)
   /// CHECK: InvokeStaticOrDirect method_name:java.lang.System.arraycopy intrinsic:SystemArrayCopy
   /// CHECK-NOT:    call
   /// CHECK: InvokeStaticOrDirect method_name:java.lang.System.arraycopy intrinsic:SystemArrayCopyByte
   /// CHECK-NOT:    call
   /// CHECK: ReturnVoid
+  //
+  // Byte version is not intrinsified because source and destination are the same.
   public static void typedCopy(Object o, byte[] foo) {
     System.arraycopy(o, 1, o, 0, 1);
     System.arraycopy((Object)foo, 1, (Object)foo, 0, 1);  // Don't use the @hide byte[] overload.
@@ -43,6 +42,8 @@ public class Main {
   /// CHECK: InvokeStaticOrDirect method_name:java.lang.System.arraycopy intrinsic:SystemArrayCopyByte
   /// CHECK-NOT:    call
   /// CHECK: ReturnVoid
+  //
+  // Byte version is not intrinsified because source and destination are the same.
   public static void untypedCopyCaller(Object o, byte[] array) {
     untypedCopy(o, array);
   }

@@ -29,6 +29,7 @@
 
 #include "arch/instruction_set.h"
 #include "base/compiler_filter.h"
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/os.h"
 #include "base/scoped_flock.h"
@@ -100,23 +101,49 @@ class OatFileAssistant {
     kOatUpToDate,
   };
 
-  // A bit field to represent the conditions where dexopt should be performed.
-  struct DexOptTrigger {
-    // Dexopt should be performed if the target compiler filter is better than the current compiler
-    // filter. See `CompilerFilter::IsBetter`.
-    bool targetFilterIsBetter : 1;
-    // Dexopt should be performed if the target compiler filter is the same as the current compiler
-    // filter.
-    bool targetFilterIsSame : 1;
-    // Dexopt should be performed if the target compiler filter is worse than the current compiler
-    // filter. See `CompilerFilter::IsBetter`.
-    bool targetFilterIsWorse : 1;
-    // Dexopt should be performed if the current oat file was compiled without a primary image,
-    // and the runtime is now running with a primary image loaded from disk.
-    bool primaryBootImageBecomesUsable : 1;
-    // Dexopt should be performed if the APK is compressed and the current oat/vdex file doesn't
-    // contain dex code.
-    bool needExtraction : 1;
+  enum class DexoptComparator : uint32_t {
+    // Compares the compiler filter of the current and target dexopt state. Higher is better.
+    //
+    // This is a primary comparator.
+    kComparingCompilerFilter = 0,
+    // Compares the compiler filter of the current and target dexopt state. Lower is better.
+    //
+    // This is a primary comparator.
+    kComparingCompilerFilterReversed = 1,
+    // Compares the primary boot image availability at the time of current dexopt state creation
+    // against its projected availability for the target state. Only relevant for compiler filters
+    // that involves compilation (e.g. `speed` and `speed-profile`).
+    //
+    // This is a secondary comparator.
+    kComparingPrimaryBootImageStatus = 2,
+    // Compares the presence of extracted DEX code in the current dexopt state against its
+    // projected presence in the target state. Only relevant for compressed DEX files.
+    //
+    // This is a secondary comparator.
+    kComparingExtractionStatus = 3,
+    // A custom comparator indicating that the target dexopt state is better than the current.
+    //
+    // This is a primary comparator.
+    kCustomTargetIsBetterThanCurrent = 4,
+    // A custom comparator indicating that the target dexopt state is worse than the current.
+    //
+    // This is a primary comparator.
+    kCustomTargetIsWorseThanCurrent = 5,
+  };
+
+  // Represents the conditions where dexopt should be performed.
+  struct DexoptTrigger {
+    // A list of `DexoptComparator`s used to compare the current dexopt state with the target
+    // dexopt state, in the order of precedence. The dexopt is needed if the target dexopt state is
+    // better than the current.
+    //
+    // The list must contain a primary comparator as the first element, followed by any number of
+    // additional primary or secondary comparators.
+    std::vector<DexoptComparator> dexopt_comparators;
+    // A string that describes the reason for using a custom comparator. This is only used when
+    // `dexopt_comparators` contains `kCustomTargetIsBetterThanCurrent` or
+    // `kCustomTargetIsWorseThanCurrent`.
+    std::optional<std::string> custom_comparator_reason;
   };
 
   // Represents the location of the current oat file and/or vdex file.
@@ -237,7 +264,7 @@ class OatFileAssistant {
   // Returns true if dexopt needs to be performed with respect to the given target compilation
   // filter and dexopt trigger. Also returns the status of the current oat file and/or vdex file.
   EXPORT bool GetDexOptNeeded(CompilerFilter::Filter target_compiler_filter,
-                              const DexOptTrigger dexopt_trigger,
+                              const DexoptTrigger& dexopt_trigger,
                               /*out*/ DexOptStatus* dexopt_status);
 
   // Returns true if there is up-to-date code for this dex location,
@@ -279,9 +306,6 @@ class OatFileAssistant {
                                     std::string* out_compilation_reason,
                                     OatFileAssistantContext* ofa_context = nullptr);
 
-  // Open and returns an image space associated with the oat file.
-  static std::unique_ptr<gc::space::ImageSpace> OpenImageSpace(const OatFile* oat_file);
-
   // Loads the dex files in the given oat file for the given dex location.
   // The oat file should be up to date for the given dex location.
   // This loads multiple dex files in the case of multidex.
@@ -290,8 +314,8 @@ class OatFileAssistant {
   //
   // The caller is responsible for freeing the dex_files returned, if any. The
   // dex_files will only remain valid as long as the oat_file is valid.
-  static std::vector<std::unique_ptr<const DexFile>> LoadDexFiles(
-      const OatFile& oat_file, const char* dex_location);
+  static std::vector<std::unique_ptr<const DexFile>> LoadDexFiles(const OatFile& oat_file,
+                                                                  const char* dex_location);
 
   // Same as `std::vector<std::unique_ptr<const DexFile>> LoadDexFiles(...)` with the difference:
   //   - puts the dex files in the given vector
@@ -324,9 +348,7 @@ class OatFileAssistant {
   // For testing purposes only.
   OatStatus OatFileStatus();
 
-  OatStatus GetBestStatus() {
-    return GetBestInfo().Status();
-  }
+  OatStatus GetBestStatus() { return GetBestInfo().Status(); }
 
   // Constructs the odex file name for the given dex location.
   // Returns true on success, in which case odex_filename is set to the odex
@@ -389,6 +411,8 @@ class OatFileAssistant {
                                              std::string_view oat_boot_class_path,
                                              /*out*/ std::string* error_msg);
 
+  EXPORT void SetLogger(ArtLogger logger) { logger_ = std::move(logger); }
+
  private:
   enum class OatFileType {
     kNone,
@@ -435,7 +459,7 @@ class OatFileAssistant {
     // Return the DexOptNeeded value for this oat file with respect to the given target compilation
     // filter and dexopt trigger.
     DexOptNeeded GetDexOptNeeded(CompilerFilter::Filter target_compiler_filter,
-                                 const DexOptTrigger dexopt_trigger);
+                                 const DexoptTrigger& dexopt_trigger);
 
     // Returns true if the file exists.
     virtual bool FileExists() const;
@@ -480,10 +504,10 @@ class OatFileAssistant {
     const std::string filename_;
 
    private:
-    // Returns true if the oat file is usable but at least one dexopt trigger is matched. This
-    // function should only be called if the oat file is usable.
-    bool ShouldRecompileForFilter(CompilerFilter::Filter target,
-                                  const DexOptTrigger dexopt_trigger);
+    // Returns true if we can improve the current usable oat file by recompiling, when comparing the
+    // dexopt states using the given comparators in `dexopt_trigger`.
+    bool ShouldRecompileForComparators(CompilerFilter::Filter target,
+                                       const DexoptTrigger& dexopt_trigger);
 
     // Release the loaded oat file.
     // Returns null if the oat file hasn't been loaded.
@@ -640,7 +664,7 @@ class OatFileAssistant {
   // Returns the trigger for the deprecated overload of `GetDexOptNeeded`.
   //
   // Deprecated. Do not use in new code.
-  DexOptTrigger GetDexOptTrigger(CompilerFilter::Filter target_compiler_filter,
+  DexoptTrigger GetDexoptTrigger(CompilerFilter::Filter target_compiler_filter,
                                  bool profile_changed,
                                  bool downgrade);
 
@@ -705,12 +729,15 @@ class OatFileAssistant {
   // Owned or unowned instance of OatFileAssistantContext.
   std::variant<std::unique_ptr<OatFileAssistantContext>, OatFileAssistantContext*> ofa_context_;
 
+  // The logger to log messages about the oat file status.
+  ArtLogger logger_;
+
   friend class OatFileAssistantTest;
 
   DISALLOW_COPY_AND_ASSIGN(OatFileAssistant);
 };
 
-std::ostream& operator << (std::ostream& stream, const OatFileAssistant::OatStatus status);
+std::ostream& operator<<(std::ostream& stream, const OatFileAssistant::OatStatus status);
 
 }  // namespace art
 

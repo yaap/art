@@ -21,6 +21,7 @@
 
 #include <atomic>
 #include <bitset>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <iosfwd>
@@ -31,8 +32,10 @@
 #include "base/atomic.h"
 #include "base/bit_field.h"
 #include "base/bit_utils.h"
+#include "base/globals.h"
 #include "base/locks.h"
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "base/pointer_size.h"
 #include "base/safe_map.h"
 #include "base/value_object.h"
@@ -46,7 +49,6 @@
 #include "javaheapprof/javaheapsampler.h"
 #include "jvalue.h"
 #include "managed_stack.h"
-#include "offsets.h"
 #include "read_barrier_config.h"
 #include "reflective_handle_scope.h"
 #include "runtime_globals.h"
@@ -59,6 +61,10 @@ class AndroidLocalUnwinder;
 }  // namespace unwindstack
 
 namespace art HIDDEN {
+
+#ifdef ART_USE_SIMULATOR
+class CodeSimulator;
+#endif
 
 namespace gc {
 namespace accounting {
@@ -211,16 +217,14 @@ enum class WeakRefAccessState : int32_t {
 };
 
 enum VirtualThreadFlag : uint8_t {
-  // This flag is set only when a virtual thread is running on the given carrier thread.
-  kIsVirtual = 1u,
   // This flag is set only when carrier thread enters a jdk.internal.vm.Continuation.
   // In this case, the Continuation is the internal implementation details of virtual thread.
   // Importantly, virtual thread frames are on top of the carrier thread frames.
-  kContinuation = 1u << 1,
+  kContinuation = 1u,
   // The flag is set when a virtual thread is being parked and unmounted from the carrier thread.
-  kParking = 1u << 2,
+  kParking = 1u << 1,
   // The flag is set when a virtual thread is being unparked and mounted from the carrier thread.
-  kUnparking = 1u << 3,
+  kUnparking = 1u << 2,
 };
 
 // ART uses two types of ABI/code: quick and native.
@@ -260,7 +264,11 @@ static constexpr StackType kNativeStackType = StackType::kHardware;
 // The type of stack used when executing quick code, i.e.: compiled dex code and quick entrypoints.
 // For simulator builds this is the kSimulated stack and for non-simulator builds this is the
 // kHardware stack.
+#ifdef ART_USE_SIMULATOR
+static constexpr StackType kQuickStackType = StackType::kSimulated;
+#else
 static constexpr StackType kQuickStackType = StackType::kHardware;
+#endif
 
 static_assert(com::android::art::flags::virtual_thread_impl_v1() ==
               COM_ANDROID_ART_FLAGS_VIRTUAL_THREAD_IMPL_V1);
@@ -294,6 +302,23 @@ class ThreadExitFlag {
   friend class Thread;
 };
 
+// The data values should only be accessed by the carrier thread itself, except
+// the next_ pointer.
+struct MountedVirtualThreadData {
+  MountedVirtualThreadData(uint32_t virtual_thread_id, uint32_t carrier_thread_id, uint8_t flags)
+      : virtual_thread_id_(virtual_thread_id),
+        carrier_thread_id_(carrier_thread_id),
+        flags_(flags),
+        next_(nullptr) {}
+  const uint32_t virtual_thread_id_;
+  const uint32_t carrier_thread_id_;
+  uint8_t flags_;
+  // art::ThreadList stores a linked list of mounted virtual threads in this field.
+  MountedVirtualThreadData* next_ GUARDED_BY(Locks::thread_list_lock_);
+};
+
+std::ostream& operator<<(std::ostream& os, const MountedVirtualThreadData& data);
+
 // This should match RosAlloc::kNumThreadLocalSizeBrackets.
 static constexpr size_t kNumRosAllocThreadLocalSizeBracketsInThread = 16;
 
@@ -326,7 +351,6 @@ static constexpr size_t kSharedMethodHotnessThreshold = 0x1fff;
 // at least 8K of space.  Because stack overflow checks are only performed in generated code,
 // if the thread makes a call out to a native function (through JNI), that native function
 // might only have 4K of memory (if the SP is adjacent to stack_end).
-
 class EXPORT Thread {
  public:
   static const size_t kStackOverflowImplicitCheckSize;
@@ -361,6 +385,10 @@ class EXPORT Thread {
   // (lowest memory). The higher portion of the memory is protected against reads and the lower is
   // available for use while throwing the StackOverflow exception.
   ALWAYS_INLINE static size_t GetStackOverflowProtectedSize();
+
+#ifdef ART_USE_SIMULATOR
+  CodeSimulator* GetSimExecutor() const;
+#endif
 
   // On a runnable thread, check for pending thread suspension request and handle if pending.
   void AllowThreadSuspension() REQUIRES_SHARED(Locks::mutator_lock_);
@@ -630,6 +658,7 @@ class EXPORT Thread {
 
   size_t NumberOfHeldMutexes() const;
 
+  // Does the current thread hold the monitor for `object`? Assumes this == Thread::Current().
   bool HoldsLock(ObjPtr<mirror::Object> object) const REQUIRES_SHARED(Locks::mutator_lock_);
 
   /*
@@ -690,6 +719,14 @@ class EXPORT Thread {
   // Guaranteed to be non-zero.
   uint32_t GetThreadId() const {
     return tls32_.thin_lock_thread_id;
+  }
+
+  // Returns the thread id used for java monitor lock purpose. If a virtual thread is mounted on
+  // this platform thread, the thread id of the virtual thread is returned.
+  ALWAYS_INLINE uint32_t GetMonitorThreadId() const {
+    DCHECK_EQ(this, Thread::Current())
+        << "GetMonitorThreadId() should only be called on the current thread.";
+    return IsVirtualThreadMounted() ? GetVirtualThreadId() : GetThreadId();
   }
 
   pid_t GetTid() const {
@@ -933,11 +970,9 @@ class EXPORT Thread {
   }
   void Notify() REQUIRES(!wait_mutex_);
 
-  ALWAYS_INLINE void PoisonObjectPointers() {
-    ++poison_object_cookie_;
-  }
+  ALWAYS_INLINE void PoisonObjectPointers();
 
-  ALWAYS_INLINE static void PoisonObjectPointersIfDebug();
+  ALWAYS_INLINE static void PoisonObjectPointersOnCurrentThread();
 
   ALWAYS_INLINE uintptr_t GetPoisonObjectCookie() const {
     return poison_object_cookie_;
@@ -948,30 +983,66 @@ class EXPORT Thread {
   void Park(bool is_absolute, int64_t time) REQUIRES_SHARED(Locks::mutator_lock_);
   void Unpark();
 
+  // Returns true when a virtual thread is mounted on this platform thread.
+  ALWAYS_INLINE bool IsVirtualThreadMounted() const {
+    MountedVirtualThreadData* data = GetMountedVirtualThreadData();
+    DCHECK(kIsVirtualThreadEnabled || data == nullptr);
+    return kIsVirtualThreadEnabled && data != nullptr;
+  }
+
+  // Callers should check IsVirtualThreadMounted() before calling GetVirtualThreadId().
+  ALWAYS_INLINE uint32_t GetVirtualThreadId() const {
+    DCHECK(IsVirtualThreadMounted());
+    DCHECK_EQ(this, Thread::Current())
+        << "GetVirtualThreadId() should only be called on the current thread.";
+    MountedVirtualThreadData* data = GetMountedVirtualThreadData();
+    return data->virtual_thread_id_;
+  }
+
   ALWAYS_INLINE void SetVirtualThreadFlags(uint8_t flags_mask, bool enabled) {
+    MountedVirtualThreadData* data = GetMountedVirtualThreadData();
+    DCHECK(data != nullptr);
     if (enabled) {
-      virtual_thread_flags = virtual_thread_flags | flags_mask;
+      data->flags_ = data->flags_ | flags_mask;
     } else {
-      virtual_thread_flags = virtual_thread_flags & (~flags_mask);
+      data->flags_ = data->flags_ & (~flags_mask);
     }
   }
 
   ALWAYS_INLINE bool IsVirtualThreadParking() const {
-    return AreVirtualThreadFlagsEnabled(VirtualThreadFlag::kIsVirtual |
-                                        VirtualThreadFlag::kParking);
+    MountedVirtualThreadData* data = GetMountedVirtualThreadData();
+    return data != nullptr && (data->flags_ & VirtualThreadFlag::kParking) != 0;
   }
 
   ALWAYS_INLINE bool IsVirtualThreadUnparking() const {
-    return AreVirtualThreadFlagsEnabled(VirtualThreadFlag::kIsVirtual |
-                                        VirtualThreadFlag::kUnparking);
+    MountedVirtualThreadData* data = GetMountedVirtualThreadData();
+    return data != nullptr && (data->flags_ & VirtualThreadFlag::kUnparking) != 0;
   }
 
   ALWAYS_INLINE bool AreVirtualThreadFlagsEnabled(uint8_t flags_mask) const {
-    return (virtual_thread_flags & flags_mask) == flags_mask;
+    MountedVirtualThreadData* data = GetMountedVirtualThreadData();
+    return data != nullptr && (data->flags_ & flags_mask) == flags_mask;
   }
+
+  // TrySetMountedVirtualThreadData and TryClearMountedVirtualThreadData temporarily release
+  // the mutator_lock_ for suspend check if `spin` is true.
+  bool TrySetMountedVirtualThreadData(MountedVirtualThreadData* data, bool spin = true)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+  bool TryClearMountedVirtualThreadData(bool spin = true) REQUIRES_SHARED(Locks::mutator_lock_);
 
  private:
   void NotifyLocked(Thread* self) REQUIRES(wait_mutex_);
+
+  ALWAYS_INLINE MountedVirtualThreadData* GetMountedVirtualThreadData() const {
+    DCHECK_EQ(this, Thread::Current());
+    return tlsPtr_.mounted_virtual_thread_data.load(std::memory_order_relaxed);
+  }
+
+  ALWAYS_INLINE void SetMountedVirtualThreadData(MountedVirtualThreadData* data)
+      REQUIRES(Locks::thread_list_lock_) {
+    DCHECK_EQ(this, Thread::Current());
+    tlsPtr_.mounted_virtual_thread_data.store(data, std::memory_order_release);
+  }
 
  public:
   Mutex* GetWaitMutex() const LOCK_RETURNED(wait_mutex_) {
@@ -1036,9 +1107,6 @@ class EXPORT Thread {
   bool HasDebuggerShadowFrames() const {
     return tlsPtr_.frame_id_to_shadow_frame != nullptr;
   }
-
-  // This is done by GC using a checkpoint (or in a stop-the-world pause).
-  void SweepInterpreterCache(IsMarkedVisitor* visitor) REQUIRES_SHARED(Locks::mutator_lock_);
 
   void VisitRoots(RootVisitor* visitor, VisitRootFlags flags)
       REQUIRES_SHARED(Locks::mutator_lock_);
@@ -1267,6 +1335,10 @@ class EXPORT Thread {
   template <StackType stack_type>
   ALWAYS_INLINE uint8_t* GetStackEnd() const;
 
+  // Return the nearest page-aligned address below the current stack top.
+  template <StackType>
+  NO_INLINE uint8_t* FindStackTop();
+
   ALWAYS_INLINE uint8_t* GetStackEndForInterpreter(bool implicit_overflow_check) const;
 
   // Set the stack end to that to be used during a stack overflow
@@ -1307,6 +1379,7 @@ class EXPORT Thread {
   }
 
   // Linked list recording fragments of managed stack.
+  // Consider using ScopedManagedStackFragment instead of these methods directly.
   void PushManagedStackFragment(ManagedStack* fragment) {
     tlsPtr_.managed_stack.PushManagedStackFragment(fragment);
   }
@@ -1314,6 +1387,7 @@ class EXPORT Thread {
     tlsPtr_.managed_stack.PopManagedStackFragment(fragment);
   }
 
+  // Consider using ScopedShadowFrame instead of these methods directly.
   ALWAYS_INLINE ShadowFrame* PushShadowFrame(ShadowFrame* new_top_frame);
   ALWAYS_INLINE ShadowFrame* PopShadowFrame();
 
@@ -1687,8 +1761,12 @@ class EXPORT Thread {
   }
 
   bool IsForceInterpreter() const {
+    DCHECK(this == Thread::Current() || IsSuspended() ||
+        Locks::thread_list_lock_->IsExclusiveHeld(Thread::Current()))
+      << "Please suspend this thread or acquire thread_list_lock from another thread. "
+      << "See the doc of mounted_virtual_thread_data field for details.";
     return (tls32_.force_interpreter_count != 0) ||
-           AreVirtualThreadFlagsEnabled(VirtualThreadFlag::kIsVirtual);
+        tlsPtr_.mounted_virtual_thread_data.load(std::memory_order_relaxed) != nullptr;
   }
 
   bool IncrementMakeVisiblyInitializedCounter() {
@@ -1775,6 +1853,14 @@ class EXPORT Thread {
     return WhichPowerOf2(InterpreterCache::kSize);
   }
 
+  static constexpr int InterpreterCacheEntrySizeLog2() {
+    return WhichPowerOf2(sizeof(InterpreterCache::Entry));
+  }
+
+  static constexpr int InterpreterCacheKeyLowBit() {
+    return InterpreterCache::kKeyLowBit;
+  }
+
   static constexpr uint32_t AllThreadFlags() {
     return enum_cast<uint32_t>(ThreadFlag::kLastFlag) |
            (enum_cast<uint32_t>(ThreadFlag::kLastFlag) - 1u);
@@ -1807,6 +1893,16 @@ class EXPORT Thread {
     tls32_.shared_method_hotness = (tls32_.shared_method_hotness - 1) & 0xffff;
     return tls32_.shared_method_hotness;
   }
+
+  static constexpr int8_t kNotBoosted = -100;
+
+  // Set nice value before temporary priority boost, for use by ScopedPriorityChange.
+  void SetNicenessBeforeBoost(int niceness) {
+    DCHECK(niceness == kNotBoosted || (niceness >= -20 && niceness <= 19));
+    niceness_before_boost_ = static_cast<int8_t>(niceness);
+  }
+
+  int GetNicenessBeforeBoost() { return niceness_before_boost_; }
 
  private:
   // We pretend to acquire this while running a checkpoint to detect lock ordering issues.
@@ -1927,6 +2023,11 @@ class EXPORT Thread {
       REQUIRES(Locks::runtime_shutdown_lock_);
   void InitCardTable();
   void InitCpu();
+
+#ifdef ART_USE_SIMULATOR
+  void CreateSimExecutor(size_t stack_size);
+#endif
+
   void CleanupCpu();
   void InitTlsEntryPoints();
   void InitTid();
@@ -1994,10 +2095,6 @@ class EXPORT Thread {
       REQUIRES(!Locks::thread_suspend_count_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
   void RunEmptyCheckpoint();
-
-  // Return the nearest page-aligned address below the current stack top.
-  template <StackType>
-  NO_INLINE uint8_t* FindStackTop();
 
   // Install the protected region for implicit stack checks.
   template <StackType>
@@ -2356,7 +2453,11 @@ class EXPORT Thread {
           thread_exit_flags(nullptr),
           last_no_thread_suspension_cause(nullptr),
           last_no_transaction_checks_cause(nullptr),
-          current_peer(nullptr) {
+#ifdef ART_USE_SIMULATOR
+          sim_data(),
+#endif
+          current_peer(nullptr),
+          mounted_virtual_thread_data(nullptr) {
       std::fill(held_mutexes, held_mutexes + kLockLevelCount, nullptr);
     }
 
@@ -2541,9 +2642,44 @@ class EXPORT Thread {
     // what is causing that assertion (debug builds only).
     const char* last_no_transaction_checks_cause;
 
+#ifdef ART_USE_SIMULATOR
+    struct SimulatorData {
+      SimulatorData()
+          : sim_executor(nullptr),
+            sim_stack_end(nullptr),
+            sim_stack_begin(nullptr),
+            sim_stack_size(0) {}
+      // Each thread has its own simulator executor with a full sim CPU context: registers,
+      // stack, etc.
+      CodeSimulator* sim_executor;
+
+      // Same semantics as for the relevant stack variables (see the diagram near class Thread), but
+      // for simulator's stack.
+      uint8_t* sim_stack_end;
+      uint8_t* sim_stack_begin;
+      size_t sim_stack_size;
+    } sim_data;
+#endif
+
     // Hold either the same reference as opeer or a VirtualThread instance. Mainly used for the
     // java.lang.Thread.currentThread() API.
     mirror::Object* current_peer;
+
+    // This field is normally set when virtual thread is mounted, and the object is expected
+    // to be allocated in the stack. When no virtual thread is mounted on this platform thread,
+    // the value should be nullptr.
+    // The concurrency model:
+    // 1. This atomic value is expected to be modified by the thread itself while holding
+    //    thread_list_lock_ and mutator_lock_ only.
+    // 2. The flags_ field should only be accessed by the thread itself.
+    // 3. Accessing the next_ field requires thread_list_lock_.
+    // 4. Accessing other fields or reliably performing a null check on this field from other
+    //    threads requires thread_list_lock_ or a thread suspension.
+    // 5. For limited purposes, e.g. logging or DCHECK, where holding thread_list_lock_ or
+    //    a thread suspension is challenging, an atomic null check from other threads
+    //    provides a useful hint whether a virtual thread is mounted on another platform thread, but
+    //    it is not reliable.
+    std::atomic<MountedVirtualThreadData*> mounted_virtual_thread_data;
   } tlsPtr_;
 
   // Small thread-local cache to be used from the interpreter.
@@ -2564,12 +2700,6 @@ class EXPORT Thread {
 
   // Debug disable read barrier count, only is checked for debug builds and only in the runtime.
   uint8_t debug_disallow_read_barrier_ = 0;
-
-  // The flag value should only be accessed by the carrier thread itself.
-  // When a virtual thread is mounted onto this carrier thread, this flag value is
-  // non-zero. See VirtualThreadFlag for the details.
-  // For a regular java thread, this value is always zero.
-  uint8_t virtual_thread_flags = 0;
 
   // Counters used only for debugging and error reporting.  Likely to wrap.  Small to avoid
   // increasing Thread size.
@@ -2601,6 +2731,9 @@ class EXPORT Thread {
   // True if the thread is some form of runtime thread (ex, GC or JIT).
   bool is_runtime_thread_;
 
+  // Priority before ScopedPriorityChange::SetToNormalOrBetter, or kNotBoosted.
+  int8_t niceness_before_boost_ = kNotBoosted;
+
   // Set during execution of JNI methods that get field and method id's as part of determining if
   // the caller is allowed to access all fields and methods in the Core Platform API.
   uint32_t core_platform_api_cookie_ = 0;
@@ -2617,6 +2750,8 @@ class EXPORT Thread {
 
   DISALLOW_COPY_AND_ASSIGN(Thread);
 };
+// The least significant bit of Thread* is used for virtual thread ids in art::MonitorMutex.
+static_assert(alignof(Thread) >= 2, "Thread must be aligned to a minimum of 2 bytes");
 
 class SCOPED_CAPABILITY ScopedAssertNoThreadSuspension {
  public:
@@ -2697,10 +2832,15 @@ class ScopedStackedShadowFramePusher {
 class ScopedDebugDisallowReadBarriers {
  public:
   explicit ScopedDebugDisallowReadBarriers(Thread* self) : self_(self) {
-    self_->ModifyDebugDisallowReadBarrier(1);
+    // Note: If there is no `Thread`, read barriers are not allowed.
+    if (kCheckDebugDisallowReadBarrierCount && self_ != nullptr) {
+      self_->ModifyDebugDisallowReadBarrier(1);
+    }
   }
   ~ScopedDebugDisallowReadBarriers() {
-    self_->ModifyDebugDisallowReadBarrier(-1);
+    if (kCheckDebugDisallowReadBarrierCount && self_ != nullptr) {
+      self_->ModifyDebugDisallowReadBarrier(-1);
+    }
   }
 
  private:

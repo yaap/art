@@ -199,11 +199,10 @@ public class Main {
   /// CHECK:       Return [<<Const10>>]
   /// CHECK:       Return [<<Const10>>]
 
-  /// CHECK-START: int Main.$noinline$testSimpleDiamondSameValueWithReturn(boolean) control_flow_simplifier (after)
-  /// CHECK-DAG:   <<Bool:z\d+>>   ParameterValue
-  /// CHECK-DAG:   <<Const10:i\d+>> IntConstant 10
-  /// CHECK-DAG:   <<Select:i\d+>>  Select [<<Const10>>,<<Const10>>,<<Bool>>]
-
+  // TODO: Due to missing flagging support in checker, this checker test is currently
+  // done in a later stage. Change it to `control_flow_simplifier (after)` when
+  // we implement flagging support or during the flag cleanup for
+  // `com::android::art::rw::flags::packed_switch_simplification()`.
   /// CHECK-START: int Main.$noinline$testSimpleDiamondSameValueWithReturn(boolean) instruction_simplifier$after_gvn (after)
   /// CHECK:       <<Const10:i\d+>> IntConstant 10
   /// CHECK:       Return [<<Const10>>]
@@ -248,14 +247,9 @@ public class Main {
   /// CHECK:       Return [<<Const10>>]
   /// CHECK:       Return [<<Const10>>]
 
-  /// CHECK-START: int Main.$noinline$testDoubleDiamondSameValueWithReturn(boolean, boolean) control_flow_simplifier (after)
-  /// CHECK-DAG:   <<Bool1:z\d+>>   ParameterValue
-  /// CHECK-DAG:   <<Bool2:z\d+>>   ParameterValue
-  /// CHECK-DAG:   <<Const10:i\d+>> IntConstant 10
-  /// CHECK-DAG:   <<Select:i\d+>>  Select [<<Const10>>,<<Const10>>,<<Bool2>>]
-  /// CHECK-DAG:   <<Select2:i\d+>> Select [<<Select>>,<<Const10>>,<<Bool1>>]
-  /// CHECK-DAG:                    Return [<<Select2>>]
-
+  // TODO: Due to missing flagging support in checker, this checker test is currently
+  // done in a later stage. Change it to `control_flow_simplifier (after)` when the
+  // `com::android::art::rw::flags::packed_switch_simplification()` is cleaned up.
   /// CHECK-START: int Main.$noinline$testDoubleDiamondSameValueWithReturn(boolean, boolean) instruction_simplifier$after_gvn (after)
   /// CHECK:       <<Const10:i\d+>> IntConstant 10
   /// CHECK:       Return [<<Const10>>]
@@ -295,9 +289,11 @@ public class Main {
   /// CHECK-DAG:   <<Bool2:z\d+>>   ParameterValue
   /// CHECK-DAG:   <<Const10:i\d+>> IntConstant 10
   /// CHECK-DAG:   <<Const20:i\d+>> IntConstant 20
-  /// CHECK-DAG:   <<Select:i\d+>>  Select [<<Const20>>,<<Const20>>,<<Bool2>>]
-  /// CHECK-DAG:   <<Select2:i\d+>> Select [<<Select>>,<<Const10>>,<<Bool1>>]
-  /// CHECK-DAG:                    Return [<<Select2>>]
+  // TODO: Due to missing flagging support in checker, this checker test is currently disabled.
+  // Enable it when we implement flagging support or during the flag cleanup for
+  // `com::android::art::rw::flags::packed_switch_simplification()`.
+  // CHECK-DAG:   <<Select2:i\d+>> Select [<<Const20>>,<<Const10>>,<<Bool1>>]
+  // CHECK-DAG:                    Return [<<Select2>>]
   private static int $noinline$testDoubleDiamondSameValueButNotAllOuterWithReturn(boolean bool_param_1, boolean bool_param_2) {
     if (bool_param_1) {
       return 10;

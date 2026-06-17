@@ -1,0 +1,2 @@
+Verify that Class.isInstance checks are replaced by `instanceof`
+calls in static context.

@@ -1,5 +1,5 @@
 java.lang.Error
-	at Main.main(Unknown Source:2)
+	at Main.main(Main.java:2)
 java.lang.NullPointerException
-	at Main.doThrow(Unknown Source:0)
-	at Main.main(Unknown Source:16)
+	at Main.doThrow(Main.java:0)
+	at Main.main(Main.java:16)

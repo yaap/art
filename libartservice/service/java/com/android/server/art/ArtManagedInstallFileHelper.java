@@ -41,11 +41,16 @@ import androidx.annotation.RequiresApi;
 import com.android.art.flags.Flags;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.art.model.ValidationResult;
+import com.android.server.art.utils.AsLog;
+import com.android.server.art.utils.Utils;
 
+import java.io.File;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -85,13 +90,14 @@ public final class ArtManagedInstallFileHelper {
     /**
      * Returns the subset of the given paths that are paths to the <i>ART-managed install files</i>
      * corresponding to the given APK path. This is a pure string operation on the inputs and does
-     * not involve any I/O.
+     * not involve any I/O (except for Android 16, where we need to work around a bug).
      *
      * Note that the files in different directories than the APK are not considered corresponding to
      * the APK.
      */
     public static @NonNull List<String> filterPathsForApk(
             @NonNull List<String> paths, @NonNull String apkPath) {
+        paths = maybeFixUpPathsForB460251001(paths, apkPath);
         Set<String> candidates =
                 Stream.concat(SDM_SUFFIXES.stream().map(
                                       suffix -> Utils.replaceFileExtension(apkPath, suffix)),
@@ -100,6 +106,35 @@ public final class ArtManagedInstallFileHelper {
                                       apkPath + ArtConstants.PROFILE_FILE_EXT))
                         .collect(Collectors.toSet());
         return paths.stream().filter(path -> candidates.contains(path)).toList();
+    }
+
+    private static @NonNull List<String> maybeFixUpPathsForB460251001(
+            @NonNull List<String> paths, @NonNull String apkPath) {
+        if (!sInjector.needFixupForB460251001()) {
+            return paths;
+        }
+        Path path;
+        try {
+            path = Paths.get(apkPath);
+        } catch (InvalidPathException e) {
+            // Cannot form a valid path, so no fixup is possible.
+            return paths;
+        }
+        if (!path.isAbsolute() || !path.equals(path.normalize()) || path.getParent() == null) {
+            return paths;
+        }
+        File[] filesInParent = sInjector.listFiles(path.getParent().toFile());
+        if (filesInParent == null) {
+            return paths;
+        }
+        return Stream
+                .concat(paths.stream(),
+                        Arrays.stream(filesInParent)
+                                .filter(sInjector::isFile)
+                                .map(File::getAbsolutePath)
+                                .filter(ArtManagedInstallFileHelper::isArtManaged))
+                .distinct()
+                .toList();
     }
 
     /**
@@ -265,6 +300,19 @@ public final class ArtManagedInstallFileHelper {
 
         public boolean exists(@NonNull String path) {
             return Files.exists(Paths.get(path));
+        }
+
+        public boolean needFixupForB460251001() {
+            // In fact, it's only BAKLAVA because the API is available since BAKLAVA.
+            return Build.VERSION.SDK_INT <= Build.VERSION_CODES.BAKLAVA;
+        }
+
+        public @NonNull File[] listFiles(@NonNull File dir) {
+            return dir.listFiles();
+        }
+
+        public boolean isFile(@NonNull File file) {
+            return file.isFile();
         }
     }
 }

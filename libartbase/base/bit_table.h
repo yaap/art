@@ -51,54 +51,90 @@ class BitTableBase {
     // Decode row count and column sizes from the table header.
     std::array<uint32_t, 1+kNumColumns> header = reader.ReadInterleavedVarints<1+kNumColumns>();
     num_rows_ = header[0];
-    column_offset_[0] = 0;
+    row_bits_ = 0;
+
+    // Column offset is cumulative and stored as uint16 for performance.
+    // Note that the last column is allowed to end past uint16 offset,
+    // which we use in some corner cases (for very large masks).
     for (uint32_t i = 0; i < kNumColumns; i++) {
-      size_t column_end = column_offset_[i] + header[i + 1];
-      column_offset_[i + 1] = dchecked_integral_cast<uint32_t>(column_end);
+      column_offset_[i] = dchecked_integral_cast<uint16_t>(row_bits_);
+      row_bits_ += header[i + 1];  // row end is stored as uint32_t.
     }
 
     // Record the region which contains the table data and skip past it.
-    table_data_ = reader.ReadRegion(num_rows_ * NumRowBits());
+    table_data_ = reader.ReadRegion(num_rows_ * RowBits());
   }
 
-  ALWAYS_INLINE uint32_t Get(uint32_t row, uint32_t column = 0) const {
+  template <uint32_t kColumn>
+  ALWAYS_INLINE uint32_t Get(uint32_t row) const {
+    static_assert(kColumn < kNumColumns);
     DCHECK(table_data_.IsValid()) << "Table has not been loaded";
     DCHECK_LT(row, num_rows_);
-    DCHECK_LT(column, kNumColumns);
-    size_t offset = row * NumRowBits() + column_offset_[column];
-    return table_data_.LoadBits(offset, NumColumnBits(column)) + kValueBias;
+    auto [column_offset, column_length] = ColumnRange<kColumn>();
+    size_t offset = row * RowBits() + column_offset;
+    return table_data_.LoadBits(offset, column_length) + kValueBias;
   }
 
-  ALWAYS_INLINE BitMemoryRegion GetBitMemoryRegion(uint32_t row, uint32_t column = 0) const {
+  template <uint32_t kColumn>
+  ALWAYS_INLINE BitMemoryRegion GetBitMemoryRegion(uint32_t row) const {
+    static_assert(kColumn < kNumColumns);
     DCHECK(table_data_.IsValid()) << "Table has not been loaded";
     DCHECK_LT(row, num_rows_);
-    DCHECK_LT(column, kNumColumns);
-    size_t offset = row * NumRowBits() + column_offset_[column];
-    return table_data_.Subregion(offset, NumColumnBits(column));
+    auto [column_offset, column_length] = ColumnRange<kColumn>();
+    size_t offset = row * RowBits() + column_offset;
+    return table_data_.Subregion(offset, column_length);
   }
 
   uint32_t NumRows() const { return num_rows_; }
 
-  uint32_t NumRowBits() const { return column_offset_[kNumColumns]; }
+  uint32_t RowBits() const { return row_bits_; }
 
   constexpr uint32_t NumColumns() const { return kNumColumns; }
 
-  uint32_t NumColumnBits(uint32_t column) const {
-    return column_offset_[column + 1] - column_offset_[column];
+  template <uint32_t kColumn>
+  std::pair<uint32_t, uint32_t> ColumnRange() const {
+    static_assert(kColumn < kNumColumns);
+    uint32_t offset = (kColumn == 0) ? 0 : column_offset_[kColumn];
+    uint32_t length = column_offset_[kColumn + 1] - offset;
+    return {offset, length};
+  }
+
+  template <>
+  std::pair<uint32_t, uint32_t> ColumnRange<kNumColumns - 1>() const {
+    constexpr size_t kColumn = kNumColumns - 1;
+    uint32_t offset = (kColumn == 0) ? 0 : column_offset_[kColumn];
+    uint32_t length = row_bits_ - offset;
+    return {offset, length};
+  }
+
+  template <uint32_t kColumn>
+  uint32_t NumColumnBits() const {
+    return ColumnRange<kColumn>().second;
+  }
+
+  template <typename Visitor, size_t... kIs>
+  ALWAYS_INLINE void ForEachColumnIndexImpl(Visitor visitor, std::index_sequence<kIs...>) const {
+    (visitor(std::integral_constant<size_t, kIs>{}), ...);
+  }
+
+  template <typename Visitor>
+  ALWAYS_INLINE void ForEachColumnIndex(Visitor visitor) const {
+    ForEachColumnIndexImpl(visitor, std::make_index_sequence<kNumColumns>());
   }
 
   size_t DataBitSize() const { return table_data_.size_in_bits(); }
 
   bool Equals(const BitTableBase& other) const {
-    return num_rows_ == other.num_rows_ &&
-        std::equal(column_offset_, column_offset_ + kNumColumns, other.column_offset_) &&
-        BitMemoryRegion::Equals(table_data_, other.table_data_);
+    return num_rows_ == other.num_rows_ && row_bits_ == other.row_bits_ &&
+           std::equal(column_offset_, column_offset_ + kNumColumns, other.column_offset_) &&
+           BitMemoryRegion::Equals(table_data_, other.table_data_);
   }
 
  protected:
   BitMemoryRegion table_data_;
   uint32_t num_rows_ = 0;
-  uint32_t column_offset_[kNumColumns + 1] = {};
+  uint32_t row_bits_ = 0;
+  uint16_t column_offset_[kNumColumns] = {};
 };
 
 // Helper class which can be used to create BitTable accessors with named getters.
@@ -129,13 +165,14 @@ class BitTableAccessor {
   static constexpr const char* kTableName = #NAME;                                   \
 
 // Helper macro to create named column accessors in derived class.
-#define BIT_TABLE_COLUMN(COLUMN, NAME)                                               \
-  static constexpr uint32_t k##NAME = COLUMN;                                        \
-  ALWAYS_INLINE uint32_t Get##NAME() const { return table_->Get(row_, COLUMN); }     \
-  ALWAYS_INLINE bool Has##NAME() const { return Get##NAME() != kNoValue; }           \
-  template<int UNUSED> struct ColumnName<COLUMN, UNUSED> {                           \
-    static constexpr const char* Value = #NAME;                                      \
-  };                                                                                 \
+#define BIT_TABLE_COLUMN(COLUMN, NAME)                                           \
+  static constexpr uint32_t k##NAME = COLUMN;                                    \
+  ALWAYS_INLINE uint32_t Get##NAME() const { return table_->Get<COLUMN>(row_); } \
+  ALWAYS_INLINE bool Has##NAME() const { return Get##NAME() != kNoValue; }       \
+  template <int UNUSED>                                                          \
+  struct ColumnName<COLUMN, UNUSED> {                                            \
+    static constexpr const char* Value = #NAME;                                  \
+  };
 
  protected:
   const BitTableBase<kNumColumns>* table_ = nullptr;
@@ -376,13 +413,15 @@ class BitTableBuilderBase {
       BitMemoryReader reader(out.GetWrittenRegion().Subregion(initial_bit_offset));
       table.Decode(reader);
       DCHECK_EQ(size(), table.NumRows());
-      for (uint32_t c = 0; c < kNumColumns; c++) {
-        DCHECK_EQ(column_bits[c], table.NumColumnBits(c));
-      }
+      table.ForEachColumnIndex([&](auto c_const) {
+        constexpr uint32_t c = c_const;
+        DCHECK_EQ(column_bits[c], table.template NumColumnBits<c>());
+      });
       for (uint32_t r = 0; r < size(); r++) {
-        for (uint32_t c = 0; c < kNumColumns; c++) {
-          DCHECK_EQ(rows_[r][c], table.Get(r, c)) << " (" << r << ", " << c << ")";
-        }
+        table.ForEachColumnIndex([&](auto c_const) {
+          constexpr uint32_t c = c_const;
+          DCHECK_EQ(rows_[r][c], table.template Get<c>(r)) << " (" << r << ", " << c << ")";
+        });
       }
     }
   }
@@ -465,10 +504,10 @@ class BitmapTableBuilder {
       BitMemoryReader reader(out.GetWrittenRegion().Subregion(initial_bit_offset));
       table.Decode(reader);
       DCHECK_EQ(size(), table.NumRows());
-      DCHECK_EQ(max_num_bits_, table.NumColumnBits(0));
+      DCHECK_EQ(max_num_bits_, table.NumColumnBits</*kColumn=*/0>());
       for (uint32_t r = 0; r < size(); r++) {
         BitMemoryRegion expected(rows_[r]);
-        BitMemoryRegion seen = table.GetBitMemoryRegion(r);
+        BitMemoryRegion seen = table.GetBitMemoryRegion</*kColumn=*/0>(r);
         size_t num_bits = std::max(expected.size_in_bits(), seen.size_in_bits());
         for (size_t b = 0; b < num_bits; b++) {
           bool e = b < expected.size_in_bits() && expected.LoadBit(b);

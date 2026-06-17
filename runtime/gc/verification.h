@@ -18,8 +18,8 @@
 #define ART_RUNTIME_GC_VERIFICATION_H_
 
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "obj_ptr.h"
-#include "offsets.h"
 #include "read_barrier_option.h"
 
 namespace art HIDDEN {

@@ -15,15 +15,15 @@
  */
 
 public class Main {
-  public static void main(String[] args) throws Exception {
-    Thread t = new Thread(null, new Runnable() { public void run() {} }, "", 3L*1024*1024*1024);
-    try {
-      t.start();
-    } catch (OutOfMemoryError expected) {
-      // TODO: fix bionic bug https://b/6702535 so we can check the full detail message.
-      if (!expected.getMessage().startsWith("pthread_create (3073MB stack) failed: ")) {
-        throw new AssertionError(expected);
-      }
+    public static void main(String[] args) throws Exception {
+        Thread t = new Thread(null, new Runnable() { public void run() {} }, "", 3L*1024*1024*1024);
+        try {
+            t.start();
+        } catch (OutOfMemoryError expected) {
+            // TODO: fix bionic bug http://b/6702535 so we can check the full detail message.
+            if (!expected.getMessage().startsWith("pthread_create (3073MB stack) failed: ")) {
+                throw new AssertionError(expected);
+            }
+        }
     }
-  }
 }

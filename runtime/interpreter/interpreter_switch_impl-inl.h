@@ -72,12 +72,13 @@ ALWAYS_INLINE bool DoFieldGet(Thread* self,
   ArtField* field = nullptr;
   MemberOffset offset(0u);
   bool is_volatile;
+  mirror::Class* cls;
   GetFieldInfo(self,
                shadow_frame,
                reinterpret_cast<const uint16_t*>(inst),
                is_static,
                /*resolve_field_type=*/ false,
-               &field,
+               &cls,
                &is_volatile,
                &offset);
   if (self->IsExceptionPending()) {
@@ -86,7 +87,18 @@ ALWAYS_INLINE bool DoFieldGet(Thread* self,
 
   ObjPtr<mirror::Object> obj;
   if (is_static) {
-    obj = field->GetDeclaringClass();
+    if (should_report) {
+      field = ResolveFieldWithAccessChecks(self,
+                                           Runtime::Current()->GetClassLinker(),
+                                           inst->VRegB_21c(),
+                                           shadow_frame.GetMethod(),
+                                           /* is_static= */ true,
+                                           /* is_put= */ false,
+                                           /* resolve_field_type= */ false);
+      obj = field->GetDeclaringClass();
+    } else {
+      obj = cls;
+    }
     using TransactionChecker = typename std::conditional_t<
         transaction_active, ActiveTransactionChecker, InactiveTransactionChecker>;
     if (TransactionChecker::ReadConstraint(self, obj)) {
@@ -171,12 +183,13 @@ ALWAYS_INLINE bool DoFieldPut(Thread* self,
   ArtField* field = nullptr;
   MemberOffset offset(0u);
   bool is_volatile;
+  mirror::Class* cls;
   GetFieldInfo(self,
                shadow_frame,
                reinterpret_cast<const uint16_t*>(inst),
                is_static,
                resolve_field_type,
-               &field,
+               &cls,
                &is_volatile,
                &offset);
   if (self->IsExceptionPending()) {
@@ -185,7 +198,18 @@ ALWAYS_INLINE bool DoFieldPut(Thread* self,
 
   ObjPtr<mirror::Object> obj;
   if (is_static) {
-    obj = field->GetDeclaringClass();
+    if (should_report) {
+      field = ResolveFieldWithAccessChecks(self,
+                                           Runtime::Current()->GetClassLinker(),
+                                           inst->VRegB_21c(),
+                                           shadow_frame.GetMethod(),
+                                           /* is_static= */ true,
+                                           /* is_put= */ true,
+                                           resolve_field_type);
+      obj = field->GetDeclaringClass();
+    } else {
+      obj = cls;
+    }
   } else {
     obj = shadow_frame.GetVRegReference(inst->VRegB_22c(inst_data));
     if (should_report || obj == nullptr) {

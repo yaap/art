@@ -20,11 +20,11 @@
 #include "base/atomic.h"
 #include "base/casts.h"
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "base/pointer_size.h"
 #include "dex/primitive.h"
 #include "obj_ptr.h"
 #include "object_reference.h"
-#include "offsets.h"
 #include "read_barrier_config.h"
 #include "read_barrier_option.h"
 #include "runtime_globals.h"
@@ -164,7 +164,7 @@ class EXPORT MANAGED LOCKABLE Object {
   void SetLockWord(LockWord new_val, bool as_volatile) REQUIRES_SHARED(Locks::mutator_lock_);
   bool CasLockWord(LockWord old_val, LockWord new_val, CASMode mode, std::memory_order memory_order)
       REQUIRES_SHARED(Locks::mutator_lock_);
-  uint32_t GetLockOwnerThreadId() REQUIRES_SHARED(Locks::mutator_lock_);
+  bool IsLockOwnedByMe(const Thread* self) REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Try to enter the monitor, returns non null if we succeeded.
   ObjPtr<mirror::Object> MonitorTryEnter(Thread* self)

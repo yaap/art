@@ -18,6 +18,7 @@
 #include "base/macros.h"
 #include "builder.h"
 #include "nodes.h"
+#include "optimizing/data_type.h"
 #include "optimizing_unit_test.h"
 #include "pretty_printer.h"
 
@@ -294,6 +295,21 @@ TEST_F(GraphTest, InsertInstructionBefore) {
   ASSERT_EQ(second_instruction->GetPrevious(), first_instruction);
   ASSERT_EQ(got->GetNext(), nullptr);
   ASSERT_EQ(got->GetPrevious(), second_instruction);
+}
+
+TEST_F(GraphTest, GetConstant) {
+  CreateGraph();
+  HBasicBlock* entry = AddNewBlock();
+  graph_->SetEntryBlock(entry);
+
+  ASSERT_EQ(0, graph_->GetConstant(DataType::Type::kBool, 0)->GetValueAsUint64());
+  ASSERT_EQ(1, graph_->GetConstant(DataType::Type::kBool, 1)->GetValueAsUint64());
+
+  ASSERT_EQ(0, graph_->GetConstant(DataType::Type::kUint8, 0)->GetValueAsUint64());
+  ASSERT_EQ(0xFF, graph_->GetConstant(DataType::Type::kUint8, 0xFF)->GetValueAsUint64());
+
+  ASSERT_EQ(0, graph_->GetConstant(DataType::Type::kUint16, 0)->GetValueAsUint64());
+  ASSERT_EQ(0xFFFF, graph_->GetConstant(DataType::Type::kUint16, 0xFFFF)->GetValueAsUint64());
 }
 
 }  // namespace art

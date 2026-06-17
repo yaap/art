@@ -110,7 +110,13 @@ void PreciseHiddenApiFinder::Dump(std::ostream& os, HiddenApiStats* stats) {
       stats->reflection_count++;
       hiddenapi::ApiList api_list = hidden_api_.GetApiList(full_name);
       stats->api_counts[api_list.GetIntValue()]++;
-      os << "#" << ++stats->count << ": Reflection " << api_list << " " << full_name << " use(s):";
+      std::string flag_info = "";
+      std::optional<std::string> flag = hidden_api_.GetFlag(full_name);
+      if (flag.has_value()) {
+        flag_info = ",flagged=" + flag.value();
+      }
+      os << "#" << ++stats->count << ": Reflection " << api_list << flag_info << " " << full_name
+         << " use(s):";
       os << std::endl;
       for (const MethodReference& ref : it.second) {
         os << kPrefix << HiddenApi::GetApiMethodName(ref) << std::endl;

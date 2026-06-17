@@ -140,4 +140,30 @@ TEST_F(LICMTest, NoArrayHoisting) {
   EXPECT_EQ(set_array->GetBlock(), loop_body_);
 }
 
+TEST_F(LICMTest, NoConditionalBlockHoisting) {
+  HBasicBlock* return_block = InitEntryMainExitGraph();
+  HInstruction* param = MakeParam(DataType::Type::kInt32);
+  HInstruction* bool_param = MakeParam(DataType::Type::kBool);
+  HInstruction* const1 = graph_->GetIntConstant(1);
+  HInstruction* const100 = graph_->GetIntConstant(100);
+  auto [pre_header, loop_header, body_end] = CreateWhileLoop(return_block);
+  auto [body_start, body_left, body_right] = CreateDiamondPattern(body_end, bool_param);
+  auto [loop_var_phi, loop_var_add] =
+      MakeLinearLoopVar(loop_header, body_end, /*initial=*/ 0, /*increment=*/ 1);
+  HCondition* ge = MakeCondition(loop_header, kCondGE, loop_var_phi, const100);
+  MakeIf(loop_header, ge);
+
+  HPhi* phi1 = MakePhi(loop_header, {param, /* placeholder */ param});
+  HAdd* add = MakeBinOp<HAdd>(body_right, DataType::Type::kInt32, param, const1);
+  ASSERT_EQ(1, body_end->GetPredecessorIndexOf(body_right));
+  HPhi* phi2 = MakePhi(body_end, {phi1, add});
+  phi1->ReplaceInput(phi2, 1u);  // Update back-edge input.
+  HReturn* ret = MakeReturn(return_block, phi1);
+
+  PerformLICM();
+
+  // The loop-invariant `add` should not be moved from a conditional block.
+  ASSERT_TRUE(add->GetBlock() == body_right);
+}
+
 }  // namespace art

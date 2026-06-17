@@ -18,16 +18,31 @@
 #define ART_SIMULATOR_INCLUDE_CODE_SIMULATOR_H_
 
 #include "arch/instruction_set.h"
+#include "runtime.h"
+#include <signal.h>
 
 namespace art {
 
-class CodeSimulator {
- public:
-  CodeSimulator() {}
-  virtual ~CodeSimulator() {}
-  // Returns a null pointer if a simulator cannot be found for target_isa.
-  static CodeSimulator* CreateCodeSimulator(InstructionSet target_isa);
+class ArtMethod;
+union JValue;
+class Thread;
 
+//
+// Classes in this file model simulator executors - per thread entities with their own contexts:
+// simulated stack, registers, etc.
+//
+
+// This class implements a basic simulator executor which is capable of executing sequences
+// of simulated ISA instructions. It is not aware of ART runtime so it can manage only trivial
+// ART methods.
+//
+// Currently only used by code generator tests.
+class BasicCodeSimulator {
+ public:
+  BasicCodeSimulator() {}
+  virtual ~BasicCodeSimulator() {}
+
+  // Starts simulating instructions of a target isa from a buffer.
   virtual void RunFrom(intptr_t code_buffer) = 0;
 
   // Get return value according to C ABI.
@@ -35,15 +50,73 @@ class CodeSimulator {
   virtual int32_t GetCReturnInt32() const = 0;
   virtual int64_t GetCReturnInt64() const = 0;
 
+  // Can the target_isa be simulated on the current host ISA?
+  static constexpr bool CanSimulate(InstructionSet target_isa) {
+    // We currently support only 64-bit hosts as the simulator is designed around the fact
+    // that host/target pointer size is the same.
+    if constexpr (kRuntimeISA == InstructionSet::kX86_64) {
+      switch (target_isa) {
+        case InstructionSet::kArm64:
+          return true;
+        default:
+          return false;
+      }
+    } else {
+      return false;
+    }
+  }
+
  private:
-  DISALLOW_COPY_AND_ASSIGN(CodeSimulator);
+  DISALLOW_COPY_AND_ASSIGN(BasicCodeSimulator);
 };
 
 // libart(d)-simulator is only included as a dependency on device targets.
 #ifndef ART_TARGET
-extern "C" CodeSimulator* CreateCodeSimulator(InstructionSet target_isa);
+// Create a basic code simulator object.
+extern "C" BasicCodeSimulator* CreateBasicCodeSimulator(InstructionSet target_isa,
+                                                        size_t stack_size);
 #else
-[[maybe_unused]] static CodeSimulator* CreateCodeSimulator(InstructionSet) { return nullptr; }
+[[maybe_unused]] static BasicCodeSimulator* CreateBasicCodeSimulator(InstructionSet, size_t) {
+  return nullptr;
+}
+#endif
+
+#ifdef ART_USE_SIMULATOR
+
+// This class implements an ART runtime aware simulator executor which can execute all quick ABI
+// code: is aware of ART entrypoints, ABI/ISA transitions, etc.
+class CodeSimulator {
+ public:
+  CodeSimulator() {}
+  virtual ~CodeSimulator() {}
+
+  // Invokes (starts to simulate) a method; this should follow the semantics of
+  // art_quick_invoke_stub.
+  virtual void Invoke(ArtMethod* method,
+                      uint32_t* args,
+                      uint32_t args_size,
+                      Thread* self,
+                      JValue* result,
+                      const char* shorty,
+                      bool isStatic) REQUIRES_SHARED(Locks::mutator_lock_) = 0;
+
+  // Get the current stack pointer from the simulator.
+  virtual int64_t GetStackPointer() = 0;
+  // Get the stack base from the simulator.
+  virtual uint8_t* GetStackBaseInternal() = 0;
+  // Get the simulated program counter (PC).
+  virtual uintptr_t GetPc() = 0;
+
+  // Try to handle an implicit check that occurred during simulation.
+  virtual bool HandleNullPointer(int sig, siginfo_t* siginfo, void* context) = 0;
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(CodeSimulator);
+};
+
+// Create a runtime aware code simulator object.
+extern "C" CodeSimulator* CreateCodeSimulator(InstructionSet target_isa, size_t stack_size);
+
 #endif
 
 }  // namespace art

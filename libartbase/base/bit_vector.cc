@@ -286,6 +286,21 @@ int BitVector::GetHighestBitSet() const {
   return -1;
 }
 
+int BitVector::GetLowestBitCleared() const {
+  uint32_t max = storage_size_;
+  for (uint32_t idx = 0; idx < max; idx++) {
+    uint32_t negated_value = ~storage_[idx];
+
+    if (negated_value != 0) {
+      // Return lowerest bit cleared in value plus bits from previous storage indexes.
+      return CTZ(negated_value) + (idx * kWordBits);
+    }
+  }
+
+  // All zero, therefore return -1.
+  return -1;
+}
+
 void BitVector::Copy(const BitVector *src) {
   // Get highest bit set, we only need to copy till then.
   int highest_bit = src->GetHighestBitSet();

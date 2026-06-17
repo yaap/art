@@ -16,11 +16,6 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.ArtManagerLocal.ScheduleBackgroundDexoptJobCallback;
-import static com.android.server.art.model.ArtFlags.BatchDexoptPass;
-import static com.android.server.art.model.ArtFlags.ScheduleStatus;
-import static com.android.server.art.model.Config.Callback;
-
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.job.JobInfo;
@@ -30,6 +25,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.os.Build;
 import android.os.CancellationSignal;
+import android.os.Environment;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 
@@ -38,17 +34,23 @@ import androidx.annotation.RequiresApi;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalManagerRegistry;
+import com.android.server.art.ArtManagerLocal.ScheduleBackgroundDexoptJobCallback;
 import com.android.server.art.model.ArtFlags;
+import com.android.server.art.model.ArtFlags.BatchDexoptPass;
+import com.android.server.art.model.ArtFlags.ScheduleStatus;
 import com.android.server.art.model.ArtServiceJobInterface;
 import com.android.server.art.model.Config;
+import com.android.server.art.model.Config.Callback;
 import com.android.server.art.model.DexoptResult;
 import com.android.server.art.model.OperationProgress;
+import com.android.server.art.utils.AsLog;
+import com.android.server.art.utils.Utils;
 import com.android.server.pm.PackageManagerLocal;
-import android.os.Environment;
 
 import com.google.auto.value.AutoValue;
 
 import java.io.File;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -56,6 +58,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -76,9 +80,37 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
     @GuardedBy("this") @Nullable private CancellationSignal mCancellationSignal = null;
     @GuardedBy("this") @NonNull private Optional<Integer> mLastStopReason = Optional.empty();
 
+    /**
+     * The time the {@link JobType.BG_DEXOPT} job was scheduled.
+     *
+     * The time is measured in milliseconds, on a monotonic clock including time spent in sleep.
+     */
+    @GuardedBy("this") private long mJobScheduledAtMillis = 0;
+
+    /**
+     * The completion time of the last finished (either completed or failed, not cancelled) run of
+     * the {@link JobType.BG_DEXOPT} job since boot.
+     *
+     * The time is measured in milliseconds, on a monotonic clock including time spent in sleep.
+     */
+    @GuardedBy("this") private long mJobLastFinishedAtMillis = 0;
+
+    /**
+     * A separate thread for executing `mRunningJob`. We avoid using any known thread / thread pool
+     * such as {@link java.util.concurrent.ForkJoinPool} and {@link
+     * com.android.server.art.utils.AsyncExecutor} because we don't want to block other things that
+     * use known threads / thread pools by this long running job.
+     */
+    @NonNull
+    private final ThreadPoolExecutor mExecutor =
+            new ThreadPoolExecutor(1 /* corePoolSize */, 1 /* maximumPoolSize */,
+                    60 /* keepAliveTime */, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>());
+
     public BackgroundDexoptJob(@NonNull Context context, @NonNull ArtManagerLocal artManagerLocal,
             @NonNull Config config) {
         this(new Injector(context, artManagerLocal, config));
+        // Recycle the thread if it's not used for `keepAliveTime`.
+        mExecutor.allowsCoreThreadTimeOut();
     }
 
     @VisibleForTesting
@@ -92,12 +124,13 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
     public boolean onStartJob(
             @NonNull BackgroundDexoptJobService jobService, @NonNull JobParameters params) {
         JobType jobType = JobType.fromJobId(params.getJobId());
+        long jobStartedAtMillis = SystemClock.elapsedRealtime();
         start(jobType).thenAcceptAsync(result -> {
             boolean wantsReschedule = false;
 
             if (jobType == JobType.BG_DEXOPT) {
                 try {
-                    writeStats(result);
+                    writeStats(result, jobStartedAtMillis);
                 } catch (RuntimeException e) {
                     // Not expected. Log wtf to surface it.
                     AsLog.wtf("Failed to write stats", e);
@@ -109,6 +142,12 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
                 // the next interval.
                 wantsReschedule = result instanceof CompletedResult
                         && ((CompletedResult) result).isCancelled();
+
+                synchronized (this) {
+                    if (!wantsReschedule) {
+                        mJobLastFinishedAtMillis = SystemClock.elapsedRealtime();
+                    }
+                }
             }
 
             // This call will be ignored if `onStopJob` is called.
@@ -158,6 +197,11 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
                 Utils.executeAndWait(
                         callback.executor(), () -> { callback.get().onOverrideJobInfo(builder); });
             }
+        } else {
+            Utils.check(jobType == JobType.POST_UNATTENDED_REBOOT);
+            // There are many things going on right after reboot, so we wait for a while to avoid
+            // resource contention.
+            builder.setMinimumLatency(Duration.ofMinutes(10).toMillis());
         }
 
         JobInfo info = builder.build();
@@ -165,6 +209,13 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
             // See the javadoc of
             // `ArtManagerLocal.ScheduleBackgroundDexoptJobCallback.onOverrideJobInfo` for details.
             throw new IllegalStateException("'setRequiresStorageNotLow' must not be set");
+        }
+
+        if (jobType == JobType.BG_DEXOPT) {
+            synchronized (this) {
+                mJobScheduledAtMillis = SystemClock.elapsedRealtime();
+                mJobLastFinishedAtMillis = 0;
+            }
         }
 
         return mInjector.getJobScheduler().schedule(info) == JobScheduler.RESULT_SUCCESS
@@ -202,7 +253,7 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
                     mCancellationSignal = null;
                 }
             }
-        });
+        }, mExecutor);
         return mRunningJob;
     }
 
@@ -261,23 +312,39 @@ public class BackgroundDexoptJob implements ArtServiceJobInterface {
                 long freedBytes = mInjector.getArtManagerLocal().cleanup(snapshot);
                 AsLog.i(String.format("Freed %d bytes", freedBytes));
             }
-            // Clean up files for legacy dexopt.
-            new File(Environment.getDataDirectory(), "system/package-cstats.list").delete();
-            new File(Environment.getDataDirectory(), "system/package-dex-usage.list").delete();
-            // TODO(b/258223472): Also delete "package-dcl.list" and "package-usage.list".
+            cleanupLegacyDexoptFiles();
         }
         return CompletedResult.create(dexoptResultByPass, durationMsByPass);
     }
 
-    private void writeStats(@NonNull Result result) {
+    private void cleanupLegacyDexoptFiles() {
+        new File(Environment.getDataDirectory(), "system/package-dex-usage.list").delete();
+        if (Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1) {
+            new File(Environment.getDataDirectory(), "system/package-cstats.list").delete();
+        }
+        // TODO(b/258223472): Also delete "package-dcl.list" and "package-usage.list".
+    }
+
+    /**
+     * @param jobStartedAtMillis the time the run was started, measured in milliseconds, on a
+     *         monotonic clock including time spent in sleep.
+     */
+    private void writeStats(@NonNull Result result, long jobStartedAtMillis) {
         Optional<Integer> stopReason;
+        boolean isFirstRun;
+        long jobLatencyMillis;
         synchronized (this) {
             stopReason = mLastStopReason;
+            Utils.check(mJobScheduledAtMillis > 0);
+            isFirstRun = mJobLastFinishedAtMillis == 0;
+            jobLatencyMillis = isFirstRun ? jobStartedAtMillis - mJobScheduledAtMillis
+                                          : jobStartedAtMillis - mJobLastFinishedAtMillis;
         }
         if (result instanceof CompletedResult completedResult) {
-            BackgroundDexoptJobStatsReporter.reportSuccess(completedResult, stopReason);
+            BackgroundDexoptJobStatsReporter.reportSuccess(
+                    completedResult, stopReason, isFirstRun, jobLatencyMillis);
         } else if (result instanceof FatalErrorResult) {
-            BackgroundDexoptJobStatsReporter.reportFailure();
+            BackgroundDexoptJobStatsReporter.reportFailure(isFirstRun, jobLatencyMillis);
         }
     }
 

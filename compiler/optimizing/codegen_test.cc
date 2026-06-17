@@ -16,10 +16,12 @@
 
 #include <functional>
 #include <memory>
+#include <regex>
 
 #include "base/macros.h"
 #include "base/utils.h"
 #include "builder.h"
+#include "code_generation_data.h"
 #include "codegen_test_utils.h"
 #include "dex/dex_file.h"
 #include "dex/dex_instruction.h"
@@ -79,6 +81,10 @@ class CodegenTest : public CommonCompilerTest, public OptimizingUnitTestHelper {
                             int64_t rhs_value,
                             DataType::Type type,
                             CodeGenerator* codegen);
+  template <typename GraphBuilder>
+  void TestDeoptimizeSlowPathDeduplication(const std::string& test_case,
+                                           const CodegenTargetConfig& target_config,
+                                           GraphBuilder builder);
 };
 
 void CodegenTest::TestCode(const std::vector<uint16_t>& data, bool has_result, int32_t expected) {
@@ -440,7 +446,6 @@ TEST_F(CodegenTest, NonMaterializedCondition) {
     then_block->AddSuccessor(exit_block);
     else_block->AddSuccessor(exit_block);
 
-    MakeExit(exit_block);
     MakeReturn(then_block, constant0);
     MakeReturn(else_block, constant1);
 
@@ -516,7 +521,6 @@ TEST_F(CodegenTest, MaterializedCondition2) {
       HBasicBlock* if_true_block = AddNewBlock();
       HBasicBlock* if_false_block = AddNewBlock();
       HBasicBlock* exit_block = AddExitBlock();
-      MakeExit(exit_block);
 
       graph->SetEntryBlock(entry_block);
       entry_block->AddSuccessor(if_block);
@@ -723,6 +727,230 @@ TEST_F(CodegenTest, PackedSwitchInHugeMethod) {
   }
 }
 
+template <typename GraphBuilder>
+void CodegenTest::TestDeoptimizeSlowPathDeduplication(const std::string& test_case,
+                                                      const CodegenTargetConfig& target_config,
+                                                      GraphBuilder builder) {
+  SCOPED_TRACE(test_case);
+
+  ResetPoolAndAllocator();
+
+  std::unique_ptr<CompilerOptions> compiler_options =
+      CommonCompilerTest::CreateCompilerOptions(target_config.GetInstructionSet(), "default");
+
+  HBasicBlock* block = InitEntryMainExitGraph();
+  // Required to emit vreg info for HEnvironment.
+  graph_->SetNumberOfVRegs(1);
+
+  std::unique_ptr<CodeGenerator> codegen(
+      target_config.CreateCodeGenerator(graph_, *compiler_options));
+
+  HInstruction* param1 = MakeParam(DataType::Type::kInt32);
+  HInstruction* param2 = MakeParam(DataType::Type::kInt32);
+
+  auto verifier = builder(block, param1, param2);
+
+  DisassemblyInformation disasm_info(GetAllocator());
+  codegen->SetDisassemblyInformation(&disasm_info);
+  graph_->BuildDominatorTree();
+
+  GenerateCode(codegen.get(), graph_, [](HGraph*) {});
+
+  std::stringstream buffer;
+  HGraphVisualizer visualizer(&buffer, graph_, codegen.get());
+
+  visualizer.DumpGraphWithDisassembly();
+  std::string dump = buffer.str();
+
+  std::regex slow_path_regex(R"((?:DeoptimizationSlowPath)[\s\S]*?(?:<\|@))");
+  std::regex encoding_regex(R"(0x[0-9A-Fa-f]+\s*:\s*([0-9A-Fa-f]+)\b)");
+
+  std::unordered_map<HInstruction*, std::string> instructions_with_slow_paths;
+  std::sregex_iterator end;
+  auto slow_paths = codegen->GetCodeGenerationData()->GetSlowPaths();
+  size_t slow_path_index = 0;
+  for (std::sregex_iterator slow_path_iterator(dump.cbegin(), dump.cend(), slow_path_regex);
+       slow_path_iterator != end;
+       ++slow_path_iterator) {
+    std::string slow_path = slow_path_iterator->str();
+
+    std::ostringstream oss;
+    for (std::sregex_iterator encodings_iterator(
+             slow_path.cbegin(), slow_path.cend(), encoding_regex);
+         encodings_iterator != end;
+         encodings_iterator++) {
+      oss << (*encodings_iterator)[1];
+    }
+
+    HInstruction* instruction = slow_paths[slow_path_index++]->GetInstruction();
+    instructions_with_slow_paths.emplace(instruction, oss.str());
+  }
+
+  ASSERT_EQ(instructions_with_slow_paths.size(), slow_paths.size()) << dump;
+
+  verifier(instructions_with_slow_paths, codegen.get(), dump);
+}
+
+TEST_F(CodegenTest, DeoptimizeSlowPathDeduplication) {
+  for (CodegenTargetConfig target_config : GetTargetConfigs()) {
+    SCOPED_TRACE(target_config.GetInstructionSet());
+
+    // We intentionally do not wrap test cases with ASSERT_NO_FATAL_FAILURE to allow execution
+    // to continue if one test case hits an assertion failure. This is fine since the test cases
+    // are independent.
+
+    TestDeoptimizeSlowPathDeduplication(
+        "Same slow paths",
+        target_config,
+        [this](HBasicBlock* block, HInstruction* param1, HInstruction* param2) {
+          HCondition* cond = MakeCondition(block, kCondA, param1, param2);
+          HDeoptimize* deopt = MakeDeoptimize(block, cond, DeoptimizationKind::kLoopNullBCE);
+          HDeoptimize* deopt_dup = MakeDeoptimize(block, cond, DeoptimizationKind::kLoopNullBCE);
+
+          MakeReturnVoid(block);
+
+          return [=](std::unordered_map<HInstruction*, std::string>& instructions_with_slow_paths,
+                     CodeGenerator* codegen,
+                     const std::string& dump) {
+            ASSERT_TRUE(IsDeoptWithSameKindAndSlowPathSavedRegisters(deopt, deopt_dup, codegen))
+                << dump;
+
+            ASSERT_TRUE(instructions_with_slow_paths.contains(deopt)) << dump;
+            EXPECT_EQ(instructions_with_slow_paths.size(), 1u) << dump;
+          };
+        });
+
+    TestDeoptimizeSlowPathDeduplication(
+        "Different deoptimization kinds",
+        target_config,
+        [this](HBasicBlock* block, HInstruction* param1, HInstruction* param2) {
+          HCondition* cond = MakeCondition(block, kCondA, param1, param2);
+          HDeoptimize* deopt_null_bce =
+              MakeDeoptimize(block, cond, DeoptimizationKind::kLoopNullBCE);
+          HDeoptimize* deopt_bounds_bce =
+              MakeDeoptimize(block, cond, DeoptimizationKind::kLoopBoundsBCE);
+
+          MakeReturnVoid(block);
+
+          return [=](std::unordered_map<HInstruction*, std::string>& instructions_with_slow_paths,
+                     CodeGenerator* codegen,
+                     const std::string& dump) {
+            EXPECT_TRUE(HaveSameSlowPathSavedRegisters(deopt_null_bce, deopt_bounds_bce, codegen))
+                << dump;
+
+            EXPECT_EQ(instructions_with_slow_paths.size(), 2u) << dump;
+            ASSERT_TRUE(instructions_with_slow_paths.contains(deopt_null_bce)) << dump;
+            ASSERT_TRUE(instructions_with_slow_paths.contains(deopt_bounds_bce)) << dump;
+
+            if (instructions_with_slow_paths[deopt_null_bce].empty()) {
+              // FIXME: `art_standalone_compiler_tests` run without the disassembler.
+              ASSERT_TRUE(instructions_with_slow_paths[deopt_bounds_bce].empty());
+            } else {
+              EXPECT_NE(instructions_with_slow_paths[deopt_null_bce],
+                        instructions_with_slow_paths[deopt_bounds_bce])
+                  << dump;
+            }
+          };
+        });
+
+    TestDeoptimizeSlowPathDeduplication(
+        "Different stack maps",
+        target_config,
+        [this](HBasicBlock* block, HInstruction* param1, HInstruction* param2) {
+          HCondition* cond = MakeCondition(block, kCondA, param1, param2);
+          HDeoptimize* deopt = MakeDeoptimize(block, cond, DeoptimizationKind::kLoopNullBCE);
+          HDeoptimize* deopt_env_with_param1 =
+              MakeDeoptimize(block, cond, DeoptimizationKind::kLoopNullBCE, {param1});
+
+          MakeReturnVoid(block);
+
+          return [=](std::unordered_map<HInstruction*, std::string>& instructions_with_slow_paths,
+                     CodeGenerator* codegen,
+                     const std::string& dump) {
+            EXPECT_TRUE(
+                IsDeoptWithSameKindAndSlowPathSavedRegisters(deopt, deopt_env_with_param1, codegen))
+                << dump;
+
+            EXPECT_EQ(instructions_with_slow_paths.size(), 2u) << dump;
+            ASSERT_TRUE(instructions_with_slow_paths.contains(deopt)) << dump;
+            ASSERT_TRUE(instructions_with_slow_paths.contains(deopt_env_with_param1)) << dump;
+
+            EXPECT_EQ(instructions_with_slow_paths[deopt],
+                      instructions_with_slow_paths[deopt_env_with_param1])
+                << dump;
+          };
+        });
+
+    TestDeoptimizeSlowPathDeduplication(
+        "Different caller-save live registers and same spilled registers",
+        target_config,
+        [this](HBasicBlock* block, HInstruction* param1, HInstruction* param2) {
+          HCondition* cond = MakeCondition(block, kCondA, param1, param2);
+          HDeoptimize* deopt = MakeDeoptimize(block, cond, DeoptimizationKind::kLoopNullBCE);
+          HNeg* neg = MakeUnOp<HNeg>(block, DataType::Type::kInt32, param1);
+          HDeoptimize* deopt_live_neg =
+              MakeDeoptimize(block, cond, DeoptimizationKind::kLoopNullBCE);
+
+          // Make `param1` and `param2` live for both deoptimize instructions. This prevents `neg`
+          // from reusing the `param1` and `param2` registers so that the deoptimize instructions
+          // have different sets of live registers.
+          MakeBinOp<HAdd>(block, DataType::Type::kInt32, param1, param2);
+
+          // Make `neg` live for `deopt_live_neg`. Since `cond` is materialized and occupies the
+          // register for the first deoptimize entrypoint parameter, `neg` uses another register
+          // that is not spilled on the slow path.
+          MakeReturn(block, neg);
+
+          return [=](std::unordered_map<HInstruction*, std::string>& instructions_with_slow_paths,
+                     CodeGenerator* codegen,
+                     const std::string& dump) {
+            EXPECT_NE(deopt->GetLocations()->GetLiveRegisters()->GetCoreRegisterSet(),
+                      deopt_live_neg->GetLocations()->GetLiveRegisters()->GetCoreRegisterSet())
+                << dump;
+            EXPECT_TRUE(HaveSameSlowPathSavedRegisters(deopt, deopt_live_neg, codegen)) << dump;
+
+            EXPECT_EQ(instructions_with_slow_paths.size(), 1u) << dump;
+            EXPECT_TRUE(instructions_with_slow_paths.contains(deopt)) << dump;
+          };
+        });
+
+    TestDeoptimizeSlowPathDeduplication(
+        "Different sets of spilled registers",
+        target_config,
+        [this](HBasicBlock* block, HInstruction* param1, HInstruction* param2) {
+          HCondition* cond = MakeCondition(block, kCondA, param1, param2);
+          HDeoptimize* deopt_live_method =
+              MakeDeoptimize(block, cond, DeoptimizationKind::kLoopNullBCE);
+          // Make the current method live. It is located in the same register as the first parameter
+          // of the deoptimize entrypoint.
+          HCurrentMethod* method = block->GetGraph()->GetCurrentMethod();
+          MakeUnOp<HNeg>(block, method->GetType(), method);
+          HDeoptimize* deopt = MakeDeoptimize(block, cond, DeoptimizationKind::kLoopNullBCE);
+
+          MakeReturnVoid(block);
+
+          return [=](std::unordered_map<HInstruction*, std::string>& instructions_with_slow_paths,
+                     CodeGenerator* codegen,
+                     const std::string& dump) {
+            EXPECT_FALSE(HaveSameSlowPathSavedRegisters(deopt, deopt_live_method, codegen)) << dump;
+
+            EXPECT_EQ(instructions_with_slow_paths.size(), 2u);
+            ASSERT_TRUE(instructions_with_slow_paths.contains(deopt)) << dump;
+            ASSERT_TRUE(instructions_with_slow_paths.contains(deopt_live_method)) << dump;
+
+            if (instructions_with_slow_paths[deopt].empty()) {
+              // FIXME: `art_standalone_compiler_tests` run without the disassembler.
+              ASSERT_TRUE(instructions_with_slow_paths[deopt_live_method].empty());
+            } else {
+              EXPECT_NE(instructions_with_slow_paths[deopt],
+                        instructions_with_slow_paths[deopt_live_method])
+                  << dump;
+            }
+          };
+        });
+  }
+}
+
 #ifdef ART_ENABLE_CODEGEN_arm
 TEST_F(CodegenTest, ARMVIXLParallelMoveResolver) {
   std::unique_ptr<CompilerOptions> compiler_options =
@@ -815,12 +1043,12 @@ TEST_F(CodegenTest, ARM64ParallelMoveResolverSIMD) {
                   Location::SIMDStackSlot(0),
                   DataType::Type::kFloat64,
                   nullptr);
-    move->AddMove(Location::FpuRegisterLocation(0),
-                  Location::FpuRegisterLocation(1),
+    move->AddMove(Location::FpuRegister(0),
+                  Location::FpuRegister(1),
                   DataType::Type::kFloat64,
                   nullptr);
-    move->AddMove(Location::FpuRegisterLocation(1),
-                  Location::FpuRegisterLocation(0),
+    move->AddMove(Location::FpuRegister(1),
+                  Location::FpuRegister(0),
                   DataType::Type::kFloat64,
                   nullptr);
     codegen.GetMoveResolver()->EmitNativeCode(move);
@@ -992,12 +1220,12 @@ void CodegenTest::TestVectorComparison(IfCondition condition,
 
 // Define tests ensuring that all types of conditions can be generated correctly and return the
 // expected result.
-#define DEFINE_CONDITION_TESTS(CondType)                                                         \
+#define DEFINE_CONDITION_TESTS(CondType, From, To)                                               \
 TEST_F(CodegenTest, ComparisonsVector##CondType) {                                               \
   std::unique_ptr<CompilerOptions> compiler_options =                                            \
       CommonCompilerTest::CreateCompilerOptions(InstructionSet::kArm64, "default", "sve");       \
-  for (int64_t i = -1; i <= 1; i++) {                                                            \
-    for (int64_t j = -1; j <= 1; j++) {                                                          \
+  for (int64_t i = From; i <= To; i++) {                                                         \
+    for (int64_t j = From; j <= To; j++) {                                                       \
       for (int cond = kCondFirst; cond <= kCondLast; cond++) {                                   \
         InitEntryMainExitGraph();                                                                \
         TestCodeGeneratorARM64 codegen(graph_, *compiler_options);                               \
@@ -1010,11 +1238,11 @@ TEST_F(CodegenTest, ComparisonsVector##CondType) {                              
     }                                                                                            \
   }                                                                                              \
 }
-DEFINE_CONDITION_TESTS(Uint8)
-DEFINE_CONDITION_TESTS(Int8)
-DEFINE_CONDITION_TESTS(Uint16)
-DEFINE_CONDITION_TESTS(Int16)
-DEFINE_CONDITION_TESTS(Int32)
+DEFINE_CONDITION_TESTS(Uint8, 0, 2)
+DEFINE_CONDITION_TESTS(Int8, -1, 1)
+DEFINE_CONDITION_TESTS(Uint16, 0, 2)
+DEFINE_CONDITION_TESTS(Int16, -1, 1)
+DEFINE_CONDITION_TESTS(Int32, -1, 1)
 #undef DEFINE_CONDITION_TESTS
 
 #endif

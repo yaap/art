@@ -225,7 +225,7 @@ public class Main {
   /// CHECK-START: int Main.deleteNullCheckAlt(int[]) dead_code_elimination$after_inlining (after)
   /// CHECK-NOT: NullCheck
   static public int deleteNullCheckAlt(int[] a) {
-    checkNotNullSplitAlt(a, "stringUnlikeltyToBeInBootImage");
+    checkNotNullSplitAlt(a, "stringUnlikelyToBeInBootImage");
     return a[0];
   }
 

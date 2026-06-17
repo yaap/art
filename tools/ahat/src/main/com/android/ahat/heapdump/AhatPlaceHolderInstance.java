@@ -36,9 +36,10 @@ class AhatPlaceHolderInstance extends AhatInstance {
     return Size.ZERO;
   }
 
-  @Override long getExtraJavaSize() {
-    return 0;
-  }
+    @Override
+    long getExtraJavaSize() {
+      return 0;
+    }
 
   @Override public Size getRetainedSize(AhatHeap heap) {
     return Size.ZERO;
@@ -69,7 +70,7 @@ class AhatPlaceHolderInstance extends AhatInstance {
   }
 
   @Override
-  Iterable<Reference> getReferences() {
+  public Iterable<Reference> getReferences() {
     List<Reference> refs = Collections.emptyList();
     return refs;
   }

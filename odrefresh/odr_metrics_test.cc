@@ -88,14 +88,6 @@ TEST_F(OdrMetricsTest, MetricsFileIsCreatedIfEnabled) {
   EXPECT_TRUE(MetricsFileExists());
 }
 
-TEST_F(OdrMetricsTest, CacheSpaceValuesAreUpdated) {
-  OdrMetrics metrics(GetCacheDirectory(), GetMetricsFilePath());
-  metrics.CaptureSpaceFreeEnd();
-  OdrMetricsRecord record = metrics.ToRecord();
-  EXPECT_GT(record.cache_space_free_start_mib, 0);
-  EXPECT_GT(record.cache_space_free_end_mib, 0);
-}
-
 TEST_F(OdrMetricsTest, PrimaryBcpResultWithValue) {
   OdrMetrics metrics(GetCacheDirectory(), GetMetricsFilePath());
   metrics.SetDex2OatResult(

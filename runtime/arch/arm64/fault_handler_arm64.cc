@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 
-#include "fault_handler.h"
-
 #include <sys/ucontext.h>
 
 #include "arch/instruction_set.h"
@@ -24,6 +22,9 @@
 #include "base/logging.h"  // For VLOG.
 #include "base/macros.h"
 #include "base/pointer_size.h"
+#include "fault_handler.h"
+#include "interpreter/mterp/nterp.h"
+#include "oat/oat_quick_method_header.h"
 #include "registers_arm64.h"
 #include "runtime_globals.h"
 #include "thread-current-inl.h"
@@ -62,7 +63,28 @@ uintptr_t FaultManager::GetFaultSp(void* context) {
   return mc->sp;
 }
 
+// Nterp details needed to check for `aget*`/`aput*` opcode handlers and export the dex PC.
+extern "C" HIDDEN void nterp3_op_nop();
+extern "C" HIDDEN void nterp3_op_aget();
+static constexpr size_t kNterpAgetAputHandlersSize =
+    (/* aget */ 7 + /* aput */ 7) * interpreter::kNterpHandlerSize;
+static constexpr size_t kNterpDexPcReg = 22;
+static constexpr size_t kNterpRefsReg = 25;
+static constexpr size_t kNterpExportedDexPcOffset = 16;  // Below refs.
+
+static uintptr_t nterp_op_aget_start() {
+  // There are four nterp handler sets, 20KiB apart, and we're using the one that's 16KiB-aligned.
+  uintptr_t op_nop = reinterpret_cast<uintptr_t>(nterp3_op_nop);
+  uintptr_t op_aget = reinterpret_cast<uintptr_t>(nterp3_op_aget);
+  uintptr_t num_sets_to_subtract = (op_nop >> 12) & 3u;
+  DCHECK_ALIGNED(op_nop - num_sets_to_subtract * 20 * KB, 16 * KB);
+  return op_aget - num_sets_to_subtract * 20 * KB;
+}
+
 bool NullPointerHandler::Action([[maybe_unused]] int sig, siginfo_t* info, void* context) {
+  // If changing this function, also update CodeSimulatorArm64::HandleNullPointer as that should
+  // stay in sync.
+
   uintptr_t fault_address = reinterpret_cast<uintptr_t>(info->si_addr);
   if (!IsValidFaultAddress(fault_address)) {
     return false;
@@ -80,6 +102,15 @@ bool NullPointerHandler::Action([[maybe_unused]] int sig, siginfo_t* info, void*
   uintptr_t return_pc = mc->pc + 4u;
   if (!IsValidMethod(*sp) || !IsValidReturnPc(sp, return_pc)) {
     return false;
+  }
+
+  if (return_pc - nterp_op_aget_start() < kNterpAgetAputHandlersSize) {
+    // Export the dex PC here, so that the nterp `aget*`/`aput*` opcode handlers do not need
+    // to export it before doing implicit null checks. The `EXPORT_PC` in nterp expands to
+    //     stur    x22, [x25, #-0x10]
+    uintptr_t* dex_pc_slot =
+        reinterpret_cast<uintptr_t*>(mc->regs[kNterpRefsReg] - kNterpExportedDexPcOffset);
+    *dex_pc_slot = mc->regs[kNterpDexPcReg];
   }
 
   // Push the return PC to the stack and pass the fault address in LR.
@@ -106,6 +137,11 @@ bool SuspensionHandler::Action([[maybe_unused]] int sig,
 
   ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
   mcontext_t* mc = reinterpret_cast<mcontext_t*>(&uc->uc_mcontext);
+
+  if (OatQuickMethodHeader::IsNterpPc(mc->pc)) {
+    // Interpreter does not do suspend check through the exception handler
+    return false;
+  }
 
   uint32_t inst = *reinterpret_cast<uint32_t*>(mc->pc);
   VLOG(signals) << "checking suspend; inst: " << std::hex << inst << " checkinst: " << checkinst;

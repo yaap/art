@@ -15,22 +15,22 @@
  */
 
 interface Itf {
-  public default int fib(int a) {
-    if (a <= 1) return a;
-    return fib(a - 1) + fib(a - 2);
-  }
+    public default int fib(int a) {
+        if (a <= 1) return a;
+        return fib(a - 1) + fib(a - 2);
+    }
 }
 
 public class Main implements Itf {
 
-  public static void main(String[] args) {
-    int result = new Main().fib(2);
-    if (result != 1) {
-      throw new Error("Expected 1, got " + result);
+    public static void main(String[] args) {
+        int result = new Main().fib(2);
+        if (result != 1) {
+            throw new Error("Expected 1, got " + result);
+        }
     }
-  }
 
-  public int fib(int a) {
-    return Itf.super.fib(a);
-  }
+    public int fib(int a) {
+        return Itf.super.fib(a);
+    }
 }

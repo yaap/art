@@ -21,18 +21,20 @@
 #include <fcntl.h>
 #include <fnmatch.h>
 #include <inttypes.h>
+#include <linux/seccomp.h>
 #include <sched.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/un.h>
 #include <sys/wait.h>
-#include <thread>
 #include <time.h>
 
 #include <limits>
 #include <optional>
+#include <thread>
 #include <type_traits>
 #include <unordered_set>
 
@@ -41,25 +43,26 @@
 #include "android-base/properties.h"
 #include "base/fast_exit.h"
 #include "base/systrace.h"
+#include "com_android_art_rw_flags.h"
+#include "dex/descriptors_names.h"
 #include "gc/heap-visit-objects-inl.h"
 #include "gc/heap.h"
 #include "gc/scoped_gc_critical_section.h"
 #include "mirror/object-refvisitor-inl.h"
 #include "nativehelper/scoped_local_ref.h"
+#include "perfetto/config/profiling/java_hprof_config.pbzero.h"
 #include "perfetto/profiling/parse_smaps.h"
+#include "perfetto/protozero/packed_repeated_fields.h"
 #include "perfetto/trace/interned_data/interned_data.pbzero.h"
 #include "perfetto/trace/profiling/heap_graph.pbzero.h"
 #include "perfetto/trace/profiling/profile_common.pbzero.h"
 #include "perfetto/trace/profiling/smaps.pbzero.h"
-#include "perfetto/config/profiling/java_hprof_config.pbzero.h"
-#include "perfetto/protozero/packed_repeated_fields.h"
 #include "perfetto/tracing.h"
 #include "runtime-inl.h"
 #include "runtime_callbacks.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread_list.h"
 #include "well_known_classes.h"
-#include "dex/descriptors_names.h"
 
 // There are three threads involved in this:
 // * listener thread: this is idle in the background when this plugin gets loaded, and waits
@@ -504,13 +507,11 @@ perfetto::protos::pbzero::HeapGraphRoot::Type ToProtoType(art::RootType art_type
 
 perfetto::protos::pbzero::HeapGraphType::Kind ProtoClassKind(uint32_t class_flags) {
   using perfetto::protos::pbzero::HeapGraphType;
-  class_flags &= ~art::mirror::kClassFlagStaticRefInfo;
+  class_flags &= ~art::mirror::kClassFlagPerfettoIgnoredFlags;
   switch (class_flags) {
     case art::mirror::kClassFlagNormal:
-    case art::mirror::kClassFlagRecord:
       return HeapGraphType::KIND_NORMAL;
     case art::mirror::kClassFlagNoReferenceFields:
-    case art::mirror::kClassFlagNoReferenceFields | art::mirror::kClassFlagRecord:
       return HeapGraphType::KIND_NOREFERENCES;
     case art::mirror::kClassFlagString | art::mirror::kClassFlagNoReferenceFields:
       return HeapGraphType::KIND_STRING;
@@ -595,7 +596,7 @@ std::vector<std::pair<std::string, art::mirror::Object*>> GetReferences(art::mir
   std::vector<std::pair<std::string, art::mirror::Object*>> referred_objects;
   ReferredObjectsFinder objf(&referred_objects, emit_field_ids);
 
-  uint32_t klass_flags = klass->GetClassFlags() & ~art::mirror::kClassFlagStaticRefInfo;
+  uint32_t klass_flags = klass->GetClassFlags() & ~art::mirror::kClassFlagPerfettoIgnoredFlags;
   if (klass_flags != art::mirror::kClassFlagNormal &&
       klass_flags != art::mirror::kClassFlagSoftReference &&
       klass_flags != art::mirror::kClassFlagWeakReference &&
@@ -768,11 +769,8 @@ class HeapGraphDumper {
       } else if (space->IsImageSpace() && heap->ObjectIsInBootImageSpace(obj)) {
         heap_type = perfetto::protos::pbzero::HeapGraphObject::HEAP_TYPE_BOOT_IMAGE;
       }
-    } else {
-      const auto* los = heap->GetLargeObjectsSpace();
-      if (los->Contains(obj) && los->IsZygoteLargeObject(art::Thread::Current(), obj)) {
-        heap_type = perfetto::protos::pbzero::HeapGraphObject::HEAP_TYPE_ZYGOTE;
-      }
+    } else if (heap->IsZygoteLargeObject(obj)) {
+      heap_type = perfetto::protos::pbzero::HeapGraphObject::HEAP_TYPE_ZYGOTE;
     }
     if (heap_type != prev_heap_type_) {
       object_proto->set_heap_type_delta(heap_type);
@@ -830,7 +828,8 @@ class HeapGraphDumper {
                       art::mirror::Class* klass,
                       perfetto::protos::pbzero::HeapGraphObject* object_proto)
       REQUIRES_SHARED(art::Locks::mutator_lock_) {
-    const uint32_t klass_flags = klass->GetClassFlags() & ~art::mirror::kClassFlagStaticRefInfo;
+    const uint32_t klass_flags =
+        klass->GetClassFlags() & ~art::mirror::kClassFlagPerfettoIgnoredFlags;
     const bool emit_field_ids = klass_flags != art::mirror::kClassFlagObjectArray &&
                                 klass_flags != art::mirror::kClassFlagNormal &&
                                 klass_flags != art::mirror::kClassFlagSoftReference &&
@@ -958,6 +957,30 @@ class HeapGraphDumper {
     return min_nonnull_ptr;
   }
 
+  void FillBitmapFieldValues(art::mirror::Object* obj,
+                             art::mirror::Class* cls,
+                             perfetto::protos::pbzero::HeapGraphObject* object_proto) const
+      REQUIRES_SHARED(art::Locks::mutator_lock_) {
+    art::ArtField* id_field = cls->FindDeclaredInstanceField(
+        "mId", art::Primitive::Descriptor(art::Primitive::kPrimLong));
+    if (id_field) {
+      object_proto->set_bitmap_id_field(id_field->GetLong(obj));
+    }
+    art::ArtField* source_id_field = cls->FindDeclaredInstanceField(
+        "mSourceId", art::Primitive::Descriptor(art::Primitive::kPrimLong));
+    if (source_id_field) {
+      object_proto->set_bitmap_source_id_field(source_id_field->GetLong(obj));
+    }
+    art::ArtField* width_field = cls->FindDeclaredInstanceField(
+        "mWidth", art::Primitive::Descriptor(art::Primitive::kPrimInt));
+    art::ArtField* height_field = cls->FindDeclaredInstanceField(
+        "mHeight", art::Primitive::Descriptor(art::Primitive::kPrimInt));
+    if (width_field && height_field) {
+      object_proto->set_bitmap_width_field(width_field->GetInt(obj));
+      object_proto->set_bitmap_height_field(height_field->GetInt(obj));
+    }
+  }
+
   // Fills `*object_proto` with the value of a subset of potentially interesting fields of `*obj`
   // (an object of type `*klass`).
   void FillFieldValues(art::mirror::Object* obj,
@@ -979,6 +1002,9 @@ class HeapGraphDumper {
         if (af) {
           object_proto->set_native_allocation_registry_size_field(af->GetLong(obj));
         }
+      } else if (com::android::art::rw::flags::bitmap_metadata_values() &&
+                 cls->DescriptorEquals("Landroid/graphics/Bitmap;")) {
+        FillBitmapFieldValues(obj, cls, object_proto);
       }
     }
   }
@@ -1051,8 +1077,12 @@ enum class ResumeParentPolicy {
   DEFERRED
 };
 
-pid_t ForkUnderThreadListLock(art::Thread* self) {
-  art::MutexLock lk(self, *art::Locks::thread_list_lock_);
+pid_t ForkUnderLocks(art::Thread* self) {
+  art::MutexLock tll(self, *art::Locks::thread_list_lock_);
+  art::ReaderMutexLock jnigl(self, *art::Locks::jni_globals_lock_);
+  art::MutexLock jniwgl(self, *art::Locks::jni_weak_globals_lock_);
+  art::MutexLock jl(self, *art::Locks::jit_lock_);
+  art::ReaderMutexLock jml(self, *art::Locks::jit_mutator_lock_);
   return fork();
 }
 
@@ -1080,8 +1110,9 @@ void ForkAndRun(art::Thread* self,
 
   std::optional<art::ScopedSuspendAll> ssa(std::in_place, __FUNCTION__, /* long_suspend=*/ true);
 
-  // Optimistically get the thread_list_lock_ to avoid the child process deadlocking
-  pid_t pid = ForkUnderThreadListLock(self);
+  // Optimistically acquire critical sections to avoid the child process deadlocking or in
+  // inconsistent states.
+  pid_t pid = ForkUnderLocks(self);
   if (pid == -1) {
     // Fork error.
     PLOG(ERROR) << "fork";
@@ -1168,7 +1199,26 @@ void WriteHeapPackets(pid_t parent_pid, uint64_t timestamp) {
           });
 }
 
+bool IsChromiumSeccompSandbox() {
+  errno = 0;
+  // Inside Chromium sandbox: BPF filter rewrites this to -1/EPERM.
+  // Outside: kernel returns 0 (action supported) or -1/EFAULT.
+  // Pre-3.17 kernel (irrelevant on modern Android): -1/ENOSYS.
+  // This detection is based on the following chromium code:
+  // https://source.chromium.org/chromium/chromium/src/+/main:sandbox/linux/seccomp-bpf-helpers/baseline_policy.cc;l=346;drc=29982c503d2649e4212fecebf1e5791639e35620
+  auto r = syscall(__NR_seccomp, SECCOMP_GET_ACTION_AVAIL, 0u, nullptr);
+  return r == -1 && errno == EPERM;
+}
+
 void DumpPerfetto(art::Thread* self) {
+  // Chromium/Webview sandboxed processes don't allow fork() and cause a
+  // crash in the child process when attemping to grab a heap dump because
+  // they opt into a strict seccomp syscall sandbox. Skip them.
+  if (IsChromiumSeccompSandbox()) {
+    LOG(INFO) << "Chromium seccomp detected, skipping Perfetto heap dump";
+    return;
+  }
+
   ForkAndRun(
     self,
     ResumeParentPolicy::IMMEDIATELY,
@@ -1319,12 +1369,12 @@ extern "C" bool ArtPlugin_Initialize() {
         g_state = State::kUninitialized;
         GetStateCV().Broadcast(nullptr);
       }
-
       return;
     }
+    // After attaching, any early thread exit must be paired with DetachCurrentThread.
     art::Thread* self = art::Thread::Current();
     if (!self) {
-      LOG(FATAL_WITHOUT_ABORT) << "no thread in perfetto_hprof_listener";
+      LOG(FATAL) << "no thread in perfetto_hprof_listener";
       return;
     }
     {
@@ -1336,16 +1386,15 @@ extern "C" bool ArtPlugin_Initialize() {
     }
     char buf[1];
     for (;;) {
-      int res;
-      do {
-        res = read(g_signal_pipe_fds[0], buf, sizeof(buf));
-      } while (res == -1 && errno == EINTR);
-
+      int res = TEMP_FAILURE_RETRY(read(g_signal_pipe_fds[0], buf, sizeof(buf)));
       if (res <= 0) {
         if (res == -1) {
-          PLOG(ERROR) << "failed to read";
+          PLOG(ERROR) << "hprof pipe read failed";
         }
         close(g_signal_pipe_fds[0]);
+        if (!runtime->IsShuttingDown(self)) {
+          runtime->DetachCurrentThread();
+        }
         return;
       }
 

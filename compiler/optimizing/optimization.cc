@@ -48,6 +48,7 @@
 #include "dex/code_item_accessors-inl.h"
 #include "driver/compiler_options.h"
 #include "driver/dex_compilation_unit.h"
+#include "environment_input_elimination.h"
 #include "gvn.h"
 #include "induction_var_analysis.h"
 #include "inliner.h"
@@ -84,6 +85,8 @@ const char* OptimizationPassName(OptimizationPass pass) {
       return HConstantFolding::kConstantFoldingPassName;
     case OptimizationPass::kDeadCodeElimination:
       return HDeadCodeElimination::kDeadCodeEliminationPassName;
+    case OptimizationPass::kEnvironmentInputElimination:
+      return HEnvironmentInputElimination::kEnvironmentInputEliminationPassName;
     case OptimizationPass::kInliner:
       return HInliner::kInlinerPassName;
     case OptimizationPass::kControlFlowSimplifier:
@@ -149,6 +152,7 @@ OptimizationPass OptimizationPassByName(std::string_view pass_name) {
   X(OptimizationPass::kConstructorFenceRedundancyElimination);
   X(OptimizationPass::kControlFlowSimplifier);
   X(OptimizationPass::kDeadCodeElimination);
+  X(OptimizationPass::kEnvironmentInputElimination);
   X(OptimizationPass::kGlobalValueNumbering);
   X(OptimizationPass::kInductionVarAnalysis);
   X(OptimizationPass::kInliner);
@@ -292,6 +296,9 @@ ArenaVector<HOptimization*> ConstructOptimizations(
       case OptimizationPass::kScheduling:
         opt = new (allocator) HInstructionScheduling(
             graph, codegen->GetCompilerOptions().GetInstructionSet(), codegen, pass_name);
+        break;
+      case art::OptimizationPass::kEnvironmentInputElimination:
+        opt = new (allocator) HEnvironmentInputElimination(graph, stats, pass_name);
         break;
       //
       // Arch-specific passes.

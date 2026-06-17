@@ -1311,6 +1311,80 @@ public class Main {
     }
   }
 
+  /// CHECK-START: void Main.$noinline$testUnrollingIntrinsic(int[]) loop_optimization (before)
+  /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
+  /// CHECK-DAG:                   Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG:                   InvokeStaticOrDirect                      loop:<<Loop>>      outer_loop:none
+
+  /// CHECK-START: void Main.$noinline$testUnrollingIntrinsic(int[]) loop_optimization (before)
+  /// CHECK:                      InvokeStaticOrDirect
+  /// CHECK-NOT:                  InvokeStaticOrDirect
+
+  /// CHECK-START: void Main.$noinline$testUnrollingIntrinsic(int[]) loop_optimization (after)
+  /// CHECK-DAG: <<Const0:i\d+>>   IntConstant 0                             loop:none
+  /// CHECK-DAG:                   Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG:                   InvokeStaticOrDirect                      loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG:                   InvokeStaticOrDirect                      loop:<<Loop>>      outer_loop:none
+
+  /// CHECK-START: void Main.$noinline$testUnrollingIntrinsic(int[]) loop_optimization (after)
+  /// CHECK:                      InvokeStaticOrDirect
+  /// CHECK:                      InvokeStaticOrDirect
+  /// CHECK-NOT:                  InvokeStaticOrDirect
+  public void $noinline$testUnrollingIntrinsic(int[] a) {
+    for (int i = 0; i < LENGTH_B; i++) {
+      a[i] = Integer.numberOfLeadingZeros(a[i]);
+    }
+  }
+
+  /// CHECK-START: void Main.$noinline$testPeelingIntrinsic(int[], boolean) loop_optimization (before)
+  /// CHECK-DAG: <<Param:z\d+>>     ParameterValue                            loop:none
+  /// CHECK-DAG: <<Const0:i\d+>>    IntConstant 0                             loop:none
+  /// CHECK-DAG: <<Const1:i\d+>>    IntConstant 1                             loop:none
+  /// CHECK-DAG: <<Limit:i\d+>>     IntConstant 4096                          loop:none
+  /// CHECK-DAG: <<Phi:i\d+>>       Phi [<<Const0>>,{{i\d+}}]                 loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG: <<Check:z\d+>>     GreaterThanOrEqual [<<Phi>>,<<Limit>>]    loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG:                    If [<<Check>>]                            loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG:                    If [<<Param>>]                            loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG:                    InvokeStaticOrDirect                      loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG:                    ArraySet                                  loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG: <<IndAdd:i\d+>>    Add [<<Phi>>,<<Const1>>]                  loop:<<Loop>>      outer_loop:none
+
+  /// CHECK-START: void Main.$noinline$testPeelingIntrinsic(int[], boolean) loop_optimization (before)
+  /// CHECK:                      InvokeStaticOrDirect
+  /// CHECK-NOT:                  InvokeStaticOrDirect
+
+  /// CHECK-START: void Main.$noinline$testPeelingIntrinsic(int[], boolean) loop_optimization (after)
+  /// CHECK-DAG: <<Param:z\d+>>     ParameterValue                            loop:none
+  /// CHECK-DAG: <<Const0:i\d+>>    IntConstant 0                             loop:none
+  /// CHECK-DAG: <<Const1:i\d+>>    IntConstant 1                             loop:none
+  /// CHECK-DAG: <<Limit:i\d+>>     IntConstant 4096                          loop:none
+  /// CHECK-DAG: <<CheckA:z\d+>>    GreaterThanOrEqual [<<Const0>>,<<Limit>>] loop:none
+  /// CHECK-DAG:                    If [<<CheckA>>]                           loop:none
+  /// CHECK-DAG:                    If [<<Param>>]                            loop:none
+  /// CHECK-DAG:                    InvokeStaticOrDirect                      loop:none
+  /// CHECK-DAG:                    ArraySet                                  loop:none
+  /// CHECK-DAG: <<IndAddA:i\d+>>   Add [<<Const0>>,<<Const1>>]               loop:none
+  /// CHECK-DAG: <<Phi:i\d+>>       Phi [<<IndAddA>>,{{i\d+}}]                loop:<<Loop:B\d+>> outer_loop:none
+  /// CHECK-DAG: <<Check:z\d+>>     GreaterThanOrEqual [<<Phi>>,<<Limit>>]    loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG:                    If [<<Check>>]                            loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG:                    If [<<Const0>>]                           loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG:                    InvokeStaticOrDirect                      loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG:                    ArraySet                                  loop:<<Loop>>      outer_loop:none
+  /// CHECK-DAG: <<IndAdd:i\d+>>    Add [<<Phi>>,<<Const1>>]                  loop:<<Loop>>      outer_loop:none
+
+  /// CHECK-START: void Main.$noinline$testPeelingIntrinsic(int[], boolean) loop_optimization (after)
+  /// CHECK:                      InvokeStaticOrDirect
+  /// CHECK:                      InvokeStaticOrDirect
+  /// CHECK-NOT:                  InvokeStaticOrDirect
+  private static final void $noinline$testPeelingIntrinsic(int[] a, boolean f) {
+    for (int i = 0; i < LENGTH; i++) {
+      if (f) {
+        break;
+      }
+      a[i] = Integer.numberOfLeadingZeros(a[i]);
+    }
+  }
+
   private static void expectEquals(int expected, int result) {
     if (expected != result) {
       throw new Error("Expected: " + expected + ", found: " + result);
@@ -1325,7 +1399,7 @@ public class Main {
     initMatrix(mB);
     initMatrix(mC);
 
-    int expected = 174291515;
+    int expected = 174291878;
     int found = 0;
 
     double[] doubleArray = new double[LENGTH_B];
@@ -1335,6 +1409,8 @@ public class Main {
     unrollingDivZeroCheck(a, 15);
     unrollingTypeConversion(a, doubleArray);
     unrollingCheckCast(a, new SubMain());
+    unrollingFull(a);
+    $noinline$testUnrollingIntrinsic(a);
 
     // Call unrollingWhile(a);
     Class<?> c = Class.forName("PeelUnroll");
@@ -1383,6 +1459,8 @@ public class Main {
     peelingAddInts(null);  // okay
     peelingBreakFromNest(a, false);
     peelingBreakFromNest(a, true);
+    $noinline$testPeelingIntrinsic(a, false);
+    $noinline$testPeelingIntrinsic(a, true);
 
     unrollingSimpleLiveOuts(a);
 
@@ -1394,7 +1472,7 @@ public class Main {
 
     unrollingLiveOutsNested(a);
 
-    int expected = 51565978;
+    int expected = 335820223;
     int found = 0;
     for (int i = 0; i < a.length; i++) {
       found += a[i];

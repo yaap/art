@@ -28,8 +28,8 @@
 
 :catch_entry
        # Catch handler. Here we had to merge the uninitialized with the initialized reference,
-       # which creates a conflict. Copy the conflict, and then return. This should not make the
-       # verifier fail the method.
+       # which creates a conflict. We could potentially copy the conflict and then return, but
+       # allowing conflics to be copied might result in a compiler crash (see b/441467737).
        move-object v0, v4
 
        return-void

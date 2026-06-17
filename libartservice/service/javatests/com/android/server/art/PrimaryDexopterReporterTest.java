@@ -17,6 +17,7 @@
 package com.android.server.art;
 
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.verify;
+import static com.android.server.art.testing.TestingUtils.SYNC_EXECUTOR;
 
 import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -39,6 +40,7 @@ import org.junit.Test;
 import org.mockito.ArgumentMatchers;
 
 import java.nio.file.NoSuchFileException;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
 public final class PrimaryDexopterReporterTest extends PrimaryDexopterTestBase {
@@ -82,8 +84,6 @@ public final class PrimaryDexopterReporterTest extends PrimaryDexopterTestBase {
     public void setUp() throws Exception {
         super.setUp();
 
-        lenient().when(mInjector.getReporterExecutor()).thenReturn(Runnable::run);
-
         // By default, none of the profiles are usable.
         lenient().when(mArtd.isProfileUsable(any(), anyString())).thenReturn(false);
         lenient()
@@ -101,8 +101,11 @@ public final class PrimaryDexopterReporterTest extends PrimaryDexopterTestBase {
         // Dexopt is by default needed and successful.
         lenient()
                 .when(mArtd.getDexoptNeeded(
-                        anyString(), anyString(), anyString(), anyString(), anyInt()))
+                        anyString(), anyString(), anyString(), anyString(), any(), any()))
                 .thenReturn(dexoptIsNeeded());
+
+        // Make asynchronous reporting synchronous.
+        lenient().when(mInjector.getAsyncExecutor()).thenReturn(SYNC_EXECUTOR);
 
         mockPrimaryDexopter(DEXOPT_PARAMS_SPEED_PROFILE);
     }

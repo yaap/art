@@ -16,6 +16,8 @@
 
 public class Main {
   public static void main(String[] args) {
+    $noinline$test450804082();
+
     test_Integer_compareUnsigned_no_fold();
     test_Long_compareUnsigned_no_fold();
     test_Integer_compareUnsigned();
@@ -36,6 +38,27 @@ public class Main {
 
     test_Integer_doubleUnsignedCompare();
     test_Integer_doubleUnsignedCompare_Xored();
+  }
+
+  // Consistency check that we don't crash if the compare has the same input twice
+  public static void $noinline$test450804082() {
+    assertEquals($noinline$CompareSameValue_Add(0), 0);
+    assertEquals($noinline$CompareSameValue_Add(Integer.MIN_VALUE), 0);
+    assertEquals($noinline$CompareSameValue_Add(Integer.MAX_VALUE), 0);
+
+    assertEquals($noinline$CompareSameValue_Xor(0), 0);
+    assertEquals($noinline$CompareSameValue_Xor(Integer.MIN_VALUE), 0);
+    assertEquals($noinline$CompareSameValue_Xor(Integer.MAX_VALUE), 0);
+  }
+
+  public static int $noinline$CompareSameValue_Add(int x) {
+    int val = x + Integer.MIN_VALUE;
+    return Integer.compare(val, val);
+  }
+
+  public static int $noinline$CompareSameValue_Xor(int x) {
+    int val = x ^ Integer.MIN_VALUE;
+    return Integer.compare(val, val);
   }
 
   public static int $noinline$cmpUnsignedInt(int a, int b) {

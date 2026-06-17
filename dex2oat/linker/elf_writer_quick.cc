@@ -45,26 +45,17 @@ class DebugInfoTask : public Task {
                 const InstructionSetFeatures* features,
                 uint64_t text_section_address,
                 size_t text_section_size,
-                uint64_t dex_section_address,
-                size_t dex_section_size,
                 const debug::DebugInfo& debug_info)
       : owner_(owner),
         isa_(isa),
         instruction_set_features_(features),
         text_section_address_(text_section_address),
         text_section_size_(text_section_size),
-        dex_section_address_(dex_section_address),
-        dex_section_size_(dex_section_size),
         debug_info_(debug_info) {}
 
   void Run(Thread*) override {
-    result_ = debug::MakeMiniDebugInfo(isa_,
-                                       instruction_set_features_,
-                                       text_section_address_,
-                                       text_section_size_,
-                                       dex_section_address_,
-                                       dex_section_size_,
-                                       debug_info_);
+    result_ = debug::MakeMiniDebugInfo(
+        isa_, instruction_set_features_, text_section_address_, text_section_size_, debug_info_);
   }
 
   std::vector<uint8_t>* WaitAndGetMiniDebugInfo() {
@@ -78,8 +69,6 @@ class DebugInfoTask : public Task {
   const InstructionSetFeatures* instruction_set_features_;
   uint64_t text_section_address_;
   size_t text_section_size_;
-  uint64_t dex_section_address_;
-  size_t dex_section_size_;
   const debug::DebugInfo& debug_info_;
   std::vector<uint8_t> result_;
 };
@@ -99,7 +88,7 @@ class ElfWriterQuick final : public ElfWriter {
                              size_t bss_size,
                              size_t bss_methods_offset,
                              size_t bss_roots_offset,
-                             size_t dex_section_size) override;
+                             size_t bss_strings_offset) override;
   std::unique_ptr<ThreadPool> PrepareDebugInfo(const debug::DebugInfo& debug_info) override;
   OutputStream* StartRoData() override;
   void EndRoData(OutputStream* rodata) override;
@@ -126,7 +115,6 @@ class ElfWriterQuick final : public ElfWriter {
   size_t text_size_;
   size_t data_img_rel_ro_size_;
   size_t bss_size_;
-  size_t dex_section_size_;
   std::unique_ptr<BufferedOutputStream> output_stream_;
   std::unique_ptr<ElfBuilder<ElfTypes>> builder_;
   std::unique_ptr<DebugInfoTask> debug_info_task_;
@@ -154,11 +142,10 @@ ElfWriterQuick<ElfTypes>::ElfWriterQuick(const CompilerOptions& compiler_options
       text_size_(0u),
       data_img_rel_ro_size_(0u),
       bss_size_(0u),
-      dex_section_size_(0u),
       output_stream_(
           std::make_unique<BufferedOutputStream>(std::make_unique<FileOutputStream>(elf_file))),
-      builder_(new ElfBuilder<ElfTypes>(compiler_options_.GetInstructionSet(),
-                                        output_stream_.get())) {}
+      builder_(
+          new ElfBuilder<ElfTypes>(compiler_options_.GetInstructionSet(), output_stream_.get())) {}
 
 template <typename ElfTypes>
 ElfWriterQuick<ElfTypes>::~ElfWriterQuick() {}
@@ -181,7 +168,7 @@ void ElfWriterQuick<ElfTypes>::PrepareDynamicSection(size_t rodata_size,
                                                      size_t bss_size,
                                                      size_t bss_methods_offset,
                                                      size_t bss_roots_offset,
-                                                     size_t dex_section_size) {
+                                                     size_t bss_strings_offset) {
   DCHECK_EQ(rodata_size_, 0u);
   rodata_size_ = rodata_size;
   DCHECK_EQ(text_size_, 0u);
@@ -190,8 +177,6 @@ void ElfWriterQuick<ElfTypes>::PrepareDynamicSection(size_t rodata_size,
   data_img_rel_ro_size_ = data_img_rel_ro_size;
   DCHECK_EQ(bss_size_, 0u);
   bss_size_ = bss_size;
-  DCHECK_EQ(dex_section_size_, 0u);
-  dex_section_size_ = dex_section_size;
   builder_->PrepareDynamicSection(elf_file_->GetPath(),
                                   rodata_size_,
                                   text_size_,
@@ -200,7 +185,7 @@ void ElfWriterQuick<ElfTypes>::PrepareDynamicSection(size_t rodata_size,
                                   bss_size_,
                                   bss_methods_offset,
                                   bss_roots_offset,
-                                  dex_section_size);
+                                  bss_strings_offset);
 }
 
 template <typename ElfTypes>
@@ -255,15 +240,13 @@ std::unique_ptr<ThreadPool> ElfWriterQuick<ElfTypes>::PrepareDebugInfo(
     thread_pool.reset(ThreadPool::Create("Mini-debug-info writer", 1));
     // Prepare the mini-debug-info in background while we do other I/O.
     Thread* self = Thread::Current();
-    debug_info_task_ = std::make_unique<DebugInfoTask>(
-        thread_pool.get(),
-        builder_->GetIsa(),
-        compiler_options_.GetInstructionSetFeatures(),
-        builder_->GetText()->GetAddress(),
-        text_size_,
-        builder_->GetDex()->Exists() ? builder_->GetDex()->GetAddress() : 0,
-        dex_section_size_,
-        debug_info);
+    debug_info_task_ =
+        std::make_unique<DebugInfoTask>(thread_pool.get(),
+                                        builder_->GetIsa(),
+                                        compiler_options_.GetInstructionSetFeatures(),
+                                        builder_->GetText()->GetAddress(),
+                                        text_size_,
+                                        debug_info);
     thread_pool->AddTask(self, debug_info_task_.get());
     thread_pool->StartWorkers(self);
   }

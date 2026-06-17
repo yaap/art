@@ -71,13 +71,11 @@ namespace art HIDDEN {
 
 // Return whether a location is consistent with a type.
 static bool CheckType(DataType::Type type, Location location) {
-  if (location.IsFpuRegister()
-      || (location.IsUnallocated() && (location.GetPolicy() == Location::kRequiresFpuRegister))) {
+  if (location.IsFpuRegister() || (location.Equals(Location::RequiresFpuRegister()))) {
     return (type == DataType::Type::kFloat32) || (type == DataType::Type::kFloat64);
-  } else if (location.IsRegister() ||
-             (location.IsUnallocated() && (location.GetPolicy() == Location::kRequiresRegister))) {
+  } else if (location.IsCoreRegister() || (location.Equals(Location::RequiresCoreRegister()))) {
     return DataType::IsIntegralType(type) || (type == DataType::Type::kReference);
-  } else if (location.IsRegisterPair()) {
+  } else if (location.IsCoreRegisterPair()) {
     return type == DataType::Type::kInt64;
   } else if (location.IsFpuRegisterPair()) {
     return type == DataType::Type::kFloat64;
@@ -321,6 +319,12 @@ void CodeGenerator::InitializeCodeGenerationData() {
   code_generation_data_ = CodeGenerationData::Create(graph_->GetArenaStack(), GetInstructionSet());
 }
 
+void CodeGenerator::DumpVectorRegister([[maybe_unused]] std::ostream& stream,
+                                       [[maybe_unused]] int reg) const {
+  LOG(FATAL) << "No vector registers on " << GetInstructionSet();
+  UNREACHABLE();
+}
+
 void CodeGenerator::Compile() {
   InitializeCodeGenerationData();
 
@@ -467,7 +471,7 @@ void CodeGenerator::CreateCommonInvokeLocationSummary(
     } else {
       locations->AddTemp(visitor->GetMethodLocation());
       if (method_load_kind == MethodLoadKind::kRuntimeCall) {
-        locations->SetInAt(call->GetCurrentMethodIndex(), Location::RequiresRegister());
+        locations->SetInAt(call->GetCurrentMethodIndex(), Location::RequiresCoreRegister());
       }
     }
   } else if (!invoke->IsInvokePolymorphic()) {
@@ -941,6 +945,7 @@ std::unique_ptr<CodeGenerator> CodeGenerator::Create(HGraph* graph,
 CodeGenerator::CodeGenerator(HGraph* graph,
                              size_t number_of_core_registers,
                              size_t number_of_fpu_registers,
+                             size_t number_of_vector_registers,
                              RegisterSet callee_saves,
                              const CompilerOptions& compiler_options,
                              OptimizingCompilerStats* stats,
@@ -954,6 +959,7 @@ CodeGenerator::CodeGenerator(HGraph* graph,
       data_types_requiring_register_pair_(0u),
       number_of_core_registers_(number_of_core_registers),
       number_of_fpu_registers_(number_of_fpu_registers),
+      number_of_vector_registers_(number_of_vector_registers),
       block_order_(nullptr),
       disasm_info_(nullptr),
       stats_(stats),
@@ -969,6 +975,7 @@ CodeGenerator::CodeGenerator(HGraph* graph,
       unimplemented_intrinsics_(unimplemented_intrinsics) {
   DCHECK_LE(number_of_core_registers_, BitSizeOf<uint32_t>());
   DCHECK_LE(number_of_fpu_registers_, BitSizeOf<uint32_t>());
+  DCHECK_LE(number_of_vector_registers, BitSizeOf<uint32_t>());
 
   if (GetGraph()->IsCompilingOsr()) {
     // Make OSR methods have all registers spilled, this simplifies the logic of
@@ -1054,27 +1061,10 @@ ScopedArenaVector<uint8_t> CodeGenerator::BuildStackMaps(const dex::CodeItem* co
 }
 
 // Returns whether stackmap dex register info is needed for the instruction.
-//
-// The following cases mandate having a dex register map:
-//  * Deoptimization
-//    when we need to obtain the values to restore actual vregisters for interpreter.
-//  * Debuggability
-//    when we want to observe the values / asynchronously deoptimize.
-//  * Monitor operations
-//    to allow dumping in a stack trace locked dex registers for non-debuggable code.
-//  * On-stack-replacement (OSR)
-//    when entering compiled for OSR code from the interpreter we need to initialize the compiled
-//    code values with the values from the vregisters.
-//  * Method local catch blocks
-//    a catch block must see the environment of the instruction from the same method that can
-//    throw to this block.
 static bool NeedsVregInfo(HInstruction* instruction, bool osr) {
   HGraph* graph = instruction->GetBlock()->GetGraph();
-  return instruction->IsDeoptimize() ||
-         graph->IsDebuggable() ||
-         graph->HasMonitorOperations() ||
-         osr ||
-         instruction->CanThrowIntoCatchBlock();
+  return GraphNeedsPreciseEnvironment(graph) ||
+         InstructionNeedsPreciseEnvironment(instruction, osr);
 }
 
 void CodeGenerator::RecordPcInfoForFrameOrBlockEntry(uint32_t dex_pc) {
@@ -1324,7 +1314,7 @@ void CodeGenerator::EmitVRegInfo(HEnvironment* environment,
         break;
       }
 
-      case Location::kRegister : {
+      case Location::kCoreRegister : {
         DCHECK(!is_for_catch_handler);
         int id = location.reg();
         if (slow_path != nullptr && slow_path->IsCoreRegisterSaved(id)) {
@@ -1390,7 +1380,7 @@ void CodeGenerator::EmitVRegInfo(HEnvironment* environment,
         break;
       }
 
-      case Location::kRegisterPair : {
+      case Location::kCoreRegisterPair : {
         DCHECK(!is_for_catch_handler);
         int low = location.low();
         int high = location.high();
@@ -1770,8 +1760,10 @@ LocationSummary* CodeGenerator::CreateSystemArrayCopyLocationSummary(
     }
   }
 
-  if (optimizations.GetDestinationIsPrimitiveArray() || optimizations.GetSourceIsPrimitiveArray()) {
-    // We currently don't intrinsify primitive copying.
+  if (invoke->GetIntrinsic() == Intrinsics::kSystemArrayCopy &&
+      (optimizations.GetDestinationIsPrimitiveArray() ||
+          optimizations.GetSourceIsPrimitiveArray())) {
+    // The generic version: we currently don't intrinsify primitive copying.
     return nullptr;
   }
 
@@ -1779,9 +1771,9 @@ LocationSummary* CodeGenerator::CreateSystemArrayCopyLocationSummary(
   LocationSummary* locations =
       LocationSummary::Create(allocator, invoke, LocationSummary::kCallOnSlowPath, kIntrinsified);
   // arraycopy(Object src, int src_pos, Object dest, int dest_pos, int length).
-  locations->SetInAt(0, Location::RequiresRegister());
+  locations->SetInAt(0, Location::RequiresCoreRegister());
   locations->SetInAt(1, Location::RegisterOrConstant(invoke->InputAt(1)));
-  locations->SetInAt(2, Location::RequiresRegister());
+  locations->SetInAt(2, Location::RequiresCoreRegister());
   locations->SetInAt(3, Location::RegisterOrConstant(invoke->InputAt(3)));
   locations->SetInAt(4, Location::RegisterOrConstant(invoke->InputAt(4)));
 
@@ -1834,6 +1826,34 @@ ScaleFactor CodeGenerator::ScaleFactorForType(DataType::Type type) {
       return TIMES_8;
     case DataType::Type::kVoid:
       LOG(FATAL) << "Unreachable type " << type;
+      UNREACHABLE();
+  }
+}
+
+void CodeGenerator::CopyConstantTableData(HLoadConstantTableEntry* load, /*out*/ uint8_t* buffer) {
+  ArrayRef<const int64_t> entries = load->GetEntries();
+  size_t entry_size = DataType::Size(load->GetType());
+  auto emit_data = [&]<typename T>([[maybe_unused]] T t) {
+    T* typed_buffer = reinterpret_cast<T*>(buffer);
+    for (size_t i : Range(entries.size())) {
+      typed_buffer[i] = static_cast<T>(entries[i]);
+    }
+  };  // NOLINT b/487466605
+  switch (entry_size) {
+    case 1:
+      emit_data(static_cast<uint8_t>(0));
+      break;
+    case 2:
+      emit_data(static_cast<uint16_t>(0));
+      break;
+    case 4:
+      emit_data(static_cast<uint32_t>(0));
+      break;
+    case 8:
+      emit_data(static_cast<uint64_t>(0));
+      break;
+    default:
+      LOG(FATAL) << "Unexpected entry size: " << entry_size;
       UNREACHABLE();
   }
 }

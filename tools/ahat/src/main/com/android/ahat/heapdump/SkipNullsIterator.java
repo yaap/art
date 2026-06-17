@@ -20,14 +20,30 @@ import java.util.Iterator;
 import java.util.NoSuchElementException;
 
 /**
+ * An iterable that skips over nulls.
+ */
+class SkipNullsIterable<T> implements Iterable<T> {
+  private final Iterable<T> mIterable;
+
+  public SkipNullsIterable(Iterable<T> iterable) {
+    mIterable = iterable;
+  }
+
+  @Override
+  public Iterator<T> iterator() {
+    return new SkipNullsIterator<>(mIterable.iterator());
+  }
+}
+
+/**
  * An iterator that skips over nulls.
  */
-class SkipNullsIterator<T> implements Iterator<T>, Iterable<T> {
-  Iterator<T> mIter;
+class SkipNullsIterator<T> implements Iterator<T> {
+  private final Iterator<T> mIter;
   private T mNext;
 
-  public SkipNullsIterator(Iterable<T> iterable) {
-    mIter = iterable.iterator();
+  SkipNullsIterator(Iterator<T> iter) {
+    mIter = iter;
     mNext = null;
   }
 
@@ -47,10 +63,5 @@ class SkipNullsIterator<T> implements Iterator<T>, Iterable<T> {
     T next = mNext;
     mNext = null;
     return next;
-  }
-
-  @Override
-  public Iterator<T> iterator() {
-    return this;
   }
 }

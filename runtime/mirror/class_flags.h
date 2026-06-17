@@ -74,6 +74,9 @@ static constexpr uint32_t kClassFlagHasStaticRefs = 0x00002000;
 // Class has embedded vtable, which maybe 0 length. Needed for CMC GC compaction phase.
 static constexpr uint32_t kClassFlagHasEmbeddedVTable = 0x00004000;
 
+// Class is a value class.
+static constexpr uint32_t kClassFlagValue             = 0x00008000;
+
 // NOTE: The most significant 2 bits are used to store the component size shift
 // for arrays (both primitive and object). See Primitive::ComponentSizeShift()
 // for size shift of different types.
@@ -89,6 +92,9 @@ static constexpr uint32_t kClassFlagReference =
 
 static constexpr uint32_t kClassFlagStaticRefInfo =
     kClassFlagHasStaticRefs | kClassFlagHasEmbeddedVTable;
+
+static constexpr uint32_t kClassFlagPerfettoIgnoredFlags =
+    kClassFlagStaticRefInfo | kClassFlagRecord | kClassFlagValue;
 
 static constexpr uint32_t kClassFlagArray = kClassFlagObjectArray | kClassFlagPrimitiveArray;
 

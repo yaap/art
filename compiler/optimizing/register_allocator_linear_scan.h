@@ -57,7 +57,11 @@ class RegisterAllocatorLinearScan : public RegisterAllocator {
   static void AddSorted(ScopedArenaVector<LiveInterval*>* array, LiveInterval* interval);
 
   // Update the interval for the register in `location` to cover [start, end).
-  void BlockRegister(Location location, size_t position, bool will_call);
+  void BlockRegister(PhysicalRegisterType register_type, int reg, size_t position, bool will_call);
+  void BlockRegisters(Location location, size_t position, bool will_call);
+
+  ScopedArenaVector<LiveInterval*>* GetPhysicalRegisterIntervals(
+      PhysicalRegisterType register_type);
 
   // Allocate a spill slot for the given catch phi. Will allocate the same slot
   // for phis which share the same vreg. Must be called in reverse linear order
@@ -67,7 +71,8 @@ class RegisterAllocatorLinearScan : public RegisterAllocator {
   // Helper methods.
   void AllocateRegistersInternal();
   void ProcessInstruction(HInstruction* instruction);
-  bool ValidateInternal(RegisterType current_register_type, bool log_fatal_on_failure) const;
+  bool ValidateInternal(PhysicalRegisterType current_register_type,
+                        bool log_fatal_on_failure) const;
 
   // If any inputs require specific registers, block those registers
   // at the position of this instruction.
@@ -93,10 +98,14 @@ class RegisterAllocatorLinearScan : public RegisterAllocator {
   // List of intervals for floating-point registers. Same comments as above.
   ScopedArenaVector<LiveInterval*> unhandled_fp_intervals_;
 
+  // List of intervals for vector registers. Same comments as above.
+  ScopedArenaVector<LiveInterval*> unhandled_vector_intervals_;
+
   // Fixed intervals for physical registers. Such intervals cover the positions
   // where an instruction requires a specific register.
   ScopedArenaVector<LiveInterval*> physical_core_register_intervals_;
   ScopedArenaVector<LiveInterval*> physical_fp_register_intervals_;
+  ScopedArenaVector<LiveInterval*> physical_vector_register_intervals_;
   LiveInterval* block_registers_for_call_interval_;
   LiveInterval* block_registers_special_interval_;  // For catch block or irreducible loop header.
 
@@ -113,6 +122,7 @@ class RegisterAllocatorLinearScan : public RegisterAllocator {
   ScopedArenaVector<SpillSlotData> long_spill_slots_;
   ScopedArenaVector<SpillSlotData> float_spill_slots_;
   ScopedArenaVector<SpillSlotData> double_spill_slots_;
+  ScopedArenaVector<SpillSlotData> vector_spill_slots_;
 
   // Spill slots allocated to catch phis. This category is special-cased because
   // (1) slots are allocated prior to linear scan and in reverse linear order,

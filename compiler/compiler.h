@@ -71,7 +71,8 @@ class Compiler {
                           [[maybe_unused]] jit::JitMemoryRegion* region,
                           [[maybe_unused]] ArtMethod* method,
                           [[maybe_unused]] CompilationKind compilation_kind,
-                          [[maybe_unused]] jit::JitLogger* jit_logger)
+                          [[maybe_unused]] jit::JitLogger* jit_logger,
+                          [[maybe_unused]] bool dynamic_instrumentation)
       REQUIRES_SHARED(Locks::mutator_lock_) {
     return false;
   }

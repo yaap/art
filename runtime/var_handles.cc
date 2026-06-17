@@ -178,9 +178,10 @@ bool VarHandleInvokeAccessor(Thread* self,
   //
   // Do a quick test for "visibly initialized" without a read barrier and, if that fails,
   // do a thorough test for "initialized" (including load acquire) with the read barrier.
-  ArtField* field = WellKnownClasses::java_util_concurrent_ThreadLocalRandom_seeder;
-  if (LIKELY(field->GetDeclaringClass<kWithoutReadBarrier>()->IsVisiblyInitialized()) ||
-      field->GetDeclaringClass()->IsInitialized()) {
+  if (LIKELY(WellKnownClasses::java_util_concurrent_ThreadLocalRandom
+                 .Get<kWithoutReadBarrier>()
+                 ->IsVisiblyInitialized()) ||
+      WellKnownClasses::java_util_concurrent_ThreadLocalRandom->IsInitialized()) {
     Handle<mirror::MethodType> callsite_type(hs.NewHandle(
         class_linker->ResolveMethodType(self, callsite_type_id, dex_cache, class_loader)));
 

@@ -28,8 +28,8 @@
 #include "base/pointer_size.h"
 #include "base/systrace.h"
 #include "dex/dex_file_types.h"
-#include "dex/dex_instruction.h"
 #include "dex/dex_instruction-inl.h"
+#include "dex/dex_instruction.h"
 #include "entrypoints/entrypoint_utils.h"
 #include "entrypoints/quick/quick_entrypoints_enum.h"
 #include "entrypoints/runtime_asm_entrypoints.h"
@@ -45,6 +45,7 @@
 #include "oat/oat_quick_method_header.h"
 #include "oat/stack_map.h"
 #include "stack.h"
+#include "trace.h"
 
 namespace art HIDDEN {
 
@@ -84,6 +85,7 @@ class CatchBlockStackVisitor final : public StackVisitor {
   bool VisitFrame() override REQUIRES_SHARED(Locks::mutator_lock_) {
     ArtMethod* method = GetMethod();
     exception_handler_->SetHandlerFrameDepth(GetFrameDepth());
+    DCHECK(!IsShadowFrame());
     if (method == nullptr) {
       DCHECK_EQ(skip_frames_, 0u)
           << "We tried to skip an upcall! We should have returned to the upcall to finish delivery";
@@ -102,23 +104,32 @@ class CatchBlockStackVisitor final : public StackVisitor {
       return true;
     }
     bool continue_stack_walk = HandleTryItems(method);
+    const OatQuickMethodHeader* header = GetCurrentOatQuickMethodHeader();
     // Collect methods for which MethodUnwind callback needs to be invoked. MethodUnwind callback
     // can potentially throw, so we want to call these after we find the catch block.
     // We stop the stack walk when we find the catch block. If we are ending the stack walk we don't
     // have to unwind this method so don't record it.
     if (continue_stack_walk && !skip_unwind_callback_) {
-      // Skip unwind callback is only used when method exit callback has thrown an exception. In
-      // that case, we should have runtime method (artMethodExitHook) on top of stack and the
-      // second should be the method for which method exit was called.
-      DCHECK_IMPLIES(skip_unwind_callback_, GetFrameDepth() == 2);
-      unwound_methods_.push(method);
+      if (Runtime::Current()->GetInstrumentation()->MethodSupportsExitEvents(GetMethod(), header)) {
+        unwound_methods_for_callbacks_.push(method);
+      }
     }
+
+    if (continue_stack_walk && header != nullptr && header->IsOptimized() && !IsInInlinedFrame()) {
+      // Record trace events only for non-inlined methods. Inlined methods don't see a method entry
+      // event, so we shouldn't report method exit events.
+      TraceLowOverhead::RecordTraceEventIfNeeded(GetThread(), method, /*is_entry=*/false);
+    }
+
+    // Skip unwind callback is used when method exit callback has thrown an exception. Since we
+    // already invoked method exit callback for the top frame we shouldn't call the unwind
+    // callbacks. For others we should call the unwind callbacks.
     skip_unwind_callback_ = false;
     return continue_stack_walk;
   }
 
   std::queue<ArtMethod*>& GetUnwoundMethods() {
-    return unwound_methods_;
+    return unwound_methods_for_callbacks_;
   }
 
  private:
@@ -166,7 +177,7 @@ class CatchBlockStackVisitor final : public StackVisitor {
   uint32_t skip_frames_;
   // The list of methods we would skip to reach the catch block. We record these to call
   // MethodUnwind callbacks.
-  std::queue<ArtMethod*> unwound_methods_;
+  std::queue<ArtMethod*> unwound_methods_for_callbacks_;
   // Specifies if the unwind callback should be ignored for method at the top of the stack.
   bool skip_unwind_callback_;
 
@@ -476,6 +487,9 @@ class DeoptimizeStackVisitor final : public StackVisitor {
             GetThread(), method, dex::kDexNoIndex);
       }
       callee_method_ = method;
+      // We need to skip method exit callbacks only for the top frame. We have
+      // seen the top frame so set the value to false.
+      skip_method_exit_callbacks_ = false;
       return true;
     } else if (!single_frame_deopt_ &&
                !Runtime::Current()->IsAsyncDeoptimizeable(GetOuterMethod(),
@@ -500,24 +514,38 @@ class DeoptimizeStackVisitor final : public StackVisitor {
         updated_vregs = GetThread()->GetUpdatedVRegFlags(frame_id);
         DCHECK(updated_vregs != nullptr);
       }
-      if (GetCurrentOatQuickMethodHeader()->IsNterpMethodHeader()) {
+      const OatQuickMethodHeader* header = GetCurrentOatQuickMethodHeader();
+      if (header->IsNterpMethodHeader()) {
         HandleNterpDeoptimization(method, new_frame, updated_vregs);
       } else {
         HandleOptimizingDeoptimization(method, new_frame, updated_vregs);
       }
-      new_frame->SetSkipMethodExitEvents(!supports_exit_events);
+      if (header->IsOptimized() && IsInInlinedFrame()) {
+        // For inlined frames, low overhead tracing doesn't report entry events. So don't report
+        // exit events too.
+        new_frame->SetSkipLowOverheadTraceEvent(true);
+      }
+      if (!new_frame->GetSkipMethodExitEvents()) {
+        // Don't reset if we already set the skip method exit events. When
+        // popping a frame, jvmti sets this bit to avoid any exit events from
+        // being sent. We shouldn't overwrite that here.
+        new_frame->SetSkipMethodExitEvents(!supports_exit_events);
+      }
       // If we are deoptimizing after method exit callback we shouldn't call the method exit
       // callbacks again for the top frame. We may have to deopt after the callback if the callback
       // either throws or performs other actions that require a deopt.
       // We only need to skip for the top frame and the rest of the frames should still run the
       // callbacks. So only do this check for the top frame.
-      if (GetFrameDepth() == 0U && skip_method_exit_callbacks_) {
+      if (skip_method_exit_callbacks_) {
         new_frame->SetSkipMethodExitEvents(true);
         // This exception was raised by method exit callbacks and we shouldn't report it to
         // listeners for these exceptions.
         if (GetThread()->IsExceptionPending()) {
           new_frame->SetSkipNextExceptionEvent(true);
         }
+        // We need to skip method exit callbacks only for the top frame. We have
+        // seen the top frame so set the value to false.
+        skip_method_exit_callbacks_ = false;
       }
       if (updated_vregs != nullptr) {
         // Calling Thread::RemoveDebuggerShadowFrameMapping will also delete the updated_vregs

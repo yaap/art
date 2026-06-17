@@ -19,6 +19,7 @@ package com.android.server.art;
 import static com.android.server.art.testing.TestDataHelper.newPackageState;
 import static com.android.server.art.testing.TestDataHelper.newSplit;
 import static com.android.server.art.testing.TestDataHelper.newUserState;
+import static com.android.server.art.testing.TestingUtils.NOOP_EXECUTOR;
 
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
@@ -53,6 +54,7 @@ import org.mockito.Mock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
 
 public class PrimaryDexopterTestBase {
@@ -74,7 +76,6 @@ public class PrimaryDexopterTestBase {
     @Mock protected DexUseManagerLocal mDexUseManager;
     @Mock protected StorageManager mStorageManager;
     @Mock protected DexMetadataHelper.Injector mDexMetadataHelperInjector;
-    @Mock protected ThreadPoolExecutor mReporterExecutor;
     protected PackageState mPkgState;
     protected AndroidPackage mPkg;
     protected PackageUserState mPkgUserStateNotInstalled;
@@ -101,7 +102,6 @@ public class PrimaryDexopterTestBase {
         lenient().when(mInjector.getStorageManager()).thenReturn(mStorageManager);
         lenient().when(mInjector.getArtVersion()).thenReturn(ART_VERSION);
         lenient().when(mInjector.getConfig()).thenReturn(mConfig);
-        lenient().when(mInjector.getReporterExecutor()).thenReturn(mReporterExecutor);
         lenient().when(mInjector.getDexMetadataHelper()).thenReturn(mDexMetadataHelper);
         lenient().when(mInjector.isPreReboot()).thenReturn(false);
 
@@ -130,6 +130,10 @@ public class PrimaryDexopterTestBase {
         lenient().when(mDexUseManager.isPrimaryDexUsedByOtherApps(any(), any())).thenReturn(false);
 
         lenient().when(mStorageManager.getAllocatableBytes(any())).thenReturn(1l);
+
+        // Swallow the async tasks. They are for metric reporting and are not needed except in
+        // PrimaryDexopterReporterTest, where we override this.
+        lenient().when(mInjector.getAsyncExecutor()).thenReturn(NOOP_EXECUTOR);
 
         // Set up the primary dex loaders to make sure that the secondary ISA is
         // used and dexopted when calling {@link Utils#getUsedPrimaryDexAbis()}.

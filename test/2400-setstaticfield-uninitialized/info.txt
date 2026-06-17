@@ -1,0 +1,2 @@
+JNI's SetStatic<Type>Field APIs should allow modification of uninitialized
+static final fields in debuggable runtime.

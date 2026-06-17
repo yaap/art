@@ -26,13 +26,14 @@ import android.os.RemoteException;
 
 import androidx.annotation.RequiresApi;
 
-import com.android.server.art.ArtdRefCache;
-import com.android.server.art.AsLog;
 import com.android.server.art.DexUseManagerLocal;
 import com.android.server.art.GlobalInjector;
 import com.android.server.art.IArtd;
 import com.android.server.art.IArtdCancellationSignal;
 import com.android.server.art.IDexoptChrootSetup;
+import com.android.server.art.utils.ArtdRefCache;
+import com.android.server.art.utils.AsLog;
+import com.android.server.art.utils.Utils;
 
 import java.util.Objects;
 
@@ -48,6 +49,7 @@ import java.util.Objects;
 public class PreRebootGlobalInjector extends GlobalInjector {
     @NonNull private ArtModuleServiceManager mArtModuleServiceManager;
     @Nullable private DexUseManagerLocal mDexUseManager;
+    private boolean mArtdInitialized = false;
 
     private PreRebootGlobalInjector(@NonNull ArtModuleServiceManager artModuleServiceManager) {
         mArtModuleServiceManager = artModuleServiceManager;
@@ -66,6 +68,10 @@ public class PreRebootGlobalInjector extends GlobalInjector {
             instance.mDexUseManager = DexUseManagerLocal.createInstance(context);
         }
         return true;
+    }
+
+    public static PreRebootGlobalInjector getInstance() {
+        return (PreRebootGlobalInjector) GlobalInjector.getInstance();
     }
 
     @Override
@@ -100,7 +106,13 @@ public class PreRebootGlobalInjector extends GlobalInjector {
                     AsLog.e("An error occurred when sending a cancellation signal", e);
                 }
             });
-            return artd.preRebootInit(artdCancellationSignal);
+            boolean initialized = artd.preRebootInit(artdCancellationSignal);
+            if (initialized) {
+                mArtdInitialized = true;
+            } else {
+                artd.stop();
+            }
+            return initialized;
         } catch (RemoteException e) {
             throw new IllegalStateException("Unable to initialize artd for pre-reboot dexopt", e);
         } finally {
@@ -109,14 +121,28 @@ public class PreRebootGlobalInjector extends GlobalInjector {
         }
     }
 
+    public void stopArtd() {
+        if (!mArtdInitialized) {
+            return;
+        }
+        try {
+            getArtdNoInit().stop();
+        } catch (RemoteException e) {
+            Utils.logArtdException(e);
+        }
+    }
+
     @Override
     @NonNull
     public IArtd getArtd() {
+        if (!mArtdInitialized) {
+            throw new IllegalStateException("artd for pre-reboot dexopt must be initialized first");
+        }
         IArtd artd = getArtdNoInit();
         try {
             artd.preRebootInit(null /* cancellationSignal */);
         } catch (RemoteException e) {
-            throw new IllegalStateException("Unable to initialize artd for pre-reboot dexopt", e);
+            throw new IllegalStateException("Unable to resume artd for pre-reboot dexopt", e);
         }
         return artd;
     }

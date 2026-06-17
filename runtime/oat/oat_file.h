@@ -33,7 +33,6 @@
 #include "base/tracking_safe_map.h"
 #include "class_status.h"
 #include "dex/dex_file.h"
-#include "dex/dex_file_layout.h"
 #include "dex/type_lookup_table.h"
 #include "dex/utf.h"
 #include "index_bss_mapping.h"
@@ -44,8 +43,8 @@ namespace art HIDDEN {
 class BitVector;
 class ClassLinker;
 class ClassLoaderContext;
+class DexProfileMetadata;
 class ElfFile;
-class DexLayoutSections;
 template <class MirrorType> class GcRoot;
 class MemMap;
 class OatDexFile;
@@ -196,12 +195,6 @@ class OatFile {
                               bool executable,
                               /*out*/ std::string* error_msg);
 
-  // Set the start of the app image.
-  // Needed for initializing app image relocations in the .data.img.rel.ro section.
-  void SetAppImageBegin(uint8_t* app_image_begin) const {
-    app_image_begin_ = app_image_begin;
-  }
-
   // Return whether the `OatFile` uses a vdex-only file.
   bool IsBackedByVdexOnly() const;
 
@@ -334,6 +327,10 @@ class OatFile {
                                   /*out*/ std::string* error_msg = nullptr) const
       REQUIRES(!secondary_lookup_lock_);
 
+  EXPORT std::unique_ptr<const DexFile> OpenOatDexFile(const char* location,
+                                                       std::string* error_msg) const
+      REQUIRES(!secondary_lookup_lock_);
+
   const std::vector<const OatDexFile*>& GetOatDexFiles() const {
     return oat_dex_files_storage_;
   }
@@ -358,10 +355,6 @@ class OatFile {
     return BssEnd() - BssBegin();
   }
 
-  size_t VdexSize() const {
-    return VdexEnd() - VdexBegin();
-  }
-
   size_t BssMethodsOffset() const {
     // Note: This is used only for symbolizer and needs to return a valid .bss offset.
     return (bss_methods_ != nullptr) ? bss_methods_ - BssBegin() : BssRootsOffset();
@@ -370,6 +363,11 @@ class OatFile {
   size_t BssRootsOffset() const {
     // Note: This is used only for symbolizer and needs to return a valid .bss offset.
     return (bss_roots_ != nullptr) ? bss_roots_ - BssBegin() : BssSize();
+  }
+
+  size_t BssStringsOffset() const {
+    // Note: This is used only for symbolizer and needs to return a valid .bss offset.
+    return (bss_strings_ != nullptr) ? bss_strings_ - BssBegin() : BssSize();
   }
 
   size_t DexSize() const {
@@ -390,9 +388,6 @@ class OatFile {
   const uint8_t* BssBegin() const { return bss_begin_; }
   const uint8_t* BssEnd() const { return bss_end_; }
 
-  const uint8_t* VdexBegin() const { return vdex_begin_; }
-  const uint8_t* VdexEnd() const { return vdex_end_; }
-
   EXPORT const uint8_t* DexBegin() const;
   EXPORT const uint8_t* DexEnd() const;
 
@@ -400,9 +395,12 @@ class OatFile {
   EXPORT ArrayRef<const uint32_t> GetAppImageRelocations() const;
   EXPORT ArrayRef<ArtMethod*> GetBssMethods() const;
   EXPORT ArrayRef<GcRoot<mirror::Object>> GetBssGcRoots() const;
+  EXPORT ArrayRef<GcRoot<mirror::Object>> GetBssStrings() const;  // Note: typed as `Object`.
 
   // Initialize relocation sections (.data.img.rel.ro and .bss).
-  void InitializeRelocations() const;
+  void InitializeRelocations(ArtMethod* resolution_method,
+                             const void* boot_image_begin,
+                             const void* app_image_begin = nullptr) const;
 
   // Finds the associated oat class for a dex_file and descriptor. Returns an invalid OatClass on
   // error and sets found to false.
@@ -478,17 +476,11 @@ class OatFile {
   // Pointer to the beginning of the GC roots in the .bss section, if present, otherwise null.
   uint8_t* bss_roots_;
 
+  // Pointer to the beginning of the strings in the .bss section, if present, otherwise null.
+  uint8_t* bss_strings_;
+
   // Was this oat_file loaded executable?
   const bool is_executable_;
-
-  // Pointer to the .vdex section, if present, otherwise null.
-  uint8_t* vdex_begin_;
-
-  // Pointer to the end of the .vdex section, if present, otherwise null.
-  uint8_t* vdex_end_;
-
-  // Pointer to the beginning of the app image, if any.
-  mutable uint8_t* app_image_begin_;
 
   // Owning storage for the OatDexFile objects.
   std::vector<const OatDexFile*> oat_dex_files_storage_;
@@ -587,6 +579,11 @@ class OatDexFile final {
 
   DexFile::Sha1 GetSha1() const { return dex_file_sha1_; }
 
+  uint32_t GetVdexIndex() const {
+    DCHECK(vdex_index_.has_value());
+    return vdex_index_.value_or(0u);
+  }
+
   // Returns the OatClass for the class specified by the given DexFile class_def_index.
   EXPORT OatFile::OatClass GetOatClass(uint16_t class_def_index) const;
 
@@ -640,10 +637,8 @@ class OatDexFile final {
   // Create only with a type lookup table, used by the compiler to speed up compilation.
   EXPORT explicit OatDexFile(TypeLookupTable&& lookup_table);
 
-  // Return the dex layout sections.
-  const DexLayoutSections* GetDexLayoutSections() const {
-    return dex_layout_sections_;
-  }
+  // Optional per-dex startup information.
+  const DexProfileMetadata* GetDexProfileMetadata() const { return dex_profile_metadata_; }
 
  private:
   OatDexFile(const OatFile* oat_file,
@@ -657,7 +652,8 @@ class OatDexFile final {
              const uint8_t* lookup_table_data,
              const OatFile::BssMappingInfo& bss_mapping_info,
              const uint32_t* oat_class_offsets_pointer,
-             const DexLayoutSections* dex_layout_sections);
+             const DexProfileMetadata* dex_profile_metadata,
+             uint32_t vdex_index);
 
   // Create an OatDexFile wrapping an existing DexFile. Will set the OatDexFile
   // pointer in the DexFile.
@@ -669,7 +665,8 @@ class OatDexFile final {
              DexFile::Sha1 dex_file_sha1,
              const std::string& dex_file_location,
              const std::string& canonical_dex_file_location,
-             const uint8_t* lookup_table_data);
+             const uint8_t* lookup_table_data,
+             uint32_t vdex_index);
 
   bool IsBackedByVdexOnly() const;
   void InitializeTypeLookupTable();
@@ -682,13 +679,17 @@ class OatDexFile final {
   const DexFile::Magic dex_file_magic_ = {};
   const uint32_t dex_file_location_checksum_ = 0u;
   const DexFile::Sha1 dex_file_sha1_ = {};
+  // Index of the corresponding entry in vdex file (if we have physical vdex file).
+  // Note that several boot jar files might be represented by a single vdex file,
+  // so this mapping might be non-trivial (not just the multidex location suffix).
+  const std::optional<uint32_t> vdex_index_;
   const std::shared_ptr<DexFileContainer> dex_file_container_;
   const uint8_t* const dex_file_pointer_ = nullptr;
   const uint8_t* const lookup_table_data_ = nullptr;
   const OatFile::BssMappingInfo bss_mapping_info_;
   const uint32_t* const oat_class_offsets_pointer_ = nullptr;
   TypeLookupTable lookup_table_;
-  const DexLayoutSections* const dex_layout_sections_ = nullptr;
+  const DexProfileMetadata* const dex_profile_metadata_ = nullptr;
 
   friend class OatFile;
   friend class OatFileBase;

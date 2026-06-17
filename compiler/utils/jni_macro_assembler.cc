@@ -78,24 +78,28 @@ MacroAsm64UniquePtr JNIMacroAssembler<PointerSize::k64>::Create(
     ArenaAllocator* allocator,
     InstructionSet instruction_set,
     const InstructionSetFeatures* instruction_set_features) {
-  // TODO: Remove the parameter from API (not needed after Mips64 target was removed).
-  UNUSED(instruction_set_features);
-
   switch (instruction_set) {
 #ifdef ART_ENABLE_CODEGEN_arm64
     case InstructionSet::kArm64:
-      return MacroAsm64UniquePtr(new (allocator) arm64::Arm64JNIMacroAssembler(allocator));
+      return MacroAsm64UniquePtr(new (allocator) arm64::Arm64JNIMacroAssembler(
+          allocator,
+          instruction_set_features != nullptr
+              ? instruction_set_features->AsArm64InstructionSetFeatures()
+              : nullptr));
 #endif
 #ifdef ART_ENABLE_CODEGEN_riscv64
     case InstructionSet::kRiscv64:
+      UNUSED(instruction_set_features);
       return MacroAsm64UniquePtr(new (allocator) riscv64::Riscv64JNIMacroAssembler(allocator));
 #endif
 #ifdef ART_ENABLE_CODEGEN_x86_64
     case InstructionSet::kX86_64:
+      UNUSED(instruction_set_features);
       return MacroAsm64UniquePtr(new (allocator) x86_64::X86_64JNIMacroAssembler(allocator));
 #endif
     default:
       UNUSED(allocator);
+      UNUSED(instruction_set_features);
       LOG(FATAL) << "Unknown/unsupported 8B InstructionSet: " << instruction_set;
       UNREACHABLE();
   }

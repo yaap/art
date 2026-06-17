@@ -33,11 +33,11 @@
 #include "base/macros.h"
 #include "base/mem_map.h"
 #include "base/mutex.h"
+#include "base/offsets.h"
 #include "gc_root.h"
 #include "indirect_reference_table.h"
 #include "mirror/object_reference.h"
 #include "obj_ptr.h"
-#include "offsets.h"
 
 namespace art HIDDEN {
 

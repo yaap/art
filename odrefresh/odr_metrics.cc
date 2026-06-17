@@ -51,21 +51,14 @@ OdrMetrics::OdrMetrics(const std::string& cache_directory, const std::string& me
     // This should never fail except for no space on device or configuration issues (e.g. SELinux).
     LOG(WARNING) << "Cache directory '" << cache_directory << "' could not be created.";
   }
-  cache_space_free_start_mib_ = GetFreeSpaceMiB(cache_directory);
 }
 
 OdrMetrics::~OdrMetrics() {
-  CaptureSpaceFreeEnd();
-
   // Log metrics only if this is explicitly enabled (typically when compilation was done or an error
   // occurred).
   if (enabled_) {
     WriteToFile(metrics_file_, this);
   }
-}
-
-void OdrMetrics::CaptureSpaceFreeEnd() {
-  cache_space_free_end_mib_ = GetFreeSpaceMiB(cache_directory_);
 }
 
 void OdrMetrics::SetDex2OatResult(Stage stage,
@@ -109,32 +102,6 @@ void OdrMetrics::SetBcpCompilationType(Stage stage, BcpCompilationType type) {
   }
 }
 
-int32_t OdrMetrics::GetFreeSpaceMiB(const std::string& path) {
-  static constexpr uint32_t kBytesPerMiB = 1024 * 1024;
-  static constexpr uint64_t kNominalMaximumCacheBytes = 1024 * kBytesPerMiB;
-
-  // Assume nominal cache space is 1GiB (much larger than expected, ~100MB).
-  uint64_t used_space_bytes;
-  if (!GetUsedSpace(path, &used_space_bytes)) {
-    used_space_bytes = 0;
-  }
-  uint64_t nominal_free_space_bytes = kNominalMaximumCacheBytes - used_space_bytes;
-
-  // Get free space on partition containing `path`.
-  uint64_t free_space_bytes;
-  if (!GetFreeSpace(path, &free_space_bytes)) {
-    free_space_bytes = kNominalMaximumCacheBytes;
-  }
-
-  // Pick the smallest free space, ie space on partition or nominal space in cache.
-  // There are two things of interest for metrics:
-  //  (i) identifying failed compilations due to low space.
-  // (ii) understanding what the storage requirements are for the spectrum of boot classpaths and
-  //      system_server classpaths.
-  uint64_t free_space_mib = std::min(free_space_bytes, nominal_free_space_bytes) / kBytesPerMiB;
-  return static_cast<int32_t>(free_space_mib);
-}
-
 OdrMetricsRecord OdrMetrics::ToRecord() const {
   return {
       .odrefresh_metrics_version = kOdrefreshMetricsVersion,
@@ -142,8 +109,6 @@ OdrMetricsRecord OdrMetrics::ToRecord() const {
       .trigger = static_cast<int32_t>(trigger_),
       .stage_reached = static_cast<int32_t>(stage_),
       .status = static_cast<int32_t>(status_),
-      .cache_space_free_start_mib = cache_space_free_start_mib_,
-      .cache_space_free_end_mib = cache_space_free_end_mib_,
       .primary_bcp_compilation_millis = primary_bcp_compilation_millis_,
       .secondary_bcp_compilation_millis = secondary_bcp_compilation_millis_,
       .system_server_compilation_millis = system_server_compilation_millis_,

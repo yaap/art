@@ -23,6 +23,29 @@ import sys
 from typing import Callable, Dict, List, Optional
 
 
+LEGACY_TEST_JARS_MAP: Dict[str, tuple[str, str]] = {
+    "core-tests": (
+        "libcore/core-tests/android_common/withres",
+        "core-tests.jar",
+    ),
+    "core-ojtests": (
+        "libcore/ojluni/src/test/core-ojtests/android_common/withres",
+        "core-ojtests.jar",
+    ),
+    "jsr166-tests": (
+        "libcore/jsr166-tests/android_common/javac",
+        "jsr166-tests.jar",
+    ),
+    "mockito-target": (
+        "external/dexmaker/mockito-target/android_common/withres",
+        "mockito-target.jar",
+    ),
+    "apache-harmony-jdwp-tests": (
+        "external/apache-harmony/jdwp/apache-harmony-jdwp-tests/"
+        "android_common/jarjar",
+        "apache-harmony-jdwp-tests.jar",
+    ),
+}
 I18N_APEX = "com.android.i18n"
 TZDATA_APEX = "com.android.tzdata"
 CORE_IMG_JARS: List[str] = [
@@ -102,6 +125,22 @@ ART_TARGET_PLATFORM_LIBS_WITH_FULL_PATH: List[str] = [
     "libtombstoned_client",
     "libz",
 ]
+
+
+def copy_legacy_test_jars_action(build_vars: BuildVarsDict):
+  """Copies legacy test JARs to their expected locations for vogar."""
+  out_dir = build_vars["OUT_DIR"]
+  soong_intermediates = os.path.join(out_dir, "soong", ".intermediates")
+  target_java_libraries = os.path.join(
+      out_dir, "target", "common", "obj", "JAVA_LIBRARIES"
+  )
+
+  for jar_name, (partial_path, jar_filename) in LEGACY_TEST_JARS_MAP.items():
+    source = os.path.join(soong_intermediates, partial_path, jar_filename)
+    target = os.path.join(
+        target_java_libraries, f"{jar_name}_intermediates", "classes.jar"
+    )
+    perform_copy(source, target)
 
 
 def using_thin_manifest():
@@ -925,6 +964,13 @@ class Builder:
     )
     self.add_target(
         Target(
+            name="art-libcore-jdwp-test-jars",
+            make_targets=list(LEGACY_TEST_JARS_MAP.keys()),
+            action=copy_legacy_test_jars_action,
+        )
+    )
+    self.add_target(
+        Target(
             name="build-art-target-run-tests",
             dependencies=[
                 "build-art-target",
@@ -1250,6 +1296,11 @@ def parse_command_line_arguments(builder: Builder) -> argparse.ArgumentParser:
       help="Build all ART simulator components (internal target).",
   )
   parser.add_argument(
+      "--build-art-libcore-jdwp-test-jars",
+      action="store_true",
+      help="Build art-libcore-jdwp-test-jars components (internal target).",
+  )
+  parser.add_argument(
       "--build-art",
       action="store_true",
       help="Build build-art components (activates internal target).",
@@ -1287,6 +1338,8 @@ def parse_command_line_arguments(builder: Builder) -> argparse.ArgumentParser:
     builder.enabled_internal_targets.append("build-art-target-run-tests")
   if args.build_art_simulator:
     builder.enabled_internal_targets.append("build-art-simulator")
+  if args.build_art_libcore_jdwp_test_jars:
+    builder.enabled_internal_targets.append("art-libcore-jdwp-test-jars")
   if args.build_art:
     builder.enabled_internal_targets.append("build-art")
 

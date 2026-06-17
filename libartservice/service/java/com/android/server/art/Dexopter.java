@@ -16,16 +16,6 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.ArtManagerLocal.AdjustCompilerFilterCallback;
-import static com.android.server.art.DexMetadataHelper.DexMetadataInfo;
-import static com.android.server.art.OutputArtifacts.PermissionSettings;
-import static com.android.server.art.ProfilePath.TmpProfilePath;
-import static com.android.server.art.Utils.Abi;
-import static com.android.server.art.Utils.InitProfileResult;
-import static com.android.server.art.model.ArtFlags.DexoptFlags;
-import static com.android.server.art.model.Config.Callback;
-import static com.android.server.art.model.DexoptResult.DexContainerFileDexoptResult;
-
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
@@ -42,12 +32,27 @@ import androidx.annotation.RequiresApi;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalManagerRegistry;
+import com.android.server.art.ArtManagerLocal.AdjustCompilerFilterCallback;
 import com.android.server.art.Dex2OatStatsReporter.Dex2OatResult;
+import com.android.server.art.DexMetadataHelper.DexMetadataInfo;
+import com.android.server.art.DexoptTrigger.DexoptComparator;
+import com.android.server.art.OutputArtifacts.PermissionSettings;
+import com.android.server.art.ProfilePath.TmpProfilePath;
 import com.android.server.art.model.ArtFlags;
+import com.android.server.art.model.ArtFlags.DexoptFlags;
 import com.android.server.art.model.Config;
+import com.android.server.art.model.Config.Callback;
 import com.android.server.art.model.DetailedDexInfo;
 import com.android.server.art.model.DexoptParams;
 import com.android.server.art.model.DexoptResult;
+import com.android.server.art.model.DexoptResult.DexContainerFileDexoptResult;
+import com.android.server.art.utils.AidlUtils;
+import com.android.server.art.utils.ArtdRefCache;
+import com.android.server.art.utils.AsLog;
+import com.android.server.art.utils.AsyncExecutor;
+import com.android.server.art.utils.Utils;
+import com.android.server.art.utils.Utils.Abi;
+import com.android.server.art.utils.Utils.InitProfileResult;
 import com.android.server.pm.PackageManagerLocal;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.PackageState;
@@ -57,6 +62,8 @@ import dalvik.system.DexFile;
 import com.google.auto.value.AutoValue;
 
 import java.io.IOException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -77,6 +84,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
     @NonNull protected final AndroidPackage mPkg;
     @NonNull protected final DexoptParams mParams;
     @NonNull protected final CancellationSignal mCancellationSignal;
+    @NonNull protected final AsLog.Logger mLogger;
 
     protected Dexopter(@NonNull Injector injector, @NonNull PackageState pkgState,
             @NonNull AndroidPackage pkg, @NonNull DexoptParams params,
@@ -86,6 +94,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
         mPkg = pkg;
         mParams = params;
         mCancellationSignal = cancellationSignal;
+        mLogger = new AsLog.Logger(mParams.getLoggingFd());
     }
 
     /**
@@ -96,7 +105,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
     @NonNull
     public final List<DexContainerFileDexoptResult> dexopt() throws RemoteException {
         if (SystemProperties.getBoolean("dalvik.vm.disable-art-service-dexopt", false /* def */)) {
-            AsLog.i("Dexopt skipped because it's disabled by system property");
+            mLogger.i("Dexopt skipped because it's disabled by system property");
             return List.of();
         }
 
@@ -143,16 +152,25 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                     if (!dmInfo.config().getEnableEmbeddedProfile()) {
                         String dmPath = DexMetadataHelper.getDmPath(
                                 Objects.requireNonNull(dmInfo.dmPath()));
-                        AsLog.i("Embedded profile disabled by config in the dm file " + dmPath);
+                        mLogger.i("Embedded profile disabled by config in the dm file " + dmPath);
                     }
 
                     if (needsToBeShared) {
+                        // If the app is shared, then try first to initialize the reference profile
+                        // from the external profile, to allow other apps to use the generated
+                        // artifacts and run in the speed-profile mode.
                         InitProfileResult result = initReferenceProfile(
                                 dexInfo, dmInfo.config().getEnableEmbeddedProfile());
                         profile = result.profile();
                         isOtherReadable = result.isOtherReadable();
                         externalProfileErrors = result.externalProfileErrors();
-                    } else {
+                    }
+
+                    if (profile == null) {
+                        // Even if the app needs to be shared with no external profile, we still
+                        // can use the local profile if available and make the artifacts private to
+                        // the app, while allowing other apps to run in "verify" mode by making the
+                        // vdex public if the dex file is public.
                         InitProfileResult result = getOrInitReferenceProfile(
                                 dexInfo, dmInfo.config().getEnableEmbeddedProfile());
                         profile = result.profile();
@@ -173,12 +191,8 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                         // and dex2oat already makes this transformation. However, we need to
                         // explicitly make this transformation here to guide the later decisions
                         // such as whether the artifacts can be public and whether dexopt is needed.
-                        compilerFilter = printAdjustCompilerFilterReason(compilerFilter,
-                                needsToBeShared ? ReasonMapping.getCompilerFilterForShared()
-                                                : "verify",
-                                "there is no valid profile"
-                                        + (needsToBeShared ? " and the package needs to be shared"
-                                                           : ""));
+                        compilerFilter = printAdjustCompilerFilterReason(compilerFilter, "verify",
+                                "there is no valid profile", dexInfo.dexPath());
                         session.setCompilerFilter(compilerFilter);
                     }
                 }
@@ -186,10 +200,16 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                         DexFile.isProfileGuidedCompilerFilter(compilerFilter);
                 Utils.check(isProfileGuidedCompilerFilter == (profile != null));
 
-                boolean canBePublic = (!isProfileGuidedCompilerFilter || isOtherReadable)
+                // For vdex, it can always follow the same permission as the dex file, so if the dex
+                // file is public, then the vdex file can be public too. This is safe because the
+                // vdex file doesn't contain anything from the profile. In this way, when the app is
+                // loaded by other apps, it can run at least in the "verify" mode even if the other
+                // artifacts are not public.
+                boolean canOdexBePublic = (!isProfileGuidedCompilerFilter || isOtherReadable)
                         && isDexFilePublic(dexInfo);
-                Utils.check(Utils.implies(needsToBeShared, canBePublic));
-                PermissionSettings permissionSettings = getPermissionSettings(dexInfo, canBePublic);
+                boolean canVdexBePublic = isDexFilePublic(dexInfo);
+                PermissionSettings permissionSettings =
+                        getPermissionSettings(dexInfo, canOdexBePublic, canVdexBePublic);
 
                 DexoptOptions dexoptOptions =
                         getDexoptOptions(dexInfo, isProfileGuidedCompilerFilter);
@@ -214,7 +234,8 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                         var options = GetDexoptNeededOptions.builder()
                                               .setProfileMerged(profileMerged)
                                               .setFlags(mParams.getFlags())
-                                              .setNeedsToBePublic(needsToBeShared)
+                                              .setCanOdexBePublic(canOdexBePublic)
+                                              .setCanVdexBePublic(canVdexBePublic)
                                               .build();
 
                         if (mInjector.isPreReboot()) {
@@ -222,7 +243,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                                     AidlUtils.buildArtifactsPathAsInputPreReboot(
                                             target.dexInfo().dexPath(), target.isa(),
                                             target.isInDalvikCache());
-                            if (mInjector.getArtd().getArtifactsVisibility(existingArtifacts)
+                            if (mInjector.getArtd().getOdexVisibility(existingArtifacts)
                                     != FileVisibility.NOT_FOUND) {
                                 // Because `getDexoptNeeded` doesn't check Pre-reboot artifacts, we
                                 // do a simple check here to handle job resuming. If the Pre-reboot
@@ -263,7 +284,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                                 continue;
                             }
                         } catch (IOException e) {
-                            AsLog.e("Failed to check storage. Assuming storage not low", e);
+                            mLogger.e("Failed to check storage. Assuming storage not low", e);
                         }
 
                         IArtdCancellationSignal artdCancellationSignal =
@@ -272,7 +293,8 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                             try {
                                 artdCancellationSignal.cancel();
                             } catch (RemoteException e) {
-                                AsLog.e("An error occurred when sending a cancellation signal", e);
+                                mLogger.e(
+                                        "An error occurred when sending a cancellation signal", e);
                             }
                         });
 
@@ -295,10 +317,10 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                         }
                     } catch (ServiceSpecificException e) {
                         // Log the error and continue.
-                        AsLog.e(String.format("Failed to dexopt [packageName = %s, dexPath = %s, "
-                                                + "isa = %s, classLoaderContext = %s]",
-                                        mPkgState.getPackageName(), dexInfo.dexPath(), abi.isa(),
-                                        dexInfo.classLoaderContext()),
+                        mLogger.e(String.format("Failed to dexopt [packageName = %s, dexPath = %s, "
+                                                  + "isa = %s, classLoaderContext = %s]",
+                                          mPkgState.getPackageName(), dexInfo.dexPath(), abi.isa(),
+                                          dexInfo.classLoaderContext()),
                                 e);
                         status = DexoptResult.DEXOPT_FAILED;
 
@@ -365,7 +387,10 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                 session.recordResultForRemainingAbis(Dex2OatResult.failedToStart());
                 throw e;
             } finally {
-                mInjector.getReporterExecutor().execute(session::report);
+                mInjector.getAsyncExecutor().executeAsync(session::report).exceptionally(t -> {
+                    AsLog.wtf("Fatal error", t);
+                    return null;
+                });
                 if (profile != null && profile.getTag() == ProfilePath.tmpProfilePath) {
                     mInjector.getArtd().deleteProfile(profile);
                 }
@@ -385,11 +410,11 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                 String systemUiCompilerFilter = getSystemUiCompilerFilter();
                 if (!systemUiCompilerFilter.isEmpty()) {
                     targetCompilerFilter = printAdjustCompilerFilterReason(targetCompilerFilter,
-                            systemUiCompilerFilter, "the package is System UI");
+                            systemUiCompilerFilter, "the package is System UI", dexInfo.dexPath());
                 }
             } else if (mInjector.isLauncherPackage(mPkgState.getPackageName())) {
-                targetCompilerFilter = printAdjustCompilerFilterReason(
-                        targetCompilerFilter, "speed-profile", "the package is a launcher package");
+                targetCompilerFilter = printAdjustCompilerFilterReason(targetCompilerFilter,
+                        "speed-profile", "the package is a launcher package", dexInfo.dexPath());
             }
 
             Callback<AdjustCompilerFilterCallback, Void> callback =
@@ -401,7 +426,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                         targetCompilerFilter, Utils.executeAndWait(callback.executor(), () -> {
                             return callback.get().onAdjustCompilerFilter(mPkgState.getPackageName(),
                                     originalCompilerFilter, mParams.getReason());
-                        }), "of AdjustCompilerFilterCallback");
+                        }), "of AdjustCompilerFilterCallback", dexInfo.dexPath());
             }
         }
 
@@ -419,14 +444,15 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
             targetCompilerFilter = printAdjustCompilerFilterReason(targetCompilerFilter,
                     DexFile.getSafeModeCompilerFilter(targetCompilerFilter),
                     mPkg.isVmSafeMode() ? "the package requests VM safe mode"
-                                        : "the package is debuggable");
+                                        : "the package is debuggable",
+                    dexInfo.dexPath());
         }
 
         // We cannot do AOT compilation if we don't have a valid class loader context.
         if (dexInfo.classLoaderContext() == null
                 && DexFile.isOptimizedCompilerFilter(targetCompilerFilter)) {
-            targetCompilerFilter = printAdjustCompilerFilterReason(
-                    targetCompilerFilter, "verify", "there is no valid class loader context");
+            targetCompilerFilter = printAdjustCompilerFilterReason(targetCompilerFilter, "verify",
+                    "there is no valid class loader context", dexInfo.dexPath());
         }
 
         // This application wants to use the embedded dex in the APK, rather than extracted or
@@ -435,14 +461,14 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
         // won't extract the dex code because the APK is uncompressed, and the assumption is that
         // such applications always use uncompressed APKs.
         if (mPkg.isUseEmbeddedDex() && DexFile.isOptimizedCompilerFilter(targetCompilerFilter)) {
-            targetCompilerFilter = printAdjustCompilerFilterReason(
-                    targetCompilerFilter, "verify", "the package requests to use embedded dex");
+            targetCompilerFilter = printAdjustCompilerFilterReason(targetCompilerFilter, "verify",
+                    "the package requests to use embedded dex", dexInfo.dexPath());
         }
 
         if ((mParams.getFlags() & ArtFlags.FLAG_IGNORE_PROFILE) != 0
                 && DexFile.isProfileGuidedCompilerFilter(targetCompilerFilter)) {
-            targetCompilerFilter = printAdjustCompilerFilterReason(
-                    targetCompilerFilter, "verify", "the user requests to ignore the profile");
+            targetCompilerFilter = printAdjustCompilerFilterReason(targetCompilerFilter, "verify",
+                    "the user requests to ignore the profile", dexInfo.dexPath());
         }
 
         return targetCompilerFilter;
@@ -459,11 +485,12 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
     }
 
     private @NonNull String printAdjustCompilerFilterReason(@NonNull String oldCompilerFilter,
-            @NonNull String newCompilerFilter, @NonNull String reason) {
+            @NonNull String newCompilerFilter, @NonNull String reason, @NonNull String dexPath) {
         if (!oldCompilerFilter.equals(newCompilerFilter)) {
-            AsLog.i(String.format(
-                    "Adjusting the compiler filter for '%s' from '%s' to '%s' because %s",
-                    mPkgState.getPackageName(), oldCompilerFilter, newCompilerFilter, reason));
+            mLogger.i(String.format("Adjusting the compiler filter for '%s' of package '%s' from "
+                            + "'%s' to '%s' because %s",
+                    Paths.get(dexPath).getFileName(), mPkgState.getPackageName(), oldCompilerFilter,
+                    newCompilerFilter, reason));
         }
         return newCompilerFilter;
     }
@@ -521,7 +548,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
     @NonNull
     GetDexoptNeededResult getDexoptNeeded(@NonNull DexoptTarget<DexInfoType> target,
             @NonNull GetDexoptNeededOptions options) throws RemoteException {
-        int dexoptTrigger = getDexoptTrigger(target, options);
+        DexoptTrigger dexoptTrigger = getDexoptTrigger(target, options);
 
         // The result should come from artd even if all the bits of `dexoptTrigger` are set
         // because the result also contains information about the usable VDEX file.
@@ -530,44 +557,57 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
         // skipped because we are only going to verify the dex code (see `adjustCompilerFilter`).
         GetDexoptNeededResult result = mInjector.getArtd().getDexoptNeeded(
                 target.dexInfo().dexPath(), target.isa(), target.dexInfo().classLoaderContext(),
-                target.compilerFilter(), dexoptTrigger);
+                target.compilerFilter(), dexoptTrigger, mParams.getLoggingFd());
 
         return result;
     }
 
-    int getDexoptTrigger(@NonNull DexoptTarget<DexInfoType> target,
+    DexoptTrigger getDexoptTrigger(@NonNull DexoptTarget<DexInfoType> target,
             @NonNull GetDexoptNeededOptions options) throws RemoteException {
         if ((options.flags() & ArtFlags.FLAG_FORCE) != 0) {
-            return DexoptTrigger.COMPILER_FILTER_IS_BETTER | DexoptTrigger.COMPILER_FILTER_IS_SAME
-                    | DexoptTrigger.COMPILER_FILTER_IS_WORSE
-                    | DexoptTrigger.PRIMARY_BOOT_IMAGE_BECOMES_USABLE
-                    | DexoptTrigger.NEED_EXTRACTION;
+            return AidlUtils.buildDexoptTrigger(
+                    List.of(DexoptComparator.CUSTOM_TARGET_IS_BETTER_THAN_CURRENT),
+                    "force recompilation");
         }
 
         if ((options.flags() & ArtFlags.FLAG_SHOULD_DOWNGRADE) != 0) {
-            return DexoptTrigger.COMPILER_FILTER_IS_WORSE;
+            return AidlUtils.buildDexoptTrigger(
+                    List.of(DexoptComparator.COMPARING_COMPILER_FILTER_REVERSED));
         }
 
-        int dexoptTrigger = DexoptTrigger.COMPILER_FILTER_IS_BETTER
-                | DexoptTrigger.PRIMARY_BOOT_IMAGE_BECOMES_USABLE | DexoptTrigger.NEED_EXTRACTION;
+        List<Integer> dexoptComparators = new ArrayList<>();
+        dexoptComparators.add(DexoptComparator.COMPARING_COMPILER_FILTER);
+
         if (options.profileMerged()) {
-            dexoptTrigger |= DexoptTrigger.COMPILER_FILTER_IS_SAME;
+            dexoptComparators.add(DexoptComparator.CUSTOM_TARGET_IS_BETTER_THAN_CURRENT);
+            return AidlUtils.buildDexoptTrigger(dexoptComparators, "profile changed");
         }
 
         ArtifactsPath existingArtifactsPath = AidlUtils.buildArtifactsPathAsInput(
                 target.dexInfo().dexPath(), target.isa(), target.isInDalvikCache());
 
-        if (options.needsToBePublic()
-                && mInjector.getArtd().getArtifactsVisibility(existingArtifactsPath)
+        if (DexFile.isOptimizedCompilerFilter(target.compilerFilter()) && options.canOdexBePublic()
+                && mInjector.getArtd().getOdexVisibility(existingArtifactsPath)
                         == FileVisibility.NOT_OTHER_READABLE) {
-            // Typically, this happens after an app starts being used by other apps.
-            // This case should be the same as force as we have no choice but to trigger a new
-            // dexopt.
-            dexoptTrigger |=
-                    DexoptTrigger.COMPILER_FILTER_IS_SAME | DexoptTrigger.COMPILER_FILTER_IS_WORSE;
+            // Typically, this happens after an app starts being used by other apps and we have a
+            // public profile that can be used. We can re-dexopt the app if it doesn't regress the
+            // compiler filter, as this will allow other apps to use the artifacts as well.
+            dexoptComparators.add(DexoptComparator.CUSTOM_TARGET_IS_BETTER_THAN_CURRENT);
+            return AidlUtils.buildDexoptTrigger(dexoptComparators, "odex visibility is better");
         }
 
-        return dexoptTrigger;
+        if (options.canVdexBePublic()
+                && mInjector.getArtd().getVdexVisibility(existingArtifactsPath)
+                        == FileVisibility.NOT_OTHER_READABLE) {
+            // Typically, this happens after an app sets the "other-readable" bit on the dex file,
+            // which is only applicable in the secondary dex case.
+            dexoptComparators.add(DexoptComparator.CUSTOM_TARGET_IS_BETTER_THAN_CURRENT);
+            return AidlUtils.buildDexoptTrigger(dexoptComparators, "vdex visibility is better");
+        }
+
+        dexoptComparators.add(DexoptComparator.COMPARING_PRIMARY_BOOT_IMAGE_STATUS);
+        dexoptComparators.add(DexoptComparator.COMPARING_EXTRACTION_STATUS);
+        return AidlUtils.buildDexoptTrigger(dexoptComparators);
     }
 
     private ArtdDexoptResult dexoptFile(@NonNull DexoptTarget<DexInfoType> target,
@@ -651,7 +691,8 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
             mInjector.getArtd().commitTmpProfile(profile);
             return true;
         } catch (ServiceSpecificException e) {
-            AsLog.e("Failed to commit profile changes " + AidlUtils.toString(profile.finalPath), e);
+            mLogger.e(
+                    "Failed to commit profile changes " + AidlUtils.toString(profile.finalPath), e);
             return false;
         }
     }
@@ -670,7 +711,8 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
                 return ProfilePath.tmpProfilePath(output.profilePath);
             }
         } catch (ServiceSpecificException e) {
-            AsLog.e("Failed to merge profiles " + AidlUtils.toString(output.profilePath.finalPath),
+            mLogger.e(
+                    "Failed to merge profiles " + AidlUtils.toString(output.profilePath.finalPath),
                     e);
         }
 
@@ -720,7 +762,7 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
     /** Returns the permission settings to use for the artifacts of the given dex file. */
     @NonNull
     protected abstract PermissionSettings getPermissionSettings(
-            @NonNull DexInfoType dexInfo, boolean canBePublic);
+            @NonNull DexInfoType dexInfo, boolean canOdexBePublic, boolean canVdexBePublic);
 
     /** Returns all ABIs that the given dex file should be compiled for. */
     @NonNull protected abstract List<Abi> getAllAbis(@NonNull DexInfoType dexInfo);
@@ -784,7 +826,8 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
     abstract static class GetDexoptNeededOptions {
         abstract @DexoptFlags int flags();
         abstract boolean profileMerged();
-        abstract boolean needsToBePublic();
+        abstract boolean canOdexBePublic();
+        abstract boolean canVdexBePublic();
 
         static Builder builder() {
             return new AutoValue_Dexopter_GetDexoptNeededOptions.Builder();
@@ -794,7 +837,8 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
         abstract static class Builder {
             abstract Builder setFlags(@DexoptFlags int value);
             abstract Builder setProfileMerged(boolean value);
-            abstract Builder setNeedsToBePublic(boolean value);
+            abstract Builder setCanOdexBePublic(boolean value);
+            abstract Builder setCanVdexBePublic(boolean value);
             abstract GetDexoptNeededOptions build();
         }
     }
@@ -808,13 +852,10 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
     public static class Injector {
         @NonNull private final Context mContext;
         @NonNull private final Config mConfig;
-        @NonNull private final Executor mReporterExecutor;
 
-        public Injector(@NonNull Context context, @NonNull Config config,
-                @NonNull Executor reporterExecutor) {
+        public Injector(@NonNull Context context, @NonNull Config config) {
             mContext = context;
             mConfig = config;
-            mReporterExecutor = reporterExecutor;
 
             // Call the getters for various dependencies, to ensure correct initialization order.
             getUserManager();
@@ -876,9 +917,8 @@ public abstract class Dexopter<DexInfoType extends DetailedDexInfo> {
             return mConfig;
         }
 
-        @NonNull
-        public Executor getReporterExecutor() {
-            return mReporterExecutor;
+        public AsyncExecutor getAsyncExecutor() {
+            return AsyncExecutor.getInstance();
         }
 
         @NonNull

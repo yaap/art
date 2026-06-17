@@ -39,7 +39,7 @@ std::vector<std::unique_ptr<StandardDexFile>> dex_files_to_delete;
 
 extern "C" int LLVMFuzzerInitialize([[maybe_unused]] int* argc, [[maybe_unused]] char*** argv) {
   static NoopCompilerCallbacks callbacks;
-  FuzzerInitialize(&callbacks);
+  FuzzerInitialize(&callbacks, kRuntimeISA);
   return 0;
 }
 

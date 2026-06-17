@@ -16,6 +16,8 @@
 
 package com.android.server.art.testing;
 
+import static com.android.server.art.testing.TestingUtils.SYNC_EXECUTOR;
+
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.eq;
@@ -25,6 +27,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import com.android.server.art.ArtStatsLog;
+import com.android.server.art.PreRebootDexoptJob;
 import com.android.server.art.prereboot.PreRebootStatsReporter;
 import com.android.server.art.prereboot.PreRebootStatsReporter.Injector;
 import com.android.server.art.proto.PreRebootStats;
@@ -45,8 +48,9 @@ public class PreRebootStatsReporterHarness {
         tempFile.deleteOnExit();
 
         lenient().when(mInjector.getFilename()).thenReturn(tempFile.getAbsolutePath());
+
         // Make asynchronous reporting synchronous.
-        lenient().when(mInjector.getExecutor()).thenReturn(Runnable::run);
+        lenient().when(mInjector.getAsyncExecutor()).thenReturn(SYNC_EXECUTOR);
     }
 
     public Injector getInjector() {
@@ -72,25 +76,42 @@ public class PreRebootStatsReporterHarness {
 
     public void verifyJobStats(Status status) {
         verifyImpl(times(1),
-                ()
-                        -> eq(PreRebootStatsReporter.getStatusForStatsd(status)),
-                () -> anyInt(), () -> anyLong());
+                () -> eq(PreRebootStatsReporter.getStatusForStatsd(status)), () -> anyLong(),
+                () -> anyInt(), () -> anyLong(), () -> anyInt());
+    }
+
+    public void verifyJobLatency(long latency) {
+        verifyImpl(times(1), () -> anyInt(), () -> eq(latency), () -> anyInt(), () -> anyLong(),
+                () -> anyInt());
     }
 
     public void verifyArtifactsStats(int endStatus, long ageMillis) {
-        verifyImpl(times(1), () -> anyInt(), () -> eq(endStatus), () -> eq(ageMillis));
+        verifyImpl(times(1),
+                () -> anyInt(), () -> anyLong(), () -> eq(endStatus), () -> eq(ageMillis),
+                () -> anyInt());
+    }
+
+    public void verifySynchronicity(PreRebootDexoptJob.JobSynchronicity synchronicity) {
+        int expected = PreRebootStatsReporter.getJobSynchronicityForStatsd(
+                PreRebootStatsReporter.getJobSynchronicityForStatsProto(synchronicity));
+
+        verifyImpl(times(1), () -> anyInt(), () -> anyLong(), () -> anyInt(), () -> anyLong(),
+                () -> eq(expected));
     }
 
     public void verifyTimes(int n) {
-        verifyImpl(times(n), () -> anyInt(), () -> anyInt(), () -> anyLong());
+        verifyImpl(times(n), () -> anyInt(), () -> anyLong(), () -> anyInt(), () -> anyLong(),
+                () -> anyInt());
     }
 
     private void verifyImpl(VerificationMode mode, Supplier<Integer> statusMatcher,
-            Supplier<Integer> artifactsEndStatusMatcher, Supplier<Long> artifactsAgeMillisMatcher) {
+            Supplier<Long> latencyMatcher, Supplier<Integer> artifactsEndStatusMatcher,
+            Supplier<Long> artifactsAgeMillisMatcher, Supplier<Integer> synchronicityMatcher) {
         verify(mInjector, mode)
                 .writeStats(eq(ArtStatsLog.PREREBOOT_DEXOPT_JOB_ENDED), statusMatcher.get(),
-                        anyInt(), anyInt(), anyInt(), anyInt(), anyLong(), anyLong(), anyInt(),
-                        anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
-                        artifactsEndStatusMatcher.get(), artifactsAgeMillisMatcher.get());
+                        anyInt(), anyInt(), anyInt(), anyInt(), anyLong(), latencyMatcher.get(),
+                        anyInt(), anyInt(), anyInt(), anyInt(), anyInt(), anyInt(),
+                        artifactsEndStatusMatcher.get(), artifactsAgeMillisMatcher.get(),
+                        synchronicityMatcher.get());
     }
 }

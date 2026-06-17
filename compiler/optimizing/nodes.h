@@ -31,6 +31,7 @@
 #include "base/iteration_range.h"
 #include "base/macros.h"
 #include "base/mutex.h"
+#include "base/offsets.h"
 #include "base/quasi_atomic.h"
 #include "base/stl_util.h"
 #include "base/transform_array_ref.h"
@@ -53,7 +54,6 @@
 #include "loop_information.h"
 #include "mirror/class.h"
 #include "mirror/method_type.h"
-#include "offsets.h"
 #include "reference_type_info.h"
 
 namespace art HIDDEN {
@@ -392,6 +392,11 @@ class HBasicBlock final : public ArenaObject<kArenaAllocBasicBlock> {
   // predecessor of `other` and vice versa.
   void MergeWith(HBasicBlock* other);
 
+  // Take the single successor's other predecessors and merge `HPhis`. This block must
+  // contain only a single `HGoto` instruction and an arbitrary number of `HPhi`s.
+  // This function does not update dominance information.
+  void TakeGotoBlockSuccessorsOtherPredecessorsAndMergePhis();
+
   // Disconnects `this` from all its predecessors, successors and dominator,
   // removes it from all loops it is included in and eventually from the graph.
   // The block must not dominate any other block. Predecessors and successors
@@ -556,6 +561,7 @@ class HBasicBlock final : public ArenaObject<kArenaAllocBasicBlock> {
   M(ClearException, Instruction)                                        \
   M(ClinitCheck, Instruction)                                           \
   M(Compare, BinaryOperation)                                           \
+  M(LoadConstantTableEntry, Instruction)                                \
   M(ConstructorFence, Instruction)                                      \
   M(CurrentMethod, Instruction)                                         \
   M(ShouldDeoptimizeFlag, Instruction)                                  \
@@ -720,13 +726,18 @@ class HBasicBlock final : public ArenaObject<kArenaAllocBasicBlock> {
 
 #if defined(ART_ENABLE_CODEGEN_x86) || defined(ART_ENABLE_CODEGEN_x86_64)
 #define FOR_EACH_CONCRETE_INSTRUCTION_X86_COMMON(M)                     \
+  M(X86LoadEffectiveAddress, Instruction)                               \
   M(X86AndNot, Instruction)                                             \
   M(X86MaskOrResetLeastSetBit, Instruction)
 #else
 #define FOR_EACH_CONCRETE_INSTRUCTION_X86_COMMON(M)
 #endif
 
+#if defined(ART_ENABLE_CODEGEN_x86_64)
+#define FOR_EACH_CONCRETE_INSTRUCTION_X86_64(M) M(X86Clear, Instruction)
+#else
 #define FOR_EACH_CONCRETE_INSTRUCTION_X86_64(M)
+#endif
 
 #define FOR_EACH_CONCRETE_INSTRUCTION(M)                                \
   FOR_EACH_CONCRETE_INSTRUCTION_COMMON(M)                               \
@@ -1598,6 +1609,9 @@ class HInstruction : public ArenaObject<kArenaAllocInstruction> {
 #if defined(ART_ENABLE_CODEGEN_x86)
       case kX86PackedSwitch:
 #endif
+#if defined(ART_ENABLE_CODEGEN_x86_64)
+      case kX86Clear:
+#endif
         return false;
       default:
         DCHECK(!IsControlFlow());
@@ -2340,6 +2354,9 @@ class HPhi final : public HVariableInputSizeInstruction {
     return nullptr;
   }
 
+  void ReplaceInputPhiWithItsInputsAt(ArenaAllocator* allocator, size_t index);
+  void DuplicateInputAt(ArenaAllocator* allocator, size_t index, size_t new_copies);
+
   DECLARE_INSTRUCTION(Phi);
 
  protected:
@@ -2703,7 +2720,7 @@ class HTryBoundary final : public HExpression<0> {
   HBasicBlock* GetNormalFlowSuccessor() const { return GetBlock()->GetSuccessors()[0]; }
 
   ArrayRef<HBasicBlock* const> GetExceptionHandlers() const {
-    return ArrayRef<HBasicBlock* const>(GetBlock()->GetSuccessors()).SubArray(1u);
+    return GetBlock()->GetExceptionalSuccessors();
   }
 
   // Returns whether `handler` is among its exception handlers (non-zero index
@@ -4066,7 +4083,8 @@ class HInvokePolymorphic final : public HInvoke {
                 resolved_method_reference,
                 kPolymorphic,
                 /* enable_intrinsic_opt= */ true),
-        proto_idx_(proto_idx) {}
+        proto_idx_(proto_idx),
+        needs_callsite_type_check_(true) {}
 
   bool IsClonable() const override { return true; }
 
@@ -4082,10 +4100,24 @@ class HInvokePolymorphic final : public HInvoke {
         InputAt(1)->GetType() == DataType::Type::kReference;
   }
 
+  void SkipCallSiteTypeCheck() {
+    DCHECK(IsMethodHandleInvokeExact());
+    DCHECK(needs_callsite_type_check_);
+    needs_callsite_type_check_ = false;
+  }
+
+  bool NeedsCallSiteTypeCheck() const {
+    DCHECK(IsMethodHandleInvokeExact());
+    return needs_callsite_type_check_;
+  }
+
+  bool NeedsReturnTypeCheck();
+
   DECLARE_INSTRUCTION(InvokePolymorphic);
 
  protected:
   dex::ProtoIndex proto_idx_;
+  bool needs_callsite_type_check_;
   DEFAULT_COPY_CONSTRUCTOR(InvokePolymorphic);
 };
 
@@ -5086,20 +5118,20 @@ class HParameterValue final : public HExpression<0> {
  public:
   HParameterValue(const DexFile& dex_file,
                   dex::TypeIndex type_index,
-                  uint8_t index,
+                  uint8_t input_vreg_index,
                   DataType::Type parameter_type,
                   bool is_this = false)
       : HExpression(kParameterValue, parameter_type, SideEffects::None(), kNoDexPc),
         dex_file_(dex_file),
         type_index_(type_index),
-        index_(index) {
+        input_vreg_index_(input_vreg_index) {
     SetPackedFlag<kFlagIsThis>(is_this);
     SetPackedFlag<kFlagCanBeNull>(!is_this);
   }
 
   const DexFile& GetDexFile() const { return dex_file_; }
   dex::TypeIndex GetTypeIndex() const { return type_index_; }
-  uint8_t GetIndex() const { return index_; }
+  uint8_t GetInputVRegIndex() const { return input_vreg_index_; }
   bool IsThis() const { return GetPackedFlag<kFlagIsThis>(); }
 
   bool CanBeNull() const override { return GetPackedFlag<kFlagCanBeNull>(); }
@@ -5122,7 +5154,7 @@ class HParameterValue final : public HExpression<0> {
   const dex::TypeIndex type_index_;
   // The index of this parameter in the parameters list. Must be less
   // than HGraph::number_of_in_vregs_.
-  const uint8_t index_;
+  const uint8_t input_vreg_index_;
 };
 
 class HNot final : public HUnaryOperation {
@@ -5330,6 +5362,31 @@ class HFieldAccess : public HInstruction {
   DataType::Type GetFieldType() const { return field_info_.GetFieldType(); }
   bool IsVolatile() const { return field_info_.IsVolatile(); }
 
+  Handle<mirror::Object> GetConstantValue() const {
+    DCHECK(HasConstantValue());
+    return value_;
+  }
+
+  bool HasConstantValue() const {
+    return value_.GetReference() != nullptr;
+  }
+
+  void SetConstantValue(Handle<mirror::Object> new_value) {
+    if (kIsDebugBuild) {
+      CHECK(GetFieldInfo().GetField()->IsFinal());
+      CHECK(IsStaticFieldGet() || IsInstanceFieldGet());
+      CHECK(!new_value.IsNull());
+    }
+    value_ = new_value;
+  }
+
+  bool CanBeNull() const override {
+    DCHECK_EQ(GetFieldType(), DataType::Type::kReference);
+    // null-s are represented as NullConstant nodes and value_ does not hold null references
+    // once it was set.
+    return !HasConstantValue();
+  }
+
   DECLARE_ABSTRACT_INSTRUCTION(FieldAccess);
 
  protected:
@@ -5337,6 +5394,7 @@ class HFieldAccess : public HInstruction {
 
  private:
   const FieldInfo field_info_;
+  Handle<mirror::Object> value_;
 };
 
 class HInstanceFieldGet final : public HExpression<1, HFieldAccess> {
@@ -6139,6 +6197,10 @@ class HLoadString final : public HInstruction {
     // Used for boot image strings referenced by apps in AOT-compiled code.
     kBootImageRelRo,
 
+    // Load from an app image entry in the .data.img.rel.ro using a PC-relative load.
+    // Used for app image strings referenced by apps in AOT-compiled code.
+    kAppImageRelRo,
+
     // Load from an entry in the .bss section using a PC-relative load.
     // Used for strings outside boot image referenced by AOT-compiled app and boot image code.
     kBssEntry,
@@ -6185,6 +6247,7 @@ class HLoadString final : public HInstruction {
   bool HasPcRelativeLoadKind() const {
     return GetLoadKind() == LoadKind::kBootImageLinkTimePcRelative ||
            GetLoadKind() == LoadKind::kBootImageRelRo ||
+           GetLoadKind() == LoadKind::kAppImageRelRo ||
            GetLoadKind() == LoadKind::kBssEntry;
   }
 
@@ -6216,6 +6279,7 @@ class HLoadString final : public HInstruction {
     LoadKind load_kind = GetLoadKind();
     if (load_kind == LoadKind::kBootImageLinkTimePcRelative ||
         load_kind == LoadKind::kBootImageRelRo ||
+        load_kind == LoadKind::kAppImageRelRo ||
         load_kind == LoadKind::kJitBootImageAddress ||
         load_kind == LoadKind::kJitTableAddress) {
       return false;
@@ -6286,6 +6350,7 @@ inline void HLoadString::AddSpecialInput(HInstruction* special_input) {
   // including literal pool loads, which are PC-relative too.
   DCHECK(GetLoadKind() == LoadKind::kBootImageLinkTimePcRelative ||
          GetLoadKind() == LoadKind::kBootImageRelRo ||
+         GetLoadKind() == LoadKind::kAppImageRelRo ||
          GetLoadKind() == LoadKind::kBssEntry ||
          GetLoadKind() == LoadKind::kJitBootImageAddress) << GetLoadKind();
   // HLoadString::GetInputRecords() returns an empty array at this point,
@@ -6327,7 +6392,7 @@ class HLoadMethodHandle final : public HInstruction {
   }
 
   bool CanThrow() const override { return true; }
-
+  bool CanBeNull() const override { return false; }
   bool NeedsEnvironment() const override { return true; }
 
   DECLARE_INSTRUCTION(LoadMethodHandle);
@@ -6368,6 +6433,7 @@ class HLoadMethodType final : public HInstruction {
         special_input_(HUserRecord<HInstruction*>(current_method)),
         proto_index_(proto_index),
         dex_file_(dex_file) {
+    DCHECK_LT(proto_index_.index_, dex_file_.NumProtoIds());
     SetPackedField<LoadKindField>(LoadKind::kRuntimeCall);
   }
 
@@ -6398,7 +6464,7 @@ class HLoadMethodType final : public HInstruction {
   }
 
   bool CanThrow() const override { return true; }
-
+  bool CanBeNull() const override { return false; }
   bool NeedsEnvironment() const override { return true; }
 
   DECLARE_INSTRUCTION(LoadMethodType);
@@ -6896,15 +6962,22 @@ class HTypeCheckInstruction : public HVariableInputSizeInstruction {
       SetRawInputAt(2, bitstring_path_to_root);
       SetRawInputAt(3, bitstring_mask);
     } else {
-      DCHECK(target_class_or_null->IsLoadClass());
+      if (kind == kCheckCast) {
+        DCHECK(target_class_or_null->IsLoadClass());
+      } else {
+        DCHECK_EQ(kind, kInstanceOf);
+        DCHECK(target_class_or_null->IsLoadClass() || target_class_or_null->IsFieldAccess());
+        DCHECK_IMPLIES(target_class_or_null->IsFieldAccess(),
+                       target_class_or_null->AsFieldAccess()->HasConstantValue());
+      }
     }
   }
 
-  HLoadClass* GetTargetClass() const {
+  HInstruction* GetTargetClass() const {
     DCHECK_NE(GetTypeCheckKind(), TypeCheckKind::kBitstringCheck);
-    HInstruction* load_class = InputAt(1);
-    DCHECK(load_class->IsLoadClass());
-    return load_class->AsLoadClass();
+    HInstruction* target_class = InputAt(1);
+    DCHECK(target_class->IsLoadClass() || target_class->IsFieldAccess());
+    return target_class;
   }
 
   uint32_t GetBitstringPathToRoot() const {
@@ -7618,6 +7691,73 @@ class HIntermediateAddress final : public HExpression<2> {
   DEFAULT_COPY_CONSTRUCTOR(IntermediateAddress);
 };
 
+// Load a value from a constant table. The value of `index` must be below `num_entries`.
+// Used for optimizing `switch` statements that just feed a Phi with constants.
+class HLoadConstantTableEntry : public HInstruction {
+ public:
+  HLoadConstantTableEntry(DataType::Type type,
+                          HInstruction* index,
+                          ArrayRef<const int64_t> entries,
+                          ArenaAllocator* allocator,
+                          uint32_t dex_pc = kNoDexPc)
+      : HInstruction(kLoadConstantTableEntry, type, SideEffects::None(), dex_pc),
+        entries_(allocator->AllocArray<int64_t>(entries.size(), kArenaAllocInstruction),
+                 entries.size()) {
+    SetRawInputAt(0, index);
+    std::copy(entries.begin(), entries.end(), entries_.begin());
+  }
+
+  HInstruction* GetIndex() const { return InputAt(0); }
+
+  size_t GetNumEntries() const {
+    return entries_.size();
+  }
+
+  int64_t GetEntry(size_t index) {
+    DCHECK_LT(index, GetNumEntries());
+    return entries_[index];
+  }
+
+  void SetEntry(size_t index, int64_t value) {
+    DCHECK_LT(index, GetNumEntries());
+    entries_[index] = value;
+  }
+
+  ArrayRef<const int64_t> GetEntries() const {
+    return ArrayRef<const int64_t>(entries_);
+  }
+
+  bool HasSpecialInput() const {
+    return inputs_[1].GetInstruction() != nullptr;
+  }
+
+  void AddSpecialInput(HInstruction* input) {
+    // We allow only one special input.
+    DCHECK(!HasSpecialInput());
+    // Store the `input` directly. `SetRawInputAt()` cannot be used here because
+    // `GetInputRecords()` does not include `inputs_[1]` while it contains null.
+    inputs_[1] = HUserRecord<HInstruction*>(input);
+    input->AddUseAt(GetBlock()->GetGraph()->GetAllocator(), this, 1u);
+  }
+
+  ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() final {
+    return ArrayRef<HUserRecord<HInstruction*>>(inputs_.data(), HasSpecialInput() ? 2u : 1u);
+  }
+  DEFINE_GET_INPUT_RECORDS_HELPERS(HLoadConstantTableEntry);
+
+  // Prevent this instruction from being moved. In particular, this instruction must not
+  // move before the index range check created from the `HPackedSwitch`.
+  bool CanBeMoved() const override { return false; }
+
+  DECLARE_INSTRUCTION(LoadConstantTableEntry);
+
+ protected:
+  DEFAULT_COPY_CONSTRUCTOR(LoadConstantTableEntry);
+
+ private:
+  std::array<HUserRecord<HInstruction*>, 2> inputs_;
+  ArrayRef<int64_t> entries_;
+};
 
 }  // namespace art
 
@@ -8038,6 +8178,50 @@ void ResetEnvironmentInputRecords(HInstruction* instruction);
 // Detects an instruction that is >= 0. As long as the value is carried by
 // a single instruction, arithmetic wrap-around cannot occur.
 bool IsGEZero(HInstruction* instruction);
+
+//
+// Helper functions that determine whether an instruction's environment must be
+// precise, i.e. whether the associated stack map should include vregister mappings.
+//
+
+// Returns whether a graph requires precise HEnvironment.
+//
+// It is true in the following cases:
+//  * Debuggable graph
+//    when we want to observe the values / asynchronously deoptimize.
+//  * Monitor operations
+//    to allow dumping in a stack trace locked dex registers for non-debuggable code.
+inline bool GraphNeedsPreciseEnvironment(HGraph* graph) {
+  return graph->IsDebuggable() || graph->HasMonitorOperations();
+}
+
+// Returns whether instruction requires precise HEnvironment, independently from the graph
+// properties.
+//
+// It is true in the following cases:
+//  * Deoptimization
+//    when we need to obtain the values to restore actual vregisters for interpreter.
+//  * On-stack-replacement (OSR)
+//    when entering compiled for OSR code from the interpreter we need to initialize the compiled
+//    code values with the values from the vregisters. Not all instructions in OSR mode
+//    require a precise HEnvironment, only SuspendChecks in the non-inlined loops do.
+//  * Method local catch blocks
+//    a catch block must see the environment of the instruction from the same method that can
+//    throw to this block.
+//  * First instruction of a catch block
+//    a catch block's first instruction is always Nop that requires precise HEnvironment as
+//    it is used to emit catch block information.
+inline bool InstructionNeedsPreciseEnvironment(HInstruction* instruction, bool osr) {
+  HBasicBlock* bb = instruction->GetBlock();
+  if (instruction->IsDeoptimize() || instruction->CanThrowIntoCatchBlock() || osr) {
+    return true;
+  }
+  if (bb->IsCatchBlock() && bb->GetFirstInstruction() == instruction) {
+    DCHECK(instruction->IsNop());
+    return true;
+  }
+  return false;
+}
 
 }  // namespace art
 

@@ -19,71 +19,71 @@
 
 public class Main {
 
-  public static void expectEquals(int expected, int value) {
-    if (expected != value) {
-      throw new Error("Expected: " + expected + ", found: " + value);
+    public static void expectEquals(int expected, int value) {
+        if (expected != value) {
+            throw new Error("Expected: " + expected + ", found: " + value);
+        }
     }
-  }
 
-  public static void main(String[] args) {
-    int result = $opt$testIfEq1(42);
-    expectEquals(42, result);
+    public static void main(String[] args) {
+        int result = $opt$testIfEq1(42);
+        expectEquals(42, result);
 
-    result = $opt$testIfEq2(42);
-    expectEquals(7, result);
+        result = $opt$testIfEq2(42);
+        expectEquals(7, result);
 
-    result = $opt$testWhileLoop(42);
-    expectEquals(45, result);
+        result = $opt$testWhileLoop(42);
+        expectEquals(45, result);
 
-    result = $opt$testDoWhileLoop(42);
-    expectEquals(45, result);
+        result = $opt$testDoWhileLoop(42);
+        expectEquals(45, result);
 
-    result = $opt$testForLoop(42);
-    expectEquals(44, result);
+        result = $opt$testForLoop(42);
+        expectEquals(44, result);
 
-    result = $opt$testIfWithLocal(5);
-    expectEquals(7, result);
-  }
-
-  static int $opt$testIfEq1(int a) {
-    if (a + 1 == 43) {
-      return 42;
-    } else {
-      return 7;
+        result = $opt$testIfWithLocal(5);
+        expectEquals(7, result);
     }
-  }
 
-  static int $opt$testIfEq2(int a) {
-    if (a + 1 == 41) {
-      return 42;
-    } else {
-      return 7;
+    static int $opt$testIfEq1(int a) {
+        if (a + 1 == 43) {
+            return 42;
+        } else {
+            return 7;
+        }
     }
-  }
 
-  static int $opt$testWhileLoop(int a) {
-    while (a++ != 44) {}
-    return a;
-  }
-
-  static int $opt$testDoWhileLoop(int a) {
-    do {
-    } while (a++ != 44);
-    return a;
-  }
-
-  static int $opt$testForLoop(int a) {
-    for (; a != 44; a++) {}
-    return a;
-  }
-
-  static int $opt$testIfWithLocal(int a) {
-    if (a == 5) {
-      int f = 2;
-      a += f;
+    static int $opt$testIfEq2(int a) {
+        if (a + 1 == 41) {
+            return 42;
+        } else {
+            return 7;
+        }
     }
-    // The SSA builder should not create a phi for f.
 
-    return a;
-  }
+    static int $opt$testWhileLoop(int a) {
+        while (a++ != 44) {}
+        return a;
+    }
+
+    static int $opt$testDoWhileLoop(int a) {
+        do {
+        } while (a++ != 44);
+        return a;
+    }
+
+    static int $opt$testForLoop(int a) {
+        for (; a != 44; a++) {}
+        return a;
+    }
+
+    static int $opt$testIfWithLocal(int a) {
+        if (a == 5) {
+            int f = 2;
+            a += f;
+        }
+        // The SSA builder should not create a phi for f.
+
+        return a;
+    }
 }

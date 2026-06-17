@@ -52,7 +52,6 @@ namespace interpreter {
      REQUIRES_SHARED(Locks::mutator_lock_);
 
   void ArtInterpreterToCompiledCodeBridge(Thread* self,
-                                          ArtMethod* caller,
                                           ShadowFrame* shadow_frame,
                                           uint16_t arg_offset,
                                           JValue* result);
@@ -78,9 +77,9 @@ inline bool EnsureInitialized(Thread* self, ShadowFrame* shadow_frame)
   return true;
 }
 
+NO_STACK_PROTECTOR
 inline void PerformCall(Thread* self,
                         const CodeItemDataAccessor& accessor,
-                        ArtMethod* caller_method,
                         const size_t first_dest_reg,
                         ShadowFrame* callee_frame,
                         JValue* result,
@@ -98,8 +97,7 @@ inline void PerformCall(Thread* self,
   if (use_interpreter_entrypoint) {
     interpreter::ArtInterpreterToInterpreterBridge(self, accessor, callee_frame, result);
   } else {
-    interpreter::ArtInterpreterToCompiledCodeBridge(
-        self, caller_method, callee_frame, first_dest_reg, result);
+    interpreter::ArtInterpreterToCompiledCodeBridge(self, callee_frame, first_dest_reg, result);
   }
 }
 

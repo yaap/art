@@ -33,8 +33,10 @@ public class Main {
             System.exit(1);
         });
 
-        Thread.startVirtual(Main::task1);
-        Thread.startVirtual(Main::task2);
+        Thread carrier1 = Thread.startVirtual(Main::task1);
+        Thread carrier2 = Thread.startVirtual(Main::task2);
+        carrier1.join(2000L);
+        carrier2.join(2000L);
     }
 
     private static void task1() {

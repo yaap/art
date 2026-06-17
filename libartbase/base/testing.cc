@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "android-base/file.h"
+#include "android-base/logging.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 #include "base/file_utils.h"

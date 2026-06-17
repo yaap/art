@@ -12,7 +12,7 @@ AllowShortBlocksOnASingleLine: Empty
 AllowShortCaseLabelsOnASingleLine: false
 AllowShortIfStatementsOnASingleLine: Never
 AllowShortLoopsOnASingleLine: false
-AttributeMacros: ['__', 'NO_RETURN']
+AttributeMacros: ['__', 'HIDDEN', 'NO_RETURN']
 BinPackArguments: false
 BinPackParameters: false
 BreakConstructorInitializers: BeforeColon
@@ -30,9 +30,10 @@ TabWidth: 2
 
 Language: Java
 
+BasedOnStyle: Google
 ColumnLimit: 100
 CommentPragmas: (NOLINT|CHECK[^ ]*):.*
-ContinuationIndentWidth: 4
+ContinuationIndentWidth: 8
 IndentWidth: 2
 JavaImportGroups:
 - android

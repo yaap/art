@@ -226,7 +226,7 @@ class AllocSpace {
   virtual size_t AllocationSize(mirror::Object* obj, size_t* usable_size) = 0;
 
   // Returns how many bytes were freed.
-  virtual size_t Free(Thread* self, mirror::Object* ptr) = 0;
+  virtual size_t Free(Thread* self, mirror::Object* ptr) REQUIRES_SHARED(Locks::mutator_lock_) = 0;
 
   // Free (deallocate) all objects in a list, and return the number of bytes freed.
   virtual size_t FreeList(Thread* self, size_t num_ptrs, mirror::Object** ptrs) = 0;

@@ -59,7 +59,8 @@ void HLoopInformation::Remove(HBasicBlock* block) {
   block_mask_.ClearBit(block->GetBlockId());
 }
 
-void HLoopInformation::PopulateRecursive(HBasicBlock* block) {
+void HLoopInformation::PopulateRecursive(
+    HBasicBlock* block, const ArenaSafeMap<HBasicBlock*, ArenaSet<HBasicBlock*>>& blocks_in_catch) {
   if (block_mask_.IsBitSet(block->GetBlockId())) {
     return;
   }
@@ -70,16 +71,39 @@ void HLoopInformation::PopulateRecursive(HBasicBlock* block) {
     // We're visiting loops in post-order, so inner loops must have been
     // populated already.
     DCHECK(block->GetLoopInformation()->IsPopulated());
-    if (block->GetLoopInformation()->IsIrreducible()) {
+    if (block->GetLoopInformation()->ContainsIrreducibleLoop()) {
       contains_irreducible_loop_ = true;
     }
   }
+
+  const bool is_catch_block = block->IsCatchBlock();
+  if (is_catch_block) {
+    auto it = blocks_in_catch.find(block);
+    if (it != blocks_in_catch.end()) {
+      const ArenaSet<HBasicBlock*>& try_blocks = it->second;
+      for (HBasicBlock* try_block : try_blocks) {
+        PopulateRecursive(try_block, blocks_in_catch);
+      }
+    }
+  }
+
   for (HBasicBlock* predecessor : block->GetPredecessors()) {
-    PopulateRecursive(predecessor);
+    if (is_catch_block) {
+      DCHECK(predecessor->EndsWithTryBoundary());
+      if (predecessor->GetLastInstruction()->AsTryBoundary()->IsEntry()) {
+        // Predecessors that are try entries cannot flow to the catch block as they are outside of
+        // the try.
+        continue;
+      }
+    }
+    PopulateRecursive(predecessor, blocks_in_catch);
   }
 }
 
-void HLoopInformation::PopulateIrreducibleRecursive(HBasicBlock* block, ArenaBitVector* finalized) {
+void HLoopInformation::PopulateIrreducibleRecursive(
+    HBasicBlock* block,
+    ArenaBitVector* finalized,
+    const ArenaSafeMap<HBasicBlock*, ArenaSet<HBasicBlock*>>& blocks_in_catch) {
   size_t block_id = block->GetBlockId();
 
   // If `block` is in `finalized`, we know its membership in the loop has been
@@ -96,7 +120,7 @@ void HLoopInformation::PopulateIrreducibleRecursive(HBasicBlock* block, ArenaBit
     // Note that we cannot use GetPreHeader, as the loop may have not been populated
     // yet.
     HBasicBlock* pre_header = block->GetPredecessors()[0];
-    PopulateIrreducibleRecursive(pre_header, finalized);
+    PopulateIrreducibleRecursive(pre_header, finalized, blocks_in_catch);
     if (block_mask_.IsBitSet(pre_header->GetBlockId())) {
       MarkInLoop(block);
       block_mask_.SetBit(block_id);
@@ -105,20 +129,43 @@ void HLoopInformation::PopulateIrreducibleRecursive(HBasicBlock* block, ArenaBit
 
       HLoopInformation* info = block->GetLoopInformation();
       for (HBasicBlock* back_edge : info->GetBackEdges()) {
-        PopulateIrreducibleRecursive(back_edge, finalized);
+        PopulateIrreducibleRecursive(back_edge, finalized, blocks_in_catch);
       }
     }
   } else {
     // Visit all predecessors. If one predecessor is part of the loop, this
     // block is also part of this loop.
-    for (HBasicBlock* predecessor : block->GetPredecessors()) {
-      PopulateIrreducibleRecursive(predecessor, finalized);
+    auto process_predecessor = [&](HBasicBlock* predecessor) ALWAYS_INLINE {
+      PopulateIrreducibleRecursive(predecessor, finalized, blocks_in_catch);
       if (!is_finalized && block_mask_.IsBitSet(predecessor->GetBlockId())) {
         MarkInLoop(block);
         block_mask_.SetBit(block_id);
         finalized->SetBit(block_id);
         is_finalized = true;
       }
+    };
+
+    const bool is_catch_block = block->IsCatchBlock();
+    if (is_catch_block) {
+      auto it = blocks_in_catch.find(block);
+      if (it != blocks_in_catch.end()) {
+        const ArenaSet<HBasicBlock*>& try_blocks = it->second;
+        for (HBasicBlock* try_block : try_blocks) {
+          process_predecessor(try_block);
+        }
+      }
+    }
+
+    for (HBasicBlock* predecessor : block->GetPredecessors()) {
+      if (is_catch_block) {
+        DCHECK(predecessor->EndsWithTryBoundary());
+        if (predecessor->GetLastInstruction()->AsTryBoundary()->IsEntry()) {
+          // Predecessors that are try entries cannot flow to the catch block as they are outside of
+          // the try.
+          continue;
+        }
+      }
+      process_predecessor(predecessor);
     }
   }
 
@@ -141,6 +188,27 @@ void HLoopInformation::Populate() {
 
   bool is_irreducible_loop = HasBackEdgeNotDominatedByHeader();
 
+  // Precompute catch block to try blocks mapping
+  ArenaSafeMap<HBasicBlock*, ArenaSet<HBasicBlock*>> blocks_in_catch(
+      graph->GetAllocator()->Adapter(kArenaAllocLoopInfo));
+
+  if (graph->HasTryCatch()) {
+    for (HBasicBlock* block : graph->GetReversePostOrderSkipEntryBlock()) {
+      if (!block->IsTryBlock()) {
+        continue;
+      }
+      const HTryBoundary& try_entry = block->GetTryCatchInformation()->GetTryEntry();
+      ArrayRef<HBasicBlock* const> handlers = try_entry.GetBlock()->GetExceptionalSuccessors();
+      for (HBasicBlock* handler : handlers) {
+        DCHECK(handler->IsCatchBlock());
+        ArenaSet<HBasicBlock*>& try_blocks = blocks_in_catch.GetOrCreate(handler, [&]() {
+          return ArenaSet<HBasicBlock*>(graph->GetAllocator()->Adapter(kArenaAllocLoopInfo));
+        });
+        try_blocks.insert(block);
+      }
+    }
+  }
+
   if (is_irreducible_loop) {
     // Allocate memory from local ScopedArenaAllocator.
     ScopedArenaAllocator allocator(graph->GetArenaStack());
@@ -152,11 +220,11 @@ void HLoopInformation::Populate() {
     visited.SetBit(header_->GetBlockId());
 
     for (HBasicBlock* back_edge : GetBackEdges()) {
-      PopulateIrreducibleRecursive(back_edge, &visited);
+      PopulateIrreducibleRecursive(back_edge, &visited, blocks_in_catch);
     }
   } else {
     for (HBasicBlock* back_edge : GetBackEdges()) {
-      PopulateRecursive(back_edge);
+      PopulateRecursive(back_edge, blocks_in_catch);
     }
   }
 
@@ -188,6 +256,9 @@ void HLoopInformation::Populate() {
 void HLoopInformation::PopulateInnerLoopUpwards(HLoopInformation* inner_loop) {
   DCHECK(inner_loop->GetPreHeader()->GetLoopInformation() == this);
   block_mask_.Union(&inner_loop->block_mask_);
+  if (inner_loop->ContainsIrreducibleLoop()) {
+    contains_irreducible_loop_ = true;
+  }
   HLoopInformation* outer_loop = GetPreHeader()->GetLoopInformation();
   if (outer_loop != nullptr) {
     outer_loop->PopulateInnerLoopUpwards(this);
@@ -210,14 +281,6 @@ bool HLoopInformation::IsIn(const HLoopInformation& other) const {
 
 bool HLoopInformation::IsDefinedOutOfTheLoop(HInstruction* instruction) const {
   return !block_mask_.IsBitSet(instruction->GetBlock()->GetBlockId());
-}
-
-size_t HLoopInformation::GetLifetimeEnd() const {
-  size_t last_position = 0;
-  for (HBasicBlock* back_edge : GetBackEdges()) {
-    last_position = std::max(back_edge->GetLifetimeEnd(), last_position);
-  }
-  return last_position;
 }
 
 bool HLoopInformation::HasBackEdgeNotDominatedByHeader() const {
@@ -260,6 +323,9 @@ inline void HLoopInformation::MarkInLoop(HBasicBlock* block) {
     // The `block` is currently part of an outer loop. Make it part of this inner loop.
     // Note that a non loop header having a loop information means this loop information
     // has already been populated
+    block->SetLoopInformation(this);
+  } else if (IsBackEdge(*block)) {
+    // If the `block` is a back edge of the current loop, it must point to this loop.
     block->SetLoopInformation(this);
   } else {
     // The `block` is part of an inner loop. Do not update the loop information.

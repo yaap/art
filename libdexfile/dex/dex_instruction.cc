@@ -164,7 +164,7 @@ std::string Instruction::DumpString(const DexFile* file) const {
           if (file != nullptr) {
             dex::TypeIndex type_idx(VRegB_21c());
             os << opcode << " v" << static_cast<int>(VRegA_21c()) << ", "
-               << file->PrettyType(type_idx) << " // type@" << type_idx;
+               << file->PrettyType(type_idx) << " // type@" << type_idx.index_;
             break;
           }
           FALLTHROUGH_INTENDED;
@@ -177,8 +177,8 @@ std::string Instruction::DumpString(const DexFile* file) const {
         case SGET_SHORT:
           if (file != nullptr) {
             uint32_t field_idx = VRegB_21c();
-            os << opcode << "  v" << static_cast<int>(VRegA_21c()) << ", " << file->PrettyField(field_idx, true)
-               << " // field@" << field_idx;
+            os << opcode << " v" << static_cast<int>(VRegA_21c()) << ", "
+               << file->PrettyField(field_idx, true) << " // field@" << field_idx;
             break;
           }
           FALLTHROUGH_INTENDED;
@@ -191,8 +191,8 @@ std::string Instruction::DumpString(const DexFile* file) const {
         case SPUT_SHORT:
           if (file != nullptr) {
             uint32_t field_idx = VRegB_21c();
-            os << opcode << " v" << static_cast<int>(VRegA_21c()) << ", " << file->PrettyField(field_idx, true)
-               << " // field@" << field_idx;
+            os << opcode << " v" << static_cast<int>(VRegA_21c()) << ", "
+               << file->PrettyField(field_idx, true) << " // field@" << field_idx;
             break;
           }
           FALLTHROUGH_INTENDED;
@@ -292,49 +292,41 @@ std::string Instruction::DumpString(const DexFile* file) const {
     case k35c: {
       uint32_t arg[kMaxVarArgRegs];
       GetVarArgs(arg);
-      auto DumpArgs = [&](size_t count) {
-        for (size_t i = 0; i < count; ++i) {
-          if (i != 0) {
-            os << ", ";
-          }
-          os << "v" << arg[i];
+      os << opcode << " {";
+      for (size_t i = 0, count = VRegA_35c(); i < count; ++i) {
+        if (i != 0) {
+          os << ", ";
         }
-      };
+        os << "v" << arg[i];
+      }
+      os << "}, ";
       switch (Opcode()) {
         case FILLED_NEW_ARRAY:
-        {
-          os << opcode << " {";
-          DumpArgs(VRegA_35c());
-          os << "}, type@" << VRegB_35c();
-        }
-        break;
-
+          if (file != nullptr) {
+            os << file->PrettyType(dex::TypeIndex(VRegB_35c())) << " // ";
+          }
+          os << "type@" << VRegB_35c();
+          break;
         case INVOKE_VIRTUAL:
         case INVOKE_SUPER:
         case INVOKE_DIRECT:
         case INVOKE_STATIC:
         case INVOKE_INTERFACE:
           if (file != nullptr) {
-            os << opcode << " {";
             uint32_t method_idx = VRegB_35c();
-            DumpArgs(VRegA_35c());
-            os << "}, " << file->PrettyMethod(method_idx) << " // method@" << method_idx;
+            os << file->PrettyMethod(method_idx) << " // method@" << method_idx;
             break;
           }
           FALLTHROUGH_INTENDED;
         case INVOKE_CUSTOM:
           if (file != nullptr) {
-            os << opcode << " {";
             uint32_t call_site_idx = VRegB_35c();
-            DumpArgs(VRegA_35c());
-            os << "},  // call_site@" << call_site_idx;
+            os << "call_site@" << call_site_idx;
             break;
           }
           FALLTHROUGH_INTENDED;
         default:
-          os << opcode << " {";
-          DumpArgs(VRegA_35c());
-          os << "}, thing@" << VRegB_35c();
+          os << "thing@" << VRegB_35c();
           break;
       }
       break;
@@ -342,7 +334,14 @@ std::string Instruction::DumpString(const DexFile* file) const {
     case k3rc: {
       uint16_t first_reg = VRegC_3rc();
       uint16_t last_reg =  VRegC_3rc() + VRegA_3rc() - 1;
+      os << opcode << ", {v" << first_reg << " .. v" << last_reg << "}, ";
       switch (Opcode()) {
+        case FILLED_NEW_ARRAY_RANGE:
+          if (file != nullptr) {
+            os << file->PrettyType(dex::TypeIndex(VRegB_3rc())) << " // ";
+          }
+          os << "type@" << VRegB_3rc();
+          break;
         case INVOKE_VIRTUAL_RANGE:
         case INVOKE_SUPER_RANGE:
         case INVOKE_DIRECT_RANGE:
@@ -350,22 +349,19 @@ std::string Instruction::DumpString(const DexFile* file) const {
         case INVOKE_INTERFACE_RANGE:
           if (file != nullptr) {
             uint32_t method_idx = VRegB_3rc();
-            os << StringPrintf("%s, {v%d .. v%d}, ", opcode, first_reg, last_reg)
-               << file->PrettyMethod(method_idx) << " // method@" << method_idx;
+            os << file->PrettyMethod(method_idx) << " // method@" << method_idx;
             break;
           }
           FALLTHROUGH_INTENDED;
         case INVOKE_CUSTOM_RANGE:
           if (file != nullptr) {
             uint32_t call_site_idx = VRegB_3rc();
-            os << StringPrintf("%s, {v%d .. v%d}, ", opcode, first_reg, last_reg)
-               << "// call_site@" << call_site_idx;
+            os << "call_site@" << call_site_idx;
             break;
           }
           FALLTHROUGH_INTENDED;
         default:
-          os << StringPrintf("%s, {v%d .. v%d}, ", opcode, first_reg, last_reg)
-             << "thing@" << VRegB_3rc();
+          os << "thing@" << VRegB_3rc();
           break;
       }
       break;

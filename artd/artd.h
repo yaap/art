@@ -160,6 +160,11 @@ class ArtdNotification : public aidl::com::android::server::art::BnArtdNotificat
   bool is_called_ GUARDED_BY(mu_) = false;
 };
 
+struct BootClasspathFds {
+  std::vector<std::unique_ptr<File>> files;
+  std::vector<int> fds;
+};
+
 class Artd : public aidl::com::android::server::art::BnArtd {
  public:
   explicit Artd(Options&& options,
@@ -170,6 +175,8 @@ class Artd : public aidl::com::android::server::art::BnArtd {
         exec_utils_(injector_->GetExecUtils()) {}
 
   ndk::ScopedAStatus isAlive(bool* _aidl_return) override;
+
+  ndk::ScopedAStatus stop() override;
 
   ndk::ScopedAStatus deleteArtifacts(
       const aidl::com::android::server::art::ArtifactsPath& in_artifactsPath,
@@ -214,7 +221,11 @@ class Artd : public aidl::com::android::server::art::BnArtd {
       const aidl::com::android::server::art::MergeProfileOptions& in_options,
       bool* _aidl_return) override;
 
-  ndk::ScopedAStatus getArtifactsVisibility(
+  ndk::ScopedAStatus getOdexVisibility(
+      const aidl::com::android::server::art::ArtifactsPath& in_artifactsPath,
+      aidl::com::android::server::art::FileVisibility* _aidl_return) override;
+
+  ndk::ScopedAStatus getVdexVisibility(
       const aidl::com::android::server::art::ArtifactsPath& in_artifactsPath,
       aidl::com::android::server::art::FileVisibility* _aidl_return) override;
 
@@ -231,7 +242,8 @@ class Artd : public aidl::com::android::server::art::BnArtd {
       const std::string& in_instructionSet,
       const std::optional<std::string>& in_classLoaderContext,
       const std::string& in_compilerFilter,
-      int32_t in_dexoptTrigger,
+      const aidl::com::android::server::art::DexoptTrigger& in_dexoptTrigger,
+      const ndk::ScopedFileDescriptor& in_loggingFd,
       aidl::com::android::server::art::GetDexoptNeededResult* _aidl_return) override;
 
   ndk::ScopedAStatus maybeCreateSdc(
@@ -304,6 +316,10 @@ class Artd : public aidl::com::android::server::art::BnArtd {
       int in_pid,
       std::shared_ptr<aidl::com::android::server::art::IArtdNotification>* _aidl_return) override;
 
+  ndk::ScopedAStatus hasAllClcDexFiles(const std::string& in_dexFile,
+                                       const std::string& in_classLoaderContext,
+                                       bool* _aidl_return) override;
+
   ndk::ScopedAStatus commitPreRebootStagedFiles(
       const std::vector<aidl::com::android::server::art::ArtifactsPath>& in_artifacts,
       const std::vector<aidl::com::android::server::art::ProfilePath::WritableProfilePath>&
@@ -334,6 +350,8 @@ class Artd : public aidl::com::android::server::art::BnArtd {
   android::base::Result<void> Start();
 
  private:
+  android::base::Result<BootClasspathFds> OpenBootClasspathFds(
+      const std::vector<std::string>& bcp_jars);
   android::base::Result<OatFileAssistantContext*> GetOatFileAssistantContext()
       EXCLUDES(ofa_context_mu_);
 

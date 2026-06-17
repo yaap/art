@@ -103,8 +103,8 @@ void ArmVIXLAssembler::LoadImmediate(vixl32::Register rd, int32_t value) {
   }
 }
 
-bool ArmVIXLAssembler::ShifterOperandCanAlwaysHold(uint32_t immediate) {
-  return vixl_masm_.IsModifiedImmediate(immediate);
+bool ArmVIXLAssembler::ShifterOperandCanAlwaysHold(uint32_t immediate) const {
+  return const_cast<ArmVIXLMacroAssembler&>(vixl_masm_).IsModifiedImmediate(immediate);
 }
 
 bool ArmVIXLAssembler::ShifterOperandCanHold(Opcode opcode,

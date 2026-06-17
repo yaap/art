@@ -17,18 +17,19 @@
 #ifndef ART_RUNTIME_THREAD_LIST_H_
 #define ART_RUNTIME_THREAD_LIST_H_
 
-#include <bitset>
+#include <cstdint>
 #include <list>
-#include <vector>
 
 #include "barrier.h"
+#include "base/bit_vector.h"
 #include "base/histogram.h"
-#include "base/mutex.h"
 #include "base/macros.h"
+#include "base/mutex.h"
 #include "base/value_object.h"
 #include "jni.h"
 #include "reflective_handle_scope.h"
 #include "suspend_reason.h"
+#include "thread.h"
 #include "thread_state.h"
 
 namespace art HIDDEN {
@@ -44,6 +45,12 @@ class RootVisitor;
 class Thread;
 class TimingLogger;
 enum VisitRootFlags : uint8_t;
+
+enum class ThreadSuspensionResult {
+  kResultFailure,
+  kResultSuccessPlatform,
+  kResultSuccessVirtual,
+};
 
 class ThreadList {
  public:
@@ -107,6 +114,21 @@ class ThreadList {
       REQUIRES(!Locks::mutator_lock_,
                !Locks::thread_list_lock_,
                !Locks::thread_suspend_count_lock_);
+
+  ThreadSuspensionResult SuspendPlatformOrVirtualThread(uint32_t thread_id,
+                                                        SuspendReason reason,
+                                                        /*out*/ Thread** carrier,
+                                                        int attempt_of_4 = 0)
+      REQUIRES(!Locks::mutator_lock_,
+               !Locks::thread_list_lock_,
+               !Locks::thread_suspend_count_lock_);
+
+  // Return true if the thread is resumed successfully. Otherwise, it returns false.
+  bool ResumePlatformOrVirtualThread(uint32_t thread_id,
+                                     Thread* carrier,
+                                     bool is_virtual,
+                                     SuspendReason reason)
+      REQUIRES(!Locks::thread_list_lock_, !Locks::thread_suspend_count_lock_);
 
   // Find an existing thread (or self) by its thread id (not tid).
   EXPORT Thread* FindThreadByThreadId(uint32_t thread_id) REQUIRES(Locks::thread_list_lock_);
@@ -226,10 +248,9 @@ class ThreadList {
 
   void VisitReflectiveTargets(ReflectiveValueVisitor* visitor) const REQUIRES(Locks::mutator_lock_);
 
-  EXPORT void SweepInterpreterCaches(IsMarkedVisitor* visitor) const
+  EXPORT void ClearInterpreterCaches() const
       REQUIRES(Locks::mutator_lock_, !Locks::thread_list_lock_);
 
-  void ClearInterpreterCaches() const REQUIRES(Locks::mutator_lock_, !Locks::thread_list_lock_);
   // Return a copy of the thread list.
   std::list<Thread*> GetList() REQUIRES(Locks::thread_list_lock_) {
     return list_;
@@ -258,14 +279,30 @@ class ThreadList {
   // the diagnostic information. If 0 is passed, we return an empty string on timeout.  Normally
   // the caller does not hold the mutator lock. See the comment at the call in
   // RequestSynchronousCheckpoint for the only exception.
-  std::optional<std::string> WaitForSuspendBarrier(AtomicInteger* barrier,
+  std::optional<std::string> WaitForSuspendBarrier(Thread* self,
+                                                   AtomicInteger* barrier,
                                                    pid_t t = 0,
                                                    int attempt_of_4 = 0)
       REQUIRES(!Locks::thread_list_lock_, !Locks::thread_suspend_count_lock_);
 
- private:
   uint32_t AllocThreadId(Thread* self);
   void ReleaseThreadId(Thread* self, uint32_t id) REQUIRES(!Locks::allocated_thread_ids_lock_);
+
+  void AllocVirtualThreadSuspendCount(uint32_t id) REQUIRES(!Locks::thread_list_lock_);
+  void ReleaseVirtualThreadSuspendCount(uint32_t id) REQUIRES(!Locks::thread_list_lock_);
+  uint32_t GetVirtualThreadSuspendCount(uint32_t id) REQUIRES(Locks::thread_list_lock_);
+  bool IsVirtualThreadSuspended(Thread* self, uint32_t id) REQUIRES(!Locks::thread_list_lock_);
+
+  void AddMountedVirtualThread(MountedVirtualThreadData* entry) REQUIRES(Locks::thread_list_lock_);
+  void RemoveMountedVirtualThread(MountedVirtualThreadData* entry)
+      REQUIRES(Locks::thread_list_lock_);
+  uint32_t GetCarrierThreadIdByVirtualThreadId(uint32_t virtual_thread_id)
+      REQUIRES(Locks::thread_list_lock_);
+  bool IsVirtualThreadSuspendCountAllocated(uint32_t id) REQUIRES(Locks::thread_list_lock_);
+
+ private:
+  void IncrementVirtualThreadSuspendCount(uint32_t id) REQUIRES(Locks::thread_list_lock_);
+  void DecrementVirtualThreadSuspendCount(uint32_t id) REQUIRES(Locks::thread_list_lock_);
 
   void DumpUnattachedThreads(std::ostream& os, bool dump_native_stack)
       REQUIRES(!Locks::thread_list_lock_);
@@ -299,10 +336,32 @@ class ThreadList {
   void AssertOtherThreadsAreSuspended(Thread* self)
       REQUIRES(!Locks::thread_list_lock_, !Locks::thread_suspend_count_lock_);
 
-  std::bitset<kMaxThreadId> allocated_ids_ GUARDED_BY(Locks::allocated_thread_ids_lock_);
+  class ThreadIdBitVector : public BitVector {
+   public:
+    ThreadIdBitVector();
+    ~ThreadIdBitVector() {}
+
+   private:
+    static constexpr uint32_t kSizeInBits = ThreadList::kMaxThreadId + 1;
+    static constexpr uint32_t kSizeInBytes = kSizeInBits / 8;
+    static constexpr uint32_t kSizeInWords = kSizeInBits / kWordBits;
+    static_assert(kSizeInBits % BitVector::kWordBits == 0, "Expected a multiple of kWordBits");
+
+    uint32_t word_storage_[kSizeInWords];
+  };
+
+  ThreadIdBitVector allocated_ids_ GUARDED_BY(Locks::allocated_thread_ids_lock_);
 
   // The actual list of all threads.
   std::list<Thread*> list_ GUARDED_BY(Locks::thread_list_lock_);
+
+  // It stores the suspend counts of each created virtual threads;
+  // TODO(http://b/477012795): Consider a more efficient data structure.
+  std::vector<uint32_t> virtual_thread_suspend_count_ GUARDED_BY(Locks::thread_list_lock_);
+
+  // A linked list of key-value pairs of a mounted virtual thread and carrier thread id. At most
+  // one entry per carrier thread. MountedVirtualThreadData objects are not owned by this list.
+  MountedVirtualThreadData* virtual_and_carrier_map_ GUARDED_BY(Locks::thread_list_lock_);
 
   // Ongoing suspend all requests, used to ensure threads added to list_ respect SuspendAll, and
   // to ensure that only one SuspendAll ot FlipThreadRoots call is active at a time.  The value is

@@ -338,7 +338,7 @@ inline void Thread::TransitionFromRunnableToSuspended(ThreadState new_state) {
   // Therefore any code added here (other than debug build assertions) should be gated
   // on some flag being set, so that the JNI stub can take the slow path to get here.
   AssertThreadSuspensionIsAllowable();
-  PoisonObjectPointersIfDebug();
+  PoisonObjectPointersOnCurrentThread();
   DCHECK_EQ(this, Thread::Current());
   // Change to non-runnable state, thereby appearing suspended to the system.
   TransitionToSuspendedAndRunCheckpoints(new_state);
@@ -507,7 +507,13 @@ inline void Thread::RevokeThreadLocalAllocationStack() {
   tlsPtr_.thread_local_alloc_stack_top = nullptr;
 }
 
-inline void Thread::PoisonObjectPointersIfDebug() {
+inline void Thread::PoisonObjectPointers() {
+  if (kObjPtrPoisoning) {
+    ++poison_object_cookie_;
+  }
+}
+
+inline void Thread::PoisonObjectPointersOnCurrentThread() {
   if (kObjPtrPoisoning) {
     Thread::Current()->PoisonObjectPointers();
   }
@@ -609,6 +615,33 @@ template <>
 inline void Thread::SetStackSize<StackType::kHardware>(size_t new_stack_size) {
   tlsPtr_.stack_size = new_stack_size;
 }
+
+#if ART_USE_SIMULATOR
+template <>
+inline uint8_t* Thread::GetStackEnd<StackType::kSimulated>() const {
+  return tlsPtr_.sim_data.sim_stack_end;
+}
+template <>
+inline void Thread::SetStackEnd<StackType::kSimulated>(uint8_t* new_stack_end) {
+  tlsPtr_.sim_data.sim_stack_end = new_stack_end;
+}
+template <>
+inline uint8_t* Thread::GetStackBegin<StackType::kSimulated>() const {
+  return tlsPtr_.sim_data.sim_stack_begin;
+}
+template <>
+inline void Thread::SetStackBegin<StackType::kSimulated>(uint8_t* new_stack_begin) {
+  tlsPtr_.sim_data.sim_stack_begin = new_stack_begin;
+}
+template <>
+inline size_t Thread::GetStackSize<StackType::kSimulated>() const {
+  return tlsPtr_.sim_data.sim_stack_size;
+}
+template <>
+inline void Thread::SetStackSize<StackType::kSimulated>(size_t new_stack_size) {
+  tlsPtr_.sim_data.sim_stack_size = new_stack_size;
+}
+#endif
 
 inline uint8_t* Thread::GetStackEndForInterpreter(bool implicit_overflow_check) const {
   uint8_t* end = GetStackEnd<kNativeStackType>() + (implicit_overflow_check

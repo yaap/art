@@ -77,7 +77,8 @@ class FuzzerCorpusTest : public CommonRuntimeTest {
     fuzzer::FuzzerCompiledMethodStorage storage;
     std::unique_ptr<fuzzer::FuzzerCompilerCallbacks> callbacks(
         new fuzzer::FuzzerCompilerCallbacks());
-    std::unique_ptr<CompilerOptions> compiler_options = fuzzer::CreateCompilerOptions(is_baseline);
+    std::unique_ptr<CompilerOptions> compiler_options =
+        fuzzer::CreateCompilerOptions(is_baseline, kRuntimeISA);
     std::unique_ptr<Compiler> compiler(fuzzer::CreateCompiler(*compiler_options, &storage));
 
     jobject class_loader = fuzzer::RegisterDexFileAndGetClassLoader(runtime, dex_file.get());
@@ -101,6 +102,34 @@ class FuzzerCorpusTest : public CommonRuntimeTest {
                                   const std::string& name,
                                   bool expected_success) {
     CommonCompilation(data, size, name, expected_success, /*is_baseline=*/true);
+  }
+
+  static void FastCompilation(const uint8_t* data,
+                              size_t size,
+                              const std::string& name,
+                              bool expected_success) {
+    std::unique_ptr<StandardDexFile> dex_file = fuzzer::VerifyDexFile(data, size, name);
+    ASSERT_EQ(dex_file != nullptr, true) << " Failed for " << name;
+
+    Runtime* runtime = Runtime::Current();
+    CHECK(runtime != nullptr);
+
+    std::unique_ptr<fuzzer::FuzzerCompilerCallbacks> callbacks(
+        new fuzzer::FuzzerCompilerCallbacks());
+    std::unique_ptr<CompilerOptions> compiler_options =
+        fuzzer::CreateCompilerOptions(/*is_baseline=*/false, InstructionSet::kArm64);
+
+    jobject class_loader = fuzzer::RegisterDexFileAndGetClassLoader(runtime, dex_file.get());
+    fuzzer::VerifyClasses(class_loader, dex_file.get());
+    const bool at_least_one_method_called_the_compiler =
+        fuzzer::CompileClassesFast(class_loader,
+                                   dex_file.get(),
+                                   compiler_options.get(),
+                                   callbacks.get(),
+                                   /*kDebugPrints=*/false);
+    // Note: no need to reset callbacks as they will get destroyed
+    fuzzer::IterationCleanup(class_loader, dex_file.get());
+    ASSERT_EQ(at_least_one_method_called_the_compiler, expected_success) << " Failed for " << name;
   }
 
   void TestFuzzerHelper(
@@ -198,6 +227,15 @@ TEST_F(FuzzerCorpusTest, BaselineCompileDexFiles) {
   // All added dex files should try to compile at least one method.
   constexpr auto should_expect_success = [](std::string&) { return true; };
   TestFuzzerHelper(archive_filename, should_expect_success, BaselineCompilation);
+}
+
+// Tests that we can compile classes with FastCompiler from dex files without crashing.
+TEST_F(FuzzerCorpusTest, FastCompileDexFiles) {
+  const std::string archive_filename = "fast_compiler_fuzzer_corpus.zip";
+
+  // All added dex files should try to compile at least one method.
+  constexpr auto should_expect_success = [](std::string&) { return true; };
+  TestFuzzerHelper(archive_filename, should_expect_success, FastCompilation);
 }
 
 }  // namespace art

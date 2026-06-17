@@ -52,6 +52,7 @@ import com.android.server.art.model.DexoptResult;
 import com.android.server.art.model.DexoptResult.DexoptResultStatus;
 import com.android.server.art.model.DexoptResult.PackageDexoptResult;
 import com.android.server.art.testing.StaticMockitoRule;
+import com.android.server.art.utils.Utils;
 import com.android.server.pm.PackageManagerLocal;
 
 import org.junit.Before;
@@ -414,6 +415,7 @@ public class BackgroundDexoptJobTest {
     private DexoptResult createDexoptResultWithStatus(@DexoptResultStatus int status) {
         return DexoptResult.create("compiler-filter", "reason",
                 List.of(PackageDexoptResult.create(
-                        "package-name", List.of() /* dexContainerFileDexoptResults */, status)));
+                        "package-name", List.of() /* dexContainerFileDexoptResults */, status)),
+                null /* overallStatus */);
     }
 }

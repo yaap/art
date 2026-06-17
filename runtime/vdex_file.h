@@ -188,51 +188,24 @@ class VdexFile {
   explicit VdexFile(MemMap&& mmap) : mmap_(std::move(mmap)) {}
 
   // Returns nullptr if the vdex file cannot be opened or is not valid.
-  // The mmap_* parameters can be left empty (nullptr/0/false) to allocate at random address.
-  EXPORT static std::unique_ptr<VdexFile> OpenAtAddress(uint8_t* mmap_addr,
-                                                        size_t mmap_size,
-                                                        bool mmap_reuse,
-                                                        const std::string& vdex_filename,
-                                                        bool low_4gb,
-                                                        std::string* error_msg);
+  EXPORT static std::unique_ptr<VdexFile> Open(const std::string& vdex_filename,
+                                               bool low_4gb,
+                                               std::string* error_msg);
 
   // Returns nullptr if the vdex file cannot be opened or is not valid.
-  // The mmap_* parameters can be left empty (nullptr/0/false) to allocate at random address.
-  EXPORT static std::unique_ptr<VdexFile> OpenAtAddress(uint8_t* mmap_addr,
-                                                        size_t mmap_size,
-                                                        bool mmap_reuse,
-                                                        int file_fd,
-                                                        off_t start,
-                                                        size_t vdex_length,
-                                                        const std::string& vdex_filename,
-                                                        bool low_4gb,
-                                                        std::string* error_msg);
-
-  // Returns nullptr if the vdex file cannot be opened or is not valid.
-  static std::unique_ptr<VdexFile> Open(const std::string& vdex_filename,
-                                        bool low_4gb,
-                                        std::string* error_msg) {
-    return OpenAtAddress(nullptr, 0, false, vdex_filename, low_4gb, error_msg);
-  }
-
-  // Returns nullptr if the vdex file cannot be opened or is not valid.
-  static std::unique_ptr<VdexFile> Open(int file_fd,
-                                        size_t vdex_length,
-                                        const std::string& vdex_filename,
-                                        bool low_4gb,
-                                        std::string* error_msg) {
-    return OpenAtAddress(
-        nullptr, 0, false, file_fd, /*start=*/0, vdex_length, vdex_filename, low_4gb, error_msg);
-  }
+  EXPORT static std::unique_ptr<VdexFile> Open(int file_fd,
+                                               off_t start,
+                                               size_t vdex_length,
+                                               const std::string& vdex_filename,
+                                               bool low_4gb,
+                                               std::string* error_msg);
 
   EXPORT static std::unique_ptr<VdexFile> OpenFromDm(const std::string& filename,
-                                                     const ZipArchive& archive,
                                                      std::string* error_msg);
 
-  static std::unique_ptr<VdexFile> OpenFromDm(const std::string& filename,
-                                              uint8_t* vdex_begin_,
-                                              uint8_t* vdex_end_,
-                                              std::string* error_msg);
+  EXPORT static std::unique_ptr<VdexFile> OpenFromDm(const ZipArchive& archive,
+                                                     const std::string& filename,
+                                                     std::string* error_msg);
 
   const uint8_t* Begin() const { return mmap_.Begin(); }
   const uint8_t* End() const { return mmap_.End(); }
@@ -283,7 +256,9 @@ class VdexFile {
   // order must match too.
   bool MatchesDexFileChecksums(const std::vector<const DexFile::Header*>& dex_headers) const;
 
-  ClassStatus ComputeClassStatus(Thread* self, Handle<mirror::Class> cls) const
+  ClassStatus ComputeClassStatus(Thread* self,
+                                 Handle<mirror::Class> cls,
+                                 uint32_t dex_file_index) const
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Return the name of the underlying `MemMap` of the vdex file, typically the

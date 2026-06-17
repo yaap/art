@@ -15,22 +15,22 @@
  */
 
 public class LoadedByAppClassLoader {
-  public static void letMeInlineYou(A a) {
-    a.foo();
-  }
+    public static void letMeInlineYou(A a) {
+        a.foo();
+    }
 
-  public static ClassLoader areYouB() {
-    // Ensure letMeInlineYou is JITted and tries to do inlining of A.foo.
-    // The compiler used to wrongly update the dex cache of letMeInlineYou's
-    // class loader.
-    Main.ensureJitCompiled(LoadedByAppClassLoader.class, "letMeInlineYou");
-    return OtherClass.getB().getClassLoader();
-  }
+    public static ClassLoader areYouB() {
+        // Ensure letMeInlineYou is JITted and tries to do inlining of A.foo.
+        // The compiler used to wrongly update the dex cache of letMeInlineYou's
+        // class loader.
+        Main.ensureJitCompiled(LoadedByAppClassLoader.class, "letMeInlineYou");
+        return OtherClass.getB().getClassLoader();
+    }
 }
 
 class OtherClass {
-  public static Class<?> getB() {
-    // This used to return the B class of another class loader.
-    return B.class;
-  }
+    public static Class<?> getB() {
+        // This used to return the B class of another class loader.
+        return B.class;
+    }
 }

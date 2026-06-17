@@ -41,7 +41,7 @@ static constexpr uint64_t kSeqMask = (0xFFFFFFFFull << 32);
 static constexpr uint64_t kSeqLock = (0x80000000ull << 32);
 static constexpr uint64_t kSeqIncr = (0x00000001ull << 32);
 static constexpr uint kAtomicPairMaxSpins = 10'000u;
-static constexpr uint kAtomicPairSleepNanos = 5'000u;
+static constexpr uint kAtomicPairSleepNanos = 100'000u;
 
 // std::pair<> is not trivially copyable and as such it is unsuitable for atomic operations.
 template <typename IntType>

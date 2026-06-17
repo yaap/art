@@ -14,8 +14,8 @@
     cmp     r0, r3                      @ compare (vA, vB)
     b${condition} 1f
     FETCH_ADVANCE_INST 2
-    GET_INST_OPCODE ip                  // extract opcode from rINST
-    GOTO_OPCODE ip                      // jump to next instruction
+    PREPARE_OPCODE_DISPATCH             // insert opcode to rIBASE
+    GOTO_OPCODE                         // jump to next instruction
 1:
     FETCH_S rINST, 1                    // rINST<- branch offset, in code units
     BRANCH
@@ -34,8 +34,8 @@
     cmp     r0, #0                      // compare (vA, 0)
     b${condition} 1f
     FETCH_ADVANCE_INST 2
-    GET_INST_OPCODE ip                  // extract opcode from rINST
-    GOTO_OPCODE ip                      // jump to next instruction
+    PREPARE_OPCODE_DISPATCH             // insert opcode to rIBASE
+    GOTO_OPCODE                         // jump to next instruction
 1:
     FETCH_S rINST, 1                    // rINST<- branch offset, in code units
     BRANCH
@@ -141,27 +141,24 @@
 /*
  * Return a 32-bit value.
  */
-%def op_return(is_object="0", is_void="0", is_wide="0"):
-    .if $is_void
+%def op_return(is_object=False, is_void=False, is_wide=False):
+%   if is_void:
       // Thread fence for constructor
       dmb ishst
-    .else
+%   else:
       mov     r2, rINST, lsr #8           @ r2<- AA
-      .if $is_wide
+%     if is_wide:
         VREG_INDEX_TO_ADDR r2, r2
         GET_VREG_WIDE_BY_ADDR r0, r1, r2 // r0,r1 <- vAA
         // In case we're going back to compiled code, put the
         // result also in d0.
         vmov d0, r0, r1
-      .else
+%     else:
         GET_VREG r0, r2                     // r0<- vAA
-        .if !$is_object
-        // In case we're going back to compiled code, put the
-        // result also in s0.
-        vmov s0, r0
-        .endif
-      .endif
-    .endif
+%       if not is_object:
+          // In case we're going back to compiled code, put the
+          // result also in s0.
+          vmov s0, r0
     .cfi_remember_state
     ldr ip, [rREFS, #-4]
     mov sp, ip
@@ -171,13 +168,13 @@
     CFI_DEF_CFA_BREG_PLUS_UCONST CFI_REFS, -4, CALLEE_SAVES_SIZE
 
 %def op_return_object():
-%  op_return(is_object="1", is_void="0", is_wide="0")
+%  op_return(is_object=True)
 
 %def op_return_void():
-%  op_return(is_object="0", is_void="1", is_wide="0")
+%  op_return(is_void=True)
 
 %def op_return_wide():
-%  op_return(is_object="0", is_void="0", is_wide="1")
+%  op_return(is_wide=True)
 
 %def op_throw():
   EXPORT_PC

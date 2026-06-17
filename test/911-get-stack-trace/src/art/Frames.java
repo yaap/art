@@ -19,117 +19,117 @@ package art;
 import java.util.Arrays;
 
 public class Frames {
-  public static void doTest() throws Exception {
-    doTestSameThread();
+    public static void doTest() throws Exception {
+        doTestSameThread();
 
-    System.out.println();
+        System.out.println();
 
-    doTestOtherThreadWait();
+        doTestOtherThreadWait();
 
-    System.out.println();
+        System.out.println();
 
-    doTestOtherThreadBusyLoop();
-  }
-
-  public static void doTestSameThread() {
-    System.out.println("###################");
-    System.out.println("### Same thread ###");
-    System.out.println("###################");
-
-    Thread t = Thread.currentThread();
-
-    int count = getFrameCount(t);
-    System.out.println(count);
-    try {
-      System.out.println(Arrays.toString(getFrameLocation(t, -1)));
-    } catch (RuntimeException e) {
-      System.out.println(e.getMessage());
-    }
-    for (int i = 0; i < count; i++) {
-      System.out.println(Arrays.toString(getFrameLocation(t, i)));
-    }
-    try {
-      System.out.println(Arrays.toString(getFrameLocation(t, count)));
-    } catch (RuntimeException e) {
-      System.out.println(e.getMessage());
-    }
-  }
-
-  public static void doTestOtherThreadWait() throws Exception {
-    System.out.println("################################");
-    System.out.println("### Other thread (suspended) ###");
-    System.out.println("################################");
-    final ControlData data = new ControlData();
-    data.waitFor = new Object();
-    Thread t = new Thread("Frames doTestOtherThreadWait") {
-      public void run() {
-        Recurse.foo(4, 0, 0, data);
-      }
-    };
-    t.start();
-    data.reached.await();
-    Thread.yield();
-    Thread.sleep(500);  // A little bit of time...
-
-    int count = getFrameCount(t);
-    System.out.println(count);
-    try {
-      System.out.println(Arrays.toString(getFrameLocation(t, -1)));
-    } catch (RuntimeException e) {
-      System.out.println(e.getMessage());
-    }
-    for (int i = 0; i < count; i++) {
-      System.out.println(Arrays.toString(getFrameLocation(t, i)));
-    }
-    try {
-      System.out.println(Arrays.toString(getFrameLocation(t, count)));
-    } catch (RuntimeException e) {
-      System.out.println(e.getMessage());
+        doTestOtherThreadBusyLoop();
     }
 
-    // Let the thread make progress and die.
-    synchronized(data.waitFor) {
-      data.waitFor.notifyAll();
-    }
-    t.join();
-  }
+    public static void doTestSameThread() {
+        System.out.println("###################");
+        System.out.println("### Same thread ###");
+        System.out.println("###################");
 
-  public static void doTestOtherThreadBusyLoop() throws Exception {
-    System.out.println("###########################");
-    System.out.println("### Other thread (live) ###");
-    System.out.println("###########################");
-    final ControlData data = new ControlData();
-    Thread t = new Thread("Frames doTestOtherThreadBusyLoop") {
-      public void run() {
-        Recurse.foo(4, 0, 0, data);
-      }
-    };
-    t.start();
-    data.reached.await();
-    Thread.yield();
-    Thread.sleep(500);  // A little bit of time...
+        Thread t = Thread.currentThread();
 
-    int count = getFrameCount(t);
-    System.out.println(count);
-    try {
-      System.out.println(Arrays.toString(getFrameLocation(t, -1)));
-    } catch (RuntimeException e) {
-      System.out.println(e.getMessage());
-    }
-    for (int i = 0; i < count; i++) {
-      System.out.println(Arrays.toString(getFrameLocation(t, i)));
-    }
-    try {
-      System.out.println(Arrays.toString(getFrameLocation(t, count)));
-    } catch (RuntimeException e) {
-      System.out.println(e.getMessage());
+        int count = getFrameCount(t);
+        System.out.println(count);
+        try {
+            System.out.println(Arrays.toString(getFrameLocation(t, -1)));
+        } catch (RuntimeException e) {
+            System.out.println(e.getMessage());
+        }
+        for (int i = 0; i < count; i++) {
+            System.out.println(Arrays.toString(getFrameLocation(t, i)));
+        }
+        try {
+            System.out.println(Arrays.toString(getFrameLocation(t, count)));
+        } catch (RuntimeException e) {
+            System.out.println(e.getMessage());
+        }
     }
 
-    // Let the thread stop looping and die.
-    data.stop = true;
-    t.join();
-  }
+    public static void doTestOtherThreadWait() throws Exception {
+        System.out.println("################################");
+        System.out.println("### Other thread (suspended) ###");
+        System.out.println("################################");
+        final ControlData data = new ControlData();
+        data.waitFor = new Object();
+        Thread t = new Thread("Frames doTestOtherThreadWait") {
+            public void run() {
+                Recurse.foo(4, 0, 0, data);
+            }
+        };
+        t.start();
+        data.reached.await();
+        Thread.yield();
+        Thread.sleep(500);  // A little bit of time...
 
-  public static native int getFrameCount(Thread thread);
-  public static native Object[] getFrameLocation(Thread thread, int depth);
+        int count = getFrameCount(t);
+        System.out.println(count);
+        try {
+            System.out.println(Arrays.toString(getFrameLocation(t, -1)));
+        } catch (RuntimeException e) {
+            System.out.println(e.getMessage());
+        }
+        for (int i = 0; i < count; i++) {
+            System.out.println(Arrays.toString(getFrameLocation(t, i)));
+        }
+        try {
+            System.out.println(Arrays.toString(getFrameLocation(t, count)));
+        } catch (RuntimeException e) {
+            System.out.println(e.getMessage());
+        }
+
+        // Let the thread make progress and die.
+        synchronized(data.waitFor) {
+            data.waitFor.notifyAll();
+        }
+        t.join();
+    }
+
+    public static void doTestOtherThreadBusyLoop() throws Exception {
+        System.out.println("###########################");
+        System.out.println("### Other thread (live) ###");
+        System.out.println("###########################");
+        final ControlData data = new ControlData();
+        Thread t = new Thread("Frames doTestOtherThreadBusyLoop") {
+            public void run() {
+                Recurse.foo(4, 0, 0, data);
+            }
+        };
+        t.start();
+        data.reached.await();
+        Thread.yield();
+        Thread.sleep(500);  // A little bit of time...
+
+        int count = getFrameCount(t);
+        System.out.println(count);
+        try {
+            System.out.println(Arrays.toString(getFrameLocation(t, -1)));
+        } catch (RuntimeException e) {
+            System.out.println(e.getMessage());
+        }
+        for (int i = 0; i < count; i++) {
+            System.out.println(Arrays.toString(getFrameLocation(t, i)));
+        }
+        try {
+            System.out.println(Arrays.toString(getFrameLocation(t, count)));
+        } catch (RuntimeException e) {
+            System.out.println(e.getMessage());
+        }
+
+        // Let the thread stop looping and die.
+        data.stop = true;
+        t.join();
+    }
+
+    public static native int getFrameCount(Thread thread);
+    public static native Object[] getFrameLocation(Thread thread, int depth);
 }

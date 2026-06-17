@@ -20,140 +20,140 @@ import java.util.ArrayList;
 import java.util.Arrays;
 
 public class Test904 {
-  public static void run() throws Exception {
-    // Use a list to ensure objects must be allocated.
-    ArrayList<Object> l = new ArrayList<>(100);
+    public static void run() throws Exception {
+        // Use a list to ensure objects must be allocated.
+        ArrayList<Object> l = new ArrayList<>(100);
 
-    prefetchClassNames();
+        prefetchClassNames();
 
-    doTest(l);
-  }
+        doTest(l);
+    }
 
-  // Pre-resolve class names so the strings don't have to be allocated as a side effect of
-  // callback printing.
-  private static void prefetchClassNames() {
-      Object.class.getName();
-      Integer.class.getName();
-      Float.class.getName();
-      Short.class.getName();
-      Byte.class.getName();
-      Double.class.getName();
-  }
+    // Pre-resolve class names so the strings don't have to be allocated as a side effect of
+    // callback printing.
+    private static void prefetchClassNames() {
+        Object.class.getName();
+        Integer.class.getName();
+        Float.class.getName();
+        Short.class.getName();
+        Byte.class.getName();
+        Double.class.getName();
+    }
 
-  public static void doTest(ArrayList<Object> l) throws Exception {
-    // Disable the global registration from OnLoad, to get into a known state.
-    enableAllocationTracking(null, false);
+    public static void doTest(ArrayList<Object> l) throws Exception {
+        // Disable the global registration from OnLoad, to get into a known state.
+        enableAllocationTracking(null, false);
 
-    // Enable actual logging callback.
-    setupObjectAllocCallback(true);
+        // Enable actual logging callback.
+        setupObjectAllocCallback(true);
 
-    System.out.println(Arrays.toString(getTrackingEventMessages(
-            new Thread[] { Thread.currentThread(), })));
+        System.out.println(Arrays.toString(getTrackingEventMessages(
+                new Thread[] { Thread.currentThread(), })));
 
-    enableAllocationTracking(null, true);
+        enableAllocationTracking(null, true);
 
-    l.add(new Object());
-    l.add(new Integer(1));
+        l.add(new Object());
+        l.add(new Integer(1));
 
-    enableAllocationTracking(null, false);
+        enableAllocationTracking(null, false);
 
-    l.add(new Float(1.0f));
+        l.add(new Float(1.0f));
 
-    enableAllocationTracking(Thread.currentThread(), true);
+        enableAllocationTracking(Thread.currentThread(), true);
 
-    l.add(new Short((short)0));
+        l.add(new Short((short)0));
 
-    enableAllocationTracking(Thread.currentThread(), false);
+        enableAllocationTracking(Thread.currentThread(), false);
 
-    l.add(new Byte((byte)0));
+        l.add(new Byte((byte)0));
 
-    System.out.println(Arrays.toString(getTrackingEventMessages(
-            new Thread[] { Thread.currentThread(), })));
-    System.out.println("Tracking on same thread");
+        System.out.println(Arrays.toString(getTrackingEventMessages(
+                new Thread[] { Thread.currentThread(), })));
+        System.out.println("Tracking on same thread");
 
-    Thread test_thread = testThread(l, true, true);
+        Thread test_thread = testThread(l, true, true);
 
-    l.add(new Byte((byte)0));
+        l.add(new Byte((byte)0));
 
-    System.out.println(Arrays.toString(getTrackingEventMessages(
-            new Thread[] { Thread.currentThread(), test_thread, })));
-    System.out.println("Tracking on same thread, not disabling tracking");
+        System.out.println(Arrays.toString(getTrackingEventMessages(
+                new Thread[] { Thread.currentThread(), test_thread, })));
+        System.out.println("Tracking on same thread, not disabling tracking");
 
-    test_thread = testThread(l, true, false);
+        test_thread = testThread(l, true, false);
 
-    System.out.println(Arrays.toString(getTrackingEventMessages(
-            new Thread[] { Thread.currentThread(), test_thread, })));
-    System.out.println("Tracking on different thread");
+        System.out.println(Arrays.toString(getTrackingEventMessages(
+                new Thread[] { Thread.currentThread(), test_thread, })));
+        System.out.println("Tracking on different thread");
 
-    test_thread = testThread(l, false, true);
+        test_thread = testThread(l, false, true);
 
-    l.add(new Byte((byte)0));
+        l.add(new Byte((byte)0));
 
-    // Disable actual logging callback and re-enable tracking, so we can keep the event enabled and
-    // check that shutdown works correctly.
-    setupObjectAllocCallback(false);
+        // Disable actual logging callback and re-enable tracking, so we can keep
+        // the event enabled and check that shutdown works correctly.
+        setupObjectAllocCallback(false);
 
-    System.out.println(Arrays.toString(getTrackingEventMessages(
-            new Thread[] { Thread.currentThread(), test_thread, })));
+        System.out.println(Arrays.toString(getTrackingEventMessages(
+                new Thread[] { Thread.currentThread(), test_thread, })));
 
-    enableAllocationTracking(null, true);
-  }
+        enableAllocationTracking(null, true);
+    }
 
-  private static Thread testThread(final ArrayList<Object> l, final boolean sameThread,
-      final boolean disableTracking) throws Exception {
-    final SimpleBarrier startBarrier = new SimpleBarrier(1);
-    final SimpleBarrier trackBarrier = new SimpleBarrier(1);
-    final SimpleBarrier disableBarrier = new SimpleBarrier(1);
+    private static Thread testThread(final ArrayList<Object> l, final boolean sameThread,
+            final boolean disableTracking) throws Exception {
+        final SimpleBarrier startBarrier = new SimpleBarrier(1);
+        final SimpleBarrier trackBarrier = new SimpleBarrier(1);
+        final SimpleBarrier disableBarrier = new SimpleBarrier(1);
 
-    final Thread thisThread = Thread.currentThread();
+        final Thread thisThread = Thread.currentThread();
 
-    Thread t = new Thread() {
-      public void run() {
-        try {
-          startBarrier.dec();
-          trackBarrier.waitFor();
-        } catch (Exception e) {
-          e.printStackTrace(System.out);
-          System.exit(1);
+        Thread t = new Thread() {
+            public void run() {
+                try {
+                    startBarrier.dec();
+                    trackBarrier.waitFor();
+                } catch (Exception e) {
+                    e.printStackTrace(System.out);
+                    System.exit(1);
+                }
+
+                l.add(new Double(0.0));
+
+                if (disableTracking) {
+                    enableAllocationTracking(sameThread ? this : thisThread, false);
+                }
+            }
+        };
+
+        t.start();
+        startBarrier.waitFor();
+        enableAllocationTracking(sameThread ? t : Thread.currentThread(), true);
+        trackBarrier.dec();
+
+        t.join();
+        return t;
+    }
+
+    private static class SimpleBarrier {
+        int count;
+
+        public SimpleBarrier(int i) {
+            count = i;
         }
 
-        l.add(new Double(0.0));
-
-        if (disableTracking) {
-          enableAllocationTracking(sameThread ? this : thisThread, false);
+        public synchronized void dec() throws Exception {
+            count--;
+            notifyAll();
         }
-      }
-    };
 
-    t.start();
-    startBarrier.waitFor();
-    enableAllocationTracking(sameThread ? t : Thread.currentThread(), true);
-    trackBarrier.dec();
-
-    t.join();
-    return t;
-  }
-
-  private static class SimpleBarrier {
-    int count;
-
-    public SimpleBarrier(int i) {
-      count = i;
+        public synchronized void waitFor() throws Exception  {
+            while (count != 0) {
+                wait();
+            }
+        }
     }
 
-    public synchronized void dec() throws Exception {
-      count--;
-      notifyAll();
-    }
-
-    public synchronized void waitFor() throws Exception  {
-      while (count != 0) {
-        wait();
-      }
-    }
-  }
-
-  private static native void setupObjectAllocCallback(boolean enable);
-  private static native void enableAllocationTracking(Thread thread, boolean enable);
-  private static native String[] getTrackingEventMessages(Thread[] threads);
+    private static native void setupObjectAllocCallback(boolean enable);
+    private static native void enableAllocationTracking(Thread thread, boolean enable);
+    private static native String[] getTrackingEventMessages(Thread[] threads);
 }

@@ -17,15 +17,15 @@
 #include "agent.h"
 
 #include "android-base/stringprintf.h"
-#include "nativehelper/scoped_local_ref.h"
-#include "nativeloader/native_loader.h"
-
 #include "base/logging.h"
 #include "base/strlcpy.h"
 #include "jni/java_vm_ext.h"
+#include "nativebridge/native_bridge.h"
+#include "nativehelper/scoped_local_ref.h"
+#include "nativeloader/native_loader.h"
 #include "runtime.h"
-#include "thread-current-inl.h"
 #include "scoped_thread_state_change-inl.h"
+#include "thread-current-inl.h"
 
 namespace art HIDDEN {
 namespace ti {
@@ -135,18 +135,8 @@ std::unique_ptr<Agent> AgentSpec::DoDlOpen(JNIEnv* env,
     *error = kLoadingError;
     return nullptr;
   }
-  if (needs_native_bridge) {
-    // TODO: Consider support?
-    // The result of this call and error_msg is ignored because the most
-    // relevant error is that native bridge is unsupported.
-    android::CloseNativeLibrary(dlopen_handle, needs_native_bridge, &nativeloader_error_msg);
-    android::NativeLoaderFreeErrorMessage(nativeloader_error_msg);
-    *error_msg = StringPrintf("Native-bridge agents unsupported: %s", name_.c_str());
-    *error = kLoadingError;
-    return nullptr;
-  }
 
-  std::unique_ptr<Agent> agent(new Agent(name_, dlopen_handle));
+  std::unique_ptr<Agent> agent{new Agent(name_, dlopen_handle, needs_native_bridge)};
   agent->PopulateFunctions();
   *error = kNoError;
   return agent;
@@ -156,10 +146,18 @@ std::ostream& operator<<(std::ostream &os, AgentSpec const& m) {
   return os << "AgentSpec { name=\"" << m.name_ << "\", args=\"" << m.args_ << "\" }";
 }
 
-
-void* Agent::FindSymbol(const std::string& name) const {
+void* Agent::FindSymbol(const std::string& name,
+                        const char* shorty,
+                        android::JNICallType jni_call_type) const {
   CHECK(dlopen_handle_ != nullptr) << "Cannot find symbols in an unloaded agent library " << this;
-  return dlsym(dlopen_handle_, name.c_str());
+
+  if (needs_native_bridge_) {
+    size_t shorty_len = shorty != nullptr ? strlen(shorty) : 0;
+    return android::NativeBridgeGetTrampoline2(
+        dlopen_handle_, name.c_str(), shorty, shorty_len, jni_call_type);
+  } else {
+    return dlsym(dlopen_handle_, name.c_str());
+  }
 }
 
 // TODO Lock some stuff probably.
@@ -207,15 +205,18 @@ Agent& Agent::operator=(Agent&& other) noexcept {
 }
 
 void Agent::PopulateFunctions() {
-  onload_ = reinterpret_cast<AgentOnLoadFunction>(FindSymbol(AGENT_ON_LOAD_FUNCTION_NAME));
+  onload_ = reinterpret_cast<AgentOnLoadFunction>(
+      FindSymbol(AGENT_ON_LOAD_FUNCTION_NAME, nullptr, android::kJNICallTypeRegular));
   if (onload_ == nullptr) {
     VLOG(agents) << "Unable to find 'Agent_OnLoad' symbol in " << this;
   }
-  onattach_ = reinterpret_cast<AgentOnLoadFunction>(FindSymbol(AGENT_ON_ATTACH_FUNCTION_NAME));
+  onattach_ = reinterpret_cast<AgentOnLoadFunction>(
+      FindSymbol(AGENT_ON_ATTACH_FUNCTION_NAME, nullptr, android::kJNICallTypeRegular));
   if (onattach_ == nullptr) {
     VLOG(agents) << "Unable to find 'Agent_OnAttach' symbol in " << this;
   }
-  onunload_ = reinterpret_cast<AgentOnUnloadFunction>(FindSymbol(AGENT_ON_UNLOAD_FUNCTION_NAME));
+  onunload_ = reinterpret_cast<AgentOnUnloadFunction>(
+      FindSymbol(AGENT_ON_UNLOAD_FUNCTION_NAME, nullptr, android::kJNICallTypeRegular));
   if (onunload_ == nullptr) {
     VLOG(agents) << "Unable to find 'Agent_OnUnload' symbol in " << this;
   }

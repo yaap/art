@@ -99,9 +99,9 @@ public class Main {
   /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[37,41]
   /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[37,41]
   /// CHECK-DAG:  <<Const1:i\d+>>   IntConstant 1         env_uses:[]
-  /// CHECK-DAG:                    NullCheck             env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:32
+  /// CHECK-DAG:                    NullCheck             env:[[_,_,<<RefArg>>,<<Array>>]]  liveness:32
   /// CHECK-DAG:                    ArrayLength                                                               liveness:36
-  /// CHECK-DAG:                    BoundsCheck           env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:40
+  /// CHECK-DAG:                    BoundsCheck           env:[[_,_,<<RefArg>>,<<Array>>]]  liveness:40
 
   /// CHECK-START-{ARM,ARM64}-DEBUGGABLE: void Main.testBoundsCheck(int, java.lang.Object, int[]) liveness (after)
   /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[37,41]
@@ -117,9 +117,9 @@ public class Main {
   /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[41,41]
   /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[41,41]
   /// CHECK-DAG:  <<Const1:i\d+>>   IntConstant 1         env_uses:[]
-  /// CHECK-DAG:                    NullCheck             env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:32
+  /// CHECK-DAG:                    NullCheck             env:[[_,_,<<RefArg>>,<<Array>>]]  liveness:32
   /// CHECK-DAG:                    ArrayLength                                                               liveness:36
-  /// CHECK-DAG:                    BoundsCheck           env:[[<<Const1>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:40
+  /// CHECK-DAG:                    BoundsCheck           env:[[_,_,<<RefArg>>,<<Array>>]]  liveness:40
 
   /// CHECK-START-{X86,X86_64}-DEBUGGABLE: void Main.testBoundsCheck(int, java.lang.Object, int[]) liveness (after)
   /// CHECK-DAG:  <<IntArg:i\d+>>   ParameterValue        env_uses:[41,41]
@@ -144,7 +144,7 @@ public class Main {
   /// CHECK-DAG:  <<RefArg:l\d+>>   ParameterValue        env_uses:[41,49]
   /// CHECK-DAG:  <<Array:l\d+>>    ParameterValue        env_uses:[41,49]
   /// CHECK-DAG:  <<Const0:i\d+>>   IntConstant 0         env_uses:[49]
-  /// CHECK-DAG:                    NullCheck             env:[[<<Const0>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:36
+  /// CHECK-DAG:                    NullCheck             env:[[_,_,<<RefArg>>,<<Array>>]]  liveness:36
   /// CHECK-DAG:                    ArrayLength                                                               liveness:40
   /// CHECK-DAG:                    Deoptimize            env:[[<<Const0>>,<<IntArg>>,<<RefArg>>,<<Array>>]]  liveness:48
 

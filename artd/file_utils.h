@@ -27,6 +27,7 @@
 
 #include "aidl/com/android/server/art/FsPermission.h"
 #include "android-base/result.h"
+#include "android-base/unique_fd.h"
 #include "base/os.h"
 
 namespace art {
@@ -118,6 +119,9 @@ class NewFile {
 
 // Opens a file for reading.
 android::base::Result<std::unique_ptr<File>> OpenFileForReading(const std::string& path);
+
+// Opens a directory as a dirfd.
+android::base::Result<android::base::unique_fd> OpenDirectory(const std::string& path);
 
 // Converts FsPermission to Linux access mode for a file.
 mode_t FileFsPermissionToMode(const aidl::com::android::server::art::FsPermission& fs_permission);

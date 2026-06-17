@@ -335,7 +335,7 @@ bool TryReplaceSubSubWithSubAdd(HSub* last_sub) {
     last_sub_right->ReplaceInput(b, 0);
     last_sub_right->ReplaceInput(a, 1);
 
-    // Replace Sub(c, Sub(a, b)) with Add(c, Sub(b, a).
+    // Replace Sub(c, Sub(a, b)) with Add(c, Sub(b, a)).
     HAdd* add = new (allocator) HAdd(last_sub->GetType(), last_sub_left, last_sub_right);
     basic_block->ReplaceAndRemoveInstructionWith(last_sub, add);
     return true;

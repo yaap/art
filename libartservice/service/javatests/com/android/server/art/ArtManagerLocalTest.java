@@ -16,16 +16,6 @@
 
 package com.android.server.art;
 
-import static android.app.ActivityManager.RunningAppProcessInfo;
-import static android.os.ParcelFileDescriptor.AutoCloseInputStream;
-import static android.platform.test.flag.junit.DeviceFlagsValueProvider.createCheckFlagsRule;
-
-import static com.android.art.rw.flags.Flags.FLAG_POST_UR_JOB;
-import static com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
-import static com.android.server.art.ProfilePath.PrimaryCurProfilePath;
-import static com.android.server.art.model.DexoptResult.DexContainerFileDexoptResult;
-import static com.android.server.art.model.DexoptResult.PackageDexoptResult;
-import static com.android.server.art.model.DexoptStatus.DexContainerFileDexoptStatus;
 import static com.android.server.art.testing.TestDataHelper.newPackageState;
 import static com.android.server.art.testing.TestDataHelper.newSplit;
 import static com.android.server.art.testing.TestDataHelper.newUserState;
@@ -36,18 +26,18 @@ import static com.android.server.art.testing.TestingUtils.inAnyOrderDeepEquals;
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.AdditionalMatchers.not;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.matches;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.argThat;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.isNull;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.matches;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.same;
@@ -56,6 +46,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.ActivityManager;
+import android.app.ActivityManager.RunningAppProcessInfo;
 import android.apphibernation.AppHibernationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -63,23 +54,22 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.CancellationSignal;
 import android.os.ParcelFileDescriptor;
+import android.os.ParcelFileDescriptor.AutoCloseInputStream;
 import android.os.Process;
 import android.os.ServiceSpecificException;
 import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.os.storage.StorageManager;
-import android.platform.test.annotations.RequiresFlagsDisabled;
-import android.platform.test.annotations.RequiresFlagsEnabled;
-import android.platform.test.flag.junit.CheckFlagsRule;
 import android.system.OsConstants;
 
 import androidx.test.filters.SmallTest;
 
-import com.android.art.flags.Flags;
 import com.android.modules.utils.pm.PackageStateModulesUtils;
+import com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
 import com.android.server.art.DexUseManagerLocal.DexLoader;
 import com.android.server.art.PreRebootDexoptJob.StagedFilesAge;
+import com.android.server.art.ProfilePath.PrimaryCurProfilePath;
 import com.android.server.art.model.ArtFlags;
 import com.android.server.art.model.ArtManagedFileStats;
 import com.android.server.art.model.BatchDexoptParams;
@@ -87,13 +77,20 @@ import com.android.server.art.model.Config;
 import com.android.server.art.model.DeleteResult;
 import com.android.server.art.model.DexoptParams;
 import com.android.server.art.model.DexoptResult;
+import com.android.server.art.model.DexoptResult.DexContainerFileDexoptResult;
+import com.android.server.art.model.DexoptResult.PackageDexoptResult;
 import com.android.server.art.model.DexoptStatus;
+import com.android.server.art.model.DexoptStatus.DexContainerFileDexoptStatus;
+import com.android.server.art.model.VerifyDexoptArtifactsResult;
 import com.android.server.art.prereboot.PreRebootStatsReporter;
 import com.android.server.art.proto.DexMetadataConfig;
+import com.android.server.art.testing.MockClock;
 import com.android.server.art.testing.PreRebootStatsReporterHarness;
 import com.android.server.art.testing.StaticMockitoRule;
 import com.android.server.art.testing.TestDataHelper.PackageStateBuilder;
 import com.android.server.art.testing.TestingUtils;
+import com.android.server.art.utils.AidlUtils;
+import com.android.server.art.utils.ArtdRefCache;
 import com.android.server.pm.PackageManagerLocal;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.AndroidPackageSplit;
@@ -138,18 +135,11 @@ public class ArtManagerLocalTest {
     private static final String PKG_NAME_1 = "com.example.foo";
     private static final String PKG_NAME_2 = "com.android.bar";
     private static final String PKG_NAME_HIBERNATING = "com.example.hibernating";
-    private static final int INACTIVE_DAYS = 1;
-    private static final long CURRENT_TIME_MS = 10000000000l;
-    private static final long RECENT_TIME_MS =
-            CURRENT_TIME_MS - TimeUnit.DAYS.toMillis(INACTIVE_DAYS) + 1;
-    private static final long NOT_RECENT_TIME_MS =
-            CURRENT_TIME_MS - TimeUnit.DAYS.toMillis(INACTIVE_DAYS) - 1;
     private static final int APP_ID = 1000;
 
     @Rule
     public StaticMockitoRule mockitoRule = new StaticMockitoRule(
             SystemProperties.class, Constants.class, PackageStateModulesUtils.class);
-    @Rule public final CheckFlagsRule mCheckFlagsRule = createCheckFlagsRule();
 
     @Mock private ArtManagerLocal.Injector mInjector;
     @Mock private ArtFileManager.Injector mArtFileManagerInjector;
@@ -167,6 +157,7 @@ public class ArtManagerLocalTest {
     @Mock private PreRebootDexoptJob mPreRebootDexoptJob;
     @Mock private ActivityManager mActivityManager;
     @Mock private BackgroundDexoptJob mBackgroundDexoptJob;
+    @Mock private ReasonMapping mReasonMapping;
     private PackageState mPkgState1;
     private AndroidPackage mPkg1;
     private CheckedSecondaryDexInfo mPkg1SecondaryDexInfo1;
@@ -175,6 +166,7 @@ public class ArtManagerLocalTest {
     private DexMetadataHelper mDexMetadataHelper;
     private Map<String, Set<BroadcastReceiver>> mBroadcastReceivers = new HashMap<>();
     private PreRebootStatsReporterHarness mPreRebootStatsReporterHarness;
+    private MockClock mMockClock;
 
     // True if the artifacts should be in dalvik-cache.
     @Parameter(0) public boolean mIsInDalvikCache;
@@ -193,6 +185,11 @@ public class ArtManagerLocalTest {
         mConfig = new Config();
         mDexMetadataHelper = new DexMetadataHelper(mDexMetadataHelperInjector);
         mPreRebootStatsReporterHarness = new PreRebootStatsReporterHarness();
+        mMockClock = new MockClock();
+
+        lenient()
+                .when(mPreRebootStatsReporterHarness.getInjector().getClock())
+                .thenReturn(mMockClock);
 
         // Use `lenient()` to suppress `UnnecessaryStubbingException` thrown by the strict stubs.
         // These are the default test setups. They may or may not be used depending on the code path
@@ -204,10 +201,7 @@ public class ArtManagerLocalTest {
         lenient().when(mInjector.getConfig()).thenReturn(mConfig);
         lenient().when(mInjector.getAppHibernationManager()).thenReturn(mAppHibernationManager);
         lenient().when(mInjector.getUserManager()).thenReturn(mUserManager);
-        lenient().when(mInjector.isSystemUiPackage(any())).thenReturn(false);
-        lenient().when(mInjector.isLauncherPackage(any())).thenReturn(false);
         lenient().when(mInjector.getDexUseManager()).thenReturn(mDexUseManager);
-        lenient().when(mInjector.getCurrentTimeMillis()).thenReturn(CURRENT_TIME_MS);
         lenient().when(mInjector.getStorageManager()).thenReturn(mStorageManager);
         lenient()
                 .when(mInjector.getArtFileManager())
@@ -220,6 +214,8 @@ public class ArtManagerLocalTest {
                 .thenReturn(mPreRebootStatsReporterHarness.createStatsReporter());
         lenient().when(mInjector.getActivityManager()).thenReturn(mActivityManager);
         lenient().when(mInjector.getBackgroundDexoptJob()).thenReturn(mBackgroundDexoptJob);
+        lenient().when(mInjector.getReasonMapping()).thenReturn(mReasonMapping);
+        lenient().when(mInjector.getClock()).thenReturn(mMockClock);
 
         lenient().when(mArtFileManagerInjector.getArtd()).thenReturn(mArtd);
         lenient().when(mArtFileManagerInjector.getUserManager()).thenReturn(mUserManager);
@@ -246,10 +242,6 @@ public class ArtManagerLocalTest {
                         matches("persist\\.device_config\\.runtime\\..*_concurrency"), anyInt()))
                 .thenReturn(3);
         lenient()
-                .when(SystemProperties.getInt(
-                        eq("pm.dexopt.downgrade_after_inactive_days"), anyInt()))
-                .thenReturn(INACTIVE_DAYS);
-        lenient()
                 .when(SystemProperties.get(eq("sys.boot.reason")))
                 .thenReturn("reboot,userrequested");
 
@@ -268,8 +260,6 @@ public class ArtManagerLocalTest {
                 .when(mUserManager.getUserHandles(anyBoolean()))
                 .thenReturn(List.of(UserHandle.of(0), UserHandle.of(1)));
 
-        // All packages are by default recently used.
-        lenient().when(mDexUseManager.getPackageLastUsedAtMillis(any())).thenReturn(RECENT_TIME_MS);
         mPkg1SecondaryDexInfo1 = createSecondaryDexInfo("/data/user/0/foo/1.apk", UserHandle.of(0));
         mPkg1SecondaryDexInfoNotFound =
                 createSecondaryDexInfo("/data/user/0/foo/not_found.apk", UserHandle.of(0));
@@ -280,13 +270,15 @@ public class ArtManagerLocalTest {
         lenient()
                 .doReturn(List.of(mPkg1SecondaryDexInfo1, mPkg1SecondaryDexInfoNotFound))
                 .when(mDexUseManager)
-                .getCheckedSecondaryDexInfo(
-                        eq(PKG_NAME_1), eq(false) /* excludeObsoleteDexesAndLoaders */);
+                .getCheckedSecondaryDexInfo(eq(PKG_NAME_1),
+                        eq(false) /* excludeObsoleteDexesAndLoaders */,
+                        anyBoolean() /* excludeObsoleteClcs */);
         lenient()
                 .doReturn(List.of(mPkg1SecondaryDexInfo1))
                 .when(mDexUseManager)
-                .getCheckedSecondaryDexInfo(
-                        eq(PKG_NAME_1), eq(true) /* excludeObsoleteDexesAndLoaders */);
+                .getCheckedSecondaryDexInfo(eq(PKG_NAME_1),
+                        eq(true) /* excludeObsoleteDexesAndLoaders */,
+                        anyBoolean() /* excludeObsoleteClcs */);
 
         // Set up the primary dex loaders.
         Set<DexLoader> loaders = new HashSet<>();
@@ -512,7 +504,7 @@ public class ArtManagerLocalTest {
                                 false /* isPrimaryDex */, true /* isPrimaryAbi */, "arm64-v8a",
                                 "unknown", "unknown", "error")));
 
-        if (mIsSecondaryAbiUsedByOtherApps || !Flags.dexoptSecondaryIsaOnlyWhenNeeded()) {
+        if (mIsSecondaryAbiUsedByOtherApps) {
             doReturn(createGetDexoptStatusResult("speed-profile", "compilation-reason-1",
                              "location-debug-string-1", ArtifactsLocation.NEXT_TO_DEX,
                              false /* isBackedByVdexOnly */))
@@ -538,6 +530,11 @@ public class ArtManagerLocalTest {
                 .comparingElementsUsing(TestingUtils.<DexContainerFileDexoptStatus>deepEquality())
                 .containsExactly(expectedDexContainerFileDexoptStatuses.toArray(
                         DexContainerFileDexoptStatus[] ::new));
+
+        verify(mDexUseManager)
+                .getCheckedSecondaryDexInfo(eq(PKG_NAME_1),
+                        eq(false) /* excludeObsoleteDexesAndLoaders */,
+                        eq(true) /* excludeObsoleteClcs */);
     }
 
     @Test(expected = IllegalArgumentException.class)
@@ -563,10 +560,7 @@ public class ArtManagerLocalTest {
 
         List<DexContainerFileDexoptStatus> statuses = result.getDexContainerFileDexoptStatuses();
         assertThat(statuses.size())
-                .isEqualTo(
-                        mIsSecondaryAbiUsedByOtherApps || !Flags.dexoptSecondaryIsaOnlyWhenNeeded()
-                                ? 6
-                                : 4);
+                .isEqualTo(mIsSecondaryAbiUsedByOtherApps ? 6 : 4);
 
         for (DexContainerFileDexoptStatus status : statuses) {
             assertThat(status.getCompilerFilter()).isEqualTo("error");
@@ -688,182 +682,144 @@ public class ArtManagerLocalTest {
     public void testDexoptPackages() throws Exception {
         var dexoptResult = DexoptResult.create();
         var cancellationSignal = new CancellationSignal();
-        when(mDexUseManager.getPackageLastUsedAtMillis(PKG_NAME_2)).thenReturn(CURRENT_TIME_MS);
-        simulateStorageLow();
 
-        // It should use the default package list and params. The list is sorted by last active
-        // time in descending order.
+        when(mReasonMapping.getDefaultPackagesForReason(mSnapshot, "boot-after-ota"))
+                .thenReturn(List.of(PKG_NAME_1));
+
+        // Even if the storage is low and there are inactive packages, it should not downgrade any
+        // package because downgrading is for "bg-dexopt" only.
+        simulateStorageLow();
+        lenient()
+                .when(mReasonMapping.getDefaultPackagesForReason(mSnapshot, "inactive"))
+                .thenReturn(List.of(PKG_NAME_2));
+
+        // Even if the dexopt is skipped due to lack of profile changes, it should not perform a
+        // supplementary pass because the supplementary pass is for "bg-dexopt" only.
+        var mainResult = DexoptResult.create("speed-profile", "boot-after-ota",
+                List.of(PackageDexoptResult.create(PKG_NAME_1,
+                        List.of(DexContainerFileDexoptResult.create("dex-file-1",
+                                true /* isPrimaryAbi */, "arm64", "speed-profile",
+                                DexoptResult.DEXOPT_SKIPPED)),
+                        null /* packageLevelStatus */)),
+                null /* overallStatus */);
+
+        // It should use the default package list and params.
         doReturn(dexoptResult)
                 .when(mDexoptHelper)
-                .dexopt(any(), deepEq(List.of(PKG_NAME_2, PKG_NAME_1)),
-                        argThat(params -> params.getReason().equals("bg-dexopt")),
+                .dexopt(any(), deepEq(List.of(PKG_NAME_1)),
+                        argThat(params -> params.getReason().equals("boot-after-ota")),
+                        same(cancellationSignal), any(), any(), any());
+
+        assertThat(mArtManagerLocal.dexoptPackages(mSnapshot, "boot-after-ota", cancellationSignal,
+                           null /* processCallbackExecutor */, null /* processCallback */))
+                .isEqualTo(Map.of(ArtFlags.PASS_MAIN, dexoptResult));
+
+        // No downgrading and supplementary passes.
+        verify(mDexoptHelper, times(1)).dexopt(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    public void testDexoptPackagesBgDexoptDowngradingPassStorageLow() throws Exception {
+        var dexoptResult = DexoptResult.create();
+        var cancellationSignal = new CancellationSignal();
+
+        when(mReasonMapping.getDefaultPackagesForReason(mSnapshot, "bg-dexopt"))
+                .thenReturn(List.of(PKG_NAME_1));
+
+        // The storage is low. It should downgrade inactive packages.
+        simulateStorageLow();
+        lenient()
+                .when(mReasonMapping.getDefaultPackagesForReason(mSnapshot, "inactive"))
+                .thenReturn(List.of(PKG_NAME_2));
+
+        // Downgrade pass.
+        doReturn(dexoptResult)
+                .when(mDexoptHelper)
+                .dexopt(any(), deepEq(List.of(PKG_NAME_2)),
+                        argThat(params -> params.getReason().equals("inactive")),
+                        same(cancellationSignal), any(), any(), any());
+
+        // Main pass.
+        doReturn(dexoptResult)
+                .when(mDexoptHelper)
+                .dexopt(any(), deepEq(List.of(PKG_NAME_1)),
+                        argThat(params
+                                -> params.getReason().equals("bg-dexopt")
+                                        && (params.getFlags() & ArtFlags.FLAG_FORCE_MERGE_PROFILE)
+                                                == 0),
+                        same(cancellationSignal), any(), any(), any());
+
+        // Supplementary pass. Nothing to do.
+        doReturn(dexoptResult)
+                .when(mDexoptHelper)
+                .dexopt(any(), deepEq(List.of()),
+                        argThat(params
+                                -> params.getReason().equals("bg-dexopt")
+                                        && (params.getFlags() & ArtFlags.FLAG_FORCE_MERGE_PROFILE)
+                                                != 0),
                         same(cancellationSignal), any(), any(), any());
 
         assertThat(mArtManagerLocal.dexoptPackages(mSnapshot, "bg-dexopt", cancellationSignal,
                            null /* processCallbackExecutor */, null /* processCallback */))
-                .isEqualTo(Map.of(ArtFlags.PASS_MAIN, dexoptResult));
+                .isEqualTo(Map.of(ArtFlags.PASS_DOWNGRADE, dexoptResult, ArtFlags.PASS_MAIN,
+                        dexoptResult, ArtFlags.PASS_SUPPLEMENTARY, dexoptResult));
 
-        // Nothing to downgrade.
-        verify(mDexoptHelper, never())
-                .dexopt(any(), any(), argThat(params -> params.getReason().equals("inactive")),
-                        any(), any(), any(), any());
+        // No other unexpected passes.
+        verify(mDexoptHelper, times(3)).dexopt(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
-    public void testDexoptPackagesRecentlyInstalled() throws Exception {
-        // The package is recently installed but hasn't been used.
-        PackageUserState userState = mPkgState1.getStateForUser(UserHandle.of(1));
-        when(userState.getFirstInstallTimeMillis()).thenReturn(RECENT_TIME_MS);
-        when(mDexUseManager.getPackageLastUsedAtMillis(PKG_NAME_1)).thenReturn(0l);
-        simulateStorageLow();
-
-        var result = DexoptResult.create();
+    public void testDexoptPackagesBgDexoptDowngradingPassStorageNotLow() throws Exception {
+        var dexoptResult = DexoptResult.create();
         var cancellationSignal = new CancellationSignal();
 
-        // PKG_NAME_1 should be dexopted.
-        doReturn(result)
-                .when(mDexoptHelper)
-                .dexopt(any(), inAnyOrder(PKG_NAME_1, PKG_NAME_2),
-                        argThat(params -> params.getReason().equals("bg-dexopt")), any(), any(),
-                        any(), any());
+        when(mReasonMapping.getDefaultPackagesForReason(mSnapshot, "bg-dexopt"))
+                .thenReturn(List.of(PKG_NAME_1));
 
-        mArtManagerLocal.dexoptPackages(mSnapshot, "bg-dexopt", cancellationSignal,
-                null /* processCallbackExecutor */, null /* processCallback */);
+        // The storage is not low. It should not downgrade inactive packages.
+        simulateStorageNotLow();
+        lenient()
+                .when(mReasonMapping.getDefaultPackagesForReason(mSnapshot, "inactive"))
+                .thenReturn(List.of(PKG_NAME_2));
 
-        // PKG_NAME_1 should not be downgraded.
-        verify(mDexoptHelper, never())
-                .dexopt(any(), any(), argThat(params -> params.getReason().equals("inactive")),
-                        any(), any(), any(), any());
-    }
-
-    @Test
-    public void testDexoptPackagesInactive() throws Exception {
-        // PKG_NAME_1 is neither recently installed nor recently used.
-        PackageUserState userState = mPkgState1.getStateForUser(UserHandle.of(1));
-        when(userState.getFirstInstallTimeMillis()).thenReturn(NOT_RECENT_TIME_MS);
-        when(mDexUseManager.getPackageLastUsedAtMillis(PKG_NAME_1)).thenReturn(NOT_RECENT_TIME_MS);
-        simulateStorageLow();
-
-        var mainResult = DexoptResult.create();
-        var downgradeResult = DexoptResult.create();
-        var cancellationSignal = new CancellationSignal();
-
-        // PKG_NAME_1 should not be dexopted.
-        doReturn(mainResult)
-                .when(mDexoptHelper)
-                .dexopt(any(), deepEq(List.of(PKG_NAME_2)),
-                        argThat(params -> params.getReason().equals("bg-dexopt")), any(), any(),
-                        any(), any());
-
-        // PKG_NAME_1 should be downgraded.
-        doReturn(downgradeResult)
+        // Main pass.
+        doReturn(dexoptResult)
                 .when(mDexoptHelper)
                 .dexopt(any(), deepEq(List.of(PKG_NAME_1)),
-                        argThat(params -> params.getReason().equals("inactive")), any(), any(),
-                        any(), any());
+                        argThat(params
+                                -> params.getReason().equals("bg-dexopt")
+                                        && (params.getFlags() & ArtFlags.FLAG_FORCE_MERGE_PROFILE)
+                                                == 0),
+                        same(cancellationSignal), any(), any(), any());
+
+        // Supplementary pass. Nothing to do.
+        doReturn(dexoptResult)
+                .when(mDexoptHelper)
+                .dexopt(any(), deepEq(List.of()),
+                        argThat(params
+                                -> params.getReason().equals("bg-dexopt")
+                                        && (params.getFlags() & ArtFlags.FLAG_FORCE_MERGE_PROFILE)
+                                                != 0),
+                        same(cancellationSignal), any(), any(), any());
 
         assertThat(mArtManagerLocal.dexoptPackages(mSnapshot, "bg-dexopt", cancellationSignal,
                            null /* processCallbackExecutor */, null /* processCallback */))
-                .isEqualTo(Map.of(
-                        ArtFlags.PASS_DOWNGRADE, downgradeResult, ArtFlags.PASS_MAIN, mainResult));
-    }
+                .isEqualTo(Map.of(ArtFlags.PASS_MAIN, dexoptResult, ArtFlags.PASS_SUPPLEMENTARY,
+                        dexoptResult));
 
-    @Test
-    public void testDexoptPackagesInactiveStorageNotLow() throws Exception {
-        // PKG_NAME_1 is neither recently installed nor recently used.
-        PackageUserState userState = mPkgState1.getStateForUser(UserHandle.of(1));
-        when(userState.getFirstInstallTimeMillis()).thenReturn(NOT_RECENT_TIME_MS);
-        when(mDexUseManager.getPackageLastUsedAtMillis(PKG_NAME_1)).thenReturn(NOT_RECENT_TIME_MS);
-
-        var result = DexoptResult.create();
-        var cancellationSignal = new CancellationSignal();
-
-        // PKG_NAME_1 should not be dexopted.
-        doReturn(result)
-                .when(mDexoptHelper)
-                .dexopt(any(), deepEq(List.of(PKG_NAME_2)),
-                        argThat(params -> params.getReason().equals("bg-dexopt")), any(), any(),
-                        any(), any());
-
-        mArtManagerLocal.dexoptPackages(mSnapshot, "bg-dexopt", cancellationSignal,
-                null /* processCallbackExecutor */, null /* processCallback */);
-
-        // PKG_NAME_1 should not be downgraded because the storage is not low.
-        verify(mDexoptHelper, never())
-                .dexopt(any(), any(), argThat(params -> params.getReason().equals("inactive")),
-                        any(), any(), any(), any());
-    }
-
-    @Test
-    public void testDexoptPackagesFirstBoot() throws Exception {
-        // On first-boot all packages haven't been used and first install time is
-        // 0 which simulates case of system time being advanced by
-        // AlarmManagerService after package installation
-        lenient().when(mDexUseManager.getPackageLastUsedAtMillis(any())).thenReturn(0l);
-
-        var result = DexoptResult.create();
-        var cancellationSignal = new CancellationSignal();
-
-        // PKG_NAME_1 and PKG_NAME_2 should be dexopted.
-        doReturn(result)
-                .when(mDexoptHelper)
-                .dexopt(any(), inAnyOrder(PKG_NAME_1, PKG_NAME_2),
-                        argThat(params -> params.getReason().equals("first-boot")), any(), any(),
-                        any(), any());
-
-        mArtManagerLocal.dexoptPackages(mSnapshot, "first-boot", cancellationSignal,
-                null /* processCallbackExecutor */, null /* processCallback */);
-    }
-
-    @Test
-    public void testDexoptPackagesBootAfterMainlineUpdate() throws Exception {
-        var result = DexoptResult.create();
-        var cancellationSignal = new CancellationSignal();
-
-        lenient().when(mInjector.isSystemUiPackage(PKG_NAME_1)).thenReturn(true);
-        lenient().when(mInjector.isLauncherPackage(PKG_NAME_2)).thenReturn(true);
-
-        // It should dexopt the system UI and the launcher.
-        when(mDexoptHelper.dexopt(
-                     any(), inAnyOrder(PKG_NAME_1, PKG_NAME_2), any(), any(), any(), any(), any()))
-                .thenReturn(result);
-
-        mArtManagerLocal.dexoptPackages(mSnapshot, "boot-after-mainline-update", cancellationSignal,
-                null /* processCallbackExecutor */, null /* processCallback */);
-    }
-
-    @Test
-    public void testDexoptPackagesBootAfterMainlineUpdatePackagesNotFound() throws Exception {
-        var result = DexoptResult.create();
-        var cancellationSignal = new CancellationSignal();
-        // PKG_NAME_1 is neither recently installed nor recently used.
-        PackageUserState userState = mPkgState1.getStateForUser(UserHandle.of(1));
-        lenient().when(userState.getFirstInstallTimeMillis()).thenReturn(NOT_RECENT_TIME_MS);
-        lenient()
-                .when(mDexUseManager.getPackageLastUsedAtMillis(PKG_NAME_1))
-                .thenReturn(NOT_RECENT_TIME_MS);
-        simulateStorageLow();
-
-        // It should dexopt the system UI and the launcher, but they are not found.
-        when(mDexoptHelper.dexopt(any(), deepEq(List.of()), any(), any(), any(), any(), any()))
-                .thenReturn(result);
-
-        mArtManagerLocal.dexoptPackages(mSnapshot, "boot-after-mainline-update", cancellationSignal,
-                null /* processCallbackExecutor */, null /* processCallback */);
-
-        // It should never downgrade apps, even if the storage is low.
-        verify(mDexoptHelper, never())
-                .dexopt(any(), any(), argThat(params -> params.getReason().equals("inactive")),
-                        any(), any(), any(), any());
+        // No other unexpected passes.
+        verify(mDexoptHelper, times(2)).dexopt(any(), any(), any(), any(), any(), any(), any());
     }
 
     @Test
     public void testDexoptPackagesOverride() throws Exception {
-        // PKG_NAME_1 is neither recently installed nor recently used.
-        PackageUserState userState = mPkgState1.getStateForUser(UserHandle.of(1));
-        when(userState.getFirstInstallTimeMillis()).thenReturn(NOT_RECENT_TIME_MS);
-        when(mDexUseManager.getPackageLastUsedAtMillis(PKG_NAME_1)).thenReturn(NOT_RECENT_TIME_MS);
+        when(mReasonMapping.getDefaultPackagesForReason(mSnapshot, "bg-dexopt"))
+                .thenReturn(List.of(PKG_NAME_2));
+
         simulateStorageLow();
+        lenient()
+                .when(mReasonMapping.getDefaultPackagesForReason(mSnapshot, "inactive"))
+                .thenReturn(List.of(PKG_NAME_1));
 
         var params = new DexoptParams.Builder("bg-dexopt").build();
         var result = DexoptResult.create();
@@ -895,6 +851,9 @@ public class ArtManagerLocalTest {
 
     @Test
     public void testDexoptPackagesOverrideCleared() throws Exception {
+        when(mReasonMapping.getDefaultPackagesForReason(mSnapshot, "bg-dexopt"))
+                .thenReturn(List.of(PKG_NAME_1, PKG_NAME_2));
+
         var params = new DexoptParams.Builder("bg-dexopt").build();
         var result = DexoptResult.create();
         var cancellationSignal = new CancellationSignal();
@@ -917,6 +876,9 @@ public class ArtManagerLocalTest {
 
     @Test
     public void testDexoptPackagesSupplementaryPass() throws Exception {
+        when(mReasonMapping.getDefaultPackagesForReason(mSnapshot, "bg-dexopt"))
+                .thenReturn(List.of(PKG_NAME_1, PKG_NAME_2));
+
         // The supplementary pass should only try dexopting PKG_NAME_2.
         var mainResult = DexoptResult.create("speed-profile", "bg-dexopt",
                 List.of(PackageDexoptResult.create(PKG_NAME_1,
@@ -934,7 +896,8 @@ public class ArtManagerLocalTest {
                                         DexContainerFileDexoptResult.create("dex-file-2",
                                                 true /* isPrimaryAbi */, "arm64", "speed-profile",
                                                 DexoptResult.DEXOPT_SKIPPED)),
-                                null /* packageLevelStatus */)));
+                                null /* packageLevelStatus */)),
+                null /* overallStatus */);
         var supplementaryResult = DexoptResult.create();
         var cancellationSignal = new CancellationSignal();
 
@@ -1334,7 +1297,7 @@ public class ArtManagerLocalTest {
         runtimeArtifactsPaths.add(AidlUtils.buildRuntimeArtifactsPath(
                 PKG_NAME_1, "/somewhere/app/foo/split_0.apk", "arm64"));
         var vdexPaths = new ArrayList<>();
-        if (mIsSecondaryAbiUsedByOtherApps || !Flags.dexoptSecondaryIsaOnlyWhenNeeded()) {
+        if (mIsSecondaryAbiUsedByOtherApps) {
             // It should only keep VDEX files and runtime images.
             doReturn(createGetDexoptStatusResult("verify", "vdex", "location",
                              ArtifactsLocation.NEXT_TO_DEX, true /* isBackedByVdexOnly */))
@@ -1418,7 +1381,7 @@ public class ArtManagerLocalTest {
         expectedRuntimeArtifactsPaths.add(AidlUtils.buildRuntimeArtifactsPath(
                 PKG_NAME_1, "/somewhere/app/foo/split_0.apk", "arm64"));
 
-        if (mIsSecondaryAbiUsedByOtherApps || !Flags.dexoptSecondaryIsaOnlyWhenNeeded()) {
+        if (mIsSecondaryAbiUsedByOtherApps) {
             // It should keep the SDM file, but not runtime images.
             doReturn(createGetDexoptStatusResult("speed-profile", "cloud", "location",
                              ArtifactsLocation.SDM_DALVIK_CACHE, false /* isBackedByVdexOnly */))
@@ -1472,8 +1435,9 @@ public class ArtManagerLocalTest {
         lenient()
                 .doReturn(List.of(mPkg1SecondaryDexInfo1, pkg1SecondaryDexInfo2))
                 .when(mDexUseManager)
-                .getCheckedSecondaryDexInfo(
-                        eq(PKG_NAME_1), eq(true) /* excludeObsoleteDexesAndLoaders */);
+                .getCheckedSecondaryDexInfo(eq(PKG_NAME_1),
+                        eq(true) /* excludeObsoleteDexesAndLoaders */,
+                        anyBoolean() /* excludeObsoleteClcs */);
 
         // It should count all artifacts, but not runtime images.
         doReturn(createGetDexoptStatusResult("speed-profile", "bg-dexopt", "location",
@@ -1506,7 +1470,7 @@ public class ArtManagerLocalTest {
         int expectedGetArtifactsSizeCalls = 3;
         int expectedGetVdexFileSizeCalls = 0;
         int expectedGetRuntimeArtifactsSizeCalls = 1;
-        if (mIsSecondaryAbiUsedByOtherApps || !Flags.dexoptSecondaryIsaOnlyWhenNeeded()) {
+        if (mIsSecondaryAbiUsedByOtherApps) {
             // If other apps are using the secondary ABI, then we expect to get
             // the artifact calls for the secondary ABI as well.
             // It should only count VDEX files and runtime images.
@@ -1601,6 +1565,11 @@ public class ArtManagerLocalTest {
         verify(mArtd, times(expectedGetVdexFileSizeCalls)).getVdexFileSize(any());
         verify(mArtd, times(expectedGetRuntimeArtifactsSizeCalls)).getRuntimeArtifactsSize(any());
         verify(mArtd, times(expectedGetProfileSizeCalls)).getProfileSize(any());
+
+        verify(mDexUseManager)
+                .getCheckedSecondaryDexInfo(eq(PKG_NAME_1),
+                        eq(true) /* excludeObsoleteDexesAndLoaders */,
+                        eq(true) /* excludeObsoleteClcs */);
     }
 
     @Test
@@ -1637,7 +1606,7 @@ public class ArtManagerLocalTest {
         long expectedTotalSize = (1l << 0) + (1l << 2) + (1l << 3);
         int expectedNumberofSdmFiles = 2;
         int expectedNumberofRuntimeArtifacts = 1;
-        if (mIsSecondaryAbiUsedByOtherApps || !Flags.dexoptSecondaryIsaOnlyWhenNeeded()) {
+        if (mIsSecondaryAbiUsedByOtherApps) {
             // It should count the SDM file, but not runtime images.
             doReturn(createGetDexoptStatusResult("speed-profile", "cloud", "location",
                              ArtifactsLocation.SDM_DALVIK_CACHE, false /* isBackedByVdexOnly */))
@@ -1676,7 +1645,7 @@ public class ArtManagerLocalTest {
         when(mArtd.checkPreRebootStagedFilesStatus())
                 .thenReturn(TestingUtils.createPreRebootStagedFilesStatus(
                         true /* isCommittable */, 200 /* createdAtMillis */));
-        when(mInjector.getCurrentTimeMillis()).thenReturn(800l);
+        mMockClock.setCurrentTimeMillis(800l);
 
         mArtManagerLocal.onBoot(ReasonMapping.REASON_BOOT_AFTER_OTA,
                 null /* progressCallbackExecutor */, null /* progressCallback */);
@@ -1756,7 +1725,7 @@ public class ArtManagerLocalTest {
         when(mArtd.checkPreRebootStagedFilesStatus())
                 .thenReturn(TestingUtils.createPreRebootStagedFilesStatus(
                         false /* isCommittable */, 200 /* createdAtMillis */));
-        when(mInjector.getCurrentTimeMillis()).thenReturn(800l);
+        mMockClock.setCurrentTimeMillis(800l);
 
         mArtManagerLocal.onBoot(ReasonMapping.REASON_BOOT_AFTER_OTA,
                 null /* progressCallbackExecutor */, null /* progressCallback */);
@@ -1836,7 +1805,6 @@ public class ArtManagerLocalTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(FLAG_POST_UR_JOB)
     public void testPostUrJob() throws Exception {
         when(SystemProperties.get(eq("sys.boot.reason"))).thenReturn("reboot,unattended,ota");
         mArtManagerLocal.onBoot(ReasonMapping.REASON_BOOT_AFTER_OTA,
@@ -1853,7 +1821,6 @@ public class ArtManagerLocalTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(FLAG_POST_UR_JOB)
     public void testPostUrJobBroadcastOrderReversed() throws Exception {
         when(SystemProperties.get(eq("sys.boot.reason"))).thenReturn("reboot,unattended,ota");
         mArtManagerLocal.onBoot(ReasonMapping.REASON_BOOT_AFTER_OTA,
@@ -1871,7 +1838,6 @@ public class ArtManagerLocalTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(FLAG_POST_UR_JOB)
     public void testPostUrJobNotUnattended() throws Exception {
         mArtManagerLocal.onBoot(ReasonMapping.REASON_BOOT_AFTER_OTA,
                 null /* progressCallbackExecutor */, null /* progressCallback */);
@@ -1884,7 +1850,6 @@ public class ArtManagerLocalTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(FLAG_POST_UR_JOB)
     public void testPostUrJobNotBootAfterOtaOrMainline() throws Exception {
         lenient()
                 .when(SystemProperties.get(eq("sys.boot.reason")))
@@ -1898,19 +1863,21 @@ public class ArtManagerLocalTest {
     }
 
     @Test
-    @RequiresFlagsDisabled(FLAG_POST_UR_JOB)
-    public void testPostUrJobFlagDisabled() throws Exception {
+    public void testVerifyDexoptArtifacts() throws Exception {
+        lenient().when(mPkgState1.shouldVerifyCompilationArtifacts()).thenReturn(true);
         lenient()
-                .when(SystemProperties.get(eq("sys.boot.reason")))
-                .thenReturn("reboot,unattended,ota");
-        mArtManagerLocal.onBoot(ReasonMapping.REASON_BOOT_AFTER_OTA,
-                null /* progressCallbackExecutor */, null /* progressCallback */);
-        mArtManagerLocal.systemReady();
+                .when(mSnapshot.getPackageState(PKG_NAME_2).shouldVerifyCompilationArtifacts())
+                .thenReturn(false);
 
-        simulateBroadcast(Intent.ACTION_BOOT_COMPLETED);
+        var result = new VerifyDexoptArtifactsResult(true /* isVerified */);
+        when(mDexoptHelper.verifyDexoptArtifacts(any(), any())).thenReturn(result);
 
-        verify(mBackgroundDexoptJob, never())
-                .schedule(BackgroundDexoptJob.JobType.POST_UNATTENDED_REBOOT);
+        VerifyDexoptArtifactsResult actualResult =
+                mArtManagerLocal.verifyDexoptArtifacts(mSnapshot);
+
+        assertThat(actualResult).isSameInstanceAs(result);
+        assertThat(actualResult.isVerified()).isTrue();
+        verify(mDexoptHelper).verifyDexoptArtifacts(eq(mSnapshot), any(Executor.class));
     }
 
     private PackageStateBuilder newPackageStateWithDefaults(String packageName) {
@@ -1944,8 +1911,8 @@ public class ArtManagerLocalTest {
         PackageState pkgState2 =
                 newPackageStateWithDefaults(PKG_NAME_2).setDexoptable(true).build();
 
-        // This should not be dexopted because it's hibernating. However, it should be included
-        // when snapshotting boot image profile.
+        // This package should be included when snapshotting boot image profile, even though it's
+        // hiberating.
         PackageState pkgHibernatingState =
                 newPackageStateWithDefaults(PKG_NAME_HIBERNATING).setDexoptable(true).build();
         lenient()

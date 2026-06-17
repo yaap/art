@@ -17,14 +17,14 @@
 import java.lang.reflect.Method;
 
 public class Main {
-  public static void main(String[] args) throws Exception {
-    Class<?> c = Class.forName("DCE");
-    Method m = c.getMethod("method", int[].class);
-    int[] array = new int[7];
-    Object[] arguments = { array };
-    Object result = m.invoke(null, arguments);
-    if (result != null) {
-      throw new Error("Expected null, got " + result);
+    public static void main(String[] args) throws Exception {
+        Class<?> c = Class.forName("DCE");
+        Method m = c.getMethod("method", int[].class);
+        int[] array = new int[7];
+        Object[] arguments = { array };
+        Object result = m.invoke(null, arguments);
+        if (result != null) {
+            throw new Error("Expected null, got " + result);
+        }
     }
-  }
 }

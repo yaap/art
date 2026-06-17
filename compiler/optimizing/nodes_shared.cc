@@ -31,17 +31,7 @@ void HDataProcWithShifterOp::GetOpInfoFromInstruction(HInstruction* instruction,
                                                       /*out*/OpKind* op_kind,
                                                       /*out*/int* shift_amount) {
   DCHECK(CanFitInShifterOperand(instruction));
-  if (instruction->IsShl()) {
-    *op_kind = kLSL;
-    *shift_amount = instruction->AsShl()->GetRight()->AsIntConstant()->GetValue();
-  } else if (instruction->IsShr()) {
-    *op_kind = kASR;
-    *shift_amount = instruction->AsShr()->GetRight()->AsIntConstant()->GetValue();
-  } else if (instruction->IsUShr()) {
-    *op_kind = kLSR;
-    *shift_amount = instruction->AsUShr()->GetRight()->AsIntConstant()->GetValue();
-  } else {
-    DCHECK(instruction->IsTypeConversion());
+  if (instruction->IsTypeConversion()) {
     DataType::Type result_type = instruction->AsTypeConversion()->GetResultType();
     DataType::Type input_type = instruction->AsTypeConversion()->GetInputType();
     int result_size = DataType::Size(result_type);
@@ -69,6 +59,15 @@ void HDataProcWithShifterOp::GetOpInfoFromInstruction(HInstruction* instruction,
           LOG(FATAL) << "Unexpected min size " << min_size;
       }
     }
+  } else {
+    DCHECK(instruction->IsShl() || instruction->IsShr() || instruction->IsUShr());
+    *op_kind = instruction->IsShl() ? kLSL : instruction->IsShr() ? kASR : kLSR;
+    int implicit_mask = (instruction->GetType() == DataType::Type::kInt64)
+        ? kMaxLongShiftDistance
+        : kMaxIntShiftDistance;
+    *shift_amount =
+        instruction->AsBinaryOperation()->GetRight()->AsIntConstant()->GetValue() & implicit_mask;
+    DCHECK_NE(*shift_amount, 0);
   }
 }
 

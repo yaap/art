@@ -1,0 +1,2 @@
+Verify that Class.isInstance call being replaced by `instanceof`
+works fine in dynamic context.

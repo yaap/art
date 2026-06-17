@@ -690,11 +690,15 @@ public class TestMinMax {
   /// CHECK-DAG: <<Max:i\d+>>  Max    [<<Par1>>,<<Par2>>]
   /// CHECK-DAG: <<Min:i\d+>>  Min    [<<Par1>>,<<Par2>>]
   /// CHECK-DAG: <<Add:i\d+>>  Add    [<<Max>>,<<Min>>]
-  /// CHECK-DAG:               Return [<<Add>>]
   /// CHECK-DAG: <<Add1:i\d+>> Add    [<<Max>>,<<Min>>]
   /// CHECK-DAG: <<Add2:i\d+>> Add    [<<Max>>,<<Add1>>]
   /// CHECK-DAG: <<Add3:i\d+>> Add    [<<Min>>,<<Add2>>]
-  /// CHECK-DAG:               Return [<<Add3>>]
+  // TODO: Due to missing flagging support in checker, this checker test is disabled.
+  // Enable it when we implement flagging support or during the flag cleanup for
+  // `com::android::art::rw::flags::packed_switch_simplification()`.
+  // CHECK-DAG: <<Phi:i\d+>>  Phi    [<<PhiIn1:i\d+>>,<<PhiIn2:i\d+>>]
+  // CHECK-DAG:               Return [<<Phi>>]
+  // CHECK-EVAL: set(["<<Add>>","<<Add3>>"]) == set(["<<PhiIn1>>","<<PhiIn2>>"])
   public static int minmaxCSEScalarAndCond(int x, int y) {
     int t1 = (x > y) ? x : y;
     int t2 = (x < y) ? x : y;

@@ -23,6 +23,7 @@
 #include "base/bit_utils.h"
 #include "base/locks.h"
 #include "base/macros.h"
+#include "com_android_art_flags.h"
 #include "dex/dex_file.h"
 #include "dex/dex_file_types.h"
 #include "gc_root.h"  // Note: must not use -inl here to avoid circular dependency.
@@ -188,8 +189,12 @@ template <typename T, size_t size> class DexCachePairArray {
 
   void Clear(uint32_t index) {
     uint32_t slot = SlotIndex(index);
-    // This is racy but should only be called from the transactional interpreter.
-    if (entries_[slot].load(std::memory_order_relaxed).index == index) {
+    // The index comparison is racy but should only be called from the transactional interpreter.
+    // For the weak `const-string` interns feature, we clear the entry unconditionally.
+    // Evicted entries can be re-resolved if needed, even though this can result in OOME
+    // for a weakly interned `String` that's been collected in the meantime.
+    if (com::android::art::flags::weak_const_string() ||
+        entries_[slot].load(std::memory_order_relaxed).index == index) {
       DexCachePair<T> cleared(nullptr, DexCachePair<T>::InvalidIndexForSlot(slot));
       entries_[slot].store(cleared, std::memory_order_relaxed);
     }
@@ -323,6 +328,8 @@ class MANAGED DexCache final : public Object {
   // the string isn't kept live.
   void ClearString(dex::StringIndex string_idx) REQUIRES_SHARED(Locks::mutator_lock_);
 
+  void ClearAllStrings() REQUIRES_SHARED(Locks::mutator_lock_);
+
   Class* GetResolvedType(dex::TypeIndex type_idx) REQUIRES_SHARED(Locks::mutator_lock_);
 
   void SetResolvedType(dex::TypeIndex type_idx, ObjPtr<Class> resolved)
@@ -361,12 +368,16 @@ class MANAGED DexCache final : public Object {
   ObjPtr<CallSite> SetResolvedCallSite(uint32_t call_site_idx, ObjPtr<CallSite> resolved)
       REQUIRES_SHARED(Locks::mutator_lock_) WARN_UNUSED;
 
+  static constexpr MemberOffset DexFileOffset() {
+    return MemberOffset(OFFSET_OF_OBJECT_MEMBER(DexCache, dex_file_));
+  }
+
   const DexFile* GetDexFile() ALWAYS_INLINE REQUIRES_SHARED(Locks::mutator_lock_) {
-    return GetFieldPtr<const DexFile*>(OFFSET_OF_OBJECT_MEMBER(DexCache, dex_file_));
+    return GetFieldPtr<const DexFile*>(DexFileOffset());
   }
 
   void SetDexFile(const DexFile* dex_file) REQUIRES_SHARED(Locks::mutator_lock_) {
-    SetFieldPtr<false>(OFFSET_OF_OBJECT_MEMBER(DexCache, dex_file_), dex_file);
+    SetFieldPtr<false>(DexFileOffset(), dex_file);
   }
 
   EXPORT void SetLocation(ObjPtr<String> location) REQUIRES_SHARED(Locks::mutator_lock_);

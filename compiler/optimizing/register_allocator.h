@@ -21,6 +21,7 @@
 #include "base/array_ref.h"
 #include "base/arena_object.h"
 #include "base/macros.h"
+#include "physical_register_type.h"
 #include "register_set.h"
 
 namespace art HIDDEN {
@@ -39,11 +40,6 @@ class SsaLivenessAnalysis;
  */
 class RegisterAllocator : public DeletableArenaObject<kArenaAllocRegisterAllocator> {
  public:
-  enum class RegisterType {
-    kCoreRegister,
-    kFpRegister
-  };
-
   static std::unique_ptr<RegisterAllocator> Create(ScopedArenaAllocator* allocator,
                                                    CodeGenerator* codegen,
                                                    const SsaLivenessAnalysis& analysis);
@@ -64,7 +60,7 @@ class RegisterAllocator : public DeletableArenaObject<kArenaAllocRegisterAllocat
                                 size_t number_of_out_slots,
                                 const CodeGenerator& codegen,
                                 const SsaLivenessAnalysis* liveness,  // Can be null in tests.
-                                RegisterType register_type,
+                                PhysicalRegisterType register_type,
                                 bool log_fatal_on_failure);
 
   static constexpr const char* kRegisterAllocatorPassName = "register";
@@ -87,20 +83,22 @@ class RegisterAllocator : public DeletableArenaObject<kArenaAllocRegisterAllocat
                                     ArrayRef<HInstruction* const> instructions_from_positions);
 
   // Helper for calling the right typed codegen function for dumping a register.
-  void DumpRegister(std::ostream& stream, int reg, RegisterType register_type) const {
+  void DumpRegister(std::ostream& stream, int reg, PhysicalRegisterType register_type) const {
     DumpRegister(stream, reg, register_type, codegen_);
   }
-  static void DumpRegister(
-      std::ostream& stream, int reg, RegisterType register_type, const CodeGenerator* codegen);
+  static void DumpRegister(std::ostream& stream,
+                           int reg,
+                           PhysicalRegisterType register_type,
+                           const CodeGenerator* codegen);
 
   // Get a mask of all registers for an interval.
   // Most intervals either have or do not have a register, but we're using special fixed
   // intervals with type `Void` to mark large sets of blocked registers for calls, catch
   // blocks and irreducible loop headers to save memory and improve performance.
-  uint32_t GetRegisterMask(LiveInterval* interval, RegisterType register_type) const;
+  uint32_t GetRegisterMask(LiveInterval* interval, PhysicalRegisterType register_type) const;
 
   // Helper function for `GetRegisterMask()` specialized for intervals holding one or two registers.
-  static uint32_t GetNormalRegisterMask(LiveInterval* interval, RegisterType register_type);
+  static uint32_t GetNormalRegisterMask(LiveInterval* interval, PhysicalRegisterType register_type);
 
   // Helper function for `GetRegisterMask()` specialized for intervals holding blocked registers.
   static uint32_t GetBlockedRegistersMask(LiveInterval* interval,
@@ -115,6 +113,7 @@ class RegisterAllocator : public DeletableArenaObject<kArenaAllocRegisterAllocat
   // Cached values calculated from codegen data.
   const size_t num_core_registers_;
   const size_t num_fp_registers_;
+  const size_t num_vector_registers_;
   const RegisterSet available_registers_;
   const RegisterSet registers_blocked_for_call_;
 };

@@ -17,22 +17,22 @@
 import java.lang.reflect.Method;
 
 public class Main {
-  public static void main(String[] args) throws Exception {
-    Class<?> c = Class.forName("DeadInstructions");
-    Method m = c.getMethod("method1");
-    Object[] arguments1 = { };
-    m.invoke(null, arguments1);
+    public static void main(String[] args) throws Exception {
+        Class<?> c = Class.forName("DeadInstructions");
+        Method m = c.getMethod("method1");
+        Object[] arguments1 = { };
+        m.invoke(null, arguments1);
 
-    Object[] arguments2 = { (long)4 };
-    m = c.getMethod("method2", long.class);
-    m.invoke(null, arguments2);
+        Object[] arguments2 = { (long)4 };
+        m = c.getMethod("method2", long.class);
+        m.invoke(null, arguments2);
 
-    Object[] arguments3 = { };
-    m = c.getMethod("method3");
-    m.invoke(null, arguments3);
+        Object[] arguments3 = { };
+        m = c.getMethod("method3");
+        m.invoke(null, arguments3);
 
-    Object[] arguments4 = { };
-    m = c.getMethod("method4");
-    m.invoke(null, arguments4);
-  }
+        Object[] arguments4 = { };
+        m = c.getMethod("method4");
+        m.invoke(null, arguments4);
+    }
 }

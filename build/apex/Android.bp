@@ -32,6 +32,15 @@ java_library {
     ],
 }
 
+java_system_modules {
+    name: "art-run-test-system-module",
+    visibility: ["//visibility:public"],
+    libs: [
+        "art-run-test-bootclasspath",
+        "libcore-string-concat-stub",
+    ],
+}
+
 android_app_certificate {
     name: "com.android.art.certificate",
     certificate: "com.android.art",
@@ -253,8 +262,7 @@ apex {
 }
 
 // "Debug" version of the ART APEX module (containing both release and
-// debug variants, as well as additional tools), included in userdebug and
-// eng build.
+// debug variants, as well as additional tools), included in eng builds.
 apex {
     name: "com.android.art.debug",
     defaults: ["com.android.art-devel-defaults"],
@@ -277,6 +285,11 @@ apex {
 
     visibility: [
         "//packages/modules/common/build",
+    ],
+
+    overrides: [
+        "com.google.android.art",
+        "com.google.android.go.art",
     ],
 }
 
@@ -343,6 +356,7 @@ apex_test {
         "libarttestd",
         "libtiagent",
         "libtiagentd",
+        "art_fake_libstatspull",
     ],
     multilib: {
         first: {

@@ -477,12 +477,11 @@ struct ClassCallback : public art::ClassLoadCallback {
                       art::MemberOffset field_offset,
                       [[maybe_unused]] bool is_static) const
           REQUIRES_SHARED(art::Locks::mutator_lock_) {
-        art::mirror::HeapReference<art::mirror::Object>* trg =
-          src->GetFieldObjectReferenceAddr(field_offset);
-        if (trg->AsMirrorPtr() == input_) {
+        if (src->GetFieldObject<art::mirror::Object>(field_offset) == input_) {
           DCHECK_NE(field_offset.Uint32Value(), 0u);  // This shouldn't be the class field of
                                                       // an object.
-          trg->Assign(output_);
+          // Conservatively use volatile store.
+          src->SetFieldObjectVolatile</*kTransactionActive=*/ false>(field_offset, output_);
         }
       }
 

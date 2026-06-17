@@ -49,6 +49,7 @@ static constexpr size_t kRuntimeParameterFpuRegistersLength =
     arraysize(kRuntimeParameterFpuRegisters);
 
 #define UNIMPLEMENTED_INTRINSIC_LIST_X86(V) \
+  V(ClassIsAssignableFrom)                  \
   V(MathSignumFloat)                        \
   V(MathSignumDouble)                       \
   V(MathCopySignFloat)                      \
@@ -175,27 +176,27 @@ class FieldAccessCallingConventionX86 : public FieldAccessCallingConvention {
   FieldAccessCallingConventionX86() {}
 
   Location GetObjectLocation() const override {
-    return Location::RegisterLocation(ECX);
+    return Location::CoreRegister(ECX);
   }
   Location GetFieldIndexLocation() const override {
-    return Location::RegisterLocation(EAX);
+    return Location::CoreRegister(EAX);
   }
   Location GetReturnLocation(DataType::Type type) const override {
     return DataType::Is64BitType(type)
-        ? Location::RegisterPairLocation(EAX, EDX)
-        : Location::RegisterLocation(EAX);
+        ? Location::CoreRegisterPair(EAX, EDX)
+        : Location::CoreRegister(EAX);
   }
   Location GetSetValueLocation(DataType::Type type, bool is_instance) const override {
     return DataType::Is64BitType(type)
         ? (is_instance
-            ? Location::RegisterPairLocation(EDX, EBX)
-            : Location::RegisterPairLocation(ECX, EDX))
+            ? Location::CoreRegisterPair(EDX, EBX)
+            : Location::CoreRegisterPair(ECX, EDX))
         : (is_instance
-            ? Location::RegisterLocation(EDX)
-            : Location::RegisterLocation(ECX));
+            ? Location::CoreRegister(EDX)
+            : Location::CoreRegister(ECX));
   }
   Location GetFpuLocation([[maybe_unused]] DataType::Type type) const override {
-    return Location::FpuRegisterLocation(XMM0);
+    return Location::FpuRegister(XMM0);
   }
 
  private:
@@ -552,6 +553,7 @@ class CodeGeneratorX86 : public CodeGenerator {
   void RecordAppImageTypePatch(HLoadClass* load_class);
   Label* NewTypeBssEntryPatch(HLoadClass* load_class);
   void RecordBootImageStringPatch(HLoadString* load_string);
+  void RecordAppImageStringPatch(HLoadString* load_string);
   Label* NewStringBssEntryPatch(HLoadString* load_string);
   void RecordBootImageJniEntrypointPatch(HInvokeStaticOrDirect* invoke);
 
@@ -752,6 +754,8 @@ class CodeGeneratorX86 : public CodeGenerator {
   // The correct value will be inserted when processing Assembler fixups.
   static constexpr int32_t kPlaceholder32BitOffset = 256;
 
+  bool IsIntrinsicCallFree(HInvoke* invoke) const override;
+
  private:
   static RegisterSet ComputeCalleeSaves();
   static RegisterSet ComputeBlockedRegisters();
@@ -798,6 +802,8 @@ class CodeGeneratorX86 : public CodeGenerator {
   ArenaDeque<X86PcRelativePatchInfo> package_type_bss_entry_patches_;
   // PC-relative String patch info for kBootImageLinkTimePcRelative.
   ArenaDeque<X86PcRelativePatchInfo> boot_image_string_patches_;
+  // PC-relative String patch info for kAppImageRelRo.
+  ArenaDeque<X86PcRelativePatchInfo> app_image_string_patches_;
   // PC-relative String patch info for kBssEntry.
   ArenaDeque<X86PcRelativePatchInfo> string_bss_entry_patches_;
   // PC-relative method patch info for kBootImageLinkTimePcRelative+kCallCriticalNative.

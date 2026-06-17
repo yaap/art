@@ -186,7 +186,7 @@
     ldr x1, [xSELF, # THREAD_EXCEPTION_OFFSET]  // Get exception field.
     CFI_REMEMBER_STATE
     cbnz x1, 1f
-    DEOPT_OR_RETURN x1, \is_ref                // Check if deopt is required
+    DEOPT_OR_RETURN w1, \is_ref                // Check if deopt is required
 1:                                             // deliver exception on current thread
     CFI_RESTORE_STATE_AND_DEF_CFA sp, 0
     DELIVER_PENDING_EXCEPTION
@@ -254,7 +254,7 @@
 .macro RETURN_OR_DEOPT_IF_INT_RESULT_IS_ZERO_OR_DELIVER
     CFI_REMEMBER_STATE
     cbnz w0, 1f                // result non-zero branch over
-    DEOPT_OR_RETURN x1
+    DEOPT_OR_RETURN w1
 1:
     CFI_RESTORE_STATE_AND_DEF_CFA sp, 0
     DELIVER_PENDING_EXCEPTION
@@ -864,8 +864,18 @@ END art_quick_do_long_jump
      * x0 holds the possibly null object to lock.
      */
 ENTRY art_quick_lock_object
-    LOCK_OBJECT_FAST_PATH x0, art_quick_lock_object_no_inline, /*can_be_null*/ 1
+    LOCK_OBJECT_FAST_PATH x0, art_quick_lock_object_no_inline, /*can_be_null*/ 1, /*use_lse*/ 0
 END art_quick_lock_object
+
+    /*
+     * Entry from managed code that tries to lock the object in a fast path and
+     * calls `artLockObjectFromCode()` for the difficult cases, may block for GC.
+     * x0 holds the possibly null object to lock.
+     * Used only if runtime LSE support is detected.
+     */
+ENTRY art_quick_lock_object_lse
+    LOCK_OBJECT_FAST_PATH x0, art_quick_lock_object_no_inline, /*can_be_null*/ 1, /*use_lse*/ 1
+END art_quick_lock_object_lse
 
     /*
      * Entry from managed code that calls `artLockObjectFromCode()`, may block for GC.
@@ -888,8 +898,18 @@ END art_quick_lock_object_no_inline
      * x0 holds the possibly null object to unlock.
      */
 ENTRY art_quick_unlock_object
-    UNLOCK_OBJECT_FAST_PATH x0, art_quick_unlock_object_no_inline, /*can_be_null*/ 1
+    UNLOCK_OBJECT_FAST_PATH x0, art_quick_unlock_object_no_inline, /*can_be_null*/ 1, /*use_lse*/ 0
 END art_quick_unlock_object
+
+    /*
+     * Entry from managed code that tries to unlock the object in a fast path and calls
+     * `artUnlockObjectFromCode()` for the difficult cases and delivers exception on failure.
+     * x0 holds the possibly null object to unlock.
+     * Used only if runtime LSE support is detected.
+     */
+ENTRY art_quick_unlock_object_lse
+    UNLOCK_OBJECT_FAST_PATH x0, art_quick_unlock_object_no_inline, /*can_be_null*/ 1, /*use_lse*/ 1
+END art_quick_unlock_object_lse
 
     /*
      * Entry from managed code that calls `artUnlockObjectFromCode()`
@@ -1197,7 +1217,7 @@ ENTRY \name
     mov   x1, xSELF                   // pass Thread::Current
     CALL_SYMBOL \entrypoint           // (int32_t index, Thread* self)
     cbz   w0, 1f                      // If result is null, deliver the OOME.
-    DEOPT_OR_RESTORE_SAVE_EVERYTHING_FRAME_AND_RETURN_X0 x1, /* is_ref= */ 1
+    DEOPT_OR_RESTORE_SAVE_EVERYTHING_FRAME_AND_RETURN_X0 w1, /* is_ref= */ 1
 1:
     DELIVER_PENDING_EXCEPTION_FRAME_READY
 END \name
@@ -1211,7 +1231,7 @@ END \name
 .macro RETURN_OR_DEOPT_IF_RESULT_IS_NON_NULL_OR_DELIVER
     CFI_REMEMBER_STATE
     cbz w0, 1f                       // result zero branch over
-    DEOPT_OR_RETURN x1, /*is_ref=*/1 // check for deopt or return
+    DEOPT_OR_RETURN w1, /*is_ref=*/1 // check for deopt or return
 1:
     CFI_RESTORE_STATE_AND_DEF_CFA sp, 0
     DELIVER_PENDING_EXCEPTION
@@ -1664,15 +1684,15 @@ END art_quick_proxy_invoke_handler
     /*
      * Called to resolve an imt conflict.
      * x0 is the conflict ArtMethod.
-     * xIP1 is a hidden argument that holds the target interface method.
+     * x15 is a hidden argument that holds the target interface method.
      *
-     * Note that this stub writes to xIP0, xIP1, and x0.
+     * Note that this stub writes to xIP0, and x0.
      */
 ENTRY art_quick_imt_conflict_trampoline
     ldr xIP0, [x0, #ART_METHOD_JNI_OFFSET_64]  // Load ImtConflictTable
     ldr x0, [xIP0]  // Load first entry in ImtConflictTable.
 .Limt_table_iterate:
-    cmp x0, xIP1
+    cmp x0, x15
     // Branch if found. Benchmarks have shown doing a branch here is better.
     beq .Limt_table_found
     // If the entry is null, the interface method is not in the ImtConflictTable.
@@ -1689,7 +1709,7 @@ ENTRY art_quick_imt_conflict_trampoline
 .Lconflict_trampoline:
     // Call the runtime stub to populate the ImtConflictTable and jump to the
     // resolved method.
-    mov x0, xIP1  // Load interface method
+    mov x0, x15  // Load interface method
     INVOKE_TRAMPOLINE_BODY artInvokeInterfaceTrampoline
 END art_quick_imt_conflict_trampoline
 
@@ -1796,6 +1816,14 @@ ENTRY art_quick_generic_jni_trampoline
     // Check for error (class init check or locking for synchronized native method can throw).
     cbz x0, .Lexception_in_native
 
+#ifdef ART_USE_SIMULATOR
+    // x0 as first argument - code pointer.
+    mov x1, sp
+    mov x2, xSELF
+    // Call to a placeholder function, simulator will intercept it and process both the native
+    // call and a call to artQuickGenericJniEndTrampoline.
+    CALL_SYMBOL artArm64SimulatorGenericJNIPlaceholder
+#else   // ART_USE_SIMULATOR
     // Save the code pointer
     mov xIP0, x0
 
@@ -1827,6 +1855,7 @@ ENTRY art_quick_generic_jni_trampoline
     fmov x2, d0     // d0 will contain floating point result, but needs to go into x2
 
     CALL_SYMBOL artQuickGenericJniEndTrampoline
+#endif  // ART_USE_SIMULATOR
 
     // Pending exceptions possible.
     ldr x2, [xSELF, THREAD_EXCEPTION_OFFSET]
@@ -2594,6 +2623,54 @@ ENTRY art_quick_record_exit_trace_event
     ret
 END art_quick_record_exit_trace_event
 
+ENTRY art_quick_record_entry_trace_event_with_flush
+    ldr xIP1, [xSELF, #TRACE_BUFFER_CURRENT_OFFSET]
+    // xIP0 has the trace buffer pointer. This is loaded on the fast path before
+    // checking if we need to call this method. This will be still valid here.
+    sub xIP1, xIP1, 16
+    cmp xIP1, xIP0
+    b.lt .Lhandle_record_entry_overflow
+    mrs xIP0, cntvct_el0
+    str x0, [xIP1]
+    lsl xIP0, xIP0, 2
+    str xIP0, [xIP1, 8]
+    str xIP1, [xSELF, #TRACE_BUFFER_CURRENT_OFFSET]
+    ret
+.Lhandle_record_entry_overflow:
+    SETUP_SAVE_EVERYTHING_FRAME
+    // x0 already has method*
+    mov x1, xSELF                             // pass Thread::Current
+    mov x2, 1                                 // set to true for entry events
+    CALL_SYMBOL artRecordMethodTraceEvent     // (ArtMethod*, Thread*, is_entry)
+    RESTORE_SAVE_EVERYTHING_FRAME             // Note: will restore xSELF
+    REFRESH_MARKING_REGISTER
+    ret
+END art_quick_record_entry_trace_event_with_flush
+
+ENTRY art_quick_record_exit_trace_event_with_flush
+    ldr xIP1, [xSELF, #TRACE_BUFFER_CURRENT_OFFSET]
+    // xIP0 has the trace buffer pointer. This is loaded on the fast path before
+    // checking if we need to call this method. This will be still valid here.
+    sub xIP1, xIP1, 8
+    cmp xIP1, xIP0
+    b.lt .Lhandle_record_exit_overflow
+    mrs xIP0, cntvct_el0
+    lsl xIP0, xIP0, 2
+    orr xIP0, xIP0, #1
+    str xIP0, [xIP1]
+    str xIP1, [xSELF, #TRACE_BUFFER_CURRENT_OFFSET]
+    ret
+.Lhandle_record_exit_overflow:
+    SETUP_SAVE_EVERYTHING_FRAME
+    ldr x0, [sp, #FRAME_SIZE_SAVE_EVERYTHING] // pass ArtMethod*
+    mov x1, xSELF                             // pass Thread::Current
+    mov x2, 0                                 // set to true for exit events
+    CALL_SYMBOL artRecordMethodTraceEvent     // (ArtMethod*, Thread*, is_entry)
+    RESTORE_SAVE_EVERYTHING_FRAME             // Note: will restore xSELF
+    REFRESH_MARKING_REGISTER
+    ret
+END art_quick_record_exit_trace_event_with_flush
+
 ENTRY art_quick_record_long_running_entry_trace_event
     ldr xIP1, [xSELF, #TRACE_BUFFER_CURRENT_OFFSET]
     sub xIP1, xIP1, 16
@@ -2613,11 +2690,11 @@ ENTRY art_quick_record_long_running_entry_trace_event
     // Call runtime to flush buffer. We expect the frequency of this case to be low. For ANR it
     // might be interesting to record the past data instead of overwriting with new entries.
     SETUP_SAVE_EVERYTHING_FRAME
-    ldr x0, [sp, #FRAME_SIZE_SAVE_EVERYTHING] // pass ArtMethod*
-    mov x1, xSELF                             // pass Thread::Current
-    mov x2, 1                                 // set to true for entry events
-    bl  artRecordLongRunningMethodTraceEvent // (ArtMethod*, Thread*, is_entry)
-    RESTORE_SAVE_EVERYTHING_FRAME             // Note: will restore xSELF
+    ldr x0, [sp, #FRAME_SIZE_SAVE_EVERYTHING]         // pass ArtMethod*
+    mov x1, xSELF                                     // pass Thread::Current
+    mov x2, 1                                         // set to true for entry events
+    CALL_SYMBOL  artRecordLongRunningMethodTraceEvent // (ArtMethod*, Thread*, is_entry)
+    RESTORE_SAVE_EVERYTHING_FRAME                     // Note: will restore xSELF
     REFRESH_MARKING_REGISTER
     ret
 END art_quick_record_long_running_entry_trace_event
@@ -2668,7 +2745,7 @@ ENTRY art_quick_record_long_running_exit_trace_event
     ldr xzr, [sp, #FRAME_SIZE_SAVE_EVERYTHING] // pass nullptr. ArtMethod* isn't required for exits
     mov x1, xSELF                              // pass Thread::Current
     mov x2, 0                                  // set to false for exit events
-    bl  artRecordLongRunningMethodTraceEvent   // (ArtMethod*, Thread*, is_entry)
+    CALL_SYMBOL artRecordLongRunningMethodTraceEvent // (ArtMethod*, Thread*, is_entry)
     RESTORE_SAVE_EVERYTHING_FRAME              // Note: will restore xSELF
     REFRESH_MARKING_REGISTER
     ret

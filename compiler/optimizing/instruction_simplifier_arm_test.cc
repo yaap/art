@@ -25,7 +25,11 @@
 namespace art HIDDEN {
 namespace arm {
 
-class InstructionSimplifierArmTest : public OptimizingUnitTest {};
+class InstructionSimplifierArmTest : public OptimizingUnitTest {
+ protected:
+  void TestAOrBShrN(int32_t n);
+  void TestASubCShlNSubB(int32_t n);
+};
 
 // Regression test for a bug in simplification of `Sub(., Sub(Shl(...), .))` to enable shifter
 // operand merging. The code wrongly assumed that the `Shl` can have only one non-environment
@@ -80,6 +84,81 @@ TEST_F(InstructionSimplifierArmTest, SubRightSubLeftShlRegressionTest) {
   EXPECT_TRUE(phi->IsInBlock());
   EXPECT_FALSE(add4->IsInBlock());
   EXPECT_TRUE(or3->IsInBlock());
+}
+
+// Regression test for b/452626599 where we created a `HDataProcWithShifterOp`
+// effectively representing `orr rd, rn, rm, asr #0` and vixl aborted because there
+// is no such instruction, the immediate 0 represents `asr #32`. We test this with
+// shifts 0 and 1 to make sure the optimization is applied only for the latter.
+void InstructionSimplifierArmTest::TestAOrBShrN(int32_t n) {
+  ASSERT_LT(n, 32);
+  HBasicBlock* block = InitEntryMainExitGraph();
+  HInstruction* a = MakeParam(DataType::Type::kInt32);
+  HInstruction* b = MakeParam(DataType::Type::kInt32);
+  HInstruction* const_n = graph_->GetIntConstant(n);
+
+  HShr* b_shr_n = MakeBinOp<HShr>(block, DataType::Type::kInt32, b, const_n);
+  HOr* a_or_b_shr_n = MakeBinOp<HOr>(block, DataType::Type::kInt32, a, b_shr_n);
+  HReturn* ret = MakeReturn(block, a_or_b_shr_n);
+
+  graph_->BuildDominatorTree();
+  InstructionSimplifierArm simplifier(graph_, /*codegen=*/ nullptr, /*stats=*/ nullptr);
+  simplifier.Run();
+
+  if (n == 0) {
+    EXPECT_INS_RETAINED(a_or_b_shr_n);
+    EXPECT_EQ(a_or_b_shr_n, ret->InputAt(0)) << ret->InputAt(0)->DebugName();
+  } else {
+    EXPECT_INS_REMOVED(a_or_b_shr_n);
+    EXPECT_TRUE(ret->InputAt(0)->IsDataProcWithShifterOp()) << ret->InputAt(0)->DebugName();
+  }
+}
+
+TEST_F(InstructionSimplifierArmTest, AOrBShr0) {
+  TestAOrBShrN(0);
+}
+
+TEST_F(InstructionSimplifierArmTest, AOrBShr1) {
+  TestAOrBShrN(1);
+}
+
+// Another test related to b/452626599 . Test that we transform Sub-Sub-Shl
+// for shifter operand merging only if the shift is non-zero. Note that the
+// optimization could easily be extended to `HShr` and `HUShr`.
+void InstructionSimplifierArmTest::TestASubCShlNSubB(int32_t n) {
+  ASSERT_LT(n, 32);
+  HBasicBlock* block = InitEntryMainExitGraph();
+  HInstruction* a = MakeParam(DataType::Type::kInt32);
+  HInstruction* b = MakeParam(DataType::Type::kInt32);
+  HInstruction* c = MakeParam(DataType::Type::kInt32);
+  HInstruction* const_n = graph_->GetIntConstant(n);
+
+  HShl* c_shl_n = MakeBinOp<HShl>(block, DataType::Type::kInt32, c, const_n);
+  HSub* sub1 = MakeBinOp<HSub>(block, DataType::Type::kInt32, c_shl_n, b);
+  HSub* sub2 = MakeBinOp<HSub>(block, DataType::Type::kInt32, a, sub1);
+  HReturn* ret = MakeReturn(block, sub2);
+
+  graph_->BuildDominatorTree();
+  InstructionSimplifierArm simplifier(graph_, /*codegen=*/ nullptr, /*stats=*/ nullptr);
+  simplifier.Run();
+
+  if (n == 0) {
+    EXPECT_INS_RETAINED(sub2);
+    EXPECT_EQ(sub2, ret->InputAt(0)) << ret->InputAt(0)->DebugName();
+  } else {
+    EXPECT_INS_REMOVED(sub2);
+    ASSERT_TRUE(ret->InputAt(0)->IsAdd()) << ret->InputAt(0)->DebugName();
+    ASSERT_TRUE(ret->InputAt(0)->InputAt(1)->IsDataProcWithShifterOp())
+        << ret->InputAt(0)->InputAt(1)->DebugName();
+  }
+}
+
+TEST_F(InstructionSimplifierArmTest, ASubCShl0SubB) {
+  TestASubCShlNSubB(0);
+}
+
+TEST_F(InstructionSimplifierArmTest, ASubCShl1SubB) {
+  TestASubCShlNSubB(1);
 }
 
 }  // namespace arm

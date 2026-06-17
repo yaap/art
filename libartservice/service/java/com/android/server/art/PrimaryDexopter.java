@@ -16,11 +16,6 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.OutputArtifacts.PermissionSettings;
-import static com.android.server.art.OutputArtifacts.PermissionSettings.SeContext;
-import static com.android.server.art.PrimaryDexUtils.DetailedPrimaryDexInfo;
-import static com.android.server.art.Utils.Abi;
-
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
@@ -33,21 +28,25 @@ import android.os.UserHandle;
 
 import androidx.annotation.RequiresApi;
 
-import com.android.art.flags.Flags;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.modules.utils.pm.PackageStateModulesUtils;
+import com.android.server.art.OutputArtifacts.PermissionSettings;
+import com.android.server.art.OutputArtifacts.PermissionSettings.SeContext;
+import com.android.server.art.PrimaryDexUtils.DetailedPrimaryDexInfo;
 import com.android.server.art.model.ArtFlags;
 import com.android.server.art.model.Config;
 import com.android.server.art.model.DexoptParams;
 import com.android.server.art.model.DexoptResult;
+import com.android.server.art.utils.AidlUtils;
+import com.android.server.art.utils.Utils;
+import com.android.server.art.utils.Utils.Abi;
 import com.android.server.pm.PackageManagerLocal.FilteredSnapshot;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.PackageState;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.Executor;
 
 /** @hide */
 @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -57,11 +56,10 @@ public class PrimaryDexopter extends Dexopter<DetailedPrimaryDexInfo> {
     private final FilteredSnapshot mSnapshot;
 
     public PrimaryDexopter(@NonNull Context context, @NonNull Config config,
-            @NonNull Executor reporterExecutor, @NonNull FilteredSnapshot snapshot,
-            @NonNull PackageState pkgState, @NonNull AndroidPackage pkg,
-            @NonNull DexoptParams params, @NonNull CancellationSignal cancellationSignal) {
-        this(new Injector(context, config, reporterExecutor), snapshot, pkgState, pkg, params,
-                cancellationSignal);
+            @NonNull FilteredSnapshot snapshot, @NonNull PackageState pkgState,
+            @NonNull AndroidPackage pkg, @NonNull DexoptParams params,
+            @NonNull CancellationSignal cancellationSignal) {
+        this(new Injector(context, config), snapshot, pkgState, pkg, params, cancellationSignal);
     }
 
     @VisibleForTesting
@@ -124,7 +122,7 @@ public class PrimaryDexopter extends Dexopter<DetailedPrimaryDexInfo> {
             return mInjector.getArtd().getDexFileVisibility(dexInfo.dexPath())
                     != FileVisibility.NOT_FOUND;
         } catch (ServiceSpecificException | RemoteException e) {
-            AsLog.e("Failed to get visibility of " + dexInfo.dexPath(), e);
+            mLogger.e("Failed to get visibility of " + dexInfo.dexPath(), e);
             return false;
         }
     }
@@ -137,8 +135,8 @@ public class PrimaryDexopter extends Dexopter<DetailedPrimaryDexInfo> {
 
     @Override
     @NonNull
-    protected PermissionSettings getPermissionSettings(
-            @NonNull DetailedPrimaryDexInfo dexInfo, boolean canBePublic) {
+    protected PermissionSettings getPermissionSettings(@NonNull DetailedPrimaryDexInfo dexInfo,
+            boolean canOdexBePublic, boolean canVdexBePublic) {
         // The files and directories should belong to the system so that Package Manager can manage
         // them (e.g., move them around).
         // We don't need the "read" bit for "others" on the directories because others only need to
@@ -146,21 +144,21 @@ public class PrimaryDexopter extends Dexopter<DetailedPrimaryDexInfo> {
         FsPermission dirFsPermission = AidlUtils.buildFsPermission(Process.SYSTEM_UID /* uid */,
                 Process.SYSTEM_UID /* gid */, false /* isOtherReadable */,
                 true /* isOtherExecutable */);
-        FsPermission fileFsPermission = AidlUtils.buildFsPermission(
-                Process.SYSTEM_UID /* uid */, mSharedGid /* gid */, canBePublic);
+        FsPermission odexFileFsPermission = AidlUtils.buildFsPermission(
+                Process.SYSTEM_UID /* uid */, mSharedGid /* gid */, canOdexBePublic);
+        FsPermission vdexFileFsPermission = AidlUtils.buildFsPermission(
+                Process.SYSTEM_UID /* uid */, mSharedGid /* gid */, canVdexBePublic);
         // For primary dex, we can use the default SELinux context.
         SeContext seContext = null;
-        return AidlUtils.buildPermissionSettings(dirFsPermission, fileFsPermission, seContext);
+        return AidlUtils.buildPermissionSettings(
+                dirFsPermission, odexFileFsPermission, vdexFileFsPermission, seContext);
     }
 
     @Override
     @NonNull
     protected List<Abi> getAllAbis(@NonNull DetailedPrimaryDexInfo dexInfo) {
-        if (Flags.dexoptSecondaryIsaOnlyWhenNeeded()) {
-            return Utils.getUsedPrimaryDexAbis(
-                    mInjector.getDexUseManager(), mSnapshot, mPkgState, dexInfo.dexPath());
-        }
-        return Utils.getAllPrimaryDexAbis(mPkgState);
+        return Utils.getUsedPrimaryDexAbis(
+            mInjector.getDexUseManager(), mSnapshot, mPkgState, dexInfo.dexPath());
     }
 
     @Override
@@ -202,8 +200,8 @@ public class PrimaryDexopter extends Dexopter<DetailedPrimaryDexInfo> {
     private void maybeCreateSdc(@NonNull DetailedPrimaryDexInfo dexInfo, @NonNull String isa,
             boolean isInDalvikCache) throws RemoteException {
         // SDC file doesn't contain sensitive data, so it can always to public.
-        PermissionSettings permissionSettings =
-                getPermissionSettings(dexInfo, true /* canBePublic */);
+        PermissionSettings permissionSettings = getPermissionSettings(
+                dexInfo, true /* canOdexBePublic */, true /* canVdexBePublic */);
         OutputSecureDexMetadataCompanion outputSdc =
                 AidlUtils.buildOutputSecureDexMetadataCompanion(
                         dexInfo.dexPath(), isa, isInDalvikCache, permissionSettings);
@@ -211,7 +209,7 @@ public class PrimaryDexopter extends Dexopter<DetailedPrimaryDexInfo> {
         try {
             mInjector.getArtd().maybeCreateSdc(outputSdc);
         } catch (ServiceSpecificException e) {
-            AsLog.e("Failed to create sdc for " + AidlUtils.toString(outputSdc.sdcPath), e);
+            mLogger.e("Failed to create sdc for " + AidlUtils.toString(outputSdc.sdcPath), e);
         }
     }
 

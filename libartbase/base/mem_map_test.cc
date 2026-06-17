@@ -332,6 +332,35 @@ TEST_F(MemMapTest, ReplaceMapping_FailureOverlap) {
 }
 #endif  // HAVE_MREMAP_SYSCALL
 
+TEST_F(MemMapTest, FormatDebugName) {
+  // Test short/empty names. They should all succeed with "dalvik-" prefixes.
+  EXPECT_EQ("dalvik-", MemMap::FormatDebugName(""));
+  EXPECT_EQ("dalvik-", MemMap::FormatDebugName(nullptr));
+  EXPECT_EQ("dalvik-short", MemMap::FormatDebugName("short"));
+
+  // Test name exactly at the limit (79 non-null chars total).
+  // "dalvik-" is 7 chars. We get 72 more chars.
+  std::string name_72(72, 'a');
+  EXPECT_EQ("dalvik-" + name_72, MemMap::FormatDebugName(name_72.c_str()));
+
+  // Test name just over the limit (80 chars total).
+  std::string name_73(73, 'a');
+  constexpr std::string_view expected_debug_name_73 =
+      "dalvik-aaaaaaaaaaaaaaaaaaaa...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  static_assert(expected_debug_name_73.size() == 79);
+  EXPECT_EQ(expected_debug_name_73, MemMap::FormatDebugName(name_73.c_str()));
+
+  // Test name exceeding the limit.
+  // This should ellipsize the interior of the requested name, preferring a
+  // lengthier suffix (49 char).
+  std::string name_long =
+      "a_very_long_name_that_is_over_72_and_should_be_ellipsized_to_preserve_the_end.dex";
+  constexpr std::string_view expected_debug_name_long =
+      "dalvik-a_very_long_name_tha..._and_should_be_ellipsized_to_preserve_the_end.dex";
+  static_assert(expected_debug_name_long.size() == 79);
+  EXPECT_EQ(expected_debug_name_long, MemMap::FormatDebugName(name_long.c_str()));
+}
+
 TEST_F(MemMapTest, MapAnonymousEmpty) {
   CommonInit();
   const size_t page_size = MemMap::GetPageSize();

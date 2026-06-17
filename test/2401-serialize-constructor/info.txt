@@ -1,0 +1,2 @@
+Test to check that non-serialized constructors have a non-null ArtMethod and
+serialized constructors have a null ArtMethod.

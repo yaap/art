@@ -142,6 +142,9 @@ class HDataProcWithShifterOp final : public HExpression<2> {
             ? kMaxIntShiftDistance
             : kMaxLongShiftDistance)) {
     DCHECK(!instr->HasSideEffects());
+    // LSL #0 is used for type conversion to `long` but ASR and LSR should not shift by 0.
+    // On ARM, encodings with immediate 0 represent ASR #32 and LSR #32.
+    DCHECK_IMPLIES(op == kASR || op == kLSR, shift != 0);
     SetRawInputAt(0, left);
     SetRawInputAt(1, right);
   }

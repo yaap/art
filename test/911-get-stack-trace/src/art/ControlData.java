@@ -19,15 +19,15 @@ package art;
 import java.util.concurrent.CountDownLatch;
 
 public class ControlData {
-  CountDownLatch reached;
-  Object waitFor = null;
-  volatile boolean stop = false;
+    CountDownLatch reached;
+    Object waitFor = null;
+    volatile boolean stop = false;
 
-  public ControlData() {
-    this(1);
-  }
+    public ControlData() {
+        this(1);
+    }
 
-  public ControlData(int latchCount) {
-    reached = new CountDownLatch(latchCount);
-  }
+    public ControlData(int latchCount) {
+        reached = new CountDownLatch(latchCount);
+    }
 }

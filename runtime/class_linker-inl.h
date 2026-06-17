@@ -71,7 +71,7 @@ inline ObjPtr<mirror::Class> ClassLinker::FindArrayClass(Thread* self,
 
 inline ObjPtr<mirror::String> ClassLinker::ResolveString(dex::StringIndex string_idx,
                                                          ArtField* referrer) {
-  Thread::PoisonObjectPointersIfDebug();
+  Thread::PoisonObjectPointersOnCurrentThread();
   DCHECK(!Thread::Current()->IsExceptionPending());
   ObjPtr<mirror::DexCache> dex_cache = referrer->GetDexCache();
   ObjPtr<mirror::String> resolved = dex_cache->GetResolvedString(string_idx);
@@ -83,7 +83,7 @@ inline ObjPtr<mirror::String> ClassLinker::ResolveString(dex::StringIndex string
 
 inline ObjPtr<mirror::String> ClassLinker::ResolveString(dex::StringIndex string_idx,
                                                          ArtMethod* referrer) {
-  Thread::PoisonObjectPointersIfDebug();
+  Thread::PoisonObjectPointersOnCurrentThread();
   DCHECK(!Thread::Current()->IsExceptionPending());
   ObjPtr<mirror::DexCache> dex_cache = referrer->GetDexCache();
   ObjPtr<mirror::String> resolved = dex_cache->GetResolvedString(string_idx);
@@ -95,7 +95,7 @@ inline ObjPtr<mirror::String> ClassLinker::ResolveString(dex::StringIndex string
 
 inline ObjPtr<mirror::String> ClassLinker::ResolveString(dex::StringIndex string_idx,
                                                          Handle<mirror::DexCache> dex_cache) {
-  Thread::PoisonObjectPointersIfDebug();
+  Thread::PoisonObjectPointersOnCurrentThread();
   DCHECK(!Thread::Current()->IsExceptionPending());
   ObjPtr<mirror::String> resolved = dex_cache->GetResolvedString(string_idx);
   if (resolved == nullptr) {
@@ -118,7 +118,7 @@ inline ObjPtr<mirror::Class> ClassLinker::ResolveType(dex::TypeIndex type_idx,
   if (kObjPtrPoisoning) {
     StackHandleScope<1> hs(Thread::Current());
     HandleWrapperObjPtr<mirror::Class> referrer_wrapper = hs.NewHandleWrapper(&referrer);
-    Thread::Current()->PoisonObjectPointers();
+    Thread::PoisonObjectPointersOnCurrentThread();
   }
   DCHECK(!Thread::Current()->IsExceptionPending());
   ObjPtr<mirror::Class> resolved_type = referrer->GetDexCache()->GetResolvedType(type_idx);
@@ -130,7 +130,7 @@ inline ObjPtr<mirror::Class> ClassLinker::ResolveType(dex::TypeIndex type_idx,
 
 inline ObjPtr<mirror::Class> ClassLinker::ResolveType(dex::TypeIndex type_idx,
                                                       ArtField* referrer) {
-  Thread::PoisonObjectPointersIfDebug();
+  Thread::PoisonObjectPointersOnCurrentThread();
   DCHECK(!Thread::Current()->IsExceptionPending());
   ObjPtr<mirror::Class> resolved_type = referrer->GetDexCache()->GetResolvedType(type_idx);
   if (UNLIKELY(resolved_type == nullptr)) {
@@ -141,7 +141,7 @@ inline ObjPtr<mirror::Class> ClassLinker::ResolveType(dex::TypeIndex type_idx,
 
 inline ObjPtr<mirror::Class> ClassLinker::ResolveType(dex::TypeIndex type_idx,
                                                       ArtMethod* referrer) {
-  Thread::PoisonObjectPointersIfDebug();
+  Thread::PoisonObjectPointersOnCurrentThread();
   DCHECK(!Thread::Current()->IsExceptionPending());
   ObjPtr<mirror::Class> resolved_type = referrer->GetDexCache()->GetResolvedType(type_idx);
   if (UNLIKELY(resolved_type == nullptr)) {
@@ -155,7 +155,7 @@ inline ObjPtr<mirror::Class> ClassLinker::ResolveType(dex::TypeIndex type_idx,
                                                       Handle<mirror::ClassLoader> class_loader) {
   DCHECK(dex_cache != nullptr);
   DCHECK(dex_cache->GetClassLoader() == class_loader.Get());
-  Thread::PoisonObjectPointersIfDebug();
+  Thread::PoisonObjectPointersOnCurrentThread();
   ObjPtr<mirror::Class> resolved = dex_cache->GetResolvedType(type_idx);
   if (resolved == nullptr) {
     resolved = DoResolveType(type_idx, dex_cache, class_loader);
@@ -360,7 +360,7 @@ inline ArtField* ClassLinker::LookupResolvedField(uint32_t field_idx,
 inline ArtField* ClassLinker::ResolveField(uint32_t field_idx,
                                            ArtMethod* referrer,
                                            bool is_static) {
-  Thread::PoisonObjectPointersIfDebug();
+  Thread::PoisonObjectPointersOnCurrentThread();
   ObjPtr<mirror::DexCache> dex_cache = referrer->GetDexCache();
   ArtField* resolved_field = dex_cache->GetResolvedField(field_idx);
   // If `resolved_field->IsStatic()` is different than `is_static` we know that we will return
@@ -386,8 +386,8 @@ inline ArtField* ClassLinker::ResolveField(uint32_t field_idx,
   DCHECK(dex_cache != nullptr);
   DCHECK(dex_cache->GetClassLoader().Ptr() == class_loader.Get());
   DCHECK(!Thread::Current()->IsExceptionPending()) << Thread::Current()->GetException()->Dump();
+  Thread::PoisonObjectPointersOnCurrentThread();
   ArtField* resolved = dex_cache->GetResolvedField(field_idx);
-  Thread::PoisonObjectPointersIfDebug();
 
   // If `resolved->IsStatic()` is different than `is_static` we know that we will return
   // nullptr. In this case we still continue forward in order to throw the right exception.

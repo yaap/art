@@ -102,7 +102,8 @@ class LoopAnalysis : public ValueObject {
   // 'analysis_results' with this information.
   static void CalculateLoopBasicProperties(HLoopInformation* loop_info,
                                            LoopAnalysisInfo* analysis_results,
-                                           int64_t trip_count);
+                                           int64_t trip_count,
+                                           const CodeGenerator& codegen);
 
   // Returns the trip count of the loop if it is known and kUnknownTripCount otherwise.
   static int64_t GetLoopTripCount(HLoopInformation* loop_info,
@@ -114,16 +115,8 @@ class LoopAnalysis : public ValueObject {
   // If in the loop body we have a dex/runtime call then its contribution to the whole
   // loop performance will probably prevail. So peeling/unrolling optimization will not bring
   // any noticeable performance improvement. It will increase the code size.
-  static bool MakesScalarPeelingUnrollingNonBeneficial(HInstruction* instruction) {
-    return (instruction->IsNewArray() ||
-        instruction->IsNewInstance() ||
-        instruction->IsUnresolvedInstanceFieldGet() ||
-        instruction->IsUnresolvedInstanceFieldSet() ||
-        instruction->IsUnresolvedStaticFieldGet() ||
-        instruction->IsUnresolvedStaticFieldSet() ||
-        // TODO: Support loops with intrinsified invokes.
-        instruction->IsInvoke());
-  }
+  static bool MakesScalarPeelingUnrollingNonBeneficial(HInstruction* instruction,
+                                                       const CodeGenerator& codegen);
 };
 
 //
@@ -181,6 +174,8 @@ class ArchNoOptsLoopHelper : public ArenaObject<kArenaAllocOptimization> {
                                           [[maybe_unused]] uint32_t vector_length) const {
     return LoopAnalysisInfo::kNoUnrollingFactor;
   }
+
+  virtual bool NeedsVectorRegisterClear() const { return false; }
 
  protected:
   const CodeGenerator& codegen_;

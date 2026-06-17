@@ -157,12 +157,15 @@ public class Main {
     /// CHECK-DAG:                InvokeStaticOrDirect env:[[<<Cond>>{{(,[^,\]]+)*}}]]
 
     public static void $noinline$IfXLtzAElseB_EnvUse(int x) {
-        boolean cond = $inline$XLtz(x);
-        if (cond) {
-            $noinline$A();
-        } else {
-            $noinline$B();
-        }
+        // Use try-catch to prevent environment inputs elimination.
+        try {
+            boolean cond = $inline$XLtz(x);
+            if (cond) {
+                $noinline$A();
+            } else {
+                $noinline$B();
+            }
+        } catch (Exception e) {}
     }
 
     /// CHECK-START: void Main.$noinline$IfXNullAElseB(java.lang.Object) prepare_for_register_allocation (before)
@@ -214,12 +217,15 @@ public class Main {
     /// CHECK:                    Equal emitted_at_use_site:false
 
     public static void $noinline$IfXNullAElseB_EnvUse(Object x) {
-        boolean cond = $inline$XNull(x);
-        if (cond) {
-            $noinline$A();
-        } else {
-            $noinline$B();
-        }
+        // Use try-catch to prevent environment inputs elimination.
+        try {
+            boolean cond = $inline$XNull(x);
+            if (cond) {
+                $noinline$A();
+            } else {
+                $noinline$B();
+            }
+        } catch (Exception e) {}
     }
 
     /// CHECK-START: void Main.$noinline$IfXNullAElseB_RefNoEnvInBlock(java.lang.Object, boolean) prepare_for_register_allocation (before)

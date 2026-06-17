@@ -22,6 +22,17 @@ interface IArtd {
     boolean isAlive();
 
     /**
+     * Stops the artd service process immediately. This will not stop subprocesses of the artd
+     * service process.
+     *
+     * Note that this will fail any ongoing call to the artd service. Therefore, it should only be
+     * called when there is no ongoing call.
+     *
+     * For Pre-reboot Dexopt use only.
+     */
+    oneway void stop();
+
+    /**
      * Deletes dexopt artifacts and returns the released space, in bytes.
      *
      * Note that this method doesn't delete runtime artifacts. To delete them, call
@@ -119,11 +130,19 @@ interface IArtd {
             in com.android.server.art.MergeProfileOptions options);
 
     /**
-     * Returns the visibility of the artifacts.
+     * Returns the visibility of the ODEX and ART files.
      *
      * Throws fatal and non-fatal errors.
      */
-    com.android.server.art.FileVisibility getArtifactsVisibility(
+    com.android.server.art.FileVisibility getOdexVisibility(
+            in com.android.server.art.ArtifactsPath artifactsPath);
+
+    /**
+     * Returns the visibility of the VDEX files.
+     *
+     * Throws fatal and non-fatal errors.
+     */
+    com.android.server.art.FileVisibility getVdexVisibility(
             in com.android.server.art.ArtifactsPath artifactsPath);
 
     /**
@@ -142,15 +161,15 @@ interface IArtd {
             in com.android.server.art.DexMetadataPath dmFile);
 
     /**
-     * Returns true if dexopt is needed. `dexoptTrigger` is a bit field that consists of values
-     * defined in `com.android.server.art.DexoptTrigger`.
+     * Returns whether dexopt is needed and some information about the current dexopt state.
      *
      * Throws fatal and non-fatal errors.
      */
     com.android.server.art.GetDexoptNeededResult getDexoptNeeded(
             @utf8InCpp String dexFile, @utf8InCpp String instructionSet,
             @nullable @utf8InCpp String classLoaderContext, @utf8InCpp String compilerFilter,
-            int dexoptTrigger);
+            in com.android.server.art.DexoptTrigger dexoptTrigger,
+            in @nullable android.os.ParcelFileDescriptor loggingFd);
 
     /**
      * Creates a secure dex metadata companion (SDC) file for the secure dex metadata (SDM) file, if
@@ -317,6 +336,13 @@ interface IArtd {
     @PropagateAllowBlocking
     com.android.server.art.IArtdNotification initProfileSaveNotification(
             in com.android.server.art.ProfilePath.PrimaryCurProfilePath profilePath, int pid);
+
+    /**
+     * Returns true if all dex files referenced by the given class loader context exist.
+     *
+     * Throws fatal and non-fatal errors.
+     */
+    boolean hasAllClcDexFiles(@utf8InCpp String dexFile, @utf8InCpp String classLoaderContext);
 
     /**
      * Moves the staged files of the given artifacts and profiles to the permanent locations,

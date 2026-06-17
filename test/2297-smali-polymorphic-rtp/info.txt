@@ -1,0 +1,1 @@
+Tests that we do not crash during RTP for invoke-polymorphic

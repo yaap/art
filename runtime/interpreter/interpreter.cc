@@ -35,6 +35,7 @@
 #include "stack.h"
 #include "thread-inl.h"
 #include "thread.h"
+#include "trace.h"
 #include "unstarted_runtime.h"
 
 namespace art HIDDEN {
@@ -268,8 +269,7 @@ static inline JValue Execute(
     if (kIsDebugBuild) {
       // TODO(b/346542404): Check this precondition prorperly, and shouldn't emit method enter event
       // when unparking a virtual thread.
-      bool is_virtual = kIsVirtualThreadEnabled &&
-                        self->AreVirtualThreadFlagsEnabled(VirtualThreadFlag::kIsVirtual);
+      bool is_virtual = kIsVirtualThreadEnabled && self->IsVirtualThreadMounted();
       if (!is_virtual) {
         CHECK_EQ(shadow_frame.GetDexPC(), 0u);
       }
@@ -294,7 +294,7 @@ static inline JValue Execute(
           // It's ok to access the code item here since JIT code will have been touched by the
           // interpreter and compiler already.
           uint16_t arg_offset = accessor.RegistersSize() - accessor.InsSize();
-          ArtInterpreterToCompiledCodeBridge(self, nullptr, &shadow_frame, arg_offset, &result);
+          ArtInterpreterToCompiledCodeBridge(self, &shadow_frame, arg_offset, &result);
           // Push the shadow frame back as the caller will expect it.
           self->PushShadowFrame(&shadow_frame);
 
@@ -303,6 +303,7 @@ static inline JValue Execute(
       }
     }
 
+    TraceLowOverhead::RecordTraceEventIfNeeded(self, method, /*is_entry=*/true);
     instrumentation::Instrumentation* instrumentation = Runtime::Current()->GetInstrumentation();
     if (UNLIKELY(instrumentation->HasMethodEntryListeners() || shadow_frame.GetForcePopFrame())) {
       instrumentation->MethodEnterEvent(self, method);
@@ -322,6 +323,8 @@ static inline JValue Execute(
         instrumentation->MethodUnwindEvent(self,
                                            method,
                                            0);
+        // We notified method has exited so don't call trace listeners anymore.
+        shadow_frame.SetSkipTraceMethodExitEvent(true);
         JValue ret = JValue();
         if (UNLIKELY(shadow_frame.GetForcePopFrame())) {
           DCHECK(Runtime::Current()->AreNonStandardExitsEnabled());
@@ -433,7 +436,7 @@ void EnterInterpreterFromInvoke(Thread* self,
   if (!EnsureInitialized(self, shadow_frame)) {
     return;
   }
-  self->PushShadowFrame(shadow_frame);
+  ScopedShadowFrame pusher(self, shadow_frame);
   if (LIKELY(!method->IsNative())) {
     JValue r = Execute(self, accessor, *shadow_frame, JValue(), stay_in_interpreter);
     if (result != nullptr) {
@@ -451,7 +454,6 @@ void EnterInterpreterFromInvoke(Thread* self,
       InterpreterJni(self, method, shorty, receiver, args, result);
     }
   }
-  self->PopShadowFrame();
 }
 
 static int16_t GetReceiverRegisterForStringInit(const Instruction* instr) {
@@ -483,16 +485,21 @@ void EnterInterpreterFromDeoptimize(Thread* self,
     uint32_t new_dex_pc = dex_pc;
     if (UNLIKELY(self->IsExceptionPending())) {
       DCHECK(self->GetException() != Thread::GetDeoptimizationException());
-      // If we deoptimize from the QuickExceptionHandler, we already reported the exception throw
-      // event to the instrumentation. Skip throw listeners for the first frame. The deopt check
-      // should happen after the throw listener is called as throw listener can trigger a
-      // deoptimization.
-      new_dex_pc = MoveToExceptionHandler(self,
-                                          *shadow_frame,
-                                          /* skip_listeners= */ false,
-                                          /* skip_throw_listener= */ frame_cnt == 0) ?
-                       shadow_frame->GetDexPC() :
-                       dex::kDexNoIndex;
+      if (shadow_frame->GetForcePopFrame()) {
+        // Just continue with next instruction which will pop the frame.
+        new_dex_pc = shadow_frame->GetDexPC();
+      } else {
+        // If we deoptimize from the QuickExceptionHandler, we already reported the exception throw
+        // event to the instrumentation. Skip throw listeners for the first frame. The deopt check
+        // should happen after the throw listener is called as throw listener can trigger a
+        // deoptimization.
+        new_dex_pc = MoveToExceptionHandler(self,
+                                            *shadow_frame,
+                                            /* skip_listeners= */ false,
+                                            /* skip_throw_listener= */ frame_cnt == 0) ?
+            shadow_frame->GetDexPC() :
+            dex::kDexNoIndex;
+      }
     } else if (!from_code) {
       // Deoptimization is not called from code directly.
       const Instruction* instr = &accessor.InstructionAt(dex_pc);
@@ -586,10 +593,6 @@ JValue EnterInterpreterFromEntryPoint(Thread* self, const CodeItemDataAccessor& 
     return JValue();
   }
 
-  jit::Jit* jit = Runtime::Current()->GetJit();
-  if (jit != nullptr) {
-    jit->NotifyCompiledCodeToInterpreterTransition(self, shadow_frame->GetMethod());
-  }
   return Execute(self, accessor, *shadow_frame, JValue());
 }
 
@@ -604,7 +607,7 @@ void ArtInterpreterToInterpreterBridge(Thread* self,
     return;
   }
 
-  self->PushShadowFrame(shadow_frame);
+  ScopedShadowFrame pusher(self, shadow_frame);
 
   if (LIKELY(!shadow_frame->GetMethod()->IsNative())) {
     result->SetJ(Execute(self, accessor, *shadow_frame, JValue()).GetJ());
@@ -617,8 +620,6 @@ void ArtInterpreterToInterpreterBridge(Thread* self,
     uint32_t* args = shadow_frame->GetVRegArgs(is_static ? 0 : 1);
     UnstartedRuntime::Jni(self, shadow_frame->GetMethod(), receiver.Ptr(), args, result);
   }
-
-  self->PopShadowFrame();
 }
 
 void CheckInterpreterAsmConstants() {

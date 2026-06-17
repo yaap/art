@@ -115,7 +115,7 @@ const vixl::aarch64::CPURegList runtime_reserved_core_registers =
 // thunks we generate. For these and similar cases, we want to reserve a specific
 // register that's neither callee-save nor an argument register. We choose x15.
 inline Location FixedTempLocation() {
-  return Location::RegisterLocation(vixl::aarch64::x15.GetCode());
+  return Location::CoreRegister(vixl::aarch64::x15.GetCode());
 }
 
 // Callee-save registers AAPCS64, without x19 (Thread Register) (nor
@@ -134,6 +134,7 @@ Location ARM64ReturnLocation(DataType::Type return_type);
 vixl::aarch64::Condition ARM64PCondition(HVecPredToBoolean::PCondKind cond);
 
 #define UNIMPLEMENTED_INTRINSIC_LIST_ARM64(V) \
+  V(ClassIsAssignableFrom)                    \
   V(MathSignumFloat)                          \
   V(MathSignumDouble)                         \
   V(MathCopySignFloat)                        \
@@ -157,8 +158,6 @@ vixl::aarch64::Condition ARM64PCondition(HVecPredToBoolean::PCondKind cond);
   V(StringBuilderAppendDouble)                \
   V(StringBuilderLength)                      \
   V(StringBuilderToString)                    \
-  V(SystemArrayCopyByte)                      \
-  V(SystemArrayCopyInt)                       \
   V(UnsafeArrayBaseOffset)                    \
   /* 1.8 */                                   \
   V(MethodHandleInvoke)                       \
@@ -690,6 +689,8 @@ class CodeGeneratorARM64 : public CodeGenerator {
 
   bool SupportsPredicatedSIMD() const override { return ShouldUseSVE(); }
 
+  bool ShouldUseLSE() const;
+
   size_t GetSlowPathFPWidth() const override {
     return GetGraph()->HasSIMD()
         ? GetSIMDRegisterWidth()
@@ -922,6 +923,14 @@ class CodeGeneratorARM64 : public CodeGenerator {
                                                 dex::StringIndex string_index,
                                                 vixl::aarch64::Label* adrp_label = nullptr);
 
+  // Add a new app image string patch for an instruction and return the label
+  // to be bound before the instruction. The instruction will be either the
+  // ADRP (pass `adrp_label = null`) or the LDR (pass `adrp_label` pointing
+  // to the associated ADRP patch label).
+  vixl::aarch64::Label* NewAppImageStringPatch(const DexFile& dex_file,
+                                               dex::StringIndex string_index,
+                                               vixl::aarch64::Label* adrp_label = nullptr);
+
   // Add a new .bss entry string patch for an instruction and return the label
   // to be bound before the instruction. The instruction will be either the
   // ADRP (pass `adrp_label = null`) or the ADD (pass `adrp_label` pointing
@@ -1134,8 +1143,11 @@ class CodeGeneratorARM64 : public CodeGenerator {
   void MaybeGenerateInlineCacheCheck(HInstruction* instruction, vixl::aarch64::Register klass);
   void MaybeIncrementHotness(HSuspendCheck* suspend_check, bool is_frame_entry);
   void MaybeRecordTraceEvent(bool is_method_entry);
+  void MaybeRecordUprobeEvent();
 
   bool CanUseImplicitSuspendCheck() const;
+
+  bool IsIntrinsicCallFree(HInvoke* invoke) const override;
 
  private:
   static RegisterSet ComputeCalleeSaves();
@@ -1272,6 +1284,8 @@ class CodeGeneratorARM64 : public CodeGenerator {
   ArenaDeque<PcRelativePatchInfo> package_type_bss_entry_patches_;
   // PC-relative String patch info for kBootImageLinkTimePcRelative.
   ArenaDeque<PcRelativePatchInfo> boot_image_string_patches_;
+  // PC-relative String patch info for kAppImageRelRo.
+  ArenaDeque<PcRelativePatchInfo> app_image_string_patches_;
   // PC-relative String patch info for kBssEntry.
   ArenaDeque<PcRelativePatchInfo> string_bss_entry_patches_;
   // PC-relative MethodType patch info for kBssEntry.

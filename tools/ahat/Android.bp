@@ -26,9 +26,30 @@ java_binary_host {
     srcs: ["src/main/**/*.java"],
     manifest: "etc/ahat.mf",
     java_resources: ["etc/style.css"],
+    static_libs: ["error_prone_annotations"],
+
     // Use a relaxed version to allow distribution against older runtimes.
     java_version: "11",
-    javacflags: ["-Xdoclint:all/protected"],
+    javacflags: [
+        "-Xdoclint:all/protected",
+        "-Xlint:unchecked",
+        "-Xlint:-options",
+        "-Werror",
+    ],
+    errorprone: {
+        enabled: true,
+    },
+}
+
+droidstubs_host {
+    name: "ahat_api_stubs",
+    srcs: ["src/main/**/*.java"],
+    check_api: {
+        current: {
+            api_file: "etc/ahat_api.txt",
+            removed_api_file: "etc/ahat_removed_api.txt",
+        },
+    },
 }
 
 // --- ahat-test-dump.jar --------------

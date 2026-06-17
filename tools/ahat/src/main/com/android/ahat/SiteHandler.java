@@ -98,7 +98,8 @@ class SiteHandler implements AhatHandler {
     List<Site.ObjectsInfo> infos = site.getObjectsInfos();
     sorter.sort(infos);
     SubsetSelector<Site.ObjectsInfo> selector
-      = new SubsetSelector(query, OBJECTS_ALLOCATED_ID, infos);
+      = new SubsetSelector<>(query, OBJECTS_ALLOCATED_ID, infos);
+
     for (Site.ObjectsInfo info : selector.selected()) {
       Site.ObjectsInfo baseinfo = info.getBaseline();
       String className = info.getClassName();

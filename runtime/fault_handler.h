@@ -161,7 +161,6 @@ class NullPointerHandler final : public FaultHandler {
       NO_THREAD_SAFETY_ANALYSIS;
   constexpr static bool IsGeneratedCodeHandler() { return true; }
 
- private:
   // Helper functions for checking whether the signal can be interpreted
   // as implicit NPE check. Note that the runtime will do more exhaustive
   // checks (that we cannot reasonably do in signal processing code) based
@@ -178,6 +177,7 @@ class NullPointerHandler final : public FaultHandler {
   static bool IsValidReturnPc(ArtMethod** sp, uintptr_t return_pc)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+ private:
   DISALLOW_COPY_AND_ASSIGN(NullPointerHandler);
 };
 
@@ -222,6 +222,24 @@ class JavaStackTraceHandler final : public FaultHandler {
 
   DISALLOW_COPY_AND_ASSIGN(JavaStackTraceHandler);
 };
+
+#ifdef ART_USE_SIMULATOR
+// Simulated implicit checks will need to be handled specially because they do not originate from
+// native compiled code and will need to modify the simulated context before specially returning
+// execution to the simulator, such that it can continue simulating the quick entrypoint code
+// required for that specific fault.
+
+class NullPointerHandlerSimulator final : public FaultHandler {
+ public:
+  NullPointerHandlerSimulator() {}
+
+  bool Action(int sig, siginfo_t* siginfo, void* context) override;
+  constexpr static bool IsGeneratedCodeHandler() { return true; }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(NullPointerHandlerSimulator);
+};
+#endif  // ART_USE_SIMULATOR
 
 // Statically allocated so the the signal handler can Get access to it.
 EXPORT extern FaultManager fault_manager;

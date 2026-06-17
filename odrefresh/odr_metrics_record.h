@@ -65,8 +65,6 @@ struct OdrMetricsRecord {
   int32_t trigger;
   int32_t stage_reached;
   int32_t status;
-  int32_t cache_space_free_start_mib;
-  int32_t cache_space_free_end_mib;
   int32_t primary_bcp_compilation_millis;
   int32_t secondary_bcp_compilation_millis;
   int32_t system_server_compilation_millis;

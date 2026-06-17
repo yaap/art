@@ -17,14 +17,14 @@
 #ifndef ART_TOOLS_VERIDEX_HIDDEN_API_H_
 #define ART_TOOLS_VERIDEX_HIDDEN_API_H_
 
-#include "api_list_filter.h"
-
-#include "base/hiddenapi_flags.h"
-#include "dex/method_reference.h"
-
 #include <map>
+#include <optional>
 #include <ostream>
 #include <string>
+
+#include "api_list_filter.h"
+#include "base/hiddenapi_flags.h"
+#include "dex/method_reference.h"
 
 namespace art {
 
@@ -41,7 +41,9 @@ enum class SignatureSource {
  */
 class HiddenApi {
  public:
-  HiddenApi(const char* flags_file, const ApiListFilter& api_list_filter);
+  HiddenApi(const char* flags_file,
+            const char* flagged_apis_file,
+            const ApiListFilter& api_list_filter);
 
   hiddenapi::ApiList GetApiList(const std::string& name) const {
     auto it = api_list_.find(name);
@@ -50,6 +52,36 @@ class HiddenApi {
 
   bool ShouldReport(const std::string& signature) const {
     return api_list_filter_.Matches(GetApiList(signature));
+  }
+
+  std::optional<std::string> GetFlag(const std::string& name) const {
+    if (flagged_apis_.empty()) {
+      return std::nullopt;
+    }
+
+    // Search for a prefix match
+    auto it = flagged_apis_.upper_bound(name);
+    while (it != flagged_apis_.begin()) {
+      it = std::prev(it);
+      const std::string& key = it->first;
+      if (name.size() >= key.size() && name.compare(0, key.size(), key) == 0) {
+        // Exact match
+        bool is_boundary = (name.size() == key.size());
+        if (!is_boundary) {
+          // If not exact match, check if the prefix ends with any of class name
+          // boundary characters (';', '$', or '-')
+          char next_char = name[key.size()];
+          if (next_char == ';' || next_char == '$' || next_char == '-') {
+            is_boundary = true;
+          }
+        }
+
+        if (is_boundary) {
+          return std::make_optional(it->second);
+        }
+      }
+    }
+    return std::nullopt;
   }
 
   void AddSignatureSource(const std::string &signature, SignatureSource source) {
@@ -105,6 +137,7 @@ class HiddenApi {
   const ApiListFilter& api_list_filter_;
   std::map<std::string, hiddenapi::ApiList> api_list_;
   std::map<std::string, SignatureSource> source_;
+  std::map<std::string, std::string> flagged_apis_;
 };
 
 struct HiddenApiStats {

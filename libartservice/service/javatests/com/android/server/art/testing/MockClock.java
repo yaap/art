@@ -16,82 +16,117 @@
 
 package com.android.server.art.testing;
 
-import android.annotation.NonNull;
-import android.util.Pair;
+import static com.google.common.truth.Truth.assertThat;
 
-import java.util.ArrayList;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyLong;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.reset;
+
+import android.os.Handler;
+import android.os.HandlerThread;
+
+import com.android.internal.annotations.GuardedBy;
+import com.android.server.art.utils.AsyncExecutor;
+import com.android.server.art.utils.AsyncExecutor.AsyncExecutorImpl;
+import com.android.server.art.utils.Utils.Clock;
+import com.android.server.art.utils.Utils.Sleeper;
+
 import java.util.Comparator;
-import java.util.List;
 import java.util.PriorityQueue;
-import java.util.concurrent.RunnableScheduledFuture;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 
-public class MockClock {
-    private long mCurrentTimeMs = 0;
-    @NonNull private List<ScheduledExecutor> mExecutors = new ArrayList<>();
+public class MockClock implements Clock, Sleeper {
+    private final AsyncExecutor mExecutor;
 
-    @NonNull
-    public ScheduledExecutor createScheduledExecutor() {
-        var executor = new ScheduledExecutor();
-        mExecutors.add(executor);
-        return executor;
+    @GuardedBy("this") private volatile long mCurrentTimeMillis = 1000000000000L;
+    @GuardedBy("this")
+    private PriorityQueue<Task> mTasks =
+            new PriorityQueue<>(Comparator.comparingLong(Task::scheduledTimeMillis));
+    @GuardedBy("this") private boolean mIsShutdown = false;
+    @GuardedBy("this") private int mSleeperCount = 0;
+
+    public MockClock() {
+        mExecutor = new AsyncExecutor(new MockAsyncExecutorImpl());
     }
 
-    public long getCurrentTimeMs() {
-        return mCurrentTimeMs;
+    public AsyncExecutor getAsyncExecutor() {
+        return mExecutor;
     }
 
-    public void advanceTime(long timeMs) {
-        mCurrentTimeMs += timeMs;
-        for (ScheduledExecutor executor : mExecutors) {
-            executor.notifyUpdate();
+    @Override
+    public long currentTimeMillis() {
+        return mCurrentTimeMillis;
+    }
+
+    @Override
+    public synchronized void sleep(long durationMillis) throws InterruptedException {
+        long targetTimeMillis = mCurrentTimeMillis + durationMillis;
+        mSleeperCount++;
+        this.notifyAll();
+        try {
+            while (mCurrentTimeMillis < targetTimeMillis) {
+                this.wait();
+            }
+        } finally {
+            mSleeperCount--;
         }
     }
 
-    @NonNull
-    public List<ScheduledExecutor> getCreatedExecutors() {
-        return mExecutors;
+    public synchronized void waitForSleepers(int expectedCount) throws InterruptedException {
+        while (mSleeperCount < expectedCount) {
+            this.wait();
+        }
     }
 
-    public class ScheduledExecutor extends ScheduledThreadPoolExecutor {
-        // The second element of the pair is the scheduled time.
-        @NonNull
-        private PriorityQueue<Pair<RunnableScheduledFuture<?>, Long>> tasks = new PriorityQueue<>(
-                1 /* initialCapacity */, Comparator.comparingLong(pair -> pair.second));
+    public synchronized void advanceTime(long timeMillis) {
+        mCurrentTimeMillis += timeMillis;
+        onUpdate();
+    }
 
-        public ScheduledExecutor() {
-            super(1 /* corePoolSize */);
+    public synchronized void setCurrentTimeMillis(long currentTimeMillis) {
+        mCurrentTimeMillis = currentTimeMillis;
+        onUpdate();
+    }
+
+    @GuardedBy("this")
+    private void onUpdate() {
+        while (!mTasks.isEmpty() && mTasks.peek().scheduledTimeMillis <= mCurrentTimeMillis) {
+            mTasks.poll().runnable.run();
+        }
+        this.notifyAll();
+    }
+
+    private class MockAsyncExecutorImpl implements AsyncExecutorImpl {
+        @Override
+        public boolean executeDelayed(Runnable runnable, Object token, long delayMillis) {
+            synchronized (MockClock.this) {
+                assertThat(mIsShutdown).isFalse();
+                mTasks.add(new Task(runnable, token, mCurrentTimeMillis + delayMillis));
+            }
+            return true;
         }
 
-        @NonNull
-        public ScheduledFuture<?> schedule(
-                @NonNull Runnable command, long delay, @NonNull TimeUnit unit) {
-            // Use `Long.MAX_VALUE` to prevent the task from being automatically run.
-            var task = (RunnableScheduledFuture<?>) super.schedule(
-                    command, Long.MAX_VALUE, TimeUnit.MILLISECONDS);
-            tasks.add(Pair.create(task, getCurrentTimeMs() + unit.toMillis(delay)));
-            return task;
-        }
-
-        public void notifyUpdate() {
-            while (!tasks.isEmpty()) {
-                Pair<RunnableScheduledFuture<?>, Long> pair = tasks.peek();
-                RunnableScheduledFuture<?> task = pair.first;
-                long scheduledTimeMs = pair.second;
-                if (getCurrentTimeMs() >= scheduledTimeMs || task.isCancelled()) {
-                    if (!task.isDone() && !task.isCancelled()) {
-                        task.run();
-                    }
-                    tasks.poll();
-                    // Remove the task from the queue of the executor. Terminate the executor if
-                    // it's shutdown and the queue is empty.
-                    super.remove(task);
-                } else {
-                    break;
-                }
+        @Override
+        public void cancelTask(Object token) {
+            synchronized (MockClock.this) {
+                mTasks.removeIf(task -> task.token == token);
             }
         }
+
+        @Override
+        public void shutdown() {
+            synchronized (MockClock.this) {
+                mTasks.clear();
+                mIsShutdown = true;
+            }
+        }
+
+        @Override
+        public void awaitTermination(long timeoutMs) throws InterruptedException {
+            // No-op for mock clock.
+        }
     }
+
+    private record Task(Runnable runnable, Object token, long scheduledTimeMillis) {}
 }

@@ -74,12 +74,13 @@ struct FieldReflectiveValueCallback : public art::ReflectiveValueVisitCallback {
     event_handler->ForEachEnv(self, [&](ArtJvmTiEnv* env) NO_THREAD_SAFETY_ANALYSIS {
       art::Locks::mutator_lock_->AssertExclusiveHeld(self);
       art::WriterMutexLock mu(self, env->event_info_mutex_);
-      std::vector<std::pair<art::ArtField*, art::ArtField*>> updated_access_fields;
+      std::vector<std::pair<jfieldID, jfieldID>> updated_access_fields;
       for (auto it : env->access_watched_fields) {
+        art::ArtField* decoded = art::jni::DecodeArtField(it);
         art::ArtField* af =
-            visitor->VisitField(it, JvmtiFieldReflectionSource(/*is_access=*/true, it));
-        if (af != it) {
-          updated_access_fields.push_back({ af, it });
+            visitor->VisitField(decoded, JvmtiFieldReflectionSource(/*is_access=*/true, decoded));
+        if (af != decoded) {
+          updated_access_fields.push_back({ art::jni::EncodeArtField(af), it });
         }
       }
       for (auto it : updated_access_fields) {
@@ -87,12 +88,13 @@ struct FieldReflectiveValueCallback : public art::ReflectiveValueVisitCallback {
         env->access_watched_fields.erase(it.second);
         env->access_watched_fields.insert(it.first);
       }
-      std::vector<std::pair<art::ArtField*, art::ArtField*>> updated_modify_fields;
+      std::vector<std::pair<jfieldID, jfieldID>> updated_modify_fields;
       for (auto it : env->modify_watched_fields) {
+        art::ArtField* decoded = art::jni::DecodeArtField(it);
         art::ArtField* af =
-            visitor->VisitField(it, JvmtiFieldReflectionSource(/*is_access=*/false, it));
-        if (af != it) {
-          updated_modify_fields.push_back({ af, it });
+            visitor->VisitField(decoded, JvmtiFieldReflectionSource(/*is_access=*/false, decoded));
+        if (af != decoded) {
+          updated_modify_fields.push_back({ art::jni::EncodeArtField(af), it });
         }
       }
       for (auto it : updated_modify_fields) {
@@ -277,7 +279,7 @@ jvmtiError FieldUtil::SetFieldModificationWatch(jvmtiEnv* jenv, jclass klass, jf
   if (field == nullptr) {
     return ERR(INVALID_FIELDID);
   }
-  auto res_pair = env->modify_watched_fields.insert(art::jni::DecodeArtField(field));
+  auto res_pair = env->modify_watched_fields.insert(field);
   if (!res_pair.second) {
     // Didn't get inserted because it's already present!
     return ERR(DUPLICATE);
@@ -294,7 +296,7 @@ jvmtiError FieldUtil::ClearFieldModificationWatch(jvmtiEnv* jenv, jclass klass, 
   if (field == nullptr) {
     return ERR(INVALID_FIELDID);
   }
-  auto pos = env->modify_watched_fields.find(art::jni::DecodeArtField(field));
+  auto pos = env->modify_watched_fields.find(field);
   if (pos == env->modify_watched_fields.end()) {
     return ERR(NOT_FOUND);
   }
@@ -311,7 +313,7 @@ jvmtiError FieldUtil::SetFieldAccessWatch(jvmtiEnv* jenv, jclass klass, jfieldID
   if (field == nullptr) {
     return ERR(INVALID_FIELDID);
   }
-  auto res_pair = env->access_watched_fields.insert(art::jni::DecodeArtField(field));
+  auto res_pair = env->access_watched_fields.insert(field);
   if (!res_pair.second) {
     // Didn't get inserted because it's already present!
     return ERR(DUPLICATE);
@@ -328,7 +330,7 @@ jvmtiError FieldUtil::ClearFieldAccessWatch(jvmtiEnv* jenv, jclass klass, jfield
   if (field == nullptr) {
     return ERR(INVALID_FIELDID);
   }
-  auto pos = env->access_watched_fields.find(art::jni::DecodeArtField(field));
+  auto pos = env->access_watched_fields.find(field);
   if (pos == env->access_watched_fields.end()) {
     return ERR(NOT_FOUND);
   }

@@ -608,6 +608,9 @@ class Instruction {
         kVerifyRegBString |
         kVerifyRegBType |
         kVerifyRegBWide |
+        kVerifyRegBCallSite |
+        kVerifyRegBMethodHandle |
+        kVerifyRegBPrototype |
         kVerifyRegBFilledNewArray;
     return VerifyFlagsOf(opcode) & kMask;
   }

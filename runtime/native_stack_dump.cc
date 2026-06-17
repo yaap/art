@@ -318,19 +318,17 @@ std::string StripParameters(std::string name) {
 void DumpNativeStack(std::ostream& os,
                      pid_t tid,
                      const char* prefix,
-                     ArtMethod* current_method,
                      void* ucontext_ptr,
                      bool skip_frames) {
   unwindstack::AndroidLocalUnwinder unwinder;
-  unwinder.set_check_global_elf_cache(true);
-  DumpNativeStack(os, unwinder, tid, prefix, current_method, ucontext_ptr, skip_frames);
+  unwinder.set_use_global_elf_cache(true);
+  DumpNativeStack(os, unwinder, tid, prefix, ucontext_ptr, skip_frames);
 }
 
 void DumpNativeStack(std::ostream& os,
                      unwindstack::AndroidLocalUnwinder& unwinder,
                      pid_t tid,
                      const char* prefix,
-                     ArtMethod* current_method,
                      void* ucontext_ptr,
                      bool skip_frames) {
   // Historical note: This was disabled when running under Valgrind (b/18119146).
@@ -360,7 +358,6 @@ void DumpNativeStack(std::ostream& os,
 
   std::unique_ptr<Addr2linePipe> addr2line_state;
   data.DemangleFunctionNames();
-  bool holds_mutator_lock =  Locks::mutator_lock_->IsSharedHeld(Thread::Current());
   for (const unwindstack::FrameData& frame : data.frames) {
     // We produce output like this:
     // ]    #00 pc 000075bb8  /system/lib/libc.so (unwind_backtrace_thread+536)
@@ -398,15 +395,6 @@ void DumpNativeStack(std::ostream& os,
         // map that cannot be found using addr2line.
         if (!map_info->name().empty()) {
           try_addr2line = true;
-        }
-      } else if (current_method != nullptr && holds_mutator_lock) {
-        const OatQuickMethodHeader* header = current_method->GetOatQuickMethodHeader(frame.pc);
-        if (header != nullptr) {
-          const void* start_of_code = header->GetCode();
-          os << current_method->JniLongName() << "+"
-             << (frame.pc - reinterpret_cast<uint64_t>(start_of_code));
-        } else {
-          os << "???";
         }
       } else {
         os << "???";

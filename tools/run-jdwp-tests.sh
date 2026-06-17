@@ -30,7 +30,7 @@ fi
 # target testing).
 android_root=${ART_TEST_ANDROID_ROOT:-/system}
 
-java_lib_location="${ANDROID_HOST_OUT}/../common/obj/JAVA_LIBRARIES"
+java_lib_location="${ANDROID_HOST_OUT}/framework/"
 make_target_name="apache-harmony-jdwp-tests-hostdex"
 
 function boot_classpath_arg {
@@ -328,21 +328,11 @@ else
   art_debugee="$art_debugee --no-compile --no-clean"
 fi
 
-function jlib_name {
-  local path=$1
-  local str="classes"
-  local suffix="jar"
-  if [[ $mode == "ri" ]]; then
-    str="javalib"
-  fi
-  echo "$path/$str.$suffix"
-}
-
 # Jar containing all the tests.
-test_jar=$(jlib_name "${java_lib_location}/${make_target_name}_intermediates")
+test_jar=${java_lib_location}/${make_target_name}.jar
 
 if [[ ! -f $test_jar ]]; then
-  echo "Before running, you must build jdwp tests and vogar:" \
+  echo "Missing $test_jar. Before running, you must build jdwp tests and vogar:" \
        "m ${make_target_name} vogar"
   exit 1
 fi

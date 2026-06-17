@@ -71,7 +71,7 @@ LocationSummary* LocationSummary::CreateImpl(ArenaAllocator* allocator,
 Location Location::RegisterOrConstant(HInstruction* instruction) {
   return instruction->IsConstant()
       ? Location::ConstantLocation(instruction)
-      : Location::RequiresRegister();
+      : Location::RequiresCoreRegister();
 }
 
 Location Location::RegisterOrInt32Constant(HInstruction* instruction) {
@@ -82,7 +82,7 @@ Location Location::RegisterOrInt32Constant(HInstruction* instruction) {
       return Location::ConstantLocation(constant);
     }
   }
-  return Location::RequiresRegister();
+  return Location::RequiresCoreRegister();
 }
 
 Location Location::FpuRegisterOrInt32Constant(HInstruction* instruction) {
@@ -99,7 +99,7 @@ Location Location::FpuRegisterOrInt32Constant(HInstruction* instruction) {
 Location Location::ByteRegisterOrConstant(int reg, HInstruction* instruction) {
   return instruction->IsConstant()
       ? Location::ConstantLocation(instruction)
-      : Location::RegisterLocation(reg);
+      : Location::CoreRegister(reg);
 }
 
 Location Location::FpuRegisterOrConstant(HInstruction* instruction) {
@@ -117,11 +117,11 @@ void Location::DCheckInstructionIsConstant(HInstruction* instruction) {
 
 std::ostream& operator<<(std::ostream& os, const Location& location) {
   os << location.DebugString();
-  if (location.IsRegister() || location.IsFpuRegister()) {
+  if (location.IsCoreRegister() || location.IsFpuRegister() || location.IsVecRegister()) {
     os << location.reg();
-  } else if (location.IsPair()) {
+  } else if (location.IsRegisterPair()) {
     os << location.low() << ":" << location.high();
-  } else if (location.IsStackSlot() || location.IsDoubleStackSlot()) {
+  } else if (location.IsStackSlot() || location.IsDoubleStackSlot() || location.IsSIMDStackSlot()) {
     os << location.GetStackIndex();
   }
   return os;

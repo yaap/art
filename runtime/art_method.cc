@@ -54,6 +54,10 @@
 #include "scoped_thread_state_change-inl.h"
 #include "vdex_file.h"
 
+#ifdef ART_USE_SIMULATOR
+#include "code_simulator.h"
+#endif
+
 namespace art HIDDEN {
 
 using android::base::StringPrintf;
@@ -380,7 +384,7 @@ void ArtMethod::Invoke(Thread* self, uint32_t* args, uint32_t args_size, JValue*
 
   // Push a transition back into managed code onto the linked list in thread.
   ManagedStack fragment;
-  self->PushManagedStackFragment(&fragment);
+  ScopedManagedStackFragment smsf(self, &fragment);
 
   Runtime* runtime = Runtime::Current();
   // Call the invoke stub, passing everything as arguments.
@@ -421,11 +425,17 @@ void ArtMethod::Invoke(Thread* self, uint32_t* args, uint32_t args_size, JValue*
             << "Don't call compiled code when -Xint " << PrettyMethod();
       }
 
+#ifdef ART_USE_SIMULATOR
+      DCHECK(Runtime::IsSimulatorMode());
+      CodeSimulator* simulator = Thread::Current()->GetSimExecutor();
+      simulator->Invoke(this, args, args_size, self, result, shorty, IsStatic());
+#else
       if (!IsStatic()) {
         (*art_quick_invoke_stub)(this, args, args_size, self, result, shorty);
       } else {
         (*art_quick_invoke_static_stub)(this, args, args_size, self, result, shorty);
       }
+#endif
       if (UNLIKELY(self->GetException() == Thread::GetDeoptimizationException())) {
         // Unusual case where we were running generated code and an
         // exception was thrown to force the activations to be removed from the
@@ -443,9 +453,6 @@ void ArtMethod::Invoke(Thread* self, uint32_t* args, uint32_t args_size, JValue*
       }
     }
   }
-
-  // Pop transition.
-  self->PopManagedStackFragment(fragment);
 }
 
 bool ArtMethod::IsSignaturePolymorphic() {
@@ -826,7 +833,7 @@ void ArtMethod::CopyFrom(ArtMethod* src, PointerSize image_pointer_size) {
     SetDataPtrSize(nullptr, image_pointer_size);
   }
   // Clear hotness to let the JIT properly decide when to compile this method.
-  ResetCounter(runtime->GetJITOptions()->GetWarmupThreshold());
+  ResetCounter(jit::Jit::GetInitialHotnessThreshold());
 }
 
 bool ArtMethod::IsImagePointerSize(PointerSize pointer_size) {

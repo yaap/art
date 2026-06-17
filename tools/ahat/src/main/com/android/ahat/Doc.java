@@ -16,6 +16,9 @@
 
 package com.android.ahat;
 
+import com.google.errorprone.annotations.FormatMethod;
+import com.google.errorprone.annotations.FormatString;
+
 import java.util.List;
 
 /**
@@ -25,7 +28,8 @@ interface Doc extends AutoCloseable {
   /**
    * Output the title of the page.
    */
-  void title(String format, Object... args);
+  @FormatMethod
+  void title(@FormatString String format, Object... args);
 
   /**
    * Print a line of text for a page menu.

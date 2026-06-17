@@ -94,6 +94,9 @@ class ImgDiagTest : public CommonRuntimeTest {
         GetClassPathOption("-Xbootclasspath-locations:", GetLibCoreDexLocations()),
         "--boot-image=" + boot_image
     };
+    if (::android::base::GetBoolProperty("dalvik.vm.allow_profile_code", false)) {
+      exec_argv.push_back("--allow-profile-code");
+    }
 
     return ::art::Exec(exec_argv, error_msg);
   }

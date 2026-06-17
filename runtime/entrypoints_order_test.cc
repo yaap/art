@@ -137,15 +137,32 @@ class EntrypointsOrderTest : public CommonArtTest {
         Thread, tlsPtr_, method_trace_buffer_curr_entry, thread_exit_flags, sizeof(void*));
     EXPECT_OFFSET_DIFFP(
         Thread, tlsPtr_, thread_exit_flags, last_no_thread_suspension_cause, sizeof(void*));
-    EXPECT_OFFSET_DIFFP(Thread, tlsPtr_, last_no_thread_suspension_cause,
-                        last_no_transaction_checks_cause, sizeof(void*));
+    EXPECT_OFFSET_DIFFP(Thread,
+                        tlsPtr_,
+                        last_no_thread_suspension_cause,
+                        last_no_transaction_checks_cause,
+                        sizeof(void*));
+#ifdef ART_USE_SIMULATOR
+    EXPECT_OFFSET_DIFFP(
+        Thread, tlsPtr_, last_no_transaction_checks_cause, sim_data.sim_executor, sizeof(void*));
+    EXPECT_OFFSET_DIFFP(
+        Thread, tlsPtr_, sim_data.sim_executor, sim_data.sim_stack_end, sizeof(void*));
+    EXPECT_OFFSET_DIFFP(
+        Thread, tlsPtr_, sim_data.sim_stack_end, sim_data.sim_stack_begin, sizeof(void*));
+    EXPECT_OFFSET_DIFFP(
+        Thread, tlsPtr_, sim_data.sim_stack_begin, sim_data.sim_stack_size, sizeof(void*));
+    EXPECT_OFFSET_DIFFP(Thread, tlsPtr_, sim_data.sim_stack_size, current_peer, sizeof(void*));
+#else
     EXPECT_OFFSET_DIFFP(
         Thread, tlsPtr_, last_no_transaction_checks_cause, current_peer, sizeof(void*));
+#endif
+    EXPECT_OFFSET_DIFFP(Thread, tlsPtr_, current_peer, mounted_virtual_thread_data, sizeof(void*));
     // The first field after tlsPtr_ is forced to a 16 byte alignment so it might have some space.
     auto offset_tlsptr_end = OFFSETOF_MEMBER(Thread, tlsPtr_) +
         sizeof(decltype(reinterpret_cast<Thread*>(16)->tlsPtr_));
-    CHECKED(offset_tlsptr_end - OFFSETOF_MEMBER(Thread, tlsPtr_.current_peer) == sizeof(void*),
-            "current_peer last field");
+    CHECKED(offset_tlsptr_end - OFFSETOF_MEMBER(Thread, tlsPtr_.mounted_virtual_thread_data) ==
+                sizeof(void*),
+            "mounted_virtual_thread_data last field");
   }
 
   void CheckJniEntryPoints() {

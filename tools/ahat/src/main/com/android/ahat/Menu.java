@@ -21,11 +21,19 @@ package com.android.ahat;
  */
 class Menu {
   private static DocString mMenu =
-    DocString.link(DocString.uri("/"), DocString.text("overview"))
-      .append(" - ")
-      .appendLink(DocString.uri("rooted"), DocString.text("rooted"))
-      .append(" - ")
-      .appendLink(DocString.uri("sites"), DocString.text("allocations"));
+          DocString.link(DocString.uri("overview"), DocString.text("overview"))
+                  .append(" - ")
+                  .appendLink(DocString.uri("rooted"), DocString.text("rooted"))
+                  .append(" - ")
+                  .appendLink(DocString.uri("sites"), DocString.text("allocations"))
+                  .append(" - ")
+                  .appendLink(DocString.uri("bitmaps"), DocString.text("bitmaps"))
+                  .append(" - ")
+                  .appendLink(DocString.uri("loopers"), DocString.text("loopers"))
+                  .append(" - ")
+                  .appendLink(DocString.uri("strings"), DocString.text("strings"))
+                  .append(" - ")
+                  .appendLink(DocString.uri("activity-leaks"), DocString.text("activity leaks"));
 
   /**
    * Returns the menu as a DocString.

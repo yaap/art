@@ -551,9 +551,102 @@ public class Main {
     return (value << distance) ^ (value >>> -distance);
   }
 
-  /// CHECK-START: void Main.$noinline$testDontOptimizeAddIntoRotate_Int() disassembly (after)
+  /// CHECK-START: void Main.$noinline$testDontOptimizeAddIntoRotate_Sub_Int() instruction_simplifier (before)
+  /// CHECK-DAG:      <<Shl:i\d+>>          Shl
+  /// CHECK-DAG:      <<Sub:i\d+>>          Sub
+  /// CHECK-DAG:      <<UShr:i\d+>>         UShr [{{i\d+}},<<Sub>>]
+  /// CHECK:                                Add  [<<Shl>>,<<UShr>>]
+  /// CHECK-START: void Main.$noinline$testDontOptimizeAddIntoRotate_Sub_Int() instruction_simplifier (after)
   /// CHECK-NOT: Ror
-  public static void $noinline$testDontOptimizeAddIntoRotate_Int() {
+  public static void $noinline$testDontOptimizeAddIntoRotate_Sub_Int() {
+      int distance = returnFalse() ? 1 : 0;
+      int value = -512667375;
+      int expected_result = 2 * value;
+      int result = (value << distance) + (value >>> (32 - distance));
+      assertIntEquals(expected_result, result);
+  }
+
+  /// CHECK-START: void Main.$noinline$testDontOptimizeAddIntoRotate_Sub_Long() instruction_simplifier (before)
+  /// CHECK-DAG:      <<Shl:j\d+>>          Shl
+  /// CHECK-DAG:      <<Sub:i\d+>>          Sub
+  /// CHECK-DAG:      <<UShr:j\d+>>         UShr [{{j\d+}},<<Sub>>]
+  /// CHECK:                                Add  [<<Shl>>,<<UShr>>]
+  /// CHECK-START: void Main.$noinline$testDontOptimizeAddIntoRotate_Sub_Long() instruction_simplifier (after)
+  /// CHECK-NOT: Ror
+  public static void $noinline$testDontOptimizeAddIntoRotate_Sub_Long() {
+      int distance = returnFalse() ? 1 : 0;
+      long value = -512667375L;
+      long expected_result = 2L * value;
+      long result = (value << distance) + (value >>> (64 - distance));
+      assertLongEquals(expected_result, result);
+  }
+
+  /// CHECK-START: void Main.$noinline$testDontOptimizeXorIntoRotate_Sub_Int() instruction_simplifier (before)
+  /// CHECK-DAG:      <<Shl:i\d+>>          Shl
+  /// CHECK-DAG:      <<Sub:i\d+>>          Sub
+  /// CHECK-DAG:      <<UShr:i\d+>>         UShr [{{i\d+}},<<Sub>>]
+  /// CHECK:                                Xor  [<<Shl>>,<<UShr>>]
+  /// CHECK-START: void Main.$noinline$testDontOptimizeXorIntoRotate_Sub_Int() instruction_simplifier (after)
+  /// CHECK-NOT: Ror
+  public static void $noinline$testDontOptimizeXorIntoRotate_Sub_Int() {
+      int distance = returnFalse() ? 1 : 0;
+      int value = -512667375;
+      int expected_result = 0;
+      int result = (value << distance) ^ (value >>> (32 - distance));
+      assertIntEquals(expected_result, result);
+  }
+
+  /// CHECK-START: void Main.$noinline$testDontOptimizeXorIntoRotate_Sub_Long() instruction_simplifier (before)
+  /// CHECK-DAG:      <<Shl:j\d+>>          Shl
+  /// CHECK-DAG:      <<Sub:i\d+>>          Sub
+  /// CHECK-DAG:      <<UShr:j\d+>>         UShr [{{j\d+}},<<Sub>>]
+  /// CHECK:                                Xor  [<<Shl>>,<<UShr>>]
+  /// CHECK-START: void Main.$noinline$testDontOptimizeXorIntoRotate_Sub_Long() instruction_simplifier (after)
+  /// CHECK-NOT: Ror
+  public static void $noinline$testDontOptimizeXorIntoRotate_Sub_Long() {
+      int distance = returnFalse() ? 1 : 0;
+      long value = -512667375L;
+      long expected_result = 0;
+      long result = (value << distance) ^ (value >>> (64 - distance));
+      assertLongEquals(expected_result, result);
+  }
+
+  /// CHECK-START: void Main.$noinline$testOptimizeOrIntoRotate_Sub_Int() instruction_simplifier (before)
+  /// CHECK-DAG:      <<Shl:i\d+>>          Shl
+  /// CHECK-DAG:      <<Sub:i\d+>>          Sub
+  /// CHECK-DAG:      <<UShr:i\d+>>         UShr [{{i\d+}},<<Sub>>]
+  /// CHECK:                                Or   [<<Shl>>,<<UShr>>]
+  /// CHECK-START: void Main.$noinline$testOptimizeOrIntoRotate_Sub_Int() instruction_simplifier (after)
+  /// CHECK: Ror
+  public static void $noinline$testOptimizeOrIntoRotate_Sub_Int() {
+      int distance = returnFalse() ? 1 : 0;
+      int value = -512667375;
+      int result = (value << distance) | (value >>> (32 - distance));
+      assertIntEquals(value, result);
+  }
+
+  /// CHECK-START: void Main.$noinline$testOptimizeOrIntoRotate_Sub_Long() instruction_simplifier (before)
+  /// CHECK-DAG:      <<Shl:j\d+>>          Shl
+  /// CHECK-DAG:      <<Sub:i\d+>>          Sub
+  /// CHECK-DAG:      <<UShr:j\d+>>         UShr [{{j\d+}},<<Sub>>]
+  /// CHECK:                                Or   [<<Shl>>,<<UShr>>]
+  /// CHECK-START: void Main.$noinline$testOptimizeOrIntoRotate_Sub_Long() instruction_simplifier (after)
+  /// CHECK: Ror
+  public static void $noinline$testOptimizeOrIntoRotate_Sub_Long() {
+      int distance = returnFalse() ? 1 : 0;
+      long value = -512667375L;
+      long result = (value << distance) | (value >>> (64 - distance));
+      assertLongEquals(value, result);
+  }
+
+  /// CHECK-START: void Main.$noinline$testDontOptimizeAddIntoRotate_Neg_Int() instruction_simplifier (before)
+  /// CHECK-DAG:      <<UShr:i\d+>>         UShr
+  /// CHECK-DAG:      <<Neg:i\d+>>          Neg
+  /// CHECK-DAG:      <<Shl:i\d+>>          Shl [{{i\d+}},<<Neg>>]
+  /// CHECK:                                Add [<<UShr>>,<<Shl>>]
+  /// CHECK-START: void Main.$noinline$testDontOptimizeAddIntoRotate_Neg_Int() instruction_simplifier (after)
+  /// CHECK-NOT: Ror
+  public static void $noinline$testDontOptimizeAddIntoRotate_Neg_Int() {
       int distance = returnFalse() ? 1 : 0;
       int value = -512667375;
       int expected_result = 2 * value;
@@ -561,9 +654,14 @@ public class Main {
       assertIntEquals(expected_result, result);
   }
 
-  /// CHECK-START: void Main.$noinline$testDontOptimizeAddIntoRotate_Long() disassembly (after)
+  /// CHECK-START: void Main.$noinline$testDontOptimizeAddIntoRotate_Neg_Long() instruction_simplifier (before)
+  /// CHECK-DAG:      <<UShr:j\d+>>         UShr
+  /// CHECK-DAG:      <<Neg:i\d+>>          Neg
+  /// CHECK-DAG:      <<Shl:j\d+>>          Shl [{{j\d+}},<<Neg>>]
+  /// CHECK:                                Add [<<UShr>>,<<Shl>>]
+  /// CHECK-START: void Main.$noinline$testDontOptimizeAddIntoRotate_Neg_Long() instruction_simplifier (after)
   /// CHECK-NOT: Ror
-  public static void $noinline$testDontOptimizeAddIntoRotate_Long() {
+  public static void $noinline$testDontOptimizeAddIntoRotate_Neg_Long() {
       int distance = returnFalse() ? 1 : 0;
       long value = -512667375L;
       long expected_result = 2L * value;
@@ -571,9 +669,14 @@ public class Main {
       assertLongEquals(expected_result, result);
   }
 
-  /// CHECK-START: void Main.$noinline$testDontOptimizeXorIntoRotate_Int() disassembly (after)
+  /// CHECK-START: void Main.$noinline$testDontOptimizeXorIntoRotate_Neg_Int() instruction_simplifier (before)
+  /// CHECK-DAG:      <<UShr:i\d+>>         UShr
+  /// CHECK-DAG:      <<Neg:i\d+>>          Neg
+  /// CHECK-DAG:      <<Shl:i\d+>>          Shl [{{i\d+}},<<Neg>>]
+  /// CHECK:                                Xor [<<UShr>>,<<Shl>>]
+  /// CHECK-START: void Main.$noinline$testDontOptimizeXorIntoRotate_Neg_Int() instruction_simplifier (after)
   /// CHECK-NOT: Ror
-  public static void $noinline$testDontOptimizeXorIntoRotate_Int() {
+  public static void $noinline$testDontOptimizeXorIntoRotate_Neg_Int() {
       int distance = returnFalse() ? 1 : 0;
       int value = -512667375;
       int expected_result = 0;
@@ -581,14 +684,61 @@ public class Main {
       assertIntEquals(expected_result, result);
   }
 
-  /// CHECK-START: void Main.$noinline$testDontOptimizeXorIntoRotate_Long() disassembly (after)
+  /// CHECK-START: void Main.$noinline$testDontOptimizeXorIntoRotate_Neg_Long() instruction_simplifier (before)
+  /// CHECK-DAG:      <<UShr:j\d+>>         UShr
+  /// CHECK-DAG:      <<Neg:i\d+>>          Neg
+  /// CHECK-DAG:      <<Shl:j\d+>>          Shl [{{j\d+}},<<Neg>>]
+  /// CHECK:                                Xor [<<UShr>>,<<Shl>>]
+  /// CHECK-START: void Main.$noinline$testDontOptimizeXorIntoRotate_Neg_Long() instruction_simplifier (after)
   /// CHECK-NOT: Ror
-  public static void $noinline$testDontOptimizeXorIntoRotate_Long() {
+  public static void $noinline$testDontOptimizeXorIntoRotate_Neg_Long() {
       int distance = returnFalse() ? 1 : 0;
       long value = -512667375L;
       long expected_result = 0;
       long result = (value >>> distance) ^ (value << -distance);
       assertLongEquals(expected_result, result);
+  }
+
+  /// CHECK-START: void Main.$noinline$testOptimizeOrIntoRotate_Neg_Int() instruction_simplifier (before)
+  /// CHECK-DAG:      <<UShr:i\d+>>         UShr
+  /// CHECK-DAG:      <<Neg:i\d+>>          Neg
+  /// CHECK-DAG:      <<Shl:i\d+>>          Shl [{{i\d+}},<<Neg>>]
+  /// CHECK:                                Or  [<<UShr>>,<<Shl>>]
+  /// CHECK-START: void Main.$noinline$testOptimizeOrIntoRotate_Neg_Int() instruction_simplifier (after)
+  /// CHECK: Ror
+  public static void $noinline$testOptimizeOrIntoRotate_Neg_Int() {
+      int distance = returnFalse() ? 1 : 0;
+      int value = -512667375;
+      int result = (value >>> distance) | (value << -distance);
+      assertIntEquals(value, result);
+  }
+
+  /// CHECK-START: void Main.$noinline$testOptimizeOrIntoRotate_Neg_Long() instruction_simplifier (before)
+  /// CHECK-DAG:      <<UShr:j\d+>>         UShr
+  /// CHECK-DAG:      <<Neg:i\d+>>          Neg
+  /// CHECK-DAG:      <<Shl:j\d+>>          Shl [{{j\d+}},<<Neg>>]
+  /// CHECK:                                Or  [<<UShr>>,<<Shl>>]
+  /// CHECK-START: void Main.$noinline$testOptimizeOrIntoRotate_Neg_Long() instruction_simplifier (after)
+  /// CHECK: Ror
+  public static void $noinline$testOptimizeOrIntoRotate_Neg_Long() {
+      int distance = returnFalse() ? 1 : 0;
+      long value = -512667375L;
+      long result = (value >>> distance) | (value << -distance);
+      assertLongEquals(value, result);
+  }
+
+  /// CHECK-START: int Main.testMixedNegFirst(int, int, int) disassembly (after)
+  /// CHECK: Ror
+  public static int testMixedNegFirst(int a, int b, int v) {
+    int x = a - b;
+    return (v << x) | (v >>> -x);
+  }
+
+  /// CHECK-START: int Main.testMixedSubFirst(int, int) disassembly (after)
+  /// CHECK: Ror
+  public static int testMixedSubFirst(int a, int v) {
+    int x = -a;
+    return (v << x) | (v >>> (32 - x));
   }
 
   static boolean returnFalse() {
@@ -623,10 +773,25 @@ public class Main {
     assertLongEquals(32L, rol_long_reg_v_negv_add(8L, 2));
     assertLongEquals(32L, rol_long_reg_v_negv_xor(8L, 2));
 
-    $noinline$testDontOptimizeAddIntoRotate_Int();
-    $noinline$testDontOptimizeAddIntoRotate_Long();
+    $noinline$testDontOptimizeAddIntoRotate_Sub_Int();
+    $noinline$testDontOptimizeAddIntoRotate_Sub_Long();
 
-    $noinline$testDontOptimizeXorIntoRotate_Int();
-    $noinline$testDontOptimizeXorIntoRotate_Long();
+    $noinline$testDontOptimizeXorIntoRotate_Sub_Int();
+    $noinline$testDontOptimizeXorIntoRotate_Sub_Long();
+
+    $noinline$testOptimizeOrIntoRotate_Sub_Int();
+    $noinline$testOptimizeOrIntoRotate_Sub_Long();
+
+    $noinline$testDontOptimizeAddIntoRotate_Neg_Int();
+    $noinline$testDontOptimizeAddIntoRotate_Neg_Long();
+
+    $noinline$testDontOptimizeXorIntoRotate_Neg_Int();
+    $noinline$testDontOptimizeXorIntoRotate_Neg_Long();
+
+    $noinline$testOptimizeOrIntoRotate_Neg_Int();
+    $noinline$testOptimizeOrIntoRotate_Neg_Long();
+
+    assertIntEquals(32, testMixedNegFirst(10, 8, 8));
+    assertIntEquals(2,  testMixedSubFirst(2, 8));
   }
 }

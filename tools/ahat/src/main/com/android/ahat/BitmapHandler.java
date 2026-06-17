@@ -16,79 +16,47 @@
 
 package com.android.ahat;
 
+import com.android.ahat.heapdump.AhatBitmapInstance;
 import com.android.ahat.heapdump.AhatInstance;
 import com.android.ahat.heapdump.AhatSnapshot;
-import com.android.ahat.heapdump.AhatBitmapInstance;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
+
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.io.PrintStream;
+
 import javax.imageio.ImageIO;
 
-class BitmapHandler implements HttpHandler {
+class BitmapHandler implements AhatDataHandler {
   private AhatSnapshot mSnapshot;
 
   public BitmapHandler(AhatSnapshot snapshot) {
     mSnapshot = snapshot;
   }
 
-  private void handle_404(HttpExchange exchange) throws IOException {
-    exchange.getResponseHeaders().add("Content-Type", "text/html");
-    exchange.sendResponseHeaders(404, 0);
-    PrintStream ps = new PrintStream(exchange.getResponseBody());
-    HtmlDoc doc = new HtmlDoc(ps, DocString.text("ahat"), DocString.uri("style.css"));
-    doc.big(DocString.text("No bitmap found for the given request."));
-    doc.close();
-  }
-
-  private void handle_BufferedImage(HttpExchange exchange,
-                                    BufferedImage bitmap) throws IOException {
-    if (bitmap == null) {
-      handle_404(exchange);
+  @Override
+  public void handle(Response response, Query query) throws IOException {
+    long id = query.getLong("id", 0);
+    AhatInstance inst = mSnapshot.findInstance(id);
+    if (inst == null || !inst.isBitmapInstance()) {
+      response.error("No bitmap found for the given request.");
       return;
     }
-    exchange.getResponseHeaders().add("Content-Type", "image/png");
-    exchange.sendResponseHeaders(200, 0);
-    OutputStream os = exchange.getResponseBody();
-    ImageIO.write(bitmap, "png", os);
-    os.close();
-  }
 
-  @Override
-  public void handle(HttpExchange exchange) throws IOException {
-    try {
-      Query query = new Query(exchange.getRequestURI());
-      long id = query.getLong("id", 0);
-      AhatInstance inst = mSnapshot.findInstance(id);
-      if (inst == null || !inst.isBitmapInstance()) {
-        handle_404(exchange);
-        return;
-      }
-
-      AhatBitmapInstance.Bitmap bitmap = inst.asBitmapInstance().getBitmap();
-      if (bitmap == null) {
-        handle_404(exchange);
-        return;
-      }
-
-      if (bitmap.image != null) {
-        handle_BufferedImage(exchange, bitmap.image);
-        return;
-      }
-
-      exchange.getResponseHeaders().add("Content-Type", bitmap.format);
-      exchange.sendResponseHeaders(200, 0);
-      OutputStream os = exchange.getResponseBody();
-      os.write(bitmap.buffer);
-      os.close();
-    } catch (RuntimeException e) {
-      // Print runtime exceptions to standard error for debugging purposes,
-      // because otherwise they are swallowed and not reported.
-      System.err.println("Exception when handling " + exchange.getRequestURI() + ": ");
-      e.printStackTrace();
-      throw e;
+    AhatBitmapInstance.Bitmap bitmap = inst.asBitmapInstance().getBitmap();
+    if (bitmap == null) {
+      response.error("No bitmap found for the given request.");
+      return;
     }
+
+    if (bitmap.image != null) {
+      OutputStream os = response.content("image/png");
+      ImageIO.write(bitmap.image, "png", os);
+      os.close();
+      return;
+    }
+
+    OutputStream os = response.content(bitmap.format);
+    os.write(bitmap.buffer);
+    os.close();
   }
 }

@@ -263,9 +263,7 @@ class LockWord {
     return lw1.GetValueWithoutGCState() == lw2.GetValueWithoutGCState();
   }
 
-  void Dump(std::ostream& os) {
-    os << "LockWord:" << std::hex << value_;
-  }
+  void Dump(std::ostream& os) { os << "LockWord:" << std::hex << value_ << std::dec; }
 
  private:
   // Default constructor with no lock ownership.

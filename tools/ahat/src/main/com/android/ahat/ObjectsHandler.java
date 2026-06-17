@@ -16,6 +16,7 @@
 
 package com.android.ahat;
 
+import com.android.ahat.Column;
 import com.android.ahat.heapdump.AhatHeap;
 import com.android.ahat.heapdump.AhatInstance;
 import com.android.ahat.heapdump.AhatSnapshot;
@@ -115,14 +116,16 @@ class ObjectsHandler implements AhatHandler {
     doc.end();
     doc.println(DocString.text(""));
 
+
+
     if (insts.isEmpty()) {
-      doc.println(DocString.text("(none)"));
+      doc.println(DocString.text("(no instances)"));
     } else {
       SizeTable.table(doc, mSnapshot.isDiffed(),
           new Column("Heap"),
           new Column("Object"));
 
-      SubsetSelector<AhatInstance> selector = new SubsetSelector(query, OBJECTS_ID, insts);
+      SubsetSelector<AhatInstance> selector = new SubsetSelector<>(query, OBJECTS_ID, insts);
       for (AhatInstance inst : selector.selected()) {
         AhatInstance base = inst.getBaseline();
         SizeTable.row(doc,
@@ -134,4 +137,6 @@ class ObjectsHandler implements AhatHandler {
       selector.render(doc);
     }
   }
+
+
 }

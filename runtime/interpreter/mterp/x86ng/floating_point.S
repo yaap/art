@@ -34,7 +34,7 @@
     SET_VREG %eax, rINST
     ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 
-%def fpcvt(instr="", load="", store="", wide="0"):
+%def fpcvt(instr="", load="", store="", wide=False):
 /*
  * Generic 32-bit FP conversion operation.
  */
@@ -45,11 +45,10 @@
     andb    $$0xf, %cl                      # ecx <- A
     $instr
     $store  VREG_ADDRESS(%ecx)              # vA <- %st0
-    .if $wide
-    CLEAR_WIDE_REF %ecx
-    .else
-    CLEAR_REF %ecx
-    .endif
+%   if wide:
+      CLEAR_WIDE_REF %ecx
+%   else:
+      CLEAR_REF %ecx
     ADVANCE_PC_FETCH_AND_GOTO_NEXT 1
 
 %def sseBinop(instr="", suff=""):
@@ -127,28 +126,28 @@
 %  fpcvt(load="fldl", store="fstps")
 
 %def op_double_to_int():
-%  cvtfp_int(srcdouble="1", tgtlong="0")
+%  cvtfp_int(srcdouble=True)
 
 %def op_double_to_long():
-%  cvtfp_int(srcdouble="1", tgtlong="1")
+%  cvtfp_int(srcdouble=True, tgtlong=True)
 
 %def op_float_to_double():
-%  fpcvt(load="flds", store="fstpl", wide="1")
+%  fpcvt(load="flds", store="fstpl", wide=True)
 
 %def op_float_to_int():
-%  cvtfp_int(srcdouble="0", tgtlong="0")
+%  cvtfp_int()
 
 %def op_float_to_long():
-%  cvtfp_int(srcdouble="0", tgtlong="1")
+%  cvtfp_int(tgtlong=True)
 
 %def op_int_to_double():
-%  fpcvt(load="fildl", store="fstpl", wide="1")
+%  fpcvt(load="fildl", store="fstpl", wide=True)
 
 %def op_int_to_float():
 %  fpcvt(load="fildl", store="fstps")
 
 %def op_long_to_double():
-%  fpcvt(load="fildll", store="fstpl", wide="1")
+%  fpcvt(load="fildll", store="fstpl", wide=True)
 
 %def op_long_to_float():
 %  fpcvt(load="fildll", store="fstps")
@@ -166,7 +165,7 @@
 %  sseBinop2Addr(instr="muls", suff="s")
 
 %def op_neg_double():
-%  fpcvt(instr="fchs", load="fldl", store="fstpl", wide="1")
+%  fpcvt(instr="fchs", load="fldl", store="fstpl", wide=True)
 
 %def op_neg_float():
 %  fpcvt(instr="fchs", load="flds", store="fstps")

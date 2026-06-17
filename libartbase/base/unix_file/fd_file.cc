@@ -440,8 +440,7 @@ bool FdFile::IsOpened() const {
   return FdFile::IsOpenFd(fd_);
 }
 
-static ssize_t ReadIgnoreOffset(int fd, void *buf, size_t count, off_t offset) {
-  DCHECK_EQ(offset, 0);
+static ssize_t ReadIgnoreOffset(int fd, void* buf, size_t count, [[maybe_unused]] off_t offset) {
   return read(fd, buf, count);
 }
 

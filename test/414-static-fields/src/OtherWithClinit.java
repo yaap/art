@@ -15,9 +15,9 @@
  */
 
 public class OtherWithClinit {
-  static int staticField = 39;
+    static int staticField = 39;
 
-  static {
-    staticField = 40;
-  }
+    static {
+        staticField = 40;
+    }
 }

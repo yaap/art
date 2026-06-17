@@ -43,6 +43,7 @@
 #include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
 #include "scoped_thread_state_change.h"
+#include "stack.h"
 #include "thread-current-inl.h"
 
 namespace art {
@@ -194,6 +195,95 @@ extern "C" JNIEXPORT jboolean JNICALL Java_Main_isAotCompiled(JNIEnv* env,
   return actual_code == oat_code;
 }
 
+template <typename Handler>
+void ProcessMethodWithName(JNIEnv* env, jstring method_name, const Handler& handler) {
+  ScopedUtfChars chars(env, method_name);
+  CHECK(chars.c_str() != nullptr);
+  ScopedObjectAccess soa(Thread::Current());
+  StackVisitor::WalkStack(
+      [&](const art::StackVisitor* stack_visitor) REQUIRES_SHARED(Locks::mutator_lock_) {
+        std::string m_name(stack_visitor->GetMethod()->GetName());
+
+        if (m_name.compare(chars.c_str()) == 0) {
+          handler(stack_visitor);
+          return false;
+        }
+        return true;
+      },
+      soa.Self(),
+      /* context= */ nullptr,
+      art::StackVisitor::StackWalkKind::kIncludeInlinedFrames);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_Main_isInOsrCode(JNIEnv* env,
+                                                            jclass,
+                                                            jstring method_name) {
+  jit::Jit* jit = Runtime::Current()->GetJit();
+  if (jit == nullptr) {
+    // Just return true for non-jit configurations to stop the infinite loop.
+    return JNI_TRUE;
+  }
+  bool in_osr_code = false;
+  ProcessMethodWithName(
+      env,
+      method_name,
+      [&](const art::StackVisitor* stack_visitor) REQUIRES_SHARED(Locks::mutator_lock_) {
+        ArtMethod* m = stack_visitor->GetMethod();
+        const OatQuickMethodHeader* header =
+            Runtime::Current()->GetJit()->GetCodeCache()->LookupOsrMethodHeader(m);
+        if (header != nullptr && header == stack_visitor->GetCurrentOatQuickMethodHeader()) {
+          in_osr_code = true;
+        }
+      });
+  return in_osr_code;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL Java_Main_isInInterpreter(JNIEnv* env,
+                                                                jclass,
+                                                                jstring method_name) {
+  if (!Runtime::Current()->UseJitCompilation()) {
+    // The return value is irrelevant if we're not using JIT.
+    return false;
+  }
+  bool in_interpreter = false;
+  ProcessMethodWithName(
+      env,
+      method_name,
+      [&](const art::StackVisitor* stack_visitor) REQUIRES_SHARED(Locks::mutator_lock_) {
+        ArtMethod* m = stack_visitor->GetMethod();
+        const OatQuickMethodHeader* header =
+            Runtime::Current()->GetJit()->GetCodeCache()->LookupOsrMethodHeader(m);
+        if ((header == nullptr || header != stack_visitor->GetCurrentOatQuickMethodHeader()) &&
+            (stack_visitor->IsShadowFrame() ||
+             stack_visitor->GetCurrentOatQuickMethodHeader()->IsNterpMethodHeader())) {
+          in_interpreter = true;
+        }
+      });
+  return in_interpreter;
+}
+
+extern "C" JNIEXPORT void JNICALL Java_Main_ensureHasOsrCode(JNIEnv* env,
+                                                             jclass,
+                                                             jstring method_name) {
+  if (!Runtime::Current()->UseJitCompilation()) {
+    return;
+  }
+  ProcessMethodWithName(
+      env,
+      method_name,
+      [&](const art::StackVisitor* stack_visitor) REQUIRES_SHARED(Locks::mutator_lock_) {
+        ArtMethod* m = stack_visitor->GetMethod();
+        jit::Jit* jit = Runtime::Current()->GetJit();
+        while (jit->GetCodeCache()->LookupOsrMethodHeader(m) == nullptr) {
+          // Sleep to yield to the compiler thread.
+          usleep(1000);
+          // Will either ensure it's compiled or do the compilation itself.
+          jit->CompileMethod(
+              m, Thread::Current(), CompilationKind::kOsr, /*prejit=*/ false);
+        }
+      });
+}
+
 extern "C" JNIEXPORT jboolean JNICALL Java_Main_hasJitCompiledEntrypoint(JNIEnv* env,
                                                                          jclass,
                                                                          jclass cls,
@@ -282,8 +372,9 @@ static void ForceJitCompiled(Thread* self,
     if (jit->TryPatternMatch(method, CompilationKind::kBaseline)) {
       return;
     }
-    jit->MaybeEnqueueCompilation(method, self);
+    jit->EnqueueBaselineCompilation(method, self);
   } else {
+    ScopedObjectAccess soa(self);
     jit->EnqueueOptimizedCompilation(method, self);
   }
   do {
@@ -466,6 +557,14 @@ extern "C" JNIEXPORT void JNICALL Java_Main_deoptimizeNativeMethod(JNIEnv* env,
 
 extern "C" JNIEXPORT jboolean JNICALL Java_Main_isDebuggable(JNIEnv*, jclass) {
   return Runtime::Current()->IsJavaDebuggable() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jint JNICALL Java_Main_getSdkVersion(JNIEnv*, jclass) {
+  return Runtime::Current()->GetSdkVersion();
+}
+
+extern "C" JNIEXPORT jint JNICALL Java_Main_getTargetSdkVersion(JNIEnv*, jclass) {
+  return Runtime::Current()->GetTargetSdkVersion();
 }
 
 extern "C" JNIEXPORT void JNICALL Java_Main_setTargetSdkVersion(JNIEnv*, jclass, jint version) {

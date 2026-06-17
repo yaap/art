@@ -72,7 +72,7 @@ class RegisterAllocatorTest : public CommonCompilerTest, public OptimizingUnitTe
                                                 /* number_of_out_slots= */ 0u,
                                                 codegen,
                                                 /*liveness=*/ nullptr,
-                                                RegisterAllocator::RegisterType::kCoreRegister,
+                                                PhysicalRegisterType::kCoreRegister,
                                                 /* log_fatal_on_failure= */ false);
   }
 
@@ -87,13 +87,14 @@ class RegisterAllocatorTest : public CommonCompilerTest, public OptimizingUnitTe
   void BlockCoreRegistersExcept(CodeGenerator* codegen, std::initializer_list<RegType> allowed) {
     size_t number_of_core_registers = codegen->GetNumberOfCoreRegisters();
     uint32_t blocked_core_registers = MaxInt<uint32_t>(number_of_core_registers);
-    for (x86::Register reg : allowed) {
+    for (RegType reg : allowed) {
       CHECK_LT(reg, number_of_core_registers);
       blocked_core_registers &= ~(1u << reg);
     }
     RegisterSet blocked_registers = RegisterSet::Empty();
     blocked_registers.AddCoreRegisterSet(blocked_core_registers);
     blocked_registers.AddFpuRegisterSet(codegen->blocked_registers_.GetFpuRegisterSet());
+    blocked_registers.AddVecRegisterSet(codegen->blocked_registers_.GetVecRegisterSet());
     codegen->blocked_registers_ = blocked_registers;
   }
 
@@ -122,7 +123,7 @@ bool RegisterAllocatorTest::Check(const std::vector<uint16_t>& data) {
  * tests are based on this validation method.
  */
 TEST_F(RegisterAllocatorTest, ValidateIntervals) {
-  HGraph* graph = CreateGraph();
+  CreateGraph();
   std::unique_ptr<CodeGenerator> codegen = CreateCodeGenerator(graph_, InstructionSet::kX86);
   if (codegen == nullptr) {
     GTEST_SKIP() << "X86 codegen is unavailable.";
@@ -391,7 +392,8 @@ TEST_F(RegisterAllocatorTest, FirstRegisterUse) {
   ASSERT_TRUE(interval->GetNextSibling() == nullptr);
 
   // We need a register for the output of the instruction.
-  ASSERT_EQ(interval->FirstRegisterUse(), first_xor->GetLifetimePosition());
+  ASSERT_TRUE(interval->RequiresRegisterForDefinitionAt(interval->GetStart()));
+  ASSERT_EQ(interval->FirstRegisterUse(), last_xor->GetLifetimePosition());
 
   // Split at the next instruction.
   interval = interval->SplitAt(first_xor->GetLifetimePosition() + 2);
@@ -404,6 +406,23 @@ TEST_F(RegisterAllocatorTest, FirstRegisterUse) {
   ASSERT_EQ(interval->FirstRegisterUse(), kNoLifetime);
   // And the new interval has it for the last add.
   ASSERT_EQ(new_interval->FirstRegisterUse(), last_xor->GetLifetimePosition());
+}
+
+TEST_F(RegisterAllocatorTest, FpuSameAsFirstInput) {
+  HBasicBlock* block = InitEntryMainExitGraphWithReturnVoid();
+  HInstruction* param1 = MakeParam(DataType::Type::kFloat32);
+  HNeg* neg = MakeUnOp<HNeg>(block, DataType::Type::kFloat32, param1);
+  LocationSummary* locations = LocationSummary::CreateNoCall(GetAllocator(), neg);
+  locations->SetInAt(0, Location::FpuRegister(0));
+  locations->SetOut(Location::SameAsFirstInput());
+  static constexpr size_t kLifetimePosition = 32u;
+  neg->SetLifetimePosition(kLifetimePosition);
+  LiveInterval* live_interval = LiveInterval::MakeInterval(
+      GetScopedAllocator(), DataType::Type::kFloat32, /*is_pair=*/ false, neg);
+  live_interval->AddRange(kLifetimePosition, kLifetimePosition + 1);
+  // This used to fail a `DCHECK()`.
+  bool requires_reg = live_interval->RequiresRegisterForDefinitionAt(kLifetimePosition);
+  EXPECT_TRUE(requires_reg);
 }
 
 TEST_F(RegisterAllocatorTest, DeadPhi) {
@@ -569,7 +588,7 @@ TEST_F(RegisterAllocatorTest, PhiHint) {
 
     // Set the phi to a specific register, and check that the inputs get allocated
     // the same register.
-    phi->GetLocations()->UpdateOut(Location::RegisterLocation(2));
+    phi->GetLocations()->UpdateOut(Location::CoreRegister(2));
     std::unique_ptr<RegisterAllocator> register_allocator =
         RegisterAllocator::Create(GetScopedAllocator(), codegen.get(), liveness);
     register_allocator->AllocateRegisters();
@@ -588,7 +607,7 @@ TEST_F(RegisterAllocatorTest, PhiHint) {
 
     // Set input1 to a specific register, and check that the phi and other input get allocated
     // the same register.
-    input1->GetLocations()->UpdateOut(Location::RegisterLocation(2));
+    input1->GetLocations()->UpdateOut(Location::CoreRegister(2));
     std::unique_ptr<RegisterAllocator> register_allocator =
         RegisterAllocator::Create(GetScopedAllocator(), codegen.get(), liveness);
     register_allocator->AllocateRegisters();
@@ -607,7 +626,7 @@ TEST_F(RegisterAllocatorTest, PhiHint) {
 
     // Set input2 to a specific register, and check that the phi and other input get allocated
     // the same register.
-    input2->GetLocations()->UpdateOut(Location::RegisterLocation(2));
+    input2->GetLocations()->UpdateOut(Location::CoreRegister(2));
     std::unique_ptr<RegisterAllocator> register_allocator =
         RegisterAllocator::Create(GetScopedAllocator(), codegen.get(), liveness);
     register_allocator->AllocateRegisters();
@@ -657,7 +676,7 @@ TEST_F(RegisterAllocatorTest, ExpectedInRegisterHint) {
 
     // Check that the field gets put in the register expected by its use.
     // Don't use SetInAt because we are overriding an already allocated location.
-    ret->GetLocations()->Inputs()[0] = Location::RegisterLocation(2);
+    ret->GetLocations()->Inputs()[0] = Location::CoreRegister(2);
 
     std::unique_ptr<RegisterAllocator> register_allocator =
         RegisterAllocator::Create(GetScopedAllocator(), codegen.get(), liveness);
@@ -712,7 +731,7 @@ TEST_F(RegisterAllocatorTest, SameAsFirstInputHint) {
 
     // check that both adds get the same register.
     // Don't use UpdateOutput because output is already allocated.
-    OverrideOutput(first_sub->InputAt(0)->GetLocations(), Location::RegisterLocation(2));
+    OverrideOutput(first_sub->InputAt(0)->GetLocations(), Location::CoreRegister(2));
     ASSERT_EQ(first_sub->GetLocations()->Out().GetPolicy(), Location::kSameAsFirstInput);
     ASSERT_EQ(second_sub->GetLocations()->Out().GetPolicy(), Location::kSameAsFirstInput);
 
@@ -773,7 +792,7 @@ void RegisterAllocatorTest::TestSpillInactive() {
   user->SetBlock(block);
   user->AddInput(one);
   LocationSummary* locations = LocationSummary::CreateNoCall(GetAllocator(), user);
-  locations->SetInAt(0, Location::RequiresRegister());
+  locations->SetInAt(0, Location::RequiresCoreRegister());
   static constexpr size_t phi_ranges[][2] = {{10 * kLppi, 15 * kLppi}};
   BuildInterval(phi_ranges, arraysize(phi_ranges), GetScopedAllocator(), kNoRegisters, user);
 
@@ -787,7 +806,7 @@ void RegisterAllocatorTest::TestSpillInactive() {
   first->uses_.push_front(*new (GetScopedAllocator()) UsePosition(user, 0u, 5u * kLppi));
 
   locations = LocationSummary::CreateNoCall(GetAllocator(), first->GetDefinedBy());
-  locations->SetOut(Location::RequiresRegister());
+  locations->SetOut(Location::RequiresCoreRegister());
   first = first->SplitAt(1u * kLppi);
 
   // Create an interval that conflicts with the next interval, to force the next
@@ -796,7 +815,7 @@ void RegisterAllocatorTest::TestSpillInactive() {
   LiveInterval* second =
       BuildInterval(ranges2, arraysize(ranges2), GetScopedAllocator(), kNoRegisters, two);
   locations = LocationSummary::CreateNoCall(GetAllocator(), second->GetDefinedBy());
-  locations->SetOut(Location::RequiresRegister());
+  locations->SetOut(Location::RequiresCoreRegister());
 
   // Create an interval that will lead to splitting the first interval. The bug occured
   // by splitting at a wrong position, in this case at the next intersection between
@@ -810,7 +829,7 @@ void RegisterAllocatorTest::TestSpillInactive() {
   third->uses_.push_front(*new (GetScopedAllocator()) UsePosition(user, 0u, 4u * kLppi));
   third->uses_.push_front(*new (GetScopedAllocator()) UsePosition(user, 0u, 3u * kLppi));
   locations = LocationSummary::CreateNoCall(GetAllocator(), third->GetDefinedBy());
-  locations->SetOut(Location::RequiresRegister());
+  locations->SetOut(Location::RequiresCoreRegister());
   third = third->SplitAt(3u * kLppi);
 
   // Because the first part of the split interval was considered handled, this interval
@@ -819,7 +838,7 @@ void RegisterAllocatorTest::TestSpillInactive() {
   LiveInterval* fourth =
       BuildInterval(ranges4, arraysize(ranges4), GetScopedAllocator(), kNoRegisters, four);
   locations = LocationSummary::CreateNoCall(GetAllocator(), fourth->GetDefinedBy());
-  locations->SetOut(Location::RequiresRegister());
+  locations->SetOut(Location::RequiresCoreRegister());
 
   std::unique_ptr<CodeGenerator> codegen = CreateCodeGenerator(graph_, InstructionSet::kX86);
   if (codegen == nullptr) {
@@ -851,9 +870,6 @@ TEST_F(RegisterAllocatorTest, SpillInactive) {
 }
 
 TEST_F(RegisterAllocatorTest, ReuseSpillSlots) {
-  if (!com::android::art::flags::reg_alloc_spill_slot_reuse()) {
-    GTEST_SKIP() << "Improved spill slot reuse disabled.";
-  }
   HBasicBlock* return_block = InitEntryMainExitGraph();
   auto [start, left, right] = CreateDiamondPattern(return_block);
   HInstruction* obj = MakeParam(DataType::Type::kReference);
@@ -902,7 +918,7 @@ TEST_F(RegisterAllocatorTest, ReuseSpillSlots) {
   BlockCoreRegistersExcept(codegen.get(), {x86::EAX, x86::EDX});
 
   // Change the `obj` parameter to come in EDX.
-  OverrideOutput(obj->GetLocations(), Location::RegisterLocation(x86::EDX));
+  OverrideOutput(obj->GetLocations(), Location::CoreRegister(x86::EDX));
 
   std::unique_ptr<RegisterAllocator> register_allocator =
       RegisterAllocator::Create(GetScopedAllocator(), codegen.get(), liveness);
@@ -934,9 +950,6 @@ TEST_F(RegisterAllocatorTest, ReuseSpillSlots) {
 }
 
 TEST_F(RegisterAllocatorTest, ReuseSpillSlotGaps) {
-  if (!com::android::art::flags::reg_alloc_spill_slot_reuse()) {
-    GTEST_SKIP() << "Improved spill slot reuse disabled.";
-  }
   HBasicBlock* return_block = InitEntryMainExitGraph();
   auto [pre_header, header, body] = CreateWhileLoop(return_block);
 
@@ -978,8 +991,8 @@ TEST_F(RegisterAllocatorTest, ReuseSpillSlotGaps) {
   BlockCoreRegistersExcept(codegen.get(), {x86::EAX});
   // Rewrite condition locations to work with the single register EAX.
   for (HCondition* c : {cond, deopt_cond}) {
-    ASSERT_TRUE(c->GetLocations()->Out().Equals(Location::RegisterLocation(x86::ECX)));
-    OverrideOutput(c->GetLocations(), Location::RegisterLocation(x86::EAX));
+    ASSERT_TRUE(c->GetLocations()->Out().Equals(Location::CoreRegister(x86::ECX)));
+    OverrideOutput(c->GetLocations(), Location::CoreRegister(x86::EAX));
     c->GetLocations()->SetInAt(0, Location::Any());
     ASSERT_TRUE(c->GetLocations()->InAt(1).Equals(Location::Any()));
   }
@@ -1000,9 +1013,6 @@ TEST_F(RegisterAllocatorTest, ReuseSpillSlotGaps) {
 // is not split when checking if the spill slot can be used. Indeed, it can be split
 // and we must use the sibling to determine the lifetime end.
 TEST_F(RegisterAllocatorTest, ReuseSpillSlotsUnavailableWithSplitPhiInterval) {
-  if (!com::android::art::flags::reg_alloc_spill_slot_reuse()) {
-    GTEST_SKIP() << "Improved spill slot reuse disabled.";
-  }
   if (!com::android::art::flags::reg_alloc_no_output_overlap()) {
     GTEST_SKIP() << "Improved `Location::kNoOutputOverlap` handling disabled.";
   }
@@ -1067,7 +1077,7 @@ TEST_F(RegisterAllocatorTest, ReuseSpillSlotsUnavailableWithSplitPhiInterval) {
   // Set just one register available to make all intervals compete for the same.
   BlockCoreRegistersExcept(codegen.get(), {x86::EAX});
   // Change the `obj` parameter to come in EAX.
-  OverrideOutput(obj->GetLocations(), Location::RegisterLocation(x86::EAX));
+  OverrideOutput(obj->GetLocations(), Location::CoreRegister(x86::EAX));
 
   std::unique_ptr<RegisterAllocator> register_allocator =
       RegisterAllocator::Create(GetScopedAllocator(), codegen.get(), liveness);
@@ -1092,9 +1102,6 @@ TEST_F(RegisterAllocatorTest, ReuseSpillSlotsUnavailableWithSplitPhiInterval) {
 // search hint was pointing to the second part of the split live range and we missed
 // overlaps when trying to reuse a spill slot. Bug: 426785078
 TEST_F(RegisterAllocatorTest, SplitSpillSlotLiveRangeHint) {
-  if (!com::android::art::flags::reg_alloc_spill_slot_reuse()) {
-    GTEST_SKIP() << "Improved spill slot reuse disabled.";
-  }
   // Create a graph with a three-way switch to blocks `left`, `mid` and `right`,
   // and a diamond pattern in the `left` block with branch blocks `left_left`
   // and `left_right` and merging to `left_end`. The linear order shall have
@@ -1299,7 +1306,7 @@ void RegisterAllocatorTest::TestNoOutputOverlapAndTemp() {
   // Add a temp for `add`. We want to test that the temp interval shall not be split.
   // Trying to split it would trigger a `DCHECK(!IsTemp())`.
   ASSERT_EQ(0, add->GetLocations()->GetTempCount());
-  add->GetLocations()->AddTemp(Location::RequiresRegister());
+  add->GetLocations()->AddTemp(Location::RequiresCoreRegister());
 
   // Set just two registers available to avoid adding more instructions
   // to reproduce the situation where we could try to split the temp.
@@ -1370,9 +1377,9 @@ TEST_F(RegisterAllocatorTest, NoOutputOverlapImmediateSpill) {
   // doable as long as the `CodeGeneratorX86` is not `final`.
   LocationSummary* get1_locs = get1->GetLocations();
   ASSERT_TRUE(get1_locs->OutputCanOverlapWithInputs());
-  ASSERT_TRUE(get1_locs->Out().Equals(Location::RequiresRegister()));
+  ASSERT_TRUE(get1_locs->Out().Equals(Location::RequiresCoreRegister()));
   get1_locs->UpdateOut(Location());  // Invalidate output to work around `DCHECK()` in `SetOut()`.
-  get1_locs->SetOut(Location::RequiresRegister(), Location::kNoOutputOverlap);
+  get1_locs->SetOut(Location::RequiresCoreRegister(), Location::kNoOutputOverlap);
 
   // Make three registers available.
   BlockCoreRegistersExcept(codegen.get(), {x86::EAX, x86::ECX, x86::EDX});

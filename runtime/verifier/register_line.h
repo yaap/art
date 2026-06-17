@@ -106,10 +106,12 @@ class RegisterLine {
   // is typical when the underlying value did not change, but we have "different" type information
   // available now. An example is sharpening types after a check-cast. Note that when given kKeep,
   // the new_type is dchecked to be a reference type.
-  ALWAYS_INLINE void SetRegisterType(uint32_t vdst, RegType::Kind new_kind)
-      REQUIRES_SHARED(Locks::mutator_lock_);
   template <LockOp kLockOp>
   ALWAYS_INLINE void SetRegisterType(uint32_t vdst, const RegType& new_type)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+  ALWAYS_INLINE void SetRegisterType(uint32_t vdst, RegType::Kind new_kind)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+  ALWAYS_INLINE void SetRegisterTypeId(uint32_t vdst, uint16_t new_id)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   void SetRegisterTypeWide(uint32_t vdst, RegType::Kind new_kind1, RegType::Kind new_kind2)

@@ -22,7 +22,7 @@ import android.os.Binder;
 import android.os.ParcelFileDescriptor;
 
 import com.android.modules.utils.BasicShellCommandHandler;
-import com.android.server.art.Utils;
+import com.android.server.art.utils.Utils;
 
 import java.io.BufferedReader;
 import java.io.FileInputStream;

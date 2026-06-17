@@ -56,7 +56,7 @@ luci.project(
                 acl.PROJECT_CONFIGS_READER,
                 acl.SCHEDULER_READER,
             ],
-            groups = "googlers",
+            groups = "mdb/android-team",
         ),
         acl.entry(
             roles = [
@@ -77,7 +77,7 @@ luci.project(
         ),
         luci.binding(
             roles = "role/swarming.poolViewer",
-            groups = "googlers",
+            groups = "mdb/android-team",
         ),
     ],
 )
@@ -191,7 +191,7 @@ luci.cq_group(
             roles = [
                 acl.CQ_COMMITTER,
             ],
-            groups = "googlers",
+            groups = "mdb/android-team",
         ),
     ],
 )
@@ -256,6 +256,7 @@ def add_builder(mode,
                 ngen=False,
                 cmc=False,
                 gcstress=False,
+                continuousgc=False,
                 poison=False,
                 hidden=False,
                 build_only=False,
@@ -270,6 +271,7 @@ def add_builder(mode,
     # Create builder name based on the configuaration parameters.
     name = mode + '.' + arch
     name += '.gcstress' if gcstress else ''
+    name += '.cgc' if continuousgc else ''
     name += '.poison' if poison else ''
     name += '.ngen' if ngen else ''
     name += '.cmc' if cmc else ''
@@ -285,6 +287,7 @@ def add_builder(mode,
     category = category.replace("host|", "host.")
     category = category.replace("target|", "target.")
     category = category.replace("gcstress|cmc", "gcstress-cmc")
+    category = category.replace("cgc|cmc", "cgc.cmc")
 
     product = None
     if arch == "arm":
@@ -297,11 +300,9 @@ def add_builder(mode,
       if cmc:
         # Request devices running at least Android 24Q3 (`AP1A` builds) for
         # (`userfaultfd`-based) Concurrent Mark-Compact GC configurations.
-        # Currently (as of 2024-08-22), the only devices within the device pool
-        # allocated to ART that are running `AP1A` builds are Pixel 6 devices
-        # (all other device types are running older Android versions), which are
-        # also the only device model supporting `userfaultfd` among that pool.
-        dimensions |= {"device_os": "A|B"}
+        # We currently have several Pixel 6 devices running Android B,
+        # and Pixel 10 devices running Android C which are 64-bit only.
+        dimensions |= {"device_os": ("C" if bitness == 64 else "B")}
       else:
         # Run all other configurations on Android S since it is the oldest we support.
         # Other than the `AP1A` builds above, all other devices are flashed to `SP2A`.
@@ -327,6 +328,7 @@ def add_builder(mode,
         "concurrent_collector": not cmc,
         "generational_cc": not ngen,
         "gcstress": gcstress,
+        "continuousgc": continuousgc,
         "heap_poisoning": poison,
         "testrunner_args": testrunner_args,
         "repo_root": REPO_ROOT,
@@ -356,6 +358,8 @@ def add_builders():
       add_builder(mode, arch, bitness, poison=True)
       add_builder(mode, arch, bitness, gcstress=True)
       add_builder(mode, arch, bitness, cmc=True, gcstress=True)
+      add_builder(mode, arch, bitness, continuousgc=True)
+      add_builder(mode, arch, bitness, cmc=True, continuousgc=True)
       add_builder(mode, arch, bitness, build_only=True, hidden=True, presubmit=True)
   add_builder('qemu', 'arm', bitness=64)
   add_builder('qemu', 'riscv', bitness=64)

@@ -51,7 +51,7 @@ service dexopt_chroot_setup /apex/com.android.art/bin/dexopt_chroot_setup
     class core
     user artd
     group artd
-    capabilities DAC_OVERRIDE DAC_READ_SEARCH SYS_CHROOT SYS_ADMIN
+    capabilities DAC_OVERRIDE DAC_READ_SEARCH SYS_CHROOT SYS_ADMIN MKNOD
 
 # Run at boot in Android U and later.
 service art_boot /apex/com.android.art/bin/art_boot

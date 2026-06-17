@@ -1,4 +1,4 @@
-%def binop(preinstr="", result="r0", chkzero="0", instr=""):
+%def binop(preinstr="", result="r0", chkzero=False, instr=""):
     /*
      * Generic 32-bit binary operation.  Provide an "instr" line that
      * specifies an instruction that performs "result = r0 op r1".
@@ -21,20 +21,19 @@
     and     r2, r0, #255                @ r2<- BB
     GET_VREG r1, r3                     @ r1<- vCC
     GET_VREG r0, r2                     @ r0<- vBB
-    .if $chkzero
-    cmp     r1, #0                      @ is second operand zero?
-    beq     common_errDivideByZero
-    .endif
+%   if chkzero:
+      cmp     r1, #0                    @ is second operand zero?
+      beq     common_errDivideByZero
 
     FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
     $preinstr                           @ optional op; may set condition codes
     $instr                              @ $result<- op, r0-r3 changed
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG $result, r4                @ vAA<- $result
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 11-14 instructions */
 
-%def binop2addr(preinstr="", result="r0", chkzero="0", instr=""):
+%def binop2addr(preinstr="", result="r0", chkzero=False, instr=""):
     /*
      * Generic 32-bit "/2addr" binary operation.  Provide an "instr" line
      * that specifies an instruction that performs "result = r0 op r1".
@@ -54,20 +53,19 @@
     ubfx    r4, rINST, #8, #4           @ r4<- A
     GET_VREG r1, r3                     @ r1<- vB
     GET_VREG r0, r4                     @ r0<- vA
-    .if $chkzero
-    cmp     r1, #0                      @ is second operand zero?
-    beq     common_errDivideByZero
-    .endif
+%   if chkzero:
+      cmp     r1, #0                    @ is second operand zero?
+      beq     common_errDivideByZero
     FETCH_ADVANCE_INST 1                @ advance rPC, load rINST
 
     $preinstr                           @ optional op; may set condition codes
     $instr                              @ $result<- op, r0-r3 changed
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG $result, r4                @ vAA<- $result
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 10-13 instructions */
 
-%def binopLit16(result="r0", chkzero="0", instr=""):
+%def binopLit16(result="r0", chkzero=False, instr=""):
     /*
      * Generic 32-bit "lit16" binary operation.  Provide an "instr" line
      * that specifies an instruction that performs "result = r0 op r1".
@@ -85,19 +83,18 @@
     mov     r2, rINST, lsr #12          @ r2<- B
     ubfx    r4, rINST, #8, #4           @ r4<- A
     GET_VREG r0, r2                     @ r0<- vB
-    .if $chkzero
-    cmp     r1, #0                      @ is second operand zero?
-    beq     common_errDivideByZero
-    .endif
+%   if chkzero:
+      cmp     r1, #0                    @ is second operand zero?
+      beq     common_errDivideByZero
     FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
 
     $instr                              @ $result<- op, r0-r3 changed
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG $result, r4                @ vAA<- $result
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 10-13 instructions */
 
-%def binopLit8(extract="asr     r1, r3, #8", result="r0", chkzero="0", instr=""):
+%def binopLit8(extract="asr     r1, r3, #8", result="r0", chkzero=False, instr=""):
     /*
      * Generic 32-bit "lit8" binary operation.  Provide an "instr" line
      * that specifies an instruction that performs "result = r0 op r1".
@@ -121,19 +118,18 @@
     and     r2, r3, #255                @ r2<- BB
     GET_VREG r0, r2                     @ r0<- vBB
     $extract                            @ optional; typically r1<- ssssssCC (sign extended)
-    .if $chkzero
-    @cmp     r1, #0                     @ is second operand zero?
-    beq     common_errDivideByZero
-    .endif
+%   if chkzero:
+      @cmp     r1, #0                   @ is second operand zero?
+      beq     common_errDivideByZero
     FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
 
     $instr                              @ $result<- op, r0-r3 changed
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG $result, r4                @ vAA<- $result
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 10-12 instructions */
 
-%def binopWide(preinstr="", result0="r0", result1="r1", chkzero="0", instr=""):
+%def binopWide(preinstr="", result0="r0", result1="r1", chkzero=False, instr=""):
     /*
      * Generic 64-bit binary operation.  Provide an "instr" line that
      * specifies an instruction that performs "result = r0-r1 op r2-r3".
@@ -143,36 +139,39 @@
      * If "chkzero" is set to 1, we perform a divide-by-zero check on
      * vCC (r1).  Useful for integer division and modulus.
      *
-     * for: add-long, sub-long, div-long, rem-long, and-long, or-long,
-     *      xor-long, add-double, sub-double, mul-double, div-double,
-     *      rem-double
+     * for: add-long, sub-long, div-long, rem-long, and-long, or-long, xor-long
      *
      * IMPORTANT: you may specify "chkzero" or "preinstr" but not both.
      */
     /* binop vAA, vBB, vCC */
     FETCH r0, 1                         @ r0<- CCBB
-    mov     rINST, rINST, lsr #8        @ rINST<- AA
-    and     r2, r0, #255                @ r2<- BB
-    mov     r3, r0, lsr #8              @ r3<- CC
+%   if chkzero:
+      lsrs    rINST, rINST, #8          @ rINST<- AA; set flags to use 16-bit encoding
+      lsrs    r3, r0, #8                @ r3<- CC; set flags to use 16-bit encoding
+%   else:
+      lsr     rINST, rINST, #8          @ rINST<- AA
+      lsr     r3, r0, #8                @ r3<- CC
+    and     r1, r0, #255                @ r1<- BB
     VREG_INDEX_TO_ADDR r4, rINST        @ r4<- &fp[AA]
-    VREG_INDEX_TO_ADDR r2, r2           @ r2<- &fp[BB]
     VREG_INDEX_TO_ADDR r3, r3           @ r3<- &fp[CC]
-    GET_VREG_WIDE_BY_ADDR r0, r1, r2    @ r0/r1<- vBB/vBB+1
+    VREG_INDEX_TO_ADDR r1, r1           @ r1<- &fp[BB]
     GET_VREG_WIDE_BY_ADDR r2, r3, r3    @ r2/r3<- vCC/vCC+1
-    .if $chkzero
-    orrs    ip, r2, r3                  @ second arg (r2-r3) is zero?
-    beq     common_errDivideByZero
-    .endif
+    GET_VREG_WIDE_BY_ADDR r0, r1, r1    @ r0/r1<- vBB/vBB+1
+%   if chkzero:
+      orrs    ip, r2, r3                @ second arg (r2-r3) is zero?
+      beq     common_errDivideByZero
     CLEAR_SHADOW_PAIR rINST, lr, ip     @ Zero out the shadow regs
     FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
     $preinstr                           @ optional op; may set condition codes
     $instr                              @ result<- op, r0-r3 changed
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    SET_VREG_WIDE_BY_ADDR $result0,$result1,r4  @ vAA/vAA+1<,  $result0/$result1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
+    @ Use write-back for 16-bit encoding if `chkzero`.
+%   wb = '!' if chkzero else ''
+    SET_VREG_WIDE_BY_ADDR $result0,$result1,r4, ${wb}  @ vAA/vAA+1<,  $result0/$result1
+    GOTO_OPCODE                         @ jump to next instruction
     /* 14-17 instructions */
 
-%def binopWide2addr(preinstr="", result0="r0", result1="r1", chkzero="0", instr=""):
+%def binopWide2addr(preinstr="", result0="r0", result1="r1", chkzero=False, instr=""):
     /*
      * Generic 64-bit "/2addr" binary operation.  Provide an "instr" line
      * that specifies an instruction that performs "result = r0-r1 op r2-r3".
@@ -194,17 +193,16 @@
     VREG_INDEX_TO_ADDR r4, rINST        @ r4<- &fp[A]
     GET_VREG_WIDE_BY_ADDR r2, r3, r1    @ r2/r3<- vBB/vBB+1
     GET_VREG_WIDE_BY_ADDR r0, r1, r4    @ r0/r1<- vAA/vAA+1
-    .if $chkzero
-    orrs    ip, r2, r3                  @ second arg (r2-r3) is zero?
-    beq     common_errDivideByZero
-    .endif
+%   if chkzero:
+      orrs    ip, r2, r3                @ second arg (r2-r3) is zero?
+      beq     common_errDivideByZero
     CLEAR_SHADOW_PAIR rINST, ip, lr     @ Zero shadow regs
     FETCH_ADVANCE_INST 1                @ advance rPC, load rINST
     $preinstr                           @ optional op; may set condition codes
     $instr                              @ result<- op, r0-r3 changed
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG_WIDE_BY_ADDR $result0,$result1,r4  @ vAA/vAA+1<- $result0/$result1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 12-15 instructions */
 
 %def unop(preinstr="", instr=""):
@@ -223,9 +221,9 @@
     $preinstr                           @ optional op; may set condition codes
     FETCH_ADVANCE_INST 1                @ advance rPC, load rINST
     $instr                              @ r0<- op, r0-r3 changed
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG r0, r4                     @ vAA<- r0
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 8-9 instructions */
 
 %def unopNarrower(preinstr="", instr=""):
@@ -247,12 +245,12 @@
     FETCH_ADVANCE_INST 1                @ advance rPC, load rINST
     $preinstr                           @ optional op; may set condition codes
     $instr                              @ r0<- op, r0-r3 changed
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG r0, r4                     @ vA<- r0
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 9-10 instructions */
 
-%def unopWide(preinstr="", instr=""):
+%def unopWide(preinstr="", instr="", postinstr=""):
     /*
      * Generic 64-bit unary operation.  Provide an "instr" line that
      * specifies an instruction that performs "result = op r0/r1".
@@ -270,9 +268,10 @@
     FETCH_ADVANCE_INST 1                @ advance rPC, load rINST
     $preinstr                           @ optional op; may set condition codes
     $instr                              @ r0/r1<- op, r2-r3 changed
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    $postinstr                          @ optional op
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG_WIDE_BY_ADDR r0, r1, r4    @ vAA<- r0/r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 10-11 instructions */
 
 %def unopWider(preinstr="", instr=""):
@@ -292,9 +291,9 @@
     CLEAR_SHADOW_PAIR rINST, ip, lr     @ Zero shadow regs
     FETCH_ADVANCE_INST 1                @ advance rPC, load rINST
     $instr                              @ r0<- op, r0-r3 changed
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG_WIDE_BY_ADDR r0, r1, r4    @ vA/vA+1<- r0/r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 9-10 instructions */
 
 %def op_add_int():
@@ -328,7 +327,8 @@
 %  binopLit8(extract="", instr="and     r0, r0, r3, asr #8")
 
 %def op_and_long():
-%  binopWide(preinstr="and     r0, r0, r2", instr="and     r1, r1, r3")
+   // Set flags to use 16-bit encoding for one of the instructions.
+%  binopWide(preinstr="ands    r0, r0, r2", instr="and     r1, r1, r3")
 
 %def op_and_long_2addr():
 %  binopWide2addr(preinstr="and     r0, r0, r2", instr="and     r1, r1, r3")
@@ -340,9 +340,9 @@
      */
     /* cmp-long vAA, vBB, vCC */
     FETCH r0, 1                         @ r0<- CCBB
-    mov     r4, rINST, lsr #8           @ r4<- AA
+    lsrs    r4, rINST, #(8-2)           @ r4<- AA << 2; opcode 31 has highest two bits clear
     and     r2, r0, #255                @ r2<- BB
-    mov     r3, r0, lsr #8              @ r3<- CC
+    lsrs    r3, r0, #8                  @ r3<- CC; set flags to use 16-bit encoding (same above)
     VREG_INDEX_TO_ADDR r2, r2           @ r2<- &fp[BB]
     VREG_INDEX_TO_ADDR r3, r3           @ r3<- &fp[CC]
     GET_VREG_WIDE_BY_ADDR r0, r1, r2    @ r0/r1<- vBB/vBB+1
@@ -357,9 +357,9 @@
     it      eq
     moveq   r3, #0
     FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
-    SET_VREG r3, r4                     @ vAA<- ip
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    GOTO_OPCODE ip                      @ jump to next instruction
+    SET_VREG_PRESCALED r3, r4, s="s"    @ vAA<- r3; set flags to use 16-bit encoding.
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
+    GOTO_OPCODE                         @ jump to next instruction
 
 %def op_div_int():
     /*
@@ -387,9 +387,9 @@
 #else
     bl    __aeabi_idiv                  @ r0<- op, r0-r3 changed
 #endif
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG r0, r4                     @ vAA<- r0
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 11-14 instructions */
 
 %def op_div_int_2addr():
@@ -416,9 +416,9 @@
 #else
     bl       __aeabi_idiv               @ r0<- op, r0-r3 changed
 #endif
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG r0, r4                     @ vAA<- r0
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 10-13 instructions */
 
 
@@ -446,9 +446,9 @@
 #else
     bl       __aeabi_idiv               @ r0<- op, r0-r3 changed
 #endif
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG r0, r4                     @ vAA<- r0
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 10-13 instructions */
 
 %def op_div_int_lit8():
@@ -476,16 +476,16 @@
 #else
     bl   __aeabi_idiv                   @ r0<- op, r0-r3 changed
 #endif
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG r0, r4                     @ vAA<- r0
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 10-12 instructions */
 
 %def op_div_long():
-%  binopWide(instr="bl      __aeabi_ldivmod", chkzero="1")
+%  binopWide(instr="bl      __aeabi_ldivmod", chkzero=True)
 
 %def op_div_long_2addr():
-%  binopWide2addr(instr="bl      __aeabi_ldivmod", chkzero="1")
+%  binopWide2addr(instr="bl      __aeabi_ldivmod", chkzero=True)
 
 %def op_int_to_byte():
 %  unop(instr="sxtb    r0, r0")
@@ -542,23 +542,24 @@
      */
     /* mul-long vAA, vBB, vCC */
     FETCH r0, 1                         @ r0<- CCBB
-    and     r2, r0, #255                @ r2<- BB
-    mov     r3, r0, lsr #8              @ r3<- CC
-    VREG_INDEX_TO_ADDR r2, r2           @ r2<- &fp[BB]
+    and     r1, r0, #255                @ r1<- BB
+    lsrs    r3, r0, #8                  @ r3<- CC; set flags to use 16-bit encoding (same below)
+    VREG_INDEX_TO_ADDR r1, r1           @ r1<- &fp[BB]
     VREG_INDEX_TO_ADDR r3, r3           @ r3<- &fp[CC]
-    GET_VREG_WIDE_BY_ADDR r0, r1, r2    @ r0/r1<- vBB/vBB+1
+    GET_VREG_WIDE_BY_ADDR r0, r1, r1    @ r0/r1<- vBB/vBB+1
     GET_VREG_WIDE_BY_ADDR r2, r3, r3    @ r2/r3<- vCC/vCC+1
-    mul     ip, r0, r3                  @ ip<- YxX
-    umull   r0, lr, r2, r0              @ r0/lr <- ZxX RdLo == Rn - this is OK.
-    mla     r3, r1, r2, ip              @ r3<- YxX + (ZxW)
-    mov     r4, rINST, lsr #8           @ r4<- AA
-    add     r1, r3, lr                  @ r1<- lr + low(ZxW + (YxX))
-    CLEAR_SHADOW_PAIR r4, lr, ip        @ Zero out the shadow regs
-    VREG_INDEX_TO_ADDR r4, r4           @ r2<- &fp[AA]
+    muls    r3, r0, r3                  @ r3<- low(YxX)
+    umull   r0, lr, r2, r0              @ r0/lr <- ZxX
+    mla     r1, r2, r1, r3              @ r1<- low(YxX + ZxW)
+    lsrs    r4, rINST, #8               @ r4<- AA
+    add     r1, r1, lr                  @ r1<- high(ZxX) + low(ZxW + (YxX))
+    PRESCALE_VREG r4, r4                @ r4<- AA << 2
+    CLEAR_SHADOW_PAIR_PRESCALED r4, r2, r3, s="s"  @ Zero out the shadow regs
+    VREG_INDEX_TO_ADDR_PRESCALED r4, r4  @ r4<- &fp[AA]
     FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    SET_VREG_WIDE_BY_ADDR r0, r1 , r4   @ vAA/vAA+1<- r1/r2
-    GOTO_OPCODE ip                      @ jump to next instruction
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
+    SET_VREG_WIDE_BY_ADDR r0, r1, r4    @ vAA/vAA+1<- r0/r1
+    GOTO_OPCODE                         @ jump to next instruction
 
 %def op_mul_long_2addr():
     /*
@@ -582,15 +583,15 @@
     mov     r4, rINST                   @ Save vAA before FETCH_ADVANCE_INST
     FETCH_ADVANCE_INST 1                @ advance rPC, load rINST
     add     r1, r3, lr                  @ r1<- lr + low(ZxW + (YxX))
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG_WIDE_BY_ADDR r0, r1, r4    @ vAA/vAA+1<- r0/r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
 
 %def op_neg_int():
 %  unop(instr="rsb     r0, r0, #0")
 
 %def op_neg_long():
-%  unopWide(preinstr="rsbs    r0, r0, #0", instr="rsc     r1, r1, #0")
+%  unopWide(preinstr="rsbs    r0, r0, #0", instr="mov     ip, #0", postinstr="sbc     r1, ip, r1")
 
 %def op_not_int():
 %  unop(instr="mvn     r0, r0")
@@ -611,7 +612,8 @@
 %  binopLit8(extract="", instr="orr     r0, r0, r3, asr #8")
 
 %def op_or_long():
-%  binopWide(preinstr="orr     r0, r0, r2", instr="orr     r1, r1, r3")
+   // Set flags to use 16-bit encoding for one of the instructions.
+%  binopWide(preinstr="orrs    r0, r0, r2", instr="orr     r1, r1, r3")
 
 %def op_or_long_2addr():
 %  binopWide2addr(preinstr="orr     r0, r0, r2", instr="orr     r1, r1, r3")
@@ -645,9 +647,9 @@
 #else
     bl      __aeabi_idivmod                @ r1<- op, r0-r3 changed
 #endif
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG r1, r4                     @ vAA<- r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 11-14 instructions */
 
 %def op_rem_int_2addr():
@@ -677,9 +679,9 @@
 #else
     bl      __aeabi_idivmod             @ r1<- op, r0-r3 changed
 #endif
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG r1, r4                     @ vAA<- r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 10-13 instructions */
 
 
@@ -710,9 +712,9 @@
 #else
     bl     __aeabi_idivmod              @ r1<- op, r0-r3 changed
 #endif
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG r1, r4                     @ vAA<- r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 10-13 instructions */
 
 %def op_rem_int_lit8():
@@ -743,18 +745,18 @@
 #else
     bl       __aeabi_idivmod            @ r1<- op, r0-r3 changed
 #endif
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG r1, r4                     @ vAA<- r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
     /* 10-12 instructions */
 
 %def op_rem_long():
 /* ldivmod returns quotient in r0/r1 and remainder in r2/r3 */
-%  binopWide(instr="bl      __aeabi_ldivmod", result0="r2", result1="r3", chkzero="1")
+%  binopWide(instr="bl      __aeabi_ldivmod", result0="r2", result1="r3", chkzero=True)
 
 %def op_rem_long_2addr():
 /* ldivmod returns quotient in r0/r1 and remainder in r2/r3 */
-%  binopWide2addr(instr="bl      __aeabi_ldivmod", result0="r2", result1="r3", chkzero="1")
+%  binopWide2addr(instr="bl      __aeabi_ldivmod", result0="r2", result1="r3", chkzero=True)
 
 %def op_rsub_int():
 /* this op is "rsub-int", but can be thought of as "rsub-int/lit16" */
@@ -772,60 +774,76 @@
 %def op_shl_int_lit8():
 %  binopLit8(extract="ubfx    r1, r3, #8, #5", instr="mov     r0, r0, lsl r1")
 
-%def op_shl_long():
+%def op_shift_long(large_shift):
     /*
      * Long integer shift.  This is different from the generic 32/64-bit
      * binary operations because vAA/vBB are 64-bit but vCC (the shift
      * distance) is 32-bit.  Also, Dalvik requires us to mask off the low
      * 6 bits of the shift distance.
      */
-    /* shl-long vAA, vBB, vCC */
+    /* {shl,shr,ushr}-long vAA, vBB, vCC */
     FETCH r0, 1                         @ r0<- CCBB
-    mov     r4, rINST, lsr #8           @ r4<- AA
+    lsrs    r4, rINST, #8               @ r4<- AA; set flags to use 16-bit encoding (same below)
     and     r3, r0, #255                @ r3<- BB
-    mov     r0, r0, lsr #8              @ r0<- CC
-    VREG_INDEX_TO_ADDR r3, r3           @ r3<- &fp[BB]
+    lsrs    r0, r0, #8                  @ r0<- CC
+    VREG_INDEX_TO_ADDR r1, r3           @ r1<- &fp[BB]
+    PRESCALE_VREG r4, r4, s="s"         @ r4<- A << 2
     GET_VREG r2, r0                     @ r2<- vCC
-    GET_VREG_WIDE_BY_ADDR r0, r1, r3    @ r0/r1<- vBB/vBB+1
-    CLEAR_SHADOW_PAIR r4, lr, ip        @ Zero out the shadow regs
-    and     r2, r2, #63                 @ r2<- r2 & 0x3f
-    VREG_INDEX_TO_ADDR r4, r4           @ r4<- &fp[AA]
-    mov     r1, r1, asl r2              @ r1<- r1 << r2
-    rsb     r3, r2, #32                 @ r3<- 32 - r2
-    orr     r1, r1, r0, lsr r3          @ r1<- r1 | (r0 << (32-r2))
-    subs    ip, r2, #32                 @ ip<- r2 - 32
-    it      pl
-    movpl   r1, r0, asl ip              @ if r2 >= 32, r1<- r0 << (r2-32)
-    FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
-    mov     r0, r0, asl r2              @ r0<- r0 << r2
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    CLEAR_SHADOW_PAIR_PRESCALED r4, r0, r3, s="s"  @ Zero out the shadow regs
+    GET_VREG_WIDE_BY_ADDR r0, r1, r1    @ r0/r1<- vBB/vBB+1
+    VREG_INDEX_TO_ADDR_PRESCALED r4, r4 @ r4<- &fp[AA]
+    FETCH_ADVANCE_INST 2
+    lsls    r3, r2, #27                 @ set C from bit 6 with a 16-bit instruction
+    and     r2, r2, #0x1f               @ r2<- (r2 & 0x1f)
+    bcc     .L${opcode}_2addr_small_shift
+.L${opcode}_large_shift:
+%   large_shift()
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG_WIDE_BY_ADDR r0, r1, r4    @ vAA/vAA+1<- r0/r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
 
-%def op_shl_long_2addr():
+%def op_shift_long_2addr(small_shift):
     /*
      * Long integer shift, 2addr version.  vA is 64-bit value/result, vB is
      * 32-bit shift distance.
      */
     /* shl-long/2addr vA, vB */
-    mov     r3, rINST, lsr #12          @ r3<- B
+    lsrs    r3, rINST, #12              @ r3<- B; set flags to use 16-bit encoding (same below)
     ubfx    r4, rINST, #8, #4           @ r4<- A
     GET_VREG r2, r3                     @ r2<- vB
-    CLEAR_SHADOW_PAIR r4, lr, ip        @ Zero out the shadow regs
-    VREG_INDEX_TO_ADDR r4, r4           @ r4<- &fp[A]
-    and     r2, r2, #63                 @ r2<- r2 & 0x3f
+    PRESCALE_VREG r4, r4, s="s"         @ r4<- A << 2
+    CLEAR_SHADOW_PAIR_PRESCALED r4, r0, r1, s="s"  @ Zero out the shadow regs
+    VREG_INDEX_TO_ADDR_PRESCALED r4, r4 @ r4<- &fp[A]
     GET_VREG_WIDE_BY_ADDR r0, r1, r4    @ r0/r1<- vAA/vAA+1
-    mov     r1, r1, asl r2              @ r1<- r1 << r2
-    rsb     r3, r2, #32                 @ r3<- 32 - r2
-    orr     r1, r1, r0, lsr r3          @ r1<- r1 | (r0 << (32-r2))
-    subs    ip, r2, #32                 @ ip<- r2 - 32
-    FETCH_ADVANCE_INST 1                @ advance rPC, load rINST
-    it      pl
-    movpl   r1, r0, asl ip              @ if r2 >= 32, r1<- r0 << (r2-32)
-    mov     r0, r0, asl r2              @ r0<- r0 << r2
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    lsls    r3, r2, #27                 @ set C from bit 6 with a 16-bit instruction
+    FETCH_ADVANCE_INST 1
+    and     r2, r2, #0x1f               @ r2<- (r2 & 0x1f)
+%   other_opcode = re.sub(r"_2addr", r"", opcode)
+    bcs     .L${other_opcode}_large_shift
+.L${opcode}_small_shift:
+%   small_shift()
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG_WIDE_BY_ADDR r0, r1, r4    @ vAA/vAA+1<- r0/r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
+
+%def shl_long_large_shift():
+    @ Calculate {r0-r1} << (r2 + 32) with r2 < 32.
+    lsl     r1, r0, r2                  @ r1<- r0 << r2
+    movs    r0, #0                      @ r0<- 0; set flags to use 16-bit encoding
+
+%def shl_long_small_shift():
+    @ Calculate {r0-r1} << r2 with r2 < 32.
+    rsb     r3, r2, #32                 @ r3<- 32 - r2
+    lsls    r1, r1, r2                  @ r1<- r1 << r2; set flags to use 16-bit encoding
+    lsr     r3, r0, r3                  @ r3<- r0 >>> (32-r2)
+    lsls    r0, r0, r2                  @ r0<- r0 << r2; set flags to use 16-bit encoding
+    add     r1, r1, r3                  @ r1<- r1 | (r0 >>> (32-r2)); use `add` for 16-bit encoding
+
+%def op_shl_long():
+%   op_shift_long(shl_long_large_shift)
+
+%def op_shl_long_2addr():
+%   op_shift_long_2addr(shl_long_small_shift)
 
 %def op_shr_int():
 %  binop(preinstr="and     r1, r1, #31", instr="mov     r0, r0, asr r1")
@@ -836,60 +854,24 @@
 %def op_shr_int_lit8():
 %  binopLit8(extract="ubfx    r1, r3, #8, #5", instr="mov     r0, r0, asr r1")
 
-%def op_shr_long():
-    /*
-     * Long integer shift.  This is different from the generic 32/64-bit
-     * binary operations because vAA/vBB are 64-bit but vCC (the shift
-     * distance) is 32-bit.  Also, Dalvik requires us to mask off the low
-     * 6 bits of the shift distance.
-     */
-    /* shr-long vAA, vBB, vCC */
-    FETCH r0, 1                         @ r0<- CCBB
-    mov     r4, rINST, lsr #8           @ r4<- AA
-    and     r3, r0, #255                @ r3<- BB
-    mov     r0, r0, lsr #8              @ r0<- CC
-    VREG_INDEX_TO_ADDR r3, r3           @ r3<- &fp[BB]
-    GET_VREG r2, r0                     @ r2<- vCC
-    GET_VREG_WIDE_BY_ADDR r0, r1, r3    @ r0/r1<- vBB/vBB+1
-    CLEAR_SHADOW_PAIR r4, lr, ip        @ Zero out the shadow regs
-    and     r2, r2, #63                 @ r0<- r0 & 0x3f
-    VREG_INDEX_TO_ADDR r4, r4           @ r4<- &fp[AA]
-    mov     r0, r0, lsr r2              @ r0<- r2 >> r2
+%def shr_long_large_shift():
+    @ Calculate {r0-r1} >> (r2 + 32) with r2 < 32.
+    asrs    r0, r1, r2                  @ r0<- r1 >> r2
+    asrs    r1, r1, #31                 @ r1<- r1 >> 31; set flags to use 16-bit encoding
+
+%def shr_long_small_shift():
+    @ Calculate {r0-r1} >> r2 with r2 < 32.
     rsb     r3, r2, #32                 @ r3<- 32 - r2
-    orr     r0, r0, r1, lsl r3          @ r0<- r0 | (r1 << (32-r2))
-    subs    ip, r2, #32                 @ ip<- r2 - 32
-    it      pl
-    movpl   r0, r1, asr ip              @ if r2 >= 32, r0<-r1 >> (r2-32)
-    FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
-    mov     r1, r1, asr r2              @ r1<- r1 >> r2
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    SET_VREG_WIDE_BY_ADDR r0, r1, r4    @ vAA/vAA+1<- r0/r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    lsrs    r0, r0, r2                  @ r0<- r0 >>> r2; set flags to use 16-bit encoding
+    lsl     r3, r1, r3                  @ r3<- r1 << (32-r2)
+    asrs    r1, r1, r2                  @ r1<- r1 >> r2; set flags to use 16-bit encoding
+    add     r0, r0, r3                  @ r0<- r0 | (r1 << (32-r2)); use `add` for 16-bit encoding
+
+%def op_shr_long():
+%   op_shift_long(shr_long_large_shift)
 
 %def op_shr_long_2addr():
-    /*
-     * Long integer shift, 2addr version.  vA is 64-bit value/result, vB is
-     * 32-bit shift distance.
-     */
-    /* shr-long/2addr vA, vB */
-    mov     r3, rINST, lsr #12          @ r3<- B
-    ubfx    r4, rINST, #8, #4           @ r4<- A
-    GET_VREG r2, r3                     @ r2<- vB
-    CLEAR_SHADOW_PAIR r4, lr, ip        @ Zero out the shadow regs
-    VREG_INDEX_TO_ADDR r4, r4           @ r4<- &fp[A]
-    and     r2, r2, #63                 @ r2<- r2 & 0x3f
-    GET_VREG_WIDE_BY_ADDR r0, r1, r4    @ r0/r1<- vAA/vAA+1
-    mov     r0, r0, lsr r2              @ r0<- r2 >> r2
-    rsb     r3, r2, #32                 @ r3<- 32 - r2
-    orr     r0, r0, r1, lsl r3          @ r0<- r0 | (r1 << (32-r2))
-    subs    ip, r2, #32                 @ ip<- r2 - 32
-    FETCH_ADVANCE_INST 1                @ advance rPC, load rINST
-    it      pl
-    movpl   r0, r1, asr ip              @ if r2 >= 32, r0<-r1 >> (r2-32)
-    mov     r1, r1, asr r2              @ r1<- r1 >> r2
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    SET_VREG_WIDE_BY_ADDR r0, r1, r4    @ vAA/vAA+1<- r0/r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+%   op_shift_long_2addr(shr_long_small_shift)
 
 %def op_sub_int():
 %  binop(instr="sub     r0, r0, r1")
@@ -912,60 +894,24 @@
 %def op_ushr_int_lit8():
 %  binopLit8(extract="ubfx    r1, r3, #8, #5", instr="mov     r0, r0, lsr r1")
 
-%def op_ushr_long():
-    /*
-     * Long integer shift.  This is different from the generic 32/64-bit
-     * binary operations because vAA/vBB are 64-bit but vCC (the shift
-     * distance) is 32-bit.  Also, Dalvik requires us to mask off the low
-     * 6 bits of the shift distance.
-     */
-    /* ushr-long vAA, vBB, vCC */
-    FETCH r0, 1                         @ r0<- CCBB
-    mov     r4, rINST, lsr #8           @ r4<- AA
-    and     r3, r0, #255                @ r3<- BB
-    mov     r0, r0, lsr #8              @ r0<- CC
-    VREG_INDEX_TO_ADDR r3, r3           @ r3<- &fp[BB]
-    GET_VREG r2, r0                     @ r2<- vCC
-    GET_VREG_WIDE_BY_ADDR r0, r1, r3    @ r0/r1<- vBB/vBB+1
-    CLEAR_SHADOW_PAIR r4, lr, ip        @ Zero out the shadow regs
-    and     r2, r2, #63                 @ r0<- r0 & 0x3f
-    VREG_INDEX_TO_ADDR r4, r4           @ r4<- &fp[AA]
-    mov     r0, r0, lsr r2              @ r0<- r2 >> r2
+%def ushr_long_large_shift():
+    @ Calculate {r0-r1} >>> (r2 + 32) with r2 < 32.
+    lsr     r0, r1, r2                  @ r1<- r0 >>> r2;
+    movs    r1, #0                      @ r1<- 0; set flags to use 16-bit encoding
+
+%def ushr_long_small_shift():
+    @ Calculate {r0-r1} >>> r2 with r2 < 32.
     rsb     r3, r2, #32                 @ r3<- 32 - r2
-    orr     r0, r0, r1, lsl r3          @ r0<- r0 | (r1 << (32-r2))
-    subs    ip, r2, #32                 @ ip<- r2 - 32
-    it      pl
-    movpl   r0, r1, lsr ip              @ if r2 >= 32, r0<-r1 >>> (r2-32)
-    FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
-    mov     r1, r1, lsr r2              @ r1<- r1 >>> r2
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    SET_VREG_WIDE_BY_ADDR r0, r1, r4    @ vAA/vAA+1<- r0/r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+    lsrs    r0, r0, r2                  @ r0<- r0 >>> r2; set flags to use 16-bit encoding
+    lsl     r3, r1, r3                  @ r3<- r1 << (32-r2)
+    lsrs    r1, r1, r2                  @ r1<- r1 >>> r2; set flags to use 16-bit encoding
+    add     r0, r0, r3                  @ r0<- r0 | (r1 << (32-r2)); use `add` for 16-bit encoding
+
+%def op_ushr_long():
+%   op_shift_long(ushr_long_large_shift)
 
 %def op_ushr_long_2addr():
-    /*
-     * Long integer shift, 2addr version.  vA is 64-bit value/result, vB is
-     * 32-bit shift distance.
-     */
-    /* ushr-long/2addr vA, vB */
-    mov     r3, rINST, lsr #12          @ r3<- B
-    ubfx    r4, rINST, #8, #4           @ r4<- A
-    GET_VREG r2, r3                     @ r2<- vB
-    CLEAR_SHADOW_PAIR r4, lr, ip        @ Zero out the shadow regs
-    VREG_INDEX_TO_ADDR r4, r4           @ r4<- &fp[A]
-    and     r2, r2, #63                 @ r2<- r2 & 0x3f
-    GET_VREG_WIDE_BY_ADDR r0, r1, r4    @ r0/r1<- vAA/vAA+1
-    mov     r0, r0, lsr r2              @ r0<- r2 >> r2
-    rsb     r3, r2, #32                 @ r3<- 32 - r2
-    orr     r0, r0, r1, lsl r3          @ r0<- r0 | (r1 << (32-r2))
-    subs    ip, r2, #32                 @ ip<- r2 - 32
-    FETCH_ADVANCE_INST 1                @ advance rPC, load rINST
-    it      pl
-    movpl   r0, r1, lsr ip              @ if r2 >= 32, r0<-r1 >>> (r2-32)
-    mov     r1, r1, lsr r2              @ r1<- r1 >>> r2
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    SET_VREG_WIDE_BY_ADDR r0, r1, r4    @ vAA/vAA+1<- r0/r1
-    GOTO_OPCODE ip                      @ jump to next instruction
+%   op_shift_long_2addr(ushr_long_small_shift)
 
 %def op_xor_int():
 %  binop(instr="eor     r0, r0, r1")
@@ -980,7 +926,8 @@
 %  binopLit8(extract="", instr="eor     r0, r0, r3, asr #8")
 
 %def op_xor_long():
-%  binopWide(preinstr="eor     r0, r0, r2", instr="eor     r1, r1, r3")
+   // Set flags to use 16-bit encoding for one of the instructions.
+%  binopWide(preinstr="eors    r0, r0, r2", instr="eor     r1, r1, r3")
 
 %def op_xor_long_2addr():
 %  binopWide2addr(preinstr="eor     r0, r0, r2", instr="eor     r1, r1, r3")

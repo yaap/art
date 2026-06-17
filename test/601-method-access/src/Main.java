@@ -20,19 +20,19 @@ import java.lang.reflect.InvocationTargetException;
  * Test method access through reflection.
  */
 public class Main {
-  public static void main(String[] args) {
-    try {
-      Class<?> c = Class.forName("SubClassUsingInaccessibleMethod");
-      Object o = c.newInstance();
-      c.getMethod("test").invoke(o, null);
-    } catch (InvocationTargetException ite) {
-      if (ite.getCause() instanceof IllegalAccessError) {
-        System.out.println("Got expected failure");
-      } else {
-        System.out.println("Got unexpected failure " + ite.getCause());
-      }
-    } catch (Exception e) {
-      System.out.println("Got unexpected failure " + e);
+    public static void main(String[] args) {
+        try {
+            Class<?> c = Class.forName("SubClassUsingInaccessibleMethod");
+            Object o = c.newInstance();
+            c.getMethod("test").invoke(o, null);
+        } catch (InvocationTargetException ite) {
+            if (ite.getCause() instanceof IllegalAccessError) {
+                System.out.println("Got expected failure");
+            } else {
+                System.out.println("Got unexpected failure " + ite.getCause());
+            }
+        } catch (Exception e) {
+            System.out.println("Got unexpected failure " + e);
+        }
     }
-  }
 }

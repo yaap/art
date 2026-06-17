@@ -26,8 +26,8 @@
 #include "assembler_arm64.h"
 #include "base/arena_containers.h"
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "base/pointer_size.h"
-#include "offsets.h"
 #include "utils/assembler.h"
 #include "utils/jni_macro_assembler.h"
 
@@ -39,12 +39,15 @@
 #pragma GCC diagnostic pop
 
 namespace art HIDDEN {
+
+class Arm64InstructionSetFeatures;
+
 namespace arm64 {
 
 class Arm64JNIMacroAssembler final : public JNIMacroAssemblerFwd<Arm64Assembler, PointerSize::k64> {
  public:
-  explicit Arm64JNIMacroAssembler(ArenaAllocator* allocator)
-      : JNIMacroAssemblerFwd(allocator) {}
+  Arm64JNIMacroAssembler(ArenaAllocator* allocator, const Arm64InstructionSetFeatures* features)
+      : JNIMacroAssemblerFwd(allocator, features) {}
 
   ~Arm64JNIMacroAssembler();
 

@@ -34,7 +34,7 @@ class X86_64Assembler;
 
 class IntrinsicLocationsBuilderX86_64 final : public IntrinsicVisitor {
  public:
-  explicit IntrinsicLocationsBuilderX86_64(CodeGeneratorX86_64* codegen);
+  explicit IntrinsicLocationsBuilderX86_64(const CodeGeneratorX86_64* codegen);
 
   // Define visitor methods.
 
@@ -50,7 +50,7 @@ class IntrinsicLocationsBuilderX86_64 final : public IntrinsicVisitor {
 
  private:
   ArenaAllocator* const allocator_;
-  CodeGeneratorX86_64* const codegen_;
+  const CodeGeneratorX86_64* const codegen_;
 
   DISALLOW_COPY_AND_ASSIGN(IntrinsicLocationsBuilderX86_64);
 };

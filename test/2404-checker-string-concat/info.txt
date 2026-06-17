@@ -1,0 +1,8 @@
+Tests for StringBuilder optimization with D8 release mode pattern.
+
+Verify that the instruction simplifier pass correctly transforms common
+StringBuilder patterns used for string concatenation into the optimized
+StringBuilderAppend instruction.
+The test covers both cases where StringBuilder is initialized with a string and
+where it's initialized empty.
+The test also covers cases where the optimization should be aborted.

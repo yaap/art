@@ -193,6 +193,69 @@ class HX86MaskOrResetLeastSetBit final : public HUnaryOperation {
   DEFAULT_COPY_CONSTRUCTOR(X86MaskOrResetLeastSetBit);
 };
 
+#if defined(ART_ENABLE_CODEGEN_x86_64)
+// TODO: Separate x86_64 only instructions to a separate file
+class HX86Clear final : public HExpression<0> {
+ public:
+  explicit HX86Clear(uint32_t dex_pc = kNoDexPc)
+      : HExpression(kX86Clear, SideEffects::None(), dex_pc) {}
+
+  DECLARE_INSTRUCTION(X86Clear);
+
+ protected:
+  DEFAULT_COPY_CONSTRUCTOR(X86Clear);
+};
+#endif
+
+class HX86LoadEffectiveAddress : public HInstruction {
+ public:
+  HX86LoadEffectiveAddress(DataType::Type result_type,
+                           HInstruction* index,
+                           HInstruction* base,  // May be null.
+                           uint32_t shift,
+                           int32_t displacement,
+                           uint32_t dex_pc = kNoDexPc)
+      : HInstruction(kX86LoadEffectiveAddress, result_type, SideEffects::None(), dex_pc),
+        shift_(shift),
+        displacement_(displacement) {
+    SetRawInputAt(0, index);
+    // Store the `base` directly. `SetRawInputAt()` cannot be used here because
+    // `GetInputRecords()` does not include `inputs_[1]` while it contains null.
+    inputs_[1] = HUserRecord<HInstruction*>(base);
+    DCHECK_LT(shift, 4u);
+  }
+
+  bool HasBase() const {
+    return inputs_[1].GetInstruction() != nullptr;
+  }
+
+  HInstruction* GetIndex() const {
+    return InputAt(0);
+  }
+  HInstruction* GetBase() const {
+    DCHECK(HasBase());
+    return InputAt(1);
+  }
+  uint32_t GetShift() const {
+    return shift_;
+  }
+  int32_t GetDisplacement() const {
+    return displacement_;
+  }
+
+  ArrayRef<HUserRecord<HInstruction*>> GetInputRecords() final {
+    return ArrayRef<HUserRecord<HInstruction*>>(inputs_.data(), HasBase() ? 2u : 1u);
+  }
+  DEFINE_GET_INPUT_RECORDS_HELPERS(HX86LoadEffectiveAddress);
+
+  DECLARE_INSTRUCTION(X86LoadEffectiveAddress);
+
+ private:
+  std::array<HUserRecord<HInstruction*>, 2> inputs_;
+  uint32_t shift_;
+  int32_t displacement_;
+};
+
 }  // namespace art
 
 #endif  // ART_COMPILER_OPTIMIZING_NODES_X86_H_

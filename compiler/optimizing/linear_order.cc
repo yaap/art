@@ -41,14 +41,32 @@ static void AddToListForLinearization(ScopedArenaVector<HBasicBlock*>* worklist,
                                       HBasicBlock* block) {
   HLoopInformation* block_loop = block->GetLoopInformation();
   auto insert_pos = worklist->rbegin();  // insert_pos.base() will be the actual position.
+
+  bool block_is_back_edge = false;
+  if (block_loop != nullptr) {
+    for (HBasicBlock* successor : block->GetSuccessors()) {
+      if (successor == block_loop->GetHeader()) {
+        block_is_back_edge = true;
+        break;
+      }
+    }
+  }
+
   for (auto end = worklist->rend(); insert_pos != end; ++insert_pos) {
     HBasicBlock* current = *insert_pos;
     HLoopInformation* current_loop = current->GetLoopInformation();
-    if (InSameLoop(block_loop, current_loop)
-        || !IsLoop(current_loop)
-        || IsInnerLoop(current_loop, block_loop)) {
+    if (!IsLoop(current_loop) || IsInnerLoop(current_loop, block_loop)) {
       // The block can be processed immediately.
       break;
+    }
+
+    if (InSameLoop(block_loop, current_loop)) {
+      DCHECK(IsLoop(current_loop));
+      const bool current_is_back_edge = current_loop->IsBackEdge(*current);
+      if (!block_is_back_edge || current_is_back_edge) {
+        // Prioritize non-backedges before backedges.
+        break;
+      }
     }
   }
   worklist->insert(insert_pos.base(), block);

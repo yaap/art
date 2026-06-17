@@ -66,7 +66,7 @@ inline Location SVEEncodableConstantOrRegister(HInstruction* constant, HInstruct
     return Location::ConstantLocation(constant);
   }
 
-  return Location::RequiresRegister();
+  return Location::RequiresCoreRegister();
 }
 
 void InstructionCodeGeneratorARM64Sve::ValidateVectorLength(HVecOperation* instr) const {
@@ -174,7 +174,7 @@ void LocationsBuilderARM64Sve::VisitVecExtractScalar(HVecExtractScalar* instruct
     case DataType::Type::kInt32:
     case DataType::Type::kInt64:
       locations->SetInAt(0, Location::RequiresFpuRegister());
-      locations->SetOut(Location::RequiresRegister());
+      locations->SetOut(Location::RequiresCoreRegister());
       break;
     case DataType::Type::kFloat32:
     case DataType::Type::kFloat64:
@@ -875,7 +875,7 @@ void LocationsBuilderARM64Sve::VisitVecSetScalars(HVecSetScalars* instruction) {
     case DataType::Type::kInt32:
     case DataType::Type::kInt64:
       locations->SetInAt(0, is_zero ? Location::ConstantLocation(input)
-                                    : Location::RequiresRegister());
+                                    : Location::RequiresCoreRegister());
       locations->SetOut(Location::RequiresFpuRegister());
       break;
     case DataType::Type::kFloat32:
@@ -1073,7 +1073,7 @@ static void CreateVecMemLocations(ArenaAllocator* allocator,
     case DataType::Type::kInt64:
     case DataType::Type::kFloat32:
     case DataType::Type::kFloat64:
-      locations->SetInAt(0, Location::RequiresRegister());
+      locations->SetInAt(0, Location::RequiresCoreRegister());
       locations->SetInAt(1, Location::RegisterOrConstant(instruction->InputAt(1)));
       if (is_load) {
         locations->SetOut(Location::RequiresFpuRegister());
@@ -1253,7 +1253,7 @@ void LocationsBuilderARM64Sve::HandleVecCondition(HVecCondition* instruction) {
   LocationSummary* locations = LocationSummary::CreateNoCall(allocator_, instruction);
   locations->SetInAt(0, Location::RequiresFpuRegister());
   locations->SetInAt(1, Location::RequiresFpuRegister());
-  locations->SetOut(Location::RequiresRegister());
+  locations->SetOut(Location::RequiresCoreRegister());
 }
 
 void InstructionCodeGeneratorARM64Sve::HandleVecCondition(HVecCondition* instruction) {
@@ -1330,7 +1330,7 @@ void LocationsBuilderARM64Sve::VisitVecPredNot(HVecPredNot* instruction) {
   LocationSummary* locations = LocationSummary::CreateNoCall(allocator_, instruction);
   DCHECK(instruction->InputAt(0)->IsVecPredSetOperation());
   locations->SetInAt(0, Location::NoLocation());
-  locations->SetOut(Location::RequiresRegister());
+  locations->SetOut(Location::RequiresCoreRegister());
 }
 
 void InstructionCodeGeneratorARM64Sve::VisitVecPredNot(HVecPredNot* instruction) {
@@ -1346,14 +1346,14 @@ void InstructionCodeGeneratorARM64Sve::VisitVecPredNot(HVecPredNot* instruction)
 
 void LocationsBuilderARM64Sve::VisitVecPredWhile(HVecPredWhile* instruction) {
   LocationSummary* locations = LocationSummary::CreateNoCall(allocator_, instruction);
-  locations->SetInAt(0, Location::RequiresRegister());
-  locations->SetInAt(1, Location::RequiresRegister());
+  locations->SetInAt(0, Location::RequiresCoreRegister());
+  locations->SetInAt(1, Location::RequiresCoreRegister());
   // The instruction doesn't really need a core register as out location; this is a hack
   // to workaround absence of support for vector predicates in register allocation.
   //
   // Semantically, the out location of this instruction and predicate inputs locations of
   // its users should be a fixed predicate register (similar to
-  // Location::RegisterLocation(int reg)). But the register allocator (RA) doesn't support
+  // Location::CoreRegister(int reg)). But the register allocator (RA) doesn't support
   // SIMD regs (e.g. predicate), so fixed registers are used explicitly without exposing it
   // to the RA (through GetVecPredSetFixedOutPReg()).
   //
@@ -1367,7 +1367,7 @@ void LocationsBuilderARM64Sve::VisitVecPredWhile(HVecPredWhile* instruction) {
   // a performance issue as a SIMD loop operates mainly on SIMD registers.
   //
   // TODO: Support SIMD types in register allocator.
-  locations->SetOut(Location::RequiresRegister());
+  locations->SetOut(Location::RequiresCoreRegister());
 }
 
 void InstructionCodeGeneratorARM64Sve::VisitVecPredWhile(HVecPredWhile* instruction) {
@@ -1404,7 +1404,7 @@ void LocationsBuilderARM64Sve::VisitVecPredToBoolean(HVecPredToBoolean* instruct
   LocationSummary* locations = LocationSummary::CreateNoCall(allocator_, instruction);
   locations->SetInAt(0, Location::NoLocation());
   // Result of the operation - a boolean value in a core register.
-  locations->SetOut(Location::RequiresRegister());
+  locations->SetOut(Location::RequiresCoreRegister());
 }
 
 void InstructionCodeGeneratorARM64Sve::VisitVecPredToBoolean(HVecPredToBoolean* instruction) {

@@ -38,7 +38,7 @@ class AsciiProgress implements Progress {
   public void start(String description, long duration) {
     assert this.description == null;
     this.description = description;
-    this.duration = duration;
+    this.duration = (duration <= 0 ? 1 : duration);
     this.progress = 0;
     display(description, 0);
   }

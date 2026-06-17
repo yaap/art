@@ -33,12 +33,7 @@ struct DebugInfo {
   // Describes compiled code in the .text section.
   ArrayRef<const MethodDebugInfo> compiled_methods;
 
-  // Describes dex-files in the .dex section.
-  std::map<uint32_t, const DexFile*> dex_files;  // Offset in section -> dex file content.
-
-  bool Empty() const {
-    return compiled_methods.empty() && dex_files.empty();
-  }
+  bool Empty() const { return compiled_methods.empty(); }
 };
 
 }  // namespace debug

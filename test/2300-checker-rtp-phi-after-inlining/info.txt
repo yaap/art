@@ -1,0 +1,1 @@
+Test that we type correctly the RTP after inlining

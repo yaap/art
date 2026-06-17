@@ -33,8 +33,9 @@
 
 // Includes for the types that are being specialized
 #include <string>
-#include "base/time_utils.h"
+
 #include "base/logging.h"
+#include "base/time_utils.h"
 #include "experimental_flags.h"
 #include "gc/collector_type.h"
 #include "gc/space/large_object_space.h"
@@ -42,7 +43,7 @@
 #include "jit/profile_saver_options.h"
 #include "plugin.h"
 #include "read_barrier_config.h"
-#include "ti/agent.h"
+#include "ti/agent_spec.h"
 #include "unit.h"
 
 namespace art {
@@ -559,6 +560,7 @@ struct XGcOption {
   // Do no measurements for kUseTableLookupReadBarrier to avoid test timeouts. b/31679493
   bool measure_ = kIsDebugBuild && !kUseTableLookupReadBarrier;
   bool gcstress_ = false;
+  bool continuous_gc_ = false;
 };
 
 template <>
@@ -615,12 +617,14 @@ struct CmdlineType<XGcOption> : CmdlineTypeParser<XGcOption> {
         xgc.gcstress_ = true;
       } else if (gc_option == "nogcstress") {
         xgc.gcstress_ = false;
+      } else if (gc_option == "continuous_gc") {
+        xgc.continuous_gc_ = true;
+      } else if (gc_option == "nocontinuous_gc") {
+        xgc.continuous_gc_ = false;
       } else if (gc_option == "measure") {
         xgc.measure_ = true;
-      } else if ((gc_option == "precise") ||
-                 (gc_option == "noprecise") ||
-                 (gc_option == "verifycardtable") ||
-                 (gc_option == "noverifycardtable")) {
+      } else if ((gc_option == "precise") || (gc_option == "noprecise") ||
+                 (gc_option == "verifycardtable") || (gc_option == "noverifycardtable")) {
         // Ignored for backwards compatibility.
       } else {
         return Result::Invalid(std::string("Unknown -Xgc option ") + gc_option);
@@ -634,7 +638,7 @@ struct CmdlineType<XGcOption> : CmdlineTypeParser<XGcOption> {
   static const char* DescribeType() {
     return "MS|nonconccurent|concurrent|CMS|SS|CC|[no]preverify[_rosalloc]|"
            "[no]presweepingverify[_rosalloc]|[no]generation_cc|[no]postverify[_rosalloc]|"
-           "[no]gcstress|measure|[no]precisce|[no]verifycardtable";
+           "[no]gcstress|measure|[no]precisce|[no]verifycardtable|[no]continuous_gc";
   }
 };
 

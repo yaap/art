@@ -65,8 +65,10 @@ static inline MemberOffset GetSlowPathFlagOffset(ObjPtr<mirror::Class> reference
 static inline void SetSlowPathFlag(bool enabled) REQUIRES_SHARED(Locks::mutator_lock_) {
   ObjPtr<mirror::Class> reference_class = GetClassRoot<mirror::Reference>();
   MemberOffset slow_path_offset = GetSlowPathFlagOffset(reference_class);
-  reference_class->SetFieldBoolean</* kTransactionActive= */ false, /* kCheckTransaction= */ false>(
-      slow_path_offset, enabled ? 1 : 0);
+  reference_class->SetFieldBoolean</*kTransactionActive=*/false,
+                                   /*kCheckTransaction=*/false,
+                                   kDefaultVerifyFlags,
+                                   /*kIsVolatile=*/true>(slow_path_offset, enabled ? 1 : 0);
 }
 
 void ReferenceProcessor::EnableSlowPath() {
@@ -81,7 +83,8 @@ void ReferenceProcessor::DisableSlowPath(Thread* self) {
 bool ReferenceProcessor::SlowPathEnabled() {
   ObjPtr<mirror::Class> reference_class = GetClassRoot<mirror::Reference>();
   MemberOffset slow_path_offset = GetSlowPathFlagOffset(reference_class);
-  return reference_class->GetFieldBoolean(slow_path_offset);
+  return reference_class->GetFieldBoolean<kDefaultVerifyFlags, /*kIsVolatile=*/true>(
+      slow_path_offset);
 }
 
 void ReferenceProcessor::BroadcastForSlowPath(Thread* self) {

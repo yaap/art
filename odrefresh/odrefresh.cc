@@ -129,9 +129,8 @@ constexpr const char* kMinimalBootImageBasename = "boot_minimal.art";
 // The default compiler filter for primary boot image.
 constexpr const char* kPrimaryCompilerFilter = "speed-profile";
 
-// The compiler filter for boot image mainline extension. We don't have profiles for mainline BCP
-// jars, so we always use "verify".
-constexpr const char* kMainlineCompilerFilter = "verify";
+// The compiler filter for boot image mainline extension.
+constexpr const char* kMainlineCompilerFilter = "speed-profile";
 
 void EraseFiles(const std::vector<std::unique_ptr<File>>& files) {
   for (auto& file : files) {
@@ -494,24 +493,23 @@ void AddDex2OatInstructionSet(/*inout*/ CmdlineBuilder& args,
   args.AddIfNonEmpty("--instruction-set-variant=%s", system_properties.GetOrEmpty(variant_prop));
 }
 
-// Returns true if any profile has been added, or false if no profile exists, or error if any error
-// occurred.
-Result<bool> AddDex2OatProfile(
+// Returns the number of profiles that have been added, or error if an error occurred.
+Result<int> AddDex2OatProfile(
     /*inout*/ CmdlineBuilder& args,
     /*inout*/ std::vector<std::unique_ptr<File>>& output_files,
     const std::vector<std::string>& profile_paths) {
-  bool has_any_profile = false;
+  int added_profile_count = 0;
   for (const std::string& path : profile_paths) {
     std::unique_ptr<File> profile_file(OS::OpenFileForReading(path.c_str()));
     if (profile_file != nullptr) {
       args.Add("--profile-file-fd=%d", profile_file->Fd());
       output_files.emplace_back(std::move(profile_file));
-      has_any_profile = true;
+      added_profile_count++;
     } else if (errno != ENOENT) {
       return ErrnoErrorf("Failed to open profile file '{}'", path);
     }
   }
-  return has_any_profile;
+  return added_profile_count;
 }
 
 Result<void> AddBootClasspathFds(/*inout*/ CmdlineBuilder& args,
@@ -565,68 +563,18 @@ Result<void> AddCompiledBootClasspathFdsIfAny(
     const std::vector<std::string>& bcp_jars,
     InstructionSet isa,
     const std::vector<std::string>& boot_image_locations) {
-  std::vector<std::string> bcp_image_fds;
-  std::vector<std::string> bcp_oat_fds;
-  std::vector<std::string> bcp_vdex_fds;
-  std::vector<std::unique_ptr<File>> opened_files;
-  bool added_any = false;
-  std::string artifact_dir;
-  for (size_t i = 0; i < bcp_jars.size(); i++) {
-    const std::string& jar = bcp_jars[i];
-    std::string basename = GetBootImageComponentBasename(jar, /*is_first_jar=*/i == 0);
-    // If there is an entry in `boot_image_locations` for the current jar, update `artifact_dir` for
-    // the current jar and the subsequent jars.
-    for (const std::string& location : boot_image_locations) {
-      if (Basename(location) == basename) {
-        artifact_dir = Dirname(location);
-        break;
-      }
-    }
-    CHECK(!artifact_dir.empty());
-    std::string image_path = ART_FORMAT("{}/{}", artifact_dir, basename);
-    image_path = GetSystemImageFilename(image_path.c_str(), isa);
-    std::unique_ptr<File> image_file(OS::OpenFileForReading(image_path.c_str()));
-    if (image_file != nullptr) {
-      bcp_image_fds.push_back(std::to_string(image_file->Fd()));
-      opened_files.push_back(std::move(image_file));
-      added_any = true;
-    } else if (errno == ENOENT) {
-      bcp_image_fds.push_back("-1");
-    } else {
-      return ErrnoErrorf("Failed to open boot image file '{}'", image_path);
-    }
-
-    std::string oat_path = ReplaceFileExtension(image_path, kOatExtension);
-    std::unique_ptr<File> oat_file(OS::OpenFileForReading(oat_path.c_str()));
-    if (oat_file != nullptr) {
-      bcp_oat_fds.push_back(std::to_string(oat_file->Fd()));
-      opened_files.push_back(std::move(oat_file));
-      added_any = true;
-    } else if (errno == ENOENT) {
-      bcp_oat_fds.push_back("-1");
-    } else {
-      return ErrnoErrorf("Failed to open boot image file '{}'", oat_path);
-    }
-
-    std::string vdex_path = ReplaceFileExtension(image_path, kVdexExtension);
-    std::unique_ptr<File> vdex_file(OS::OpenFileForReading(vdex_path.c_str()));
-    if (vdex_file != nullptr) {
-      bcp_vdex_fds.push_back(std::to_string(vdex_file->Fd()));
-      opened_files.push_back(std::move(vdex_file));
-      added_any = true;
-    } else if (errno == ENOENT) {
-      bcp_vdex_fds.push_back("-1");
-    } else {
-      return ErrnoErrorf("Failed to open boot image file '{}'", vdex_path);
-    }
+  CompiledBootClasspathFds bcp_fds;
+  std::string error_msg;
+  if (!OpenCompiledBootClasspathFdsIfAny(
+          bcp_jars, isa, boot_image_locations, &bcp_fds, &error_msg)) {
+    return Errorf("Failed to open compiled boot classpath artifacts: {}", error_msg);
   }
-  // Add same amount of FDs as BCP JARs, or none.
-  if (added_any) {
-    std::move(opened_files.begin(), opened_files.end(), std::back_inserter(output_files));
 
-    args.AddRuntime("-Xbootclasspathimagefds:%s", Join(bcp_image_fds, ':'));
-    args.AddRuntime("-Xbootclasspathoatfds:%s", Join(bcp_oat_fds, ':'));
-    args.AddRuntime("-Xbootclasspathvdexfds:%s", Join(bcp_vdex_fds, ':'));
+  if (!bcp_fds.files.empty()) {
+    std::move(bcp_fds.files.begin(), bcp_fds.files.end(), std::back_inserter(output_files));
+    args.AddRuntime("-Xbootclasspathimagefds:%s", Join(bcp_fds.image_fds, ':'));
+    args.AddRuntime("-Xbootclasspathoatfds:%s", Join(bcp_fds.oat_fds, ':'));
+    args.AddRuntime("-Xbootclasspathvdexfds:%s", Join(bcp_fds.vdex_fds, ':'));
   }
 
   return {};
@@ -757,8 +705,7 @@ OnDeviceRefresh::OnDeviceRefresh(
 time_t OnDeviceRefresh::GetExecutionTimeUsed() const { return time(nullptr) - start_time_; }
 
 time_t OnDeviceRefresh::GetExecutionTimeRemaining() const {
-  return std::max(static_cast<time_t>(0),
-                  kMaximumExecutionSeconds - GetExecutionTimeUsed());
+  return std::max(static_cast<time_t>(0), kMaximumExecutionSeconds - GetExecutionTimeUsed());
 }
 
 time_t OnDeviceRefresh::GetSubprocessTimeout() const {
@@ -1592,8 +1539,8 @@ Result<void> OnDeviceRefresh::CleanupArtifactDirectory(
     entries.push_back(entry);
   }
   if (ec && ec.value() != ENOENT) {
-    metrics.SetStatus(ec.value() == EPERM ? OdrMetrics::Status::kDalvikCachePermissionDenied :
-                                            OdrMetrics::Status::kIoError);
+    metrics.SetStatus(ec.value() == EPERM ? OdrMetrics::Status::kDalvikCachePermissionDenied
+                                          : OdrMetrics::Status::kIoError);
     return Errorf("Failed to iterate over entries in the artifact directory: {}", ec.message());
   }
 
@@ -1852,9 +1799,9 @@ WARN_UNUSED CompilationResult OnDeviceRefresh::RunDex2oat(
 
   if (dex2oat_result.exit_code != 0) {
     return CompilationResult::Dex2oatError(
-        dex2oat_result.exit_code < 0 ?
-            error_msg :
-            ART_FORMAT("dex2oat returned an unexpected code: {}", dex2oat_result.exit_code),
+        dex2oat_result.exit_code < 0
+            ? error_msg
+            : ART_FORMAT("dex2oat returned an unexpected code: {}", dex2oat_result.exit_code),
         timer.duration().count(),
         dex2oat_result);
   }
@@ -1903,13 +1850,13 @@ OnDeviceRefresh::RunDex2oatForBootClasspath(const std::string& staging_dir,
     // Primary boot image.
     std::string art_boot_profile_file = GetArtRoot() + "/etc/boot-image.prof";
     std::string framework_boot_profile_file = GetAndroidRoot() + "/etc/boot-image.prof";
-    Result<bool> has_any_profile = AddDex2OatProfile(
+    Result<int> num_added_profiles = AddDex2OatProfile(
         args, readonly_files_raii, {art_boot_profile_file, framework_boot_profile_file});
-    if (!has_any_profile.ok()) {
+    if (!num_added_profiles.ok()) {
       return CompilationResult::Error(OdrMetrics::Status::kIoError,
-                                      has_any_profile.error().message());
+                                      num_added_profiles.error().message());
     }
-    if (!*has_any_profile) {
+    if (*num_added_profiles == 0) {
       return CompilationResult::Error(OdrMetrics::Status::kIoError, "Missing boot image profile");
     }
     const std::string& compiler_filter = config_.GetBootImageCompilerFilter();
@@ -1953,7 +1900,29 @@ OnDeviceRefresh::RunDex2oatForBootClasspath(const std::string& staging_dir,
     args.Add("--oat-location=%s", OdrArtifacts::ForBootImage(output_path).OatPath());
   } else {
     // Mainline extension.
-    args.Add("--compiler-filter=%s", kMainlineCompilerFilter);
+    std::string compiler_filter = kMainlineCompilerFilter;
+    std::vector<std::string> mainline_bcp_jars = GetMainlineBcpJars();
+    std::vector<std::string> mainline_boot_image_profiles =
+        GetMainlineBootImageProfilePaths(mainline_bcp_jars);
+
+    if (!mainline_boot_image_profiles.empty()) {
+      Result<int> num_added_profiles =
+          AddDex2OatProfile(args, readonly_files_raii, mainline_boot_image_profiles);
+
+      if (!num_added_profiles.ok()) {
+        return CompilationResult::Error(OdrMetrics::Status::kIoError,
+                                        ART_FORMAT("Failed to add BCP mainline profiles: {}",
+                                                   num_added_profiles.error().message()));
+      }
+      if (static_cast<size_t>(*num_added_profiles) != mainline_boot_image_profiles.size()) {
+        return CompilationResult::Error(OdrMetrics::Status::kIoError,
+                                        "Cannot add existing BCP mainline profiles");
+      }
+    } else {
+      // Fall back to verify mode if there is no profile.
+      compiler_filter = "verify";
+    }
+    args.Add("--compiler-filter=%s", compiler_filter);
     // For boot image extensions, dex2oat takes the oat location of the primary boot image and
     // expends it with the name of the first input dex file.
     args.Add("--oat-location=%s",
@@ -2089,12 +2058,12 @@ WARN_UNUSED CompilationResult OnDeviceRefresh::RunDex2oatForSystemServer(
   bool maybe_add_profile = !compiler_filter.empty() || HasVettedDeviceSystemServerProfiles();
   bool has_added_profile = false;
   if (maybe_add_profile) {
-    Result<bool> has_any_profile = AddDex2OatProfile(args, readonly_files_raii, {profile});
-    if (!has_any_profile.ok()) {
+    Result<int> num_added_profiles = AddDex2OatProfile(args, readonly_files_raii, {profile});
+    if (!num_added_profiles.ok()) {
       return CompilationResult::Error(OdrMetrics::Status::kIoError,
-                                      has_any_profile.error().message());
+                                      num_added_profiles.error().message());
     }
-    has_added_profile = *has_any_profile;
+    has_added_profile = *num_added_profiles > 0;
   }
   if (!compiler_filter.empty()) {
     args.Add("--compiler-filter=%s", compiler_filter);
@@ -2196,8 +2165,8 @@ WARN_UNUSED ExitCode OnDeviceRefresh::Compile(OdrMetrics& metrics,
 
   if (!EnsureDirectoryExists(config_.GetArtifactDirectory())) {
     LOG(ERROR) << "Failed to prepare artifact directory";
-    metrics.SetStatus(errno == EPERM ? OdrMetrics::Status::kDalvikCachePermissionDenied :
-                                       OdrMetrics::Status::kIoError);
+    metrics.SetStatus(errno == EPERM ? OdrMetrics::Status::kDalvikCachePermissionDenied
+                                     : OdrMetrics::Status::kIoError);
     return ExitCode::kCleanupFailed;
   }
 
@@ -2249,9 +2218,9 @@ WARN_UNUSED ExitCode OnDeviceRefresh::Compile(OdrMetrics& metrics,
 
   for (const auto& [isa, boot_images_to_generate] :
        compilation_options.boot_images_to_generate_for_isas) {
-    OdrMetrics::Stage stage = (isa == bcp_instruction_sets.front()) ?
-                                  OdrMetrics::Stage::kPrimaryBootClasspath :
-                                  OdrMetrics::Stage::kSecondaryBootClasspath;
+    OdrMetrics::Stage stage = (isa == bcp_instruction_sets.front())
+                                  ? OdrMetrics::Stage::kPrimaryBootClasspath
+                                  : OdrMetrics::Stage::kSecondaryBootClasspath;
     CompilationResult bcp_result =
         CompileBootClasspath(staging_dir, isa, boot_images_to_generate, advance_animation_progress);
     metrics.SetDex2OatResult(stage, bcp_result.elapsed_time_ms, bcp_result.dex2oat_result);

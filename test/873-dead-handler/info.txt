@@ -1,0 +1,2 @@
+Regression test for the fast compiler, which did not handle the knowledge that
+monitor-exit doesn't throw.

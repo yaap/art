@@ -1171,13 +1171,16 @@ static void* FindCodeForNativeMethodInAgents(ArtMethod* m) REQUIRES_SHARED(Locks
   std::string jni_short_name(m->JniShortName());
   std::string jni_long_name(m->JniLongName());
   for (const std::unique_ptr<ti::Agent>& agent : Runtime::Current()->GetAgents()) {
-    void* fn = agent->FindSymbol(jni_short_name);
+    const char* shorty = m->GetShorty();
+    android::JNICallType jni_call_type =
+        m->IsCriticalNative() ? android::kJNICallTypeCriticalNative : android::kJNICallTypeRegular;
+    void* fn = agent->FindSymbol(jni_short_name, shorty, jni_call_type);
     if (fn != nullptr) {
       VLOG(jni) << "Found implementation for " << m->PrettyMethod()
                 << " (symbol: " << jni_short_name << ") in " << *agent;
       return fn;
     }
-    fn = agent->FindSymbol(jni_long_name);
+    fn = agent->FindSymbol(jni_long_name, shorty, jni_call_type);
     if (fn != nullptr) {
       VLOG(jni) << "Found implementation for " << m->PrettyMethod()
                 << " (symbol: " << jni_long_name << ") in " << *agent;

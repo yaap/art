@@ -167,8 +167,8 @@
 // src: one of w (int32), l (int64), s (float), d (double)
 // Clobbers: ft0, t0, t1, t2
 %def generic_funop(instr, dst, src, nan_zeroed=False):
-    srliw t0, xINST, 12        // t0 := B
-    srliw t2, xINST, 8         // t2 := B|A
+   srliw t0, xINST, 12        // t0 := B
+   srliw t2, xINST, 8         // t2 := B|A
 
 %  if src == "w":
 %    get_vreg("t1", "t0")     #  t1 := fp[B]
@@ -180,17 +180,15 @@
      GET_VREG_DOUBLE ft0, t0  // ft0 := fp[B]
 %  else:
 %    assert false, src
-%#:
-    and t2, t2, 0xF            // t2 := A
-    FETCH_ADVANCE_INST 1       // advance xPC, load xINST
+   and t2, t2, 0xF            // t2 := A
+   FETCH_ADVANCE_INST 1       // advance xPC, load xINST
 %  if nan_zeroed:
      // Okay to clobber T1. It is not read if nan_zeroed=True.
-     fclass.${src} t1, ft0  // fclass.s or fclass.d on the source register ft0
-     sltiu t1, t1, 0x100    // t1 := 0 if NaN, per dex spec. Skip the conversion.
+     fclass.${src} t1, ft0    // fclass.s or fclass.d on the source register ft0
+     sltiu t1, t1, 0x100      // t1 := 0 if NaN, per dex spec. Skip the conversion.
      beqz t1, 1f
-%#:
-    $instr                     // read operand (from t1|ft0), write result (to t1|ft0)
-                               // do not clobber t2!
+   $instr                     // read operand (from t1|ft0), write result (to t1|ft0)
+                              // do not clobber t2!
 1:
 
 %  if dst == "w":
@@ -203,7 +201,6 @@
      SET_VREG_DOUBLE ft0, t2, z0=t0  // fp[B] := ft0
 %  else:
 %    assert false, dst
-%#:
 
    GET_INST_OPCODE t0         // t0 holds next opcode
    GOTO_OPCODE t0             // continue to next

@@ -1,0 +1,1 @@
+Check that there are no redundant branch instructions generated for ArraySet on arm64.

@@ -14,10 +14,16 @@
  * limitations under the License.
  */
 
+#include "monitor.h"
+
 #include <android-base/properties.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
+#include "android-base/logging.h"
+#include "android-base/macros.h"
 #include "android-base/stringprintf.h"
 #include "art_method-inl.h"
 #include "base/logging.h"  // For VLOG.
@@ -37,6 +43,7 @@
 #include "mirror/object-inl.h"
 #include "monitor-inl.h"
 #include "object_callbacks.h"
+#include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
 #include "stack.h"
 #include "thread.h"
@@ -94,8 +101,12 @@ void Monitor::Init(uint32_t lock_profiling_threshold,
       stack_dump_lock_profiling_threshold * kDebugThresholdFudgeFactor;
 }
 
-Monitor::Monitor(Thread* self, Thread* owner, ObjPtr<mirror::Object> obj, int32_t hash_code)
-    : monitor_lock_("a monitor lock", kMonitorLock),
+Monitor::Monitor(Thread* self, MonitorOwner owner, ObjPtr<mirror::Object> obj, int32_t hash_code)
+    : Monitor(self, owner, obj, hash_code, MonitorPool::ComputeMonitorId(this, self)) {}
+
+Monitor::Monitor(
+    Thread* self, MonitorOwner owner, ObjPtr<mirror::Object> obj, int32_t hash_code, MonitorId id)
+    : monitor_lock_(),
       num_waiters_(0),
       owner_(owner),
       lock_count_(0),
@@ -103,52 +114,28 @@ Monitor::Monitor(Thread* self, Thread* owner, ObjPtr<mirror::Object> obj, int32_
       wait_set_(nullptr),
       wake_set_(nullptr),
       hash_code_(hash_code),
-      lock_owner_(nullptr),
+      lock_owner_(),
       lock_owner_method_(nullptr),
       lock_owner_dex_pc_(0),
       lock_owner_sum_(0),
-      lock_owner_request_(nullptr),
-      monitor_id_(MonitorPool::ComputeMonitorId(this, self)) {
-#ifdef __LP64__
-  DCHECK(false) << "Should not be reached in 64b";
-  next_free_ = nullptr;
-#endif
-  // We should only inflate a lock if the owner is ourselves or suspended. This avoids a race
-  // with the owner unlocking the thin-lock.
-  CHECK(owner == nullptr || owner == self || owner->IsSuspended());
-  // The identity hash code is set for the life time of the monitor.
-
-  bool monitor_timeout_enabled = Runtime::Current()->IsMonitorTimeoutEnabled();
-  if (monitor_timeout_enabled) {
-    MaybeEnableTimeout();
-  }
-}
-
-Monitor::Monitor(Thread* self,
-                 Thread* owner,
-                 ObjPtr<mirror::Object> obj,
-                 int32_t hash_code,
-                 MonitorId id)
-    : monitor_lock_("a monitor lock", kMonitorLock),
-      num_waiters_(0),
-      owner_(owner),
-      lock_count_(0),
-      obj_(GcRoot<mirror::Object>(obj)),
-      wait_set_(nullptr),
-      wake_set_(nullptr),
-      hash_code_(hash_code),
-      lock_owner_(nullptr),
-      lock_owner_method_(nullptr),
-      lock_owner_dex_pc_(0),
-      lock_owner_sum_(0),
-      lock_owner_request_(nullptr),
+      lock_owner_request_(),
       monitor_id_(id) {
 #ifdef __LP64__
   next_free_ = nullptr;
 #endif
   // We should only inflate a lock if the owner is ourselves or suspended. This avoids a race
   // with the owner unlocking the thin-lock.
-  CHECK(owner == nullptr || owner == self || owner->IsSuspended());
+  CHECK(owner.IsNull() || owner == self ||
+        (!owner.IsVirtualThread() && owner.GetThreadPtr()->IsSuspended()) ||
+        (owner.IsVirtualThread()));
+  // Disable this check of virtual thread suspension due to a lock ordering issue because
+  // thread_list_lock is acquired in IsVirtualThreadSuspended(id) but the current thread
+  // holds the allocated_monitor_ids_lock earlier in `MonitorPool::CreateMonitorInPool`.
+  // It's okay not to check here because the caller should have ensured the virtual thread owner
+  // has been suspended.
+  //
+  // && Runtime::Current()->GetThreadList()->IsVirtualThreadSuspended(owner.GetVirtualId())));
+
   // The identity hash code is set for the life time of the monitor.
 
   bool monitor_timeout_enabled = Runtime::Current()->IsMonitorTimeoutEnabled();
@@ -206,12 +193,12 @@ void Monitor::SetLockingMethod(Thread* owner) {
       ArtMethod* method_;
       uint32_t dex_pc_;
     };
-    NextMethodVisitor nmv(owner_.load(std::memory_order_relaxed));
+    NextMethodVisitor nmv(owner);
     nmv.WalkStack();
     lock_owner_method = nmv.method_;
     lock_owner_dex_pc = nmv.dex_pc_;
   }
-  SetLockOwnerInfo(lock_owner_method, lock_owner_dex_pc, owner);
+  SetLockOwnerInfo(lock_owner_method, lock_owner_dex_pc, MonitorOwner::FromPlatformThread(owner));
   DCHECK(lock_owner_method == nullptr || !lock_owner_method->IsProxyMethod());
 }
 
@@ -221,32 +208,68 @@ void Monitor::SetLockingMethodNoProxy(Thread *owner) {
   ArtMethod* lock_owner_method = owner->GetCurrentMethod(&lock_owner_dex_pc);
   // We don't expect a proxy method here.
   DCHECK(lock_owner_method == nullptr || !lock_owner_method->IsProxyMethod());
-  SetLockOwnerInfo(lock_owner_method, lock_owner_dex_pc, owner);
+  SetLockOwnerInfo(lock_owner_method, lock_owner_dex_pc, MonitorOwner::FromPlatformThread(owner));
 }
 
 bool Monitor::Install(Thread* self) NO_THREAD_SAFETY_ANALYSIS {
   // This may or may not result in acquiring monitor_lock_. Its behavior is much more complicated
   // than what clang thread safety analysis understands.
   // Monitor is not yet public.
-  Thread* owner = owner_.load(std::memory_order_relaxed);
-  CHECK(owner == nullptr || owner == self || owner->IsSuspended());
+  MonitorOwner owner = owner_.load(std::memory_order_relaxed);
+  ThreadList* thread_list = Runtime::Current()->GetThreadList();
+  DCHECK(owner == nullptr || owner == self ||
+        (!owner.IsVirtualThread() && owner.GetThreadPtr()->IsSuspended()) ||
+        (owner.IsVirtualThread()) &&
+            thread_list->IsVirtualThreadSuspended(self, owner.GetVirtualThreadId()));
   // Propagate the lock state.
   LockWord lw(GetObject()->GetLockWord(false));
   switch (lw.GetState()) {
     case LockWord::kThinLocked: {
       DCHECK(owner != nullptr);
-      CHECK_EQ(owner->GetThreadId(), lw.ThinLockOwner());
-      DCHECK_EQ(monitor_lock_.GetExclusiveOwnerTid(), 0) << " my tid = " << SafeGetTid(self);
+      CHECK_EQ(owner.GetThreadId(), lw.ThinLockOwner())
+          << " my thread id = " << self->GetThreadId()
+          << " my monitor thread id = " << self->GetMonitorThreadId();
       lock_count_ = lw.ThinLockCount();
-      monitor_lock_.ExclusiveLockUncontendedFor(owner);
-      DCHECK_EQ(monitor_lock_.GetExclusiveOwnerTid(), owner->GetTid())
+      DCHECK_EQ(monitor_lock_.GetExclusiveOwnerTid(), 0) << " my tid = " << SafeGetTid(self);
+      if (kIsVirtualThreadEnabled && UNLIKELY(owner.IsVirtualThread())) {
+        monitor_lock_.ExclusiveLockUncontendedForVirtualThreadId(owner.GetVirtualThreadId());
+      } else {
+        monitor_lock_.ExclusiveLockUncontendedFor(owner.GetThreadPtr());
+      }
+
+      DCHECK_EQ(monitor_lock_.GetExclusiveOwnerTid(), owner.GetMutexOwnerId())
           << " my tid = " << SafeGetTid(self);
       LockWord fat(this, lw.GCState());
       // Publish the updated lock word, which may race with other threads.
       bool success = GetObject()->CasLockWord(lw, fat, CASMode::kWeak, std::memory_order_release);
       if (success) {
         if (ATraceEnabled()) {
-          SetLockingMethod(owner);
+          if (owner == self) {
+            SetLockingMethod(self);
+          } else if (UNLIKELY(owner.IsVirtualThread())) {
+            MutexLock mu(self, *Locks::thread_list_lock_);
+            uint32_t carrier_id = thread_list->GetCarrierThreadIdByVirtualThreadId(
+                owner.GetVirtualThreadId());
+            if (carrier_id == ThreadList::kInvalidThreadId) {  // The virtual thread is unmounted.
+              // TODO(b/460438903): Walk the stack of an unmounted virtual thread instead of
+              // hard-coding the current method. However, this hard-coded value is quite accurate at
+              // the time of writing because this is the only method that can unmount a virtual
+              // thread. Also, when the owner thread isn't the current thread, the current method
+              // and dex PC are just the points when the thread is suspended, but not the dex
+              // instruction acquiring the monitor. The locking method and dex pc are later updated
+              // when exiting the monitor. This value is probably used for a long contention only.
+              SetLockOwnerInfo(WellKnownClasses::jdk_internal_vm_Continuation_doYieldNative,
+                               dex::kDexNoIndex,
+                               owner);
+            } else {  // The virtual thread is mounted.
+              Thread* carrier = thread_list->FindThreadByThreadId(carrier_id);
+              DCHECK_NE(carrier, nullptr);
+              DCHECK(carrier->IsSuspended());
+              SetLockingMethod(carrier);
+            }
+          } else {
+            SetLockingMethod(owner.GetThreadPtr());
+          }
         }
         return true;
       } else {
@@ -298,7 +321,7 @@ void Monitor::AppendToWaitSet(Thread* thread) {
 }
 
 void Monitor::RemoveFromWaitSet(Thread *thread) {
-  DCHECK(owner_ == Thread::Current());
+  DCHECK(owner_.load() == Thread::Current());
   DCHECK(thread != nullptr);
   auto remove = [&](Thread*& set){
     if (set != nullptr) {
@@ -401,6 +424,7 @@ void Monitor::AtraceMonitorUnlock() {
 
 std::string Monitor::PrettyContentionInfo(const std::string& owner_name,
                                           pid_t owner_tid,
+                                          uint32_t virtual_thread_id,
                                           ArtMethod* owners_method,
                                           uint32_t owners_dex_pc,
                                           size_t num_waiters) {
@@ -411,7 +435,13 @@ std::string Monitor::PrettyContentionInfo(const std::string& owner_name,
     TranslateLocation(owners_method, owners_dex_pc, &owners_filename, &owners_line_number);
   }
   std::ostringstream oss;
-  oss << "monitor contention with owner " << owner_name << " (" << owner_tid << ")";
+  if (owner_tid != 0) {
+    oss << "monitor contention with owner " << owner_name << " (" << owner_tid << ")";
+  } else if (virtual_thread_id != ThreadList::kInvalidThreadId) {
+    oss << "monitor contention with virtual thread owner: " << virtual_thread_id;
+  } else {
+    oss << "monitor contention with unknown owner";
+  }
   if (owners_method != nullptr) {
     oss << " at " << owners_method->PrettyMethod();
     oss << "(" << owners_filename << ":" << owners_line_number << ")";
@@ -421,7 +451,7 @@ std::string Monitor::PrettyContentionInfo(const std::string& owner_name,
 }
 
 bool Monitor::TryLock(Thread* self, bool spin) {
-  Thread *owner = owner_.load(std::memory_order_relaxed);
+  MonitorOwner owner = owner_.load(std::memory_order_relaxed);
   if (owner == self) {
     lock_count_++;
     CHECK_NE(lock_count_, 0u);  // Abort on overflow.
@@ -431,8 +461,8 @@ bool Monitor::TryLock(Thread* self, bool spin) {
     if (!success) {
       return false;
     }
-    DCHECK(owner_.load(std::memory_order_relaxed) == nullptr);
-    owner_.store(self, std::memory_order_relaxed);
+    DCHECK(owner_.load(std::memory_order_relaxed).IsNull());
+    owner_.store(MonitorOwner::FromThread(self), std::memory_order_relaxed);
     CHECK_EQ(lock_count_, 0u);
     if (ATraceEnabled()) {
       SetLockingMethodNoProxy(self);
@@ -444,7 +474,9 @@ bool Monitor::TryLock(Thread* self, bool spin) {
 }
 
 template <LockReason reason>
-void Monitor::Lock(Thread* self) {
+void Monitor::Lock(Thread* self) NO_THREAD_SAFETY_ANALYSIS {
+  // Turning off thread safety analysis for this method until b/489835449
+  // is resolved
   bool called_monitors_callback = false;
   if (TryLock(self, /*spin=*/ true)) {
     // TODO: This preserves original behavior. Correct?
@@ -458,7 +490,7 @@ void Monitor::Lock(Thread* self) {
   const bool log_contention = (lock_profiling_threshold_ != 0);
   uint64_t wait_start_ms = log_contention ? MilliTime() : 0;
 
-  Thread *orig_owner = nullptr;
+  MonitorOwner orig_owner;
   ArtMethod* owners_method;
   uint32_t owners_dex_pc;
 
@@ -472,13 +504,28 @@ void Monitor::Lock(Thread* self) {
     Locks::thread_list_lock_->ExclusiveLock(self);
     orig_owner = owner_.load(std::memory_order_relaxed);
     if (orig_owner != nullptr) {  // Did the owner_ give the lock up?
-      const uint32_t orig_owner_thread_id = orig_owner->GetTid();
+      Thread* owner_thread;
+      if (orig_owner.IsVirtualThread()) {
+        ThreadList* thread_list = Runtime::Current()->GetThreadList();
+        uint32_t carrier_id = thread_list->GetCarrierThreadIdByVirtualThreadId(
+            orig_owner.GetVirtualThreadId());
+        owner_thread = thread_list->FindThreadByThreadId(carrier_id);
+      } else {
+        owner_thread = orig_owner.GetThreadPtr();
+      }
+      pid_t owner_thread_tid = 0;
+      std::string owner_name;
+      if (owner_thread != nullptr) {
+        owner_thread_tid = owner_thread->GetTid();
+        owner_thread->GetThreadName(owner_name);
+      }
+      const uint32_t virtual_thread_id = orig_owner.IsVirtualThread() ?
+          orig_owner.GetVirtualThreadId() : ThreadList::kInvalidThreadId;
       GetLockOwnerInfo(&owners_method, &owners_dex_pc, orig_owner);
       std::ostringstream oss;
-      std::string name;
-      orig_owner->GetThreadName(name);
-      oss << PrettyContentionInfo(name,
-                                  orig_owner_thread_id,
+      oss << PrettyContentionInfo(owner_name,
+                                  owner_thread_tid,
+                                  virtual_thread_id,
                                   owners_method,
                                   owners_dex_pc,
                                   num_waiters);
@@ -550,13 +597,27 @@ void Monitor::Lock(Thread* self) {
 
         // Is there still a thread at the same address as the original owner?
         // We tolerate the fact that it may occasionally be the wrong one.
-        if (Runtime::Current()->GetThreadList()->Contains(orig_owner)) {
-          uint32_t original_owner_tid = orig_owner->GetTid();  // System thread id.
-          std::string original_owner_name;
-          orig_owner->GetThreadName(original_owner_name);
-          std::string owner_stack_dump;
+        ThreadList* thread_list = Runtime::Current()->GetThreadList();
+        if (orig_owner.IsVirtualThread() || thread_list->Contains(orig_owner.GetThreadPtr())) {
+          Thread* owner_thread;
+          if (orig_owner.IsVirtualThread()) {
+            uint32_t carrier_id =
+                thread_list->GetCarrierThreadIdByVirtualThreadId(orig_owner.GetVirtualThreadId());
+            owner_thread = thread_list->FindThreadByThreadId(carrier_id);
+          } else {
+            owner_thread = orig_owner.GetThreadPtr();
+          }
+          pid_t owner_thread_tid = 0;
+          std::string owner_name;
+          if (owner_thread != nullptr) {
+            owner_thread_tid = owner_thread->GetTid();
+            owner_thread->GetThreadName(owner_name);
+          }
+          const uint32_t virtual_thread_id = orig_owner.IsVirtualThread() ?
+              orig_owner.GetVirtualThreadId() : ThreadList::kInvalidThreadId;
 
-          if (should_dump_stacks) {
+          std::string owner_stack_dump;
+          if (should_dump_stacks && owner_thread != nullptr) {
             // Very long contention. Dump stacks.
             struct CollectStackTrace : public Closure {
               void Run(art::Thread* thread) override
@@ -569,7 +630,7 @@ void Monitor::Lock(Thread* self) {
             CollectStackTrace owner_trace;
             // RequestSynchronousCheckpoint releases the thread_list_lock_ as a part of its
             // execution.
-            orig_owner->RequestSynchronousCheckpoint(&owner_trace);
+            owner_thread->RequestSynchronousCheckpoint(&owner_trace);
             owner_stack_dump = owner_trace.oss.str();
           } else {
             Locks::thread_list_lock_->ExclusiveUnlock(self);
@@ -589,27 +650,22 @@ void Monitor::Lock(Thread* self) {
             ArtMethod* m = self->GetCurrentMethod(&pc);
 
             LOG(WARNING) << "Long "
-                << PrettyContentionInfo(original_owner_name,
-                                        original_owner_tid,
-                                        owners_method,
-                                        owners_dex_pc,
-                                        num_waiters)
-                << " in " << ArtMethod::PrettyMethod(m) << " for "
-                << PrettyDuration(MsToNs(wait_ms)) << "\n"
-                << "Current owner stack:\n" << owner_stack_dump
-                << "Contender stack:\n" << self_trace_oss.str();
+                         << PrettyContentionInfo(owner_name, owner_thread_tid, virtual_thread_id,
+                                owners_method, owners_dex_pc, num_waiters)
+                         << " in " << ArtMethod::PrettyMethod(m) << " for "
+                         << PrettyDuration(MsToNs(wait_ms)) << "\n"
+                         << "Current owner stack:\n"
+                         << owner_stack_dump << "Contender stack:\n"
+                         << self_trace_oss.str();
           } else if (wait_ms > kLongWaitMs && owners_method != nullptr) {
             uint32_t pc;
             ArtMethod* m = self->GetCurrentMethod(&pc);
             // TODO: We should maybe check that original_owner is still a live thread.
             LOG(WARNING) << "Long "
-                << PrettyContentionInfo(original_owner_name,
-                                        original_owner_tid,
-                                        owners_method,
-                                        owners_dex_pc,
-                                        num_waiters)
-                << " in " << ArtMethod::PrettyMethod(m) << " for "
-                << PrettyDuration(MsToNs(wait_ms));
+                         << PrettyContentionInfo(owner_name, owner_thread_tid, virtual_thread_id,
+                                owners_method, owners_dex_pc, num_waiters)
+                         << " in " << ArtMethod::PrettyMethod(m) << " for "
+                         << PrettyDuration(MsToNs(wait_ms));
           }
           LogContentionEvent(self,
                             wait_ms,
@@ -625,7 +681,7 @@ void Monitor::Lock(Thread* self) {
   // We've successfully acquired monitor_lock_, released thread_list_lock, and are runnable.
 
   // We avoided touching monitor fields while suspended, so set owner_ here.
-  owner_.store(self, std::memory_order_relaxed);
+  owner_.store(MonitorOwner::FromThread(self), std::memory_order_relaxed);
   DCHECK_EQ(lock_count_, 0u);
 
   if (ATraceEnabled()) {
@@ -666,39 +722,50 @@ static void ThrowIllegalMonitorStateExceptionF(const char* fmt, ...)
   va_end(args);
 }
 
-static std::string ThreadToString(Thread* thread) {
-  if (thread == nullptr) {
+static std::string MonitorOwnerToString(MonitorOwner owner) {
+  if (owner.IsNull()) {
     return "nullptr";
   }
   std::ostringstream oss;
-  // TODO: alternatively, we could just return the thread's name.
-  oss << *thread;
+  if (owner.IsVirtualThread()) {
+    oss << "Virtual Thread " << owner.GetVirtualThreadId();
+  } else {
+    // TODO: alternatively, we could just return the thread's name.
+    oss << *owner.GetThreadPtr();
+  }
   return oss.str();
 }
 
 void Monitor::FailedUnlock(ObjPtr<mirror::Object> o,
-                           uint32_t expected_owner_thread_id,
+                           Thread* self,
                            uint32_t found_owner_thread_id,
                            Monitor* monitor) {
+  DCHECK_NE(self, nullptr);
   std::string current_owner_string;
   std::string expected_owner_string;
   std::string found_owner_string;
   uint32_t current_owner_thread_id = 0u;
   {
     MutexLock mu(Thread::Current(), *Locks::thread_list_lock_);
+    MonitorOwner expected_owner = MonitorOwner::FromThread(self);
     ThreadList* const thread_list = Runtime::Current()->GetThreadList();
-    Thread* expected_owner = thread_list->FindThreadByThreadId(expected_owner_thread_id);
-    Thread* found_owner = thread_list->FindThreadByThreadId(found_owner_thread_id);
+    MonitorOwner found_owner;
+    if (thread_list->IsVirtualThreadSuspendCountAllocated(found_owner_thread_id)) {
+      found_owner = MonitorOwner::FromVirtualThreadId(found_owner_thread_id);
+    } else {
+      Thread* found_owner_thread = thread_list->FindThreadByThreadId(found_owner_thread_id);
+      found_owner = MonitorOwner::FromPlatformThread(found_owner_thread);
+    }
 
     // Re-read owner now that we hold lock.
-    Thread* current_owner = (monitor != nullptr) ? monitor->GetOwner() : nullptr;
+    MonitorOwner current_owner = (monitor != nullptr) ? monitor->GetOwner() : MonitorOwner();
     if (current_owner != nullptr) {
-      current_owner_thread_id = current_owner->GetThreadId();
+      current_owner_thread_id = current_owner.GetThreadId();
     }
     // Get short descriptions of the threads involved.
-    current_owner_string = ThreadToString(current_owner);
-    expected_owner_string = expected_owner != nullptr ? ThreadToString(expected_owner) : "unnamed";
-    found_owner_string = found_owner != nullptr ? ThreadToString(found_owner) : "unnamed";
+    current_owner_string = MonitorOwnerToString(current_owner);
+    expected_owner_string = MonitorOwnerToString(expected_owner);
+    found_owner_string = found_owner != nullptr ? MonitorOwnerToString(found_owner) : "unnamed";
   }
 
   if (current_owner_thread_id == 0u) {
@@ -745,18 +812,18 @@ void Monitor::FailedUnlock(ObjPtr<mirror::Object> o,
 
 bool Monitor::Unlock(Thread* self) {
   DCHECK(self != nullptr);
-  Thread* owner = owner_.load(std::memory_order_relaxed);
+  MonitorOwner owner = owner_.load(std::memory_order_relaxed);
   if (owner == self) {
     // We own the monitor, so nobody else can be in here.
     CheckLockOwnerRequest(self);
     AtraceMonitorUnlock();
     if (lock_count_ == 0) {
-      owner_.store(nullptr, std::memory_order_relaxed);
+      owner_.store(MonitorOwner(), std::memory_order_relaxed);
       SignalWaiterAndReleaseMonitorLock(self);
     } else {
       --lock_count_;
       DCHECK(monitor_lock_.IsExclusiveHeld(self));
-      DCHECK_EQ(owner_.load(std::memory_order_relaxed), self);
+      DCHECK(owner_.load(std::memory_order_relaxed) == self);
       // Keep monitor_lock_, but pretend we released it.
       FakeUnlockMonitorLock();
     }
@@ -769,10 +836,10 @@ bool Monitor::Unlock(Thread* self) {
     MutexLock mu(self, *Locks::thread_list_lock_);
     owner = owner_.load(std::memory_order_relaxed);
     if (owner != nullptr) {
-      owner_thread_id = owner->GetThreadId();
+      owner_thread_id = owner.GetThreadId();
     }
   }
-  FailedUnlock(GetObject(), self->GetThreadId(), owner_thread_id, this);
+  FailedUnlock(GetObject(), self, owner_thread_id, this);
   // Pretend to release monitor_lock_, which we should not.
   FakeUnlockMonitorLock();
   return false;
@@ -868,7 +935,7 @@ void Monitor::Wait(Thread* self, int64_t ms, int32_t ns,
   bool was_interrupted = false;
   bool timed_out = false;
   // Update monitor state now; it's not safe once we're "suspended".
-  owner_.store(nullptr, std::memory_order_relaxed);
+  owner_.store(MonitorOwner(), std::memory_order_relaxed);
   num_waiters_.fetch_add(1, std::memory_order_relaxed);
   {
     // Update thread state. If the GC wakes up, it'll ignore us, knowing
@@ -1013,7 +1080,7 @@ bool Monitor::Deflate(Thread* self, ObjPtr<mirror::Object> obj) {
       return false;
     }
     DCHECK_EQ(monitor->lock_count_, 0u);
-    DCHECK_EQ(monitor->owner_.load(std::memory_order_relaxed), static_cast<Thread*>(nullptr));
+    DCHECK(monitor->owner_.load(std::memory_order_relaxed).IsNull());
     if (monitor->HasHashCode()) {
       LockWord new_lw = LockWord::FromHashCode(monitor->GetHashCode(), lw.GCState());
       // Assume no concurrent read barrier state changes as mutators are suspended.
@@ -1035,7 +1102,10 @@ bool Monitor::Deflate(Thread* self, ObjPtr<mirror::Object> obj) {
   return true;
 }
 
-void Monitor::Inflate(Thread* self, Thread* owner, ObjPtr<mirror::Object> obj, int32_t hash_code) {
+void Monitor::Inflate(Thread* self,
+                      MonitorOwner owner,
+                      ObjPtr<mirror::Object> obj,
+                      int32_t hash_code) NO_THREAD_SAFETY_ANALYSIS {
   DCHECK(self != nullptr);
   DCHECK(obj != nullptr);
   // Allocate and acquire a new monitor.
@@ -1043,8 +1113,8 @@ void Monitor::Inflate(Thread* self, Thread* owner, ObjPtr<mirror::Object> obj, i
   DCHECK(m != nullptr);
   if (m->Install(self)) {
     if (owner != nullptr) {
-      VLOG(monitor) << "monitor: thread" << owner->GetThreadId()
-          << " created monitor " << m << " for object " << obj;
+      VLOG(monitor) << "monitor: thread" << owner.GetThreadId() << " created monitor " << m
+                    << " for object " << obj;
     } else {
       VLOG(monitor) << "monitor: Inflate with hashcode " << hash_code
           << " created monitor " << m << " for object " << obj;
@@ -1052,43 +1122,66 @@ void Monitor::Inflate(Thread* self, Thread* owner, ObjPtr<mirror::Object> obj, i
     Runtime::Current()->GetMonitorList()->Add(m);
     CHECK_EQ(obj->GetLockWord(true).GetState(), LockWord::kFatLocked);
   } else {
+    LOG(WARNING) << "Monitor::Inflate: Install failed " << obj;
     MonitorPool::ReleaseMonitor(self, m);
   }
 }
 
-void Monitor::InflateThinLocked(Thread* self,
+bool Monitor::InflateThinLocked(Thread* self,
                                 Handle<mirror::Object> obj,
                                 LockWord lock_word,
                                 uint32_t hash_code,
                                 int attempt_of_4) {
   DCHECK_EQ(lock_word.GetState(), LockWord::kThinLocked);
   uint32_t owner_thread_id = lock_word.ThinLockOwner();
-  if (owner_thread_id == self->GetThreadId()) {
+  bool result = true;
+  if (owner_thread_id == self->GetMonitorThreadId()) {
     // We own the monitor, we can easily inflate it.
-    Inflate(self, self, obj.Get(), hash_code);
+    Inflate(self, MonitorOwner::FromThread(self), obj.Get(), hash_code);
   } else {
     ThreadList* thread_list = Runtime::Current()->GetThreadList();
     // Suspend the owner, inflate. First change to blocked and give up mutator_lock_.
     self->SetMonitorEnterObject(obj.Get());
-    Thread* owner;
+    MonitorOwner owner;
+    Thread* owner_thread;
     {
       ScopedThreadSuspension sts(self, ThreadState::kWaitingForLockInflation);
-      owner = thread_list->SuspendThreadByThreadId(
-          owner_thread_id, SuspendReason::kInternal, attempt_of_4);
+      ThreadSuspensionResult res = thread_list->SuspendPlatformOrVirtualThread(
+          owner_thread_id, SuspendReason::kInternal, &owner_thread, attempt_of_4);
+      switch (res) {
+        case ThreadSuspensionResult::kResultFailure: {
+          owner = MonitorOwner();
+          break;
+        }
+        case ThreadSuspensionResult::kResultSuccessPlatform: {
+          DCHECK_NE(owner_thread, nullptr);
+          owner = MonitorOwner::FromPlatformThread(owner_thread);
+          break;
+        }
+        case ThreadSuspensionResult::kResultSuccessVirtual: {
+          owner = MonitorOwner::FromVirtualThreadId(owner_thread_id);
+          break;
+        }
+      }
     }
-    if (owner != nullptr) {
+    if (!owner.IsNull()) {
       // We succeeded in suspending the thread, check the lock's status didn't change.
       lock_word = obj->GetLockWord(true);
       if (lock_word.GetState() == LockWord::kThinLocked &&
           lock_word.ThinLockOwner() == owner_thread_id) {
         // Go ahead and inflate the lock.
         Inflate(self, owner, obj.Get(), hash_code);
+      } else {
+        // Owner has changed; inform caller.
+        result = false;
       }
-      bool resumed = thread_list->Resume(owner, SuspendReason::kInternal);
+      bool resumed = thread_list->ResumePlatformOrVirtualThread(
+          owner_thread_id, owner_thread, owner.IsVirtualThread(), SuspendReason::kInternal);
       DCHECK(resumed);
     }
     self->SetMonitorEnterObject(nullptr);
   }
+  return result;
 }
 
 // Fool annotalysis into thinking that the lock on obj is acquired.
@@ -1105,12 +1198,13 @@ static ObjPtr<mirror::Object> FakeUnlock(ObjPtr<mirror::Object> obj)
 
 ObjPtr<mirror::Object> Monitor::MonitorEnter(Thread* self,
                                              ObjPtr<mirror::Object> obj,
-                                             bool trylock) {
+                                             bool trylock) NO_THREAD_SAFETY_ANALYSIS {
+  // NO_THREAD_SAFETY_ANALYSIS for <monitor>->monitor_lock_, etc.
   DCHECK(self != nullptr);
   DCHECK(obj != nullptr);
   self->AssertThreadSuspensionIsAllowable();
   obj = FakeLock(obj);
-  uint32_t thread_id = self->GetThreadId();
+  uint32_t thread_id = self->GetMonitorThreadId();
   size_t contention_count = 0;
   // Initial pure spin iterations before the GetMaxSpinsBeforeThinLockInflation() calls to
   // sched_yield().
@@ -1122,7 +1216,41 @@ ObjPtr<mirror::Object> Monitor::MonitorEnter(Thread* self,
     static constexpr int kMaxInflationAttempts = 100;  // Really > 5 should essentially never
                                                        // happen.
     if (UNLIKELY(inflation_attempt >= kMaxInflationAttempts)) {
-      LOG(FATAL) << "Too many inflation attempts";
+      LockWord lw = h_obj.Get()->GetLockWord(/*as_volatile=*/true);
+      std::ostringstream oss;
+      lw.Dump(oss);
+      uint32_t owner_thread_id = 0;
+      if (lw.GetState() == LockWord::kThinLocked) {
+        owner_thread_id = lw.ThinLockOwner();
+      }
+      if (owner_thread_id != 0) {
+        MutexLock mu(self, *Locks::thread_list_lock_);
+        ThreadList* thread_list = Runtime::Current()->GetThreadList();
+        Thread* t;
+        if (kIsVirtualThreadEnabled &&
+            thread_list->IsVirtualThreadSuspendCountAllocated(owner_thread_id)) {
+          uint32_t carrier_id = thread_list->GetCarrierThreadIdByVirtualThreadId(owner_thread_id);
+          if (carrier_id == ThreadList::kInvalidThreadId) {
+            oss << "; virtual thread carrier not found";
+            t = nullptr;
+          } else {
+            oss << "; carrier id: " << carrier_id;
+            t = thread_list->FindThreadByThreadId(carrier_id);
+          }
+        } else {
+          t = thread_list->FindThreadByThreadId(owner_thread_id);
+        }
+
+        if (t == nullptr) {
+          oss << "; owner not found!";
+        } else {
+          oss << "; owner: " << *t;
+          if (kill(t->GetTid(), 0) == 0) {
+            oss << " (live)";
+          }
+        }
+      }
+      LOG(FATAL) << "Too many inflation attempts: " << oss.str();
     }
     // We initially read the lockword with ordinary Java/relaxed semantics. When stronger
     // semantics are needed, we address it below. Since GetLockWord bottoms out to a relaxed load,
@@ -1167,7 +1295,9 @@ ObjPtr<mirror::Object> Monitor::MonitorEnter(Thread* self,
             continue;  // Go again.
           } else {
             // We'd overflow the recursion count, so inflate the monitor.
-            InflateThinLocked(self, h_obj, lock_word, 0, std::min(inflation_attempt++, 4));
+            bool unchanged =
+                InflateThinLocked(self, h_obj, lock_word, 0, std::min(inflation_attempt++, 4));
+            DCHECK(unchanged);  // We hold the lock, and thus it shouldn't change.
           }
         } else {
           if (trylock) {
@@ -1188,9 +1318,15 @@ ObjPtr<mirror::Object> Monitor::MonitorEnter(Thread* self,
           } else {
             contention_count = 0;
             // No ordering required for initial lockword read. Install rereads it anyway.
-            InflateThinLocked(self, h_obj, lock_word, 0, std::min(inflation_attempt++, 4));
-            // The above can fail without timing out of the owner exits. If that happens on the
-            // last attempt, we retry with attempt = 4.
+            if (!InflateThinLocked(self, h_obj, lock_word, 0, std::min(inflation_attempt++, 4))) {
+              // The above can fail without timing out if e.g. the owner exits. If that happens on
+              // the last attempt, we retry with attempt = 4.
+              // If it returned false, the owner or lock status changed. Our inflation strategy
+              // actually doesn't work well for a briefly held, frequently acquired lock, since
+              // ownership is likely to change before we can suspend the owner. Try again to just
+              // use the thin lock, and reset inflation_attempt, since this can happen many times.
+              inflation_attempt = 1;
+            }
           }
         }
         continue;  // Start from the beginning.
@@ -1212,7 +1348,7 @@ ObjPtr<mirror::Object> Monitor::MonitorEnter(Thread* self,
         // Inflate with the existing hashcode.
         // Again no ordering required for initial lockword read, since we don't rely
         // on the visibility of any prior computation.
-        Inflate(self, nullptr, h_obj.Get(), lock_word.GetHashCode());
+        Inflate(self, MonitorOwner(), h_obj.Get(), lock_word.GetHashCode());
         continue;  // Start from the beginning.
       default: {
         LOG(FATAL) << "Invalid monitor state " << lock_word.GetState();
@@ -1222,7 +1358,8 @@ ObjPtr<mirror::Object> Monitor::MonitorEnter(Thread* self,
   }
 }
 
-bool Monitor::MonitorExit(Thread* self, ObjPtr<mirror::Object> obj) {
+bool Monitor::MonitorExit(Thread* self, ObjPtr<mirror::Object> obj) NO_THREAD_SAFETY_ANALYSIS {
+  // NO_THREAD_SAFETY_ANALYSIS for <monitor>->monitor_lock_, etc.
   DCHECK(self != nullptr);
   DCHECK(obj != nullptr);
   self->AssertThreadSuspensionIsAllowable();
@@ -1235,13 +1372,13 @@ bool Monitor::MonitorExit(Thread* self, ObjPtr<mirror::Object> obj) {
       case LockWord::kHashCode:
         // Fall-through.
       case LockWord::kUnlocked:
-        FailedUnlock(h_obj.Get(), self->GetThreadId(), 0u, nullptr);
+        FailedUnlock(h_obj.Get(), self, 0u, nullptr);
         return false;  // Failure.
       case LockWord::kThinLocked: {
-        uint32_t thread_id = self->GetThreadId();
+        uint32_t thread_id = self->GetMonitorThreadId();
         uint32_t owner_thread_id = lock_word.ThinLockOwner();
         if (owner_thread_id != thread_id) {
-          FailedUnlock(h_obj.Get(), thread_id, owner_thread_id, nullptr);
+          FailedUnlock(h_obj.Get(), self, owner_thread_id, nullptr);
           return false;  // Failure.
         } else {
           // We own the lock, decrease the recursion count.
@@ -1289,7 +1426,8 @@ void Monitor::Wait(Thread* self,
                    int64_t ms,
                    int32_t ns,
                    bool interruptShouldThrow,
-                   ThreadState why) {
+                   ThreadState why) NO_THREAD_SAFETY_ANALYSIS {
+  // NO_THREAD_SAFETY_ANALYSIS for <monitor>->Wait(), etc.
   DCHECK(self != nullptr);
   DCHECK(obj != nullptr);
   StackHandleScope<1> hs(self);
@@ -1310,7 +1448,7 @@ void Monitor::Wait(Thread* self,
         ThrowIllegalMonitorStateExceptionF("object not locked by thread before wait()");
         return;  // Failure.
       case LockWord::kThinLocked: {
-        uint32_t thread_id = self->GetThreadId();
+        uint32_t thread_id = self->GetMonitorThreadId();
         uint32_t owner_thread_id = lock_word.ThinLockOwner();
         if (owner_thread_id != thread_id) {
           ThrowIllegalMonitorStateExceptionF("object not locked by thread before wait()");
@@ -1318,7 +1456,7 @@ void Monitor::Wait(Thread* self,
         } else {
           // We own the lock, inflate to enqueue ourself on the Monitor. May fail spuriously so
           // re-load.
-          Inflate(self, self, h_obj.Get(), 0);
+          Inflate(self, MonitorOwner::FromThread(self), h_obj.Get(), 0);
           lock_word = h_obj->GetLockWord(true);
         }
         break;
@@ -1345,7 +1483,7 @@ void Monitor::DoNotify(Thread* self, ObjPtr<mirror::Object> obj, bool notify_all
       ThrowIllegalMonitorStateExceptionF("object not locked by thread before notify()");
       return;  // Failure.
     case LockWord::kThinLocked: {
-      uint32_t thread_id = self->GetThreadId();
+      uint32_t thread_id = self->GetMonitorThreadId();
       uint32_t owner_thread_id = lock_word.ThinLockOwner();
       if (owner_thread_id != thread_id) {
         ThrowIllegalMonitorStateExceptionF("object not locked by thread before notify()");
@@ -1395,14 +1533,39 @@ uint32_t Monitor::GetLockOwnerThreadId(ObjPtr<mirror::Object> obj) {
   }
 }
 
+bool Monitor::IsOwnedByMe(const Thread* self, ObjPtr<mirror::Object> obj) {
+  DCHECK_EQ(self, Thread::Current());
+  DCHECK(obj != nullptr);
+  Locks::mutator_lock_->AssertSharedHeld(Thread::Current());
+  LockWord lock_word = obj->GetLockWord(true);
+  switch (lock_word.GetState()) {
+    case LockWord::kHashCode:
+      // Fall-through.
+    case LockWord::kUnlocked:
+      return false;
+    case LockWord::kThinLocked:
+      return lock_word.ThinLockOwner() == self->GetMonitorThreadId();
+    case LockWord::kFatLocked: {
+      Monitor* mon = lock_word.FatLockMonitor();
+      // Since we hold a share of the mutator lock, the obj lock cannot be deflated here.
+      // Since our caller holds a reference to obj, mon cannot be reclaimed.
+      return mon->IsOwnedByMe(self);
+    }
+    default: {
+      LOG(FATAL) << "Unreachable";
+      UNREACHABLE();
+    }
+  }
+}
+
 ThreadState Monitor::FetchState(const Thread* thread,
                                 /* out */ ObjPtr<mirror::Object>* monitor_object,
-                                /* out */ uint32_t* lock_owner_tid) {
+                                /* out */ uint32_t* lock_owner_thread_id) {
   DCHECK(monitor_object != nullptr);
-  DCHECK(lock_owner_tid != nullptr);
+  DCHECK(lock_owner_thread_id != nullptr);
 
   *monitor_object = nullptr;
-  *lock_owner_tid = ThreadList::kInvalidThreadId;
+  *lock_owner_thread_id = ThreadList::kInvalidThreadId;
 
   ThreadState state = thread->GetState();
 
@@ -1433,7 +1596,7 @@ ThreadState Monitor::FetchState(const Thread* thread,
           lock_object = ReadBarrier::Mark(lock_object.Ptr());
         }
         *monitor_object = lock_object;
-        *lock_owner_tid = lock_object->GetLockOwnerThreadId();
+        *lock_owner_thread_id = GetLockOwnerThreadId(lock_object);
       }
     }
     break;
@@ -1617,12 +1780,13 @@ void Monitor::TranslateLocation(ArtMethod* method,
 uint32_t Monitor::GetOwnerThreadId() {
   // Make sure owner is not deallocated during access.
   MutexLock mu(Thread::Current(), *Locks::thread_list_lock_);
-  Thread* owner = GetOwner();
-  if (owner != nullptr) {
-    return owner->GetThreadId();
-  } else {
-    return ThreadList::kInvalidThreadId;
-  }
+  MonitorOwner owner = GetOwner();
+  return owner.GetThreadId();
+}
+
+bool Monitor::IsOwnedByMe(const Thread* self) const {
+  MonitorOwner owner = GetOwner();
+  return owner.IsOwner(self);
 }
 
 MonitorList::MonitorList()
@@ -1734,7 +1898,7 @@ size_t MonitorList::DeflateMonitors() {
   return visitor.deflate_count_;
 }
 
-MonitorInfo::MonitorInfo(ObjPtr<mirror::Object> obj) : owner_(nullptr), entry_count_(0) {
+MonitorInfo::MonitorInfo(ObjPtr<mirror::Object> obj) : owner_(), entry_count_(0) {
   DCHECK(obj != nullptr);
   LockWord lock_word = obj->GetLockWord(true);
   switch (lock_word.GetState()) {
@@ -1744,12 +1908,22 @@ MonitorInfo::MonitorInfo(ObjPtr<mirror::Object> obj) : owner_(nullptr), entry_co
       // Fall-through.
     case LockWord::kHashCode:
       break;
-    case LockWord::kThinLocked:
-      owner_ = Runtime::Current()->GetThreadList()->FindThreadByThreadId(lock_word.ThinLockOwner());
-      DCHECK(owner_ != nullptr) << "Thin-locked without owner!";
+    case LockWord::kThinLocked: {
+      ThreadList* thread_list = Runtime::Current()->GetThreadList();
+      uint32_t owner_thread_id = lock_word.ThinLockOwner();
+      DCHECK_NE(owner_thread_id, ThreadList::kInvalidThreadId) << "Thin-locked without owner!";
+      if (kIsVirtualThreadEnabled &&
+          thread_list->IsVirtualThreadSuspendCountAllocated(owner_thread_id)) {
+        owner_ = MonitorOwner::FromVirtualThreadId(owner_thread_id);
+      } else {
+        Thread* thread = thread_list->FindThreadByThreadId(owner_thread_id);
+        DCHECK_NE(thread, nullptr) << "Thin-locked without owner!";
+        owner_ = MonitorOwner::FromPlatformThread(thread);
+      }
       entry_count_ = 1 + lock_word.ThinLockCount();
       // Thin locks have no waiters.
       break;
+    }
     case LockWord::kFatLocked: {
       Monitor* mon = lock_word.FatLockMonitor();
       owner_ = mon->owner_.load(std::memory_order_relaxed);

@@ -653,20 +653,6 @@ bool StackVisitor::GetNextMethodAndDexPc(ArtMethod** next_method, uint32_t* next
   return visitor.has_more_frames_;
 }
 
-void StackVisitor::DescribeStack(Thread* thread) {
-  struct DescribeStackVisitor : public StackVisitor {
-    explicit DescribeStackVisitor(Thread* thread_in)
-        : StackVisitor(thread_in, nullptr, StackVisitor::StackWalkKind::kIncludeInlinedFrames) {}
-
-    bool VisitFrame() override REQUIRES_SHARED(Locks::mutator_lock_) {
-      LOG(INFO) << "Frame Id=" << GetFrameId() << " " << DescribeLocation();
-      return true;
-    }
-  };
-  DescribeStackVisitor visitor(thread);
-  visitor.WalkStack(true);
-}
-
 std::string StackVisitor::DescribeLocation() const {
   std::string result("Visiting method '");
   ArtMethod* m = GetMethod();
@@ -743,13 +729,7 @@ void StackVisitor::ValidateFrame() const {
     // Frame consistency checks.
     size_t frame_size = GetCurrentQuickFrameInfo().FrameSizeInBytes();
     CHECK_NE(frame_size, 0u);
-    // For compiled code, we could try to have a rough guess at an upper size we expect
-    // to see for a frame:
-    // 256 registers
-    // 2 words HandleScope overhead
-    // 3+3 register spills
-    // const size_t kMaxExpectedFrameSize = (256 + 2 + 3 + 3) * sizeof(word);
-    const size_t kMaxExpectedFrameSize = interpreter::kNterpMaxFrame;
+    constexpr size_t kMaxExpectedFrameSize = GetStackOverflowReservedBytes(kRuntimeISA);
     CHECK_LE(frame_size, kMaxExpectedFrameSize) << method->PrettyMethod();
     size_t return_pc_offset = GetCurrentQuickFrameInfo().GetReturnPcOffset();
     CHECK_LT(return_pc_offset, frame_size);
@@ -812,7 +792,7 @@ uint8_t* StackVisitor::GetShouldDeoptimizeFlagAddr() const REQUIRES_SHARED(Locks
   return should_deoptimize_addr;
 }
 
-template <StackVisitor::CountTransitions kCount>
+template <StackVisitor::CountTransitions kCount, bool kTolerateNullMethods>
 void StackVisitor::WalkStack(bool include_transitions) {
   if (check_suspended_) {
     DCHECK(thread_ == Thread::Current() || thread_->GetState() != ThreadState::kRunnable);
@@ -827,14 +807,29 @@ void StackVisitor::WalkStack(bool include_transitions) {
     DCHECK(cur_oat_quick_method_header_ == nullptr);
 
     if (kDebugStackWalk) {
-      LOG(INFO) << "Tid=" << thread_-> GetThreadId()
-          << ", ManagedStack fragement: " << current_fragment;
+      LOG(INFO) << "Tid=" << thread_->GetThreadId()
+                << ", ManagedStack fragment: " << current_fragment;
     }
 
     if (cur_quick_frame_ != nullptr) {  // Handle quick stack frames.
       // Can't be both a shadow and a quick fragment.
       DCHECK(current_fragment->GetTopShadowFrame() == nullptr);
       ArtMethod* method = *cur_quick_frame_;
+      // TODO(lokeshgidra): revert the CL after the bug (b/440722522) is diagnosed or convert to
+      // debug-only.
+      if (kTolerateNullMethods && method == nullptr) {
+        LOG(FATAL_WITHOUT_ABORT) << "null art-method found at ManagedStack fragment: "
+                                 << current_fragment << " cur_quick_frame_:" << cur_quick_frame_;
+        goto visit_transitions;
+      } else if (UNLIKELY(method == nullptr)) {
+        DescribeStack<kCount, /*kTolerateNullMethods=*/true>(thread_);
+        std::string walking_thread_name, cur_thread_name;
+        thread_->GetThreadName(walking_thread_name);
+        Thread::Current()->GetThreadName(cur_thread_name);
+        LOG(FATAL) << "StackWalk failed on Tid=" << thread_->GetThreadId()
+                   << " name:" << walking_thread_name
+                   << " by Tid:" << Thread::Current()->GetThreadId() << " name:" << cur_thread_name;
+      }
       DCHECK(method != nullptr);
       bool header_retrieved = false;
       if (method->IsNative()) {
@@ -982,6 +977,7 @@ void StackVisitor::WalkStack(bool include_transitions) {
         cur_shadow_frame_ = cur_shadow_frame_->GetLink();
       } while (cur_shadow_frame_ != nullptr);
     }
+  visit_transitions:
     if (include_transitions) {
       bool should_continue = VisitFrame();
       if (!should_continue) {
@@ -997,7 +993,9 @@ void StackVisitor::WalkStack(bool include_transitions) {
   }
 }
 
-template void StackVisitor::WalkStack<StackVisitor::CountTransitions::kYes>(bool);
-template void StackVisitor::WalkStack<StackVisitor::CountTransitions::kNo>(bool);
+template void
+StackVisitor::WalkStack<StackVisitor::CountTransitions::kYes, /*kTolerateNullMethods=*/false>(bool);
+template void
+StackVisitor::WalkStack<StackVisitor::CountTransitions::kNo, /*kTolerateNullMethods=*/false>(bool);
 
 }  // namespace art

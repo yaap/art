@@ -87,9 +87,6 @@ struct EXPORT WellKnownClasses {
   template <ArtMethod** kMethod>
   using ClassFromMethod = detail::ClassFromMember<ArtMethod, kMethod>;
 
-  template <ArtField** kField>
-  using ClassFromField = detail::ClassFromMember<ArtField, kField>;
-
  public:
   static jclass dalvik_annotation_optimization_CriticalNative;
   static jclass dalvik_annotation_optimization_FastNative;
@@ -101,20 +98,30 @@ struct EXPORT WellKnownClasses {
   static jclass java_lang_Record;
   static jclass java_lang_reflect_Parameter__array;
   static jclass java_lang_StringFactory;
-  static jclass java_lang_System;
   static jclass java_lang_Void;
+  static jclass java_util_concurrent_atomic_AIFU;
+  static jclass java_util_concurrent_atomic_ALFU;
+  static jclass java_util_concurrent_atomic_ARFU;
+  static jclass jdk_internal_misc_Unsafe;
   static jclass libcore_reflect_AnnotationMember__array;
+  static jclass sun_misc_Unsafe;
 
   static ArtMethod* dalvik_system_BaseDexClassLoader_getLdLibraryPath;
   static ArtMethod* dalvik_system_DelegateLastClassLoader_init;  // Only for the declaring class.
   static ArtMethod* dalvik_system_DexClassLoader_init;  // Only for the declaring class.
+  static ArtMethod* dalvik_system_DexFile_init;  // Only for the declaring class.
+  static ArtMethod* dalvik_system_DexPathList_init;  // Only for the declaring class.
+  static ArtMethod* dalvik_system_DexPathList__Element_init;  // Only for the declaring class.
   static ArtMethod* dalvik_system_InMemoryDexClassLoader_init;  // Only for the declaring class.
   static ArtMethod* dalvik_system_PathClassLoader_init;  // Only for the declaring class.
   static ArtMethod* dalvik_system_VMRuntime_hiddenApiUsed;
+  static ArtMethod* dalvik_system_VirtualThreadParkedStates_init;  // Only for the declaring class.
   static ArtMethod* java_lang_Boolean_valueOf;
   static ArtMethod* java_lang_BootClassLoader_init;  // Only for the declaring class.
   static ArtMethod* java_lang_Byte_valueOf;
+  static ArtMethod* java_lang_Byte_ByteCache_init;  // Only for the declaring class.
   static ArtMethod* java_lang_Character_valueOf;
+  static ArtMethod* java_lang_Character_CharacterCache_init;  // Only for the declaring class.
   static ArtMethod* java_lang_ClassLoader_loadClass;
   static ArtMethod* java_lang_ClassNotFoundException_init;
   static ArtMethod* java_lang_Daemons_start;
@@ -127,15 +134,19 @@ struct EXPORT WellKnownClasses {
   static ArtMethod* java_lang_Float_valueOf;
   static ArtMethod* java_lang_IllegalAccessError_init;  // Only for the declaring class.
   static ArtMethod* java_lang_Integer_valueOf;
+  static ArtMethod* java_lang_Integer_IntegerCache_init;  // Only for the declaring class.
   static ArtMethod* java_lang_Long_valueOf;
+  static ArtMethod* java_lang_Long_LongCache_init;  // Only for the declaring class.
   static ArtMethod* java_lang_NoClassDefFoundError_init;  // Only for the declaring class.
   static ArtMethod* java_lang_OutOfMemoryError_init;  // Only for the declaring class.
   static ArtMethod* java_lang_Runnable_run;
   static ArtMethod* java_lang_Runtime_nativeLoad;
   static ArtMethod* java_lang_RuntimeException_init;  // Only for the declaring class.
   static ArtMethod* java_lang_Short_valueOf;
+  static ArtMethod* java_lang_Short_ShortCache_init;  // Only for the declaring class.
   static ArtMethod* java_lang_StackOverflowError_init;  // Only for the declaring class.
   static ArtMethod* java_lang_String_charAt;
+  static ArtMethod* java_lang_System_identityHashCode;  // Only for the declaring class.
   static ArtMethod* java_lang_Thread_dispatchUncaughtException;
   static ArtMethod* java_lang_Thread_init;
   static ArtMethod* java_lang_Thread_parkVirtualInternal;
@@ -158,15 +169,24 @@ struct EXPORT WellKnownClasses {
   static ArtMethod* java_lang_reflect_Proxy_invoke;
   static ArtMethod* java_nio_Buffer_isDirect;
   static ArtMethod* java_nio_DirectByteBuffer_init;
+  static ArtMethod* java_util_Collections_emptyList;  // Only for the declaring class.
+  // Only for the declaring class.
+  static ArtMethod* java_util_concurrent_ThreadLocalRandom_current;
   static ArtMethod* java_util_function_Consumer_accept;
+  // Only for the declaring class.
+  static ArtMethod* jdk_internal_foreign_NativeMemorySegmentImpl_isNative;
   static ArtMethod* jdk_internal_math_FloatingDecimal_getBinaryToASCIIConverter_D;
   static ArtMethod* jdk_internal_math_FloatingDecimal_getBinaryToASCIIConverter_F;
   static ArtMethod* jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_getChars;
+  // Only for the declaring class.
+  static ArtMethod*
+      jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer_toJavaFormatString;
   static ArtMethod* jdk_internal_vm_Continuation_doYieldNative;
   static ArtMethod* jdk_internal_vm_Continuation_enter;
   static ArtMethod* jdk_internal_vm_Continuation_enterSpecial;
   static ArtMethod* libcore_reflect_AnnotationFactory_createAnnotation;
   static ArtMethod* libcore_reflect_AnnotationMember_init;
+  static ArtMethod* libcore_util_EmptyArray_init;  // Only for the declaring class.
   static ArtMethod* org_apache_harmony_dalvik_ddmc_DdmServer_broadcast;
   static ArtMethod* org_apache_harmony_dalvik_ddmc_DdmServer_dispatch;
 
@@ -178,14 +198,9 @@ struct EXPORT WellKnownClasses {
   static ArtField* dalvik_system_DexPathList_dexElements;
   static ArtField* dalvik_system_DexPathList__Element_dexFile;
   static ArtField* dalvik_system_VMRuntime_nonSdkApiUsageConsumer;
-  static ArtField* dalvik_system_VirtualThreadContext_parkedStates;
-  static ArtField* dalvik_system_VirtualThreadContext_pinnedCarrierThread;
   static ArtField* dalvik_system_VirtualThreadParkedStates_frames;
-  // TODO: Consider using a mirror class for VirtualThreadFrame.
-  static ArtField* dalvik_system_VirtualThreadFrame_frame;
-  static ArtField* dalvik_system_VirtualThreadFrame_refs;
-  static ArtField* dalvik_system_VirtualThreadFrame_declaringClass;
   static ArtField* java_io_FileDescriptor_descriptor;
+  static ArtField* java_lang_invoke_MethodHandle_type;
   static ArtField* java_lang_ref_Reference_disableIntrinsic;
   static ArtField* java_lang_ref_Reference_slowPathEnabled;
   static ArtField* java_lang_ClassLoader_parent;
@@ -225,6 +240,9 @@ struct EXPORT WellKnownClasses {
   static ArtField* java_nio_ByteBuffer_hb;
   static ArtField* java_nio_ByteBuffer_isReadOnly;
   static ArtField* java_nio_ByteBuffer_offset;
+  static ArtField* jdk_internal_foreign_NativeMemorySegmentImpl_min;
+  static ArtField* jdk_internal_foreign_AbstractMemorySegmentImpl_length;
+  static ArtField* jdk_internal_foreign_AbstractMemorySegmentImpl_readOnly;
   static ArtField* java_util_Collections_EMPTY_LIST;
   static ArtField* java_util_concurrent_ThreadLocalRandom_seeder;
   static ArtField* jdk_internal_vm_Continuation_virtualThreadContext;
@@ -251,28 +269,26 @@ struct EXPORT WellKnownClasses {
   static ArtField* java_lang_Integer_value;
   static ArtField* java_lang_Long_value;
 
-  static constexpr ClassFromField<&dalvik_system_BaseDexClassLoader_pathList>
+  static constexpr ClassFromMethod<&dalvik_system_BaseDexClassLoader_getLdLibraryPath>
       dalvik_system_BaseDexClassLoader;
   static constexpr ClassFromMethod<&dalvik_system_DelegateLastClassLoader_init>
       dalvik_system_DelegateLastClassLoader;
   static constexpr ClassFromMethod<&dalvik_system_DexClassLoader_init>
       dalvik_system_DexClassLoader;
-  static constexpr ClassFromField<&dalvik_system_DexFile_cookie> dalvik_system_DexFile;
-  static constexpr ClassFromField<&dalvik_system_DexPathList_dexElements> dalvik_system_DexPathList;
-  static constexpr ClassFromField<&dalvik_system_DexPathList__Element_dexFile>
+  static constexpr ClassFromMethod<&dalvik_system_DexFile_init> dalvik_system_DexFile;
+  static constexpr ClassFromMethod<&dalvik_system_DexPathList_init> dalvik_system_DexPathList;
+  static constexpr ClassFromMethod<&dalvik_system_DexPathList__Element_init>
       dalvik_system_DexPathList__Element;
   static constexpr ClassFromMethod<&dalvik_system_InMemoryDexClassLoader_init>
       dalvik_system_InMemoryDexClassLoader;
   static constexpr ClassFromMethod<&dalvik_system_PathClassLoader_init>
       dalvik_system_PathClassLoader;
-  static constexpr ClassFromField<&dalvik_system_VirtualThreadContext_parkedStates>
-      dalvik_system_VirtualThreadContext;
-  static constexpr ClassFromField<&dalvik_system_VirtualThreadParkedStates_frames>
+  static constexpr ClassFromMethod<&dalvik_system_VMRuntime_hiddenApiUsed>
+      dalvik_system_VMRuntime;
+  static constexpr ClassFromMethod<&dalvik_system_VirtualThreadParkedStates_init>
       dalvik_system_VirtualThreadParkedStates;
-  static constexpr ClassFromField<&dalvik_system_VirtualThreadFrame_frame>
-      dalvik_system_VirtualThreadFrame;
   static constexpr ClassFromMethod<&java_lang_BootClassLoader_init> java_lang_BootClassLoader;
-  static constexpr ClassFromField<&java_lang_ClassLoader_parent> java_lang_ClassLoader;
+  static constexpr ClassFromMethod<&java_lang_ClassLoader_loadClass> java_lang_ClassLoader;
   static constexpr ClassFromMethod<&java_lang_Daemons_start> java_lang_Daemons;
   static constexpr ClassFromMethod<&java_lang_Error_init> java_lang_Error;
   static constexpr ClassFromMethod<&java_lang_IllegalAccessError_init>
@@ -283,8 +299,9 @@ struct EXPORT WellKnownClasses {
   static constexpr ClassFromMethod<&java_lang_RuntimeException_init> java_lang_RuntimeException;
   static constexpr ClassFromMethod<&java_lang_StackOverflowError_init>
       java_lang_StackOverflowError;
-  static constexpr ClassFromField<&java_lang_Thread_daemon> java_lang_Thread;
-  static constexpr ClassFromField<&java_lang_ThreadGroup_groups> java_lang_ThreadGroup;
+  static constexpr ClassFromMethod<&java_lang_System_identityHashCode> java_lang_System;
+  static constexpr ClassFromMethod<&java_lang_Thread_init> java_lang_Thread;
+  static constexpr ClassFromMethod<&java_lang_ThreadGroup_add> java_lang_ThreadGroup;
   static constexpr ClassFromMethod<&java_lang_invoke_MethodHandle_invokeExact>
       java_lang_invoke_MethodHandle;
   static constexpr ClassFromMethod<&java_lang_invoke_MethodType_makeImpl>
@@ -293,18 +310,27 @@ struct EXPORT WellKnownClasses {
       java_lang_reflect_InvocationTargetException;
   static constexpr ClassFromMethod<&java_lang_reflect_Parameter_init>
       java_lang_reflect_Parameter;
-  static constexpr ClassFromField<&java_nio_Buffer_address> java_nio_Buffer;
-  static constexpr ClassFromField<&java_util_Collections_EMPTY_LIST> java_util_Collections;
-  static constexpr ClassFromField<&libcore_util_EmptyArray_STACK_TRACE_ELEMENT>
+  static constexpr ClassFromMethod<&java_nio_Buffer_isDirect> java_nio_Buffer;
+  static constexpr ClassFromMethod<&java_util_Collections_emptyList> java_util_Collections;
+  static constexpr ClassFromMethod<&java_util_concurrent_ThreadLocalRandom_current>
+      java_util_concurrent_ThreadLocalRandom;
+  static constexpr ClassFromMethod<&libcore_util_EmptyArray_init>
       libcore_util_EmptyArray;
 
-  static constexpr ClassFromField<&java_lang_Byte_ByteCache_cache> java_lang_Byte_ByteCache;
-  static constexpr ClassFromField<&java_lang_Character_CharacterCache_cache>
+  static constexpr ClassFromMethod<&java_lang_Byte_ByteCache_init> java_lang_Byte_ByteCache;
+  static constexpr ClassFromMethod<&java_lang_Character_CharacterCache_init>
       java_lang_Character_CharacterCache;
-  static constexpr ClassFromField<&java_lang_Short_ShortCache_cache> java_lang_Short_ShortCache;
-  static constexpr ClassFromField<&java_lang_Integer_IntegerCache_cache>
+  static constexpr ClassFromMethod<&java_lang_Short_ShortCache_init> java_lang_Short_ShortCache;
+  static constexpr ClassFromMethod<&java_lang_Integer_IntegerCache_init>
       java_lang_Integer_IntegerCache;
-  static constexpr ClassFromField<&java_lang_Long_LongCache_cache> java_lang_Long_LongCache;
+  static constexpr ClassFromMethod<&java_lang_Long_LongCache_init> java_lang_Long_LongCache;
+  static constexpr ClassFromMethod<&jdk_internal_foreign_NativeMemorySegmentImpl_isNative>
+      jdk_internal_foreign_NativeMemorySegmentImpl;
+  static constexpr ClassFromMethod<&jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_getChars>
+      jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer;
+  static constexpr ClassFromMethod<
+      &jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer_toJavaFormatString>
+          jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer;
 
   static constexpr ClassFromMethod<&java_lang_Boolean_valueOf> java_lang_Boolean;
   static constexpr ClassFromMethod<&java_lang_Byte_valueOf> java_lang_Byte;

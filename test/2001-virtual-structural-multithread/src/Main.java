@@ -15,7 +15,7 @@
  */
 
 public class Main {
-  public static void main(String[] args) throws Exception {
-    System.out.println("FAIL: Test is only for art!");
-  }
+    public static void main(String[] args) throws Exception {
+        System.out.println("FAIL: Test is only for art!");
+    }
 }

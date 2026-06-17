@@ -50,6 +50,7 @@ static constexpr const char* x86_known_variants[] = {
     "tremont",
     "kabylake",
     "alderlake",
+    "pantherlake",
     "default",
 };
 
@@ -63,6 +64,7 @@ static constexpr const char* x86_variants_with_ssse3[] = {
     "tremont",
     "alderlake",
     "kabylake",
+    "pantherlake",
 };
 
 static constexpr const char* x86_variants_with_sse4_1[] = {
@@ -74,6 +76,7 @@ static constexpr const char* x86_variants_with_sse4_1[] = {
     "tremont",
     "alderlake",
     "kabylake",
+    "pantherlake",
 };
 
 static constexpr const char* x86_variants_with_sse4_2[] = {
@@ -85,6 +88,7 @@ static constexpr const char* x86_variants_with_sse4_2[] = {
     "tremont",
     "alderlake",
     "kabylake",
+    "pantherlake",
 };
 
 static constexpr const char* x86_variants_with_popcnt[] = {
@@ -96,15 +100,18 @@ static constexpr const char* x86_variants_with_popcnt[] = {
     "tremont",
     "alderlake",
     "kabylake",
+    "pantherlake",
 };
 static constexpr const char* x86_variants_with_avx[] = {
     "kabylake",
     "alderlake",
+    "pantherlake",
 };
 
 static constexpr const char* x86_variants_with_avx2[] = {
     "kabylake",
     "alderlake",
+    "pantherlake",
 };
 
 X86FeaturesUniquePtr X86InstructionSetFeatures::Create(bool x86_64,
@@ -177,7 +184,7 @@ X86FeaturesUniquePtr X86InstructionSetFeatures::FromBitmap(uint32_t bitmap, bool
   bool has_SSE4_1 = (bitmap & kSse4_1Bitfield) != 0;
   bool has_SSE4_2 = (bitmap & kSse4_2Bitfield) != 0;
   bool has_AVX = (bitmap & kAvxBitfield) != 0;
-  bool has_AVX2 = (bitmap & kAvxBitfield) != 0;
+  bool has_AVX2 = (bitmap & kAvx2Bitfield) != 0;
   bool has_POPCNT = (bitmap & kPopCntBitfield) != 0;
   return Create(x86_64, has_SSSE3, has_SSE4_1, has_SSE4_2, has_AVX, has_AVX2, has_POPCNT);
 }

@@ -136,4 +136,96 @@ TEST_F(RuntimeInitMetricsForceEnableTest, MetricsAreInitialized) {
   ASSERT_TRUE(runtime_->AreMetricsInitialized());
 }
 
+struct MadviseTestParam {
+  SdkVersion sdk;
+  ProcessState state;
+  std::optional<int32_t> code_type;
+  bool expect_madvise;
+};
+
+class RuntimeMadviseTest : public CommonRuntimeTestWithParam<MadviseTestParam> {
+ protected:
+  void SetSdkVersion(SdkVersion sdk_version) {
+    runtime_->SetSdkVersion(static_cast<uint32_t>(sdk_version));
+  }
+};
+
+TEST_P(RuntimeMadviseTest, ShouldMadviseForAppStartup) {
+  const MadviseTestParam& param = GetParam();
+
+  SetSdkVersion(param.sdk);
+  runtime_->UpdateProcessState(param.state);
+  std::string dex_location = "example.dex";
+  if (param.code_type.has_value()) {
+    std::vector<std::string> code_paths = {dex_location};
+    runtime_->RegisterAppInfo("com.example",
+                              code_paths,
+                              /*profile_output_filename=*/"",
+                              /*ref_profile_filename=*/"",
+                              *param.code_type);
+  }
+
+  EXPECT_EQ(runtime_->ShouldMadviseForAppStartup(dex_location.c_str()), param.expect_madvise);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RuntimeMadviseConfigurations,
+    RuntimeMadviseTest,
+    ::testing::Values(
+        // Pre-T: Madvises unless app info reports secondary dex (ignores unreliable proc state).
+        MadviseTestParam{.sdk = SdkVersion::kS,
+                         .state = kProcessStateJankImperceptible,
+                         .code_type = std::nullopt,
+                         .expect_madvise = true},
+        MadviseTestParam{.sdk = SdkVersion::kS,
+                         .state = kProcessStateJankPerceptible,
+                         .code_type = std::nullopt,
+                         .expect_madvise = true},
+        MadviseTestParam{.sdk = SdkVersion::kS,
+                         .state = kProcessStateJankImperceptible,
+                         .code_type = kVMRuntimePrimaryApk,
+                         .expect_madvise = true},
+        MadviseTestParam{.sdk = SdkVersion::kS,
+                         .state = kProcessStateJankPerceptible,
+                         .code_type = kVMRuntimePrimaryApk,
+                         .expect_madvise = true},
+        MadviseTestParam{.sdk = SdkVersion::kS,
+                         .state = kProcessStateJankImperceptible,
+                         .code_type = kVMRuntimeSecondaryDex,
+                         .expect_madvise = false},
+        // T+: Madvises only in foreground, unless app info reports secondary dex.
+        MadviseTestParam{.sdk = SdkVersion::kT,
+                         .state = kProcessStateJankImperceptible,
+                         .code_type = std::nullopt,
+                         .expect_madvise = false},
+        MadviseTestParam{.sdk = SdkVersion::kT,
+                         .state = kProcessStateJankImperceptible,
+                         .code_type = kVMRuntimePrimaryApk,
+                         .expect_madvise = false},
+        MadviseTestParam{.sdk = SdkVersion::kT,
+                         .state = kProcessStateJankPerceptible,
+                         .code_type = std::nullopt,
+                         .expect_madvise = true},
+        MadviseTestParam{.sdk = SdkVersion::kT,
+                         .state = kProcessStateJankPerceptible,
+                         .code_type = kVMRuntimePrimaryApk,
+                         .expect_madvise = true},
+        MadviseTestParam{.sdk = SdkVersion::kT,
+                         .state = kProcessStateJankPerceptible,
+                         .code_type = kVMRuntimeSplitApk,
+                         .expect_madvise = true},
+        MadviseTestParam{.sdk = SdkVersion::kT,
+                         .state = kProcessStateJankPerceptible,
+                         .code_type = kVMRuntimeSecondaryDex,
+                         .expect_madvise = false}),
+    [](const auto& info) {
+      std::string name;
+      name += (info.param.sdk < SdkVersion::kT) ? "PreT" : "TPlus";
+      name += (info.param.state == kProcessStateJankPerceptible) ? "Foreground" : "Background";
+      name += "CodeType";
+      name +=
+          info.param.code_type.has_value() ? std::to_string(*info.param.code_type) : "Unregistered";
+      return name;
+    });
+
 }  // namespace art

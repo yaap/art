@@ -18,7 +18,7 @@ package other;
 
 // Class that cannot be accessed outside of this package.
 class ProtectedClass {
- /* package */ int otherProtectedClassPackageIntInstanceMethod() {
-   return 28;
- }
+    /* package */ int otherProtectedClassPackageIntInstanceMethod() {
+        return 28;
+    }
 }

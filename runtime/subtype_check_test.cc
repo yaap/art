@@ -339,13 +339,13 @@ struct SubtypeCheckTest : public ::testing::Test {
 };
 
 TEST_F(SubtypeCheckTest, LookupAllChildren) {
-  MockScopedLockSubtypeCheck lock_a;
   MockScopedLockMutator lock_b;
+  MockScopedLockSubtypeCheck lock_a;
   using SCTree = MockSubtypeCheck;
 
   root_->Visit([&](MockClass* kls) {
-    MockScopedLockSubtypeCheck lock_a;
     MockScopedLockMutator lock_b;
+    MockScopedLockSubtypeCheck lock_a;
 
     EXPECT_EQ(SubtypeCheckInfo::kUninitialized, SCTree::Lookup(kls).GetState());
     return true;  // Keep visiting.
@@ -353,8 +353,8 @@ TEST_F(SubtypeCheckTest, LookupAllChildren) {
 }
 
 TEST_F(SubtypeCheckTest, LookupRoot) {
-  MockScopedLockSubtypeCheck lock_a;
   MockScopedLockMutator lock_b;
+  MockScopedLockSubtypeCheck lock_a;
   using SCTree = MockSubtypeCheck;
 
   SCTree root = SCTree::Lookup(root_);
@@ -363,8 +363,8 @@ TEST_F(SubtypeCheckTest, LookupRoot) {
 }
 
 TEST_F(SubtypeCheckTest, EnsureInitializedFirstLevel) {
-  MockScopedLockSubtypeCheck lock_a;
   MockScopedLockMutator lock_b;
+  MockScopedLockSubtypeCheck lock_a;
   using SCTree = MockSubtypeCheck;
 
   SCTree root = SCTree::Lookup(root_);
@@ -388,8 +388,8 @@ TEST_F(SubtypeCheckTest, EnsureInitializedFirstLevel) {
 }
 
 TEST_F(SubtypeCheckTest, EnsureAssignedFirstLevel) {
-  MockScopedLockSubtypeCheck lock_a;
   MockScopedLockMutator lock_b;
+  MockScopedLockSubtypeCheck lock_a;
   using SCTree = MockSubtypeCheck;
 
   SCTree root = SCTree::Lookup(root_);
@@ -413,8 +413,8 @@ TEST_F(SubtypeCheckTest, EnsureAssignedFirstLevel) {
 }
 
 TEST_F(SubtypeCheckTest, EnsureInitializedSecondLevelWithPreassign) {
-  MockScopedLockSubtypeCheck lock_a;
   MockScopedLockMutator lock_b;
+  MockScopedLockSubtypeCheck lock_a;
   using SCTree = MockSubtypeCheck;
 
   SCTree root = SCTree::Lookup(root_);
@@ -463,8 +463,8 @@ TEST_F(SubtypeCheckTest, EnsureInitializedSecondLevelWithPreassign) {
 }
 
 TEST_F(SubtypeCheckTest, EnsureInitializedSecondLevelDontPreassign) {
-  MockScopedLockSubtypeCheck lock_a;
   MockScopedLockMutator lock_b;
+  MockScopedLockSubtypeCheck lock_a;
   using SCTree = MockSubtypeCheck;
 
   SCTree root = SCTree::Lookup(root_);
@@ -509,8 +509,8 @@ TEST_F(SubtypeCheckTest, EnsureInitializedSecondLevelDontPreassign) {
 void ApplyTransition(MockSubtypeCheck sc_tree,
                      SubtypeCheckInfo::State transition,
                      SubtypeCheckInfo::State expected) {
-  MockScopedLockSubtypeCheck lock_a;
   MockScopedLockMutator lock_b;
+  MockScopedLockSubtypeCheck lock_a;
 
   EXPECT_EQ(SubtypeCheckInfo::kUninitialized, sc_tree.GetState()) << sc_tree.GetClass();
 
@@ -545,8 +545,8 @@ std::ostream& operator<<(std::ostream& os, const MockSubtypeOfTransition& transi
 
 SubtypeCheckInfo::State ApplyTransition(MockSubtypeCheck sc_tree,
                                         MockSubtypeOfTransition transition) {
-  MockScopedLockSubtypeCheck lock_a;
   MockScopedLockMutator lock_b;
+  MockScopedLockSubtypeCheck lock_a;
 
   if (transition ==  MockSubtypeOfTransition::kUninitialized) {
     return sc_tree.ForceUninitialize();
@@ -602,8 +602,8 @@ void EnsureStateChangedTestRecursiveGeneric(MockClass* klass,
                                             size_t total_depth,
                                             T2 transition_func,
                                             T expect_checks) {
-  MockScopedLockSubtypeCheck lock_a;
   MockScopedLockMutator lock_b;
+  MockScopedLockSubtypeCheck lock_a;
   using SCTree = MockSubtypeCheck;
 
   SCTree sc_tree = SCTree::Lookup(klass);
@@ -613,8 +613,8 @@ void EnsureStateChangedTestRecursiveGeneric(MockClass* klass,
   // to make any sense of what's going on.
 
   auto do_expect_checks = [&](int transition_label, TransitionHistory& transition_details) {
-    MockScopedLockSubtypeCheck lock_a;
     MockScopedLockMutator lock_b;
+    MockScopedLockSubtypeCheck lock_a;
 
     transition_details.Record(transition_label, klass);
 
@@ -655,8 +655,8 @@ void EnsureStateChangedTestRecursive(
     size_t cur_depth,
     size_t total_depth,
     const std::vector<std::pair<SubtypeCheckInfo::State, SubtypeCheckInfo::State>>& transitions) {
-  MockScopedLockSubtypeCheck lock_a;
   MockScopedLockMutator lock_b;
+  MockScopedLockSubtypeCheck lock_a;
   using SCTree = MockSubtypeCheck;
 
   ASSERT_EQ(cur_depth, klass->Depth());
@@ -934,13 +934,13 @@ TEST_F(SubtypeCheckTest, EnsureInitialized_TooWide_TooWide) {
 }
 
 void EnsureSubtypeOfCorrect(MockClass* a, MockClass* b) {
-  MockScopedLockSubtypeCheck lock_a;
   MockScopedLockMutator lock_b;
+  MockScopedLockSubtypeCheck lock_a;
   using SCTree = MockSubtypeCheck;
 
   auto IsAssigned = [](SCTree& tree) {
-    MockScopedLockSubtypeCheck lock_a;
     MockScopedLockMutator lock_b;
+    MockScopedLockSubtypeCheck lock_a;
     // This assumes that MockClass is always called with EnsureAssigned.
     EXPECT_NE(SubtypeCheckInfo::kInitialized, tree.GetState());
     EXPECT_NE(SubtypeCheckInfo::kUninitialized, tree.GetState());

@@ -16,9 +16,6 @@
 
 package com.android.server.art.model;
 
-import static com.android.server.art.model.ArtFlags.DexoptFlags;
-import static com.android.server.art.model.ArtFlags.PriorityClassApi;
-
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
@@ -30,8 +27,10 @@ import androidx.annotation.RequiresApi;
 import com.android.internal.annotations.Immutable;
 import com.android.server.art.ArtConstants;
 import com.android.server.art.ReasonMapping;
-import com.android.server.art.Utils;
+import com.android.server.art.model.ArtFlags.DexoptFlags;
+import com.android.server.art.model.ArtFlags.PriorityClassApi;
 import com.android.server.art.proto.DexoptParamsProto;
+import com.android.server.art.utils.Utils;
 
 /** @hide */
 @SystemApi(client = SystemApi.Client.SYSTEM_SERVER)

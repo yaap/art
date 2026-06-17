@@ -121,16 +121,16 @@
 .endm
 
 // Macro to poison (negate) the reference for heap poisoning.
-.macro POISON_HEAP_REF rRef
+.macro POISON_HEAP_REF rRef, s=""
 #ifdef USE_HEAP_POISONING
-    rsb \rRef, \rRef, #0
+    rsb\s \rRef, \rRef, #0
 #endif  // USE_HEAP_POISONING
 .endm
 
 // Macro to unpoison (negate) the reference for heap poisoning.
-.macro UNPOISON_HEAP_REF rRef
+.macro UNPOISON_HEAP_REF rRef, s=""
 #ifdef USE_HEAP_POISONING
-    rsb \rRef, \rRef, #0
+    rsb\s \rRef, \rRef, #0
 #endif  // USE_HEAP_POISONING
 .endm
 

@@ -179,7 +179,113 @@ installed by Package Manager or shipped as a part of the system image, and it's
 loaded by Framework on app startup.
 
 A secondary dex file refers to an APK or JAR file that an app adds to its own
-data directory and loads dynamically.
+data directory and loads dynamically through `dalvik.system.BaseDexClassLoader`
+(which notifies ART Service through the Binder API
+`android.content.pm.IPackageManager.notifyDexLoad`), or one of its subclasses
+such as `dalvik.system.PathClassLoader`. It can also be provided for loading by
+other apps.
+
+## Storage
+
+### General principles
+
+-   There is no storage of user authored "golden" data that require storage
+    compatibility or backup. There is some data that isn't fully reconstructable
+    if lost, like usage profiles and the secondary dex use database. Loss of
+    that data may have temporary effect on performance, but nothing more.
+
+-   All file operations are atomic, typically by writing to a temporary with an
+    additional `.*.tmp` suffix in the same directory and renaming to the target
+    filename when done. There is no locking.
+
+### Storage locations
+
+`<encoded-dex-path>` below is the full path to the input dex file (JAR or APK),
+with `/` replaced by `@` and with an `@classes` suffix.
+
+#### Boot classpath
+
+-   `/system/framework/<isa>/boot*.{art,oat,vdex}`: Dexpreopted artifacts for
+    boot classpath libraries in the platform and all modules in the system
+    image.
+
+-   `/data/misc/apexdata/com.android.art/dalvik-cache/boot.{art,oat,vdex}`:
+    On-device `odrefresh` compiled artifacts for boot classpath libraries in
+    ART, the platform, and non-updatable modules (aka the primary boot image).
+
+-   `/data/misc/apexdata/com.android.art/dalvik-cache/boot-*.{art,oat,vdex}`:
+    On-device `odrefresh` compiled artifacts for boot classpath libraries in
+    updatable APEX modules (aka Mainline boot image extensions).
+
+#### Packages
+
+-   For primary dex files:
+
+    -   `/{data,mnt/expand/*}/app/*/*/oat/<isa>/{base,split_*}.{art,odex,vdex}`:
+        Compiled artifacts for the primary dex files of installed packages (aka
+        app images).
+
+    -   `/data/dalvik-cache/<isa>/<encoded-dex-path>.{art,dex,vdex}`: On-device
+        compiled artifacts for packages (typically APKs) in read-only
+        filesystems. That includes system partitions, APEX modules, and
+        Incremental FS locations.
+
+        Note: For historical reasons, OAT files here have a `.dex` extension
+        rather than the usual `.oat` or `.odex`.
+
+    -   `/data/misc/profiles/{cur/<user-id>,ref}/<package-name>/{primary,*.split}.prof`:
+        Profiles based on user usage for the primary dex files in each package.
+        `primary.prof` is for the base APK and `*.split.prof` is for splits. The
+        `cur` directory holds the last saved profiles for each user, and `ref`
+        holds the (merged) profiles used in the last on-device profile-guided
+        dexopt (aka reference profiles).
+
+-   For secondary dex files: `<dex-dir>` below is the app-specified path to the
+    directory of a secondary dex file, relative to the root of the app's data
+    directory, and `<dex-filename>` is its filename (including extension).
+    `<dex-dir>` may contain several directory levels.
+
+    -   `/data/{user,user_de}/<user-id>/<package-name>/<dex-dir>/oat/<isa>/<dex-filename>.{art,odex,vdex}`:
+        Compiled artifacts for the secondary dex files of installed packages.
+
+        Both these and the dex files that are their sources are stored per user.
+        The primary reason is that the apps themselves control secondary dex'es
+        and must be completely separated between users. Compiled artifacts may
+        also differ due to user specific profiles.
+
+    -   `/data/{user,user_de}/<user-id>/<package-name>/<dex-dir>/oat/<dex-filename>.{cur,ref}.prof`:
+        Profiles based on user usage for the secondary dex files in each
+        package. `cur` and `ref` works like for primary dex'es above.
+
+-   `*.staged` files in the directories above: Versions of the files that have
+    been writted by the pre-reboot dexopt job to be used after reboot by
+    dropping the `.staged` suffix. Applies to both compilation artifacts and ref
+    profiles.
+
+#### Other Java libraries
+
+-   `/system/framework/oat/<isa>/<encoded-dex-path>.{art,odex,vdex}`:
+    Dexpreopted artifacts for the system server classpath.
+
+-   `/data/misc/apexdata/com.android.art/dalvik-cache/<isa>/<encoded-dex-path>.{art,odex,vdex}`:
+    On-device compiled artifacts for Java libraries in read-only filesystems and
+    APEX modules that aren't in the boot classpath. This includes libraries in
+    the system server classpath.
+
+#### Miscellaneous
+
+-   `/mnt/pre_reboot_dexopt`: Chroot environment used for pre-reboot dexopt. See
+    art/dexopt_chroot_setup/README.md.
+
+-   TODO:
+    `/{data,mnt/expand/*}/{app,user,user_de}/<user-id>/<package-name>/cache/oat_primary/<isa>/{base,split_*}.art`
+
+-   TODO: dm files
+
+-   TODO: dex use database
+
+-   TODO: `/data/dalvik-cache/staged_metadata.txt.staged`
+
 
 ## Dexopt scenarios
 

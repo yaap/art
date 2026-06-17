@@ -67,6 +67,9 @@ struct BootImageOptions {
 
   // The set of classes that should not be preloaded in Zygote
   std::set<std::string> preloaded_classes_denylist;
+
+  // Whether to record preloaded classes denylist in the profile or not.
+  bool record_preloaded_classes_denylist;
 };
 
 // Generate a boot image profile according to the specified options.

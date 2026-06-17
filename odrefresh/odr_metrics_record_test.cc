@@ -38,8 +38,6 @@ class OdrMetricsRecordTest : public CommonArtTest {
     ofs << "<trigger>16909060</trigger>";
     ofs << "<stage_reached>286397204</stage_reached>";
     ofs << status_;
-    ofs << "<cache_space_free_start_mib>1633837924</cache_space_free_start_mib>";
-    ofs << "<cache_space_free_end_mib>1903326068</cache_space_free_end_mib>";
     ofs << "<primary_bcp_compilation_millis>825373492</primary_bcp_compilation_millis>";
     ofs << "<secondary_bcp_compilation_millis>1094861636</secondary_bcp_compilation_millis>";
     ofs << "<system_server_compilation_millis>1364349780</system_server_compilation_millis>";
@@ -83,8 +81,6 @@ TEST_F(OdrMetricsRecordTest, HappyPath) {
   expected.trigger = 0x01020304;
   expected.stage_reached = 0x11121314;
   expected.status = 0x21222324;
-  expected.cache_space_free_start_mib = 0x61626364;
-  expected.cache_space_free_end_mib = 0x71727374;
   expected.primary_bcp_compilation_millis = 0x31323334;
   expected.secondary_bcp_compilation_millis = 0x41424344;
   expected.system_server_compilation_millis = 0x51525354;
@@ -104,8 +100,6 @@ TEST_F(OdrMetricsRecordTest, HappyPath) {
   ASSERT_EQ(expected.trigger, actual.trigger);
   ASSERT_EQ(expected.stage_reached, actual.stage_reached);
   ASSERT_EQ(expected.status, actual.status);
-  ASSERT_EQ(expected.cache_space_free_start_mib, actual.cache_space_free_start_mib);
-  ASSERT_EQ(expected.cache_space_free_end_mib, actual.cache_space_free_end_mib);
   ASSERT_EQ(expected.primary_bcp_compilation_millis, actual.primary_bcp_compilation_millis);
   ASSERT_EQ(expected.secondary_bcp_compilation_millis, actual.secondary_bcp_compilation_millis);
   ASSERT_EQ(expected.system_server_compilation_millis, actual.system_server_compilation_millis);

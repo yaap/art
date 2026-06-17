@@ -16,11 +16,6 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
-import static com.android.server.art.OutputArtifacts.PermissionSettings;
-import static com.android.server.art.OutputArtifacts.PermissionSettings.SeContext;
-import static com.android.server.art.Utils.Abi;
-
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
@@ -30,22 +25,26 @@ import android.os.CancellationSignal;
 import androidx.annotation.RequiresApi;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
+import com.android.server.art.OutputArtifacts.PermissionSettings;
+import com.android.server.art.OutputArtifacts.PermissionSettings.SeContext;
 import com.android.server.art.model.Config;
 import com.android.server.art.model.DexoptParams;
+import com.android.server.art.utils.AidlUtils;
+import com.android.server.art.utils.Utils;
+import com.android.server.art.utils.Utils.Abi;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.PackageState;
 
 import java.util.List;
-import java.util.concurrent.Executor;
 
 /** @hide */
 @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 public class SecondaryDexopter extends Dexopter<CheckedSecondaryDexInfo> {
     public SecondaryDexopter(@NonNull Context context, @NonNull Config config,
-            Executor reporterExecutor, @NonNull PackageState pkgState, @NonNull AndroidPackage pkg,
+            @NonNull PackageState pkgState, @NonNull AndroidPackage pkg,
             @NonNull DexoptParams params, @NonNull CancellationSignal cancellationSignal) {
-        this(new Injector(context, config, reporterExecutor), pkgState, pkg, params,
-                cancellationSignal);
+        this(new Injector(context, config), pkgState, pkg, params, cancellationSignal);
     }
 
     @VisibleForTesting
@@ -69,8 +68,8 @@ public class SecondaryDexopter extends Dexopter<CheckedSecondaryDexInfo> {
     @Override
     @NonNull
     protected List<CheckedSecondaryDexInfo> getDexInfoList() {
-        return mInjector.getDexUseManager().getCheckedSecondaryDexInfo(
-                mPkgState.getPackageName(), true /* excludeObsoleteDexesAndLoaders */);
+        return mInjector.getDexUseManager().getCheckedSecondaryDexInfo(mPkgState.getPackageName(),
+                true /* excludeObsoleteDexesAndLoaders */, true /* excludeObsoleteClcs */);
     }
 
     @Override
@@ -103,19 +102,22 @@ public class SecondaryDexopter extends Dexopter<CheckedSecondaryDexInfo> {
 
     @Override
     @NonNull
-    protected PermissionSettings getPermissionSettings(
-            @NonNull CheckedSecondaryDexInfo dexInfo, boolean canBePublic) {
+    protected PermissionSettings getPermissionSettings(@NonNull CheckedSecondaryDexInfo dexInfo,
+            boolean canOdexBePublic, boolean canVdexBePublic) {
         int uid = getUid(dexInfo);
-        // We need the "execute" bit for "others" even though `canBePublic` is false because the
+        // We need the "execute" bit for "others" even though `can*BePublic` is false because the
         // directory can contain other artifacts that needs to be public.
         // We don't need the "read" bit for "others" on the directories because others only need to
         // access the files in the directories, but they don't need to "ls" the directories.
         FsPermission dirFsPermission = AidlUtils.buildFsPermission(uid /* uid */, uid /* gid */,
                 false /* isOtherReadable */, true /* isOtherExecutable */);
-        FsPermission fileFsPermission =
-                AidlUtils.buildFsPermission(uid /* uid */, uid /* gid */, canBePublic);
+        FsPermission odexFileFsPermission =
+                AidlUtils.buildFsPermission(uid /* uid */, uid /* gid */, canOdexBePublic);
+        FsPermission vdexFileFsPermission =
+                AidlUtils.buildFsPermission(uid /* uid */, uid /* gid */, canVdexBePublic);
         SeContext seContext = AidlUtils.buildSeContext(mPkgState.getSeInfo(), uid);
-        return AidlUtils.buildPermissionSettings(dirFsPermission, fileFsPermission, seContext);
+        return AidlUtils.buildPermissionSettings(
+                dirFsPermission, odexFileFsPermission, vdexFileFsPermission, seContext);
     }
 
     @Override

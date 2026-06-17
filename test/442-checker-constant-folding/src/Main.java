@@ -132,6 +132,36 @@ public class Main {
     return (Integer)m.invoke(null, arg);
   }
 
+  public static int $noinline$smaliCompareSameValue(int arg) throws Exception {
+      Method m = Class.forName("TestCmp").getMethod("CompareSameValue", int.class);
+      return (Integer) m.invoke(null, arg);
+  }
+
+  public static int $noinline$smaliCompareSameValue_Long(long arg) throws Exception {
+      Method m = Class.forName("TestCmp").getMethod("CompareSameValue_Long", long.class);
+      return (Integer) m.invoke(null, arg);
+  }
+
+  public static int $noinline$smaliCompareSameValue_Float_Gt(float arg) throws Exception {
+      Method m = Class.forName("TestCmp").getMethod("CompareSameValue_Float_Gt", float.class);
+      return (Integer) m.invoke(null, arg);
+  }
+
+  public static int $noinline$smaliCompareSameValue_Float_Lt(float arg) throws Exception {
+      Method m = Class.forName("TestCmp").getMethod("CompareSameValue_Float_Lt", float.class);
+      return (Integer) m.invoke(null, arg);
+  }
+
+  public static int $noinline$smaliCompareSameValue_Double_Gt(double arg) throws Exception {
+      Method m = Class.forName("TestCmp").getMethod("CompareSameValue_Double_Gt", double.class);
+      return (Integer) m.invoke(null, arg);
+  }
+
+  public static int $noinline$smaliCompareSameValue_Double_Lt(double arg) throws Exception {
+      Method m = Class.forName("TestCmp").getMethod("CompareSameValue_Double_Lt", double.class);
+      return (Integer) m.invoke(null, arg);
+  }
+
   /**
    * Exercise constant folding on negation.
    */
@@ -1913,6 +1943,54 @@ public class Main {
     }
   }
 
+  private static void $noinline$testSame_Int() throws Exception {
+      assertIntEquals(0, $noinline$smaliCompareSameValue(0));
+      assertIntEquals(0, $noinline$smaliCompareSameValue(Integer.MIN_VALUE));
+      assertIntEquals(0, $noinline$smaliCompareSameValue(Integer.MAX_VALUE));
+  }
+
+  private static void $noinline$testSame_Long() throws Exception {
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Long(0L));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Long(Long.MIN_VALUE));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Long(Long.MAX_VALUE));
+  }
+
+  private static void $noinline$testSame_Float_Gt() throws Exception {
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Float_Gt(0.0f));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Float_Gt(Float.MIN_VALUE));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Float_Gt(Float.MAX_VALUE));
+      assertIntEquals(1, $noinline$smaliCompareSameValue_Float_Gt(Float.NaN));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Float_Gt(Float.POSITIVE_INFINITY));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Float_Gt(Float.NEGATIVE_INFINITY));
+  }
+
+  private static void $noinline$testSame_Float_Lt() throws Exception {
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Float_Lt(0.0f));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Float_Lt(Float.MIN_VALUE));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Float_Lt(Float.MAX_VALUE));
+      assertIntEquals(-1, $noinline$smaliCompareSameValue_Float_Lt(Float.NaN));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Float_Lt(Float.POSITIVE_INFINITY));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Float_Lt(Float.NEGATIVE_INFINITY));
+  }
+
+  private static void $noinline$testSame_Double_Gt() throws Exception {
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Double_Gt(0.0));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Double_Gt(Double.MIN_VALUE));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Double_Gt(Double.MAX_VALUE));
+      assertIntEquals(1, $noinline$smaliCompareSameValue_Double_Gt(Double.NaN));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Double_Gt(Double.POSITIVE_INFINITY));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Double_Gt(Double.NEGATIVE_INFINITY));
+  }
+
+  private static void $noinline$testSame_Double_Lt() throws Exception {
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Double_Lt(0.0));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Double_Lt(Double.MIN_VALUE));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Double_Lt(Double.MAX_VALUE));
+      assertIntEquals(-1, $noinline$smaliCompareSameValue_Double_Lt(Double.NaN));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Double_Lt(Double.POSITIVE_INFINITY));
+      assertIntEquals(0, $noinline$smaliCompareSameValue_Double_Lt(Double.NEGATIVE_INFINITY));
+  }
+
   public static void main(String[] args) throws Exception {
     assertIntEquals(-42, IntNegation());
     assertLongEquals(-42L, LongNegation());
@@ -2088,6 +2166,14 @@ public class Main {
     // Propagating parameters.
     assertIntEquals(1, $noinline$PropagatingParameterValue(true));
     assertIntEquals(4, $noinline$PropagatingParameterValue(false));
+
+    // Folding comparisons of the same value twice.
+    $noinline$testSame_Int();
+    $noinline$testSame_Long();
+    $noinline$testSame_Float_Gt();
+    $noinline$testSame_Float_Lt();
+    $noinline$testSame_Double_Gt();
+    $noinline$testSame_Double_Lt();
   }
 
   Main() throws ClassNotFoundException {

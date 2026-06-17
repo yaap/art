@@ -36,13 +36,14 @@ class LargeObjectSpaceTest : public SpaceTest<CommonRuntimeTest> {
 void LargeObjectSpaceTest::LargeObjectTest() {
   size_t rand_seed = 0;
   Thread* const self = Thread::Current();
+  ScopedObjectAccess soa(self);
   for (size_t i = 0; i < 2; ++i) {
-    LargeObjectSpace* los = nullptr;
+    std::unique_ptr<LargeObjectSpace> los;
     const size_t capacity = 128 * MB;
     if (i == 0) {
-      los = space::LargeObjectMapSpace::Create("large object space");
+      los.reset(space::LargeObjectMapSpace::Create("large object space"));
     } else {
-      los = space::FreeListSpace::Create("large object space", capacity);
+      los.reset(space::FreeListSpace::Create("large object space", capacity));
     }
 
     // Make sure the bitmap is not empty and actually covers at least how much we expect.
@@ -119,7 +120,6 @@ void LargeObjectSpaceTest::LargeObjectTest() {
 
     EXPECT_EQ(0U, los->GetBytesAllocated());
     EXPECT_EQ(0U, los->GetObjectsAllocated());
-    delete los;
   }
 }
 
@@ -130,13 +130,16 @@ class AllocRaceTask : public Task {
 
   void Run(Thread* self) override {
     for (size_t i = 0; i < iterations_ ; ++i) {
+      ScopedObjectAccess soa(self);
+      StackHandleScope<1u> hs(self);
       size_t alloc_size, bytes_tl_bulk_allocated;
-      mirror::Object* ptr = los_->Alloc(self, size_, &alloc_size, nullptr,
-                                        &bytes_tl_bulk_allocated);
-
-      NanoSleep((id_ + 3) * 1000);  // (3+id) mu s
-
-      los_->Free(self, ptr);
+      Handle<mirror::Object> handle = hs.NewHandle(
+          los_->Alloc(self, size_, &alloc_size, nullptr, &bytes_tl_bulk_allocated));
+      {
+        ScopedThreadSuspension sts(self, ThreadState::kNative);
+        NanoSleep((id_ + 3) * 1000);  // (3+id) mu s
+      }
+      los_->Free(self, handle.Get());
     }
   }
 

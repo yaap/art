@@ -139,7 +139,7 @@ class StackVisitor {
     kNo,
   };
 
-  template <CountTransitions kCount = CountTransitions::kYes>
+  template <CountTransitions kCount = CountTransitions::kYes, bool kTolerateNullMethods = false>
   EXPORT void WalkStack(bool include_transitions = false) REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Convenience helper function to walk the stack with a lambda as a visitor.
@@ -298,7 +298,26 @@ class StackVisitor {
   EXPORT static size_t ComputeNumFrames(Thread* thread, StackWalkKind walk_kind)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  static void DescribeStack(Thread* thread) REQUIRES_SHARED(Locks::mutator_lock_);
+  template <CountTransitions kCount = CountTransitions::kYes, bool kForAbort = true>
+  static void DescribeStack(Thread* thread) REQUIRES_SHARED(Locks::mutator_lock_) {
+    struct DescribeStackVisitor : public StackVisitor {
+      explicit DescribeStackVisitor(Thread* thread_in)
+          : StackVisitor(thread_in, nullptr, StackVisitor::StackWalkKind::kIncludeInlinedFrames) {}
+
+      bool VisitFrame() override REQUIRES_SHARED(Locks::mutator_lock_) {
+        // Can't take the risk of calling GetFrameId() in abort case as it also
+        // performs stalk-walk, resulting in infinite recursion (b/489073528).
+        if (kForAbort) {
+          LOG(FATAL_WITHOUT_ABORT) << " " << DescribeLocation();
+        } else {
+          LOG(INFO) << "Frame Id=" << GetFrameId() << " " << DescribeLocation();
+        }
+        return true;
+      }
+    };
+    DescribeStackVisitor visitor(thread);
+    visitor.template WalkStack<kCount, /*kTolerateNullMethods=*/true>(/*include_transitions=*/true);
+  }
 
   const OatQuickMethodHeader* GetCurrentOatQuickMethodHeader() const {
     return cur_oat_quick_method_header_;

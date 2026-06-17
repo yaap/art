@@ -31,6 +31,7 @@
 #include "debug/method_debug_info.h"
 #include "dex/class_accessor-inl.h"
 #include "dex/dex_file_loader.h"
+#include "dex/dex_file_profile.h"
 #include "dex/quick_compiler_callbacks.h"
 #include "dex/test_dex_file_builder.h"
 #include "dex/verification_results.h"
@@ -210,8 +211,7 @@ class OatTest : public CommonCompilerDriverTest {
                                       oat_writer.GetBssSize(),
                                       oat_writer.GetBssMethodsOffset(),
                                       oat_writer.GetBssRootsOffset(),
-                                      oat_writer.GetVdexSize());
-
+                                      oat_writer.GetBssStringsOffset());
 
     if (!oat_writer.WriteRodata(oat_rodata)) {
       return false;
@@ -247,6 +247,11 @@ class OatTest : public CommonCompilerDriverTest {
       opened_dex_files_maps_.emplace_back(std::move(map));
     }
     for (std::unique_ptr<const DexFile>& dex_file : opened_dex_files) {
+      // FIXME: We shall soon destroy the `OatWriter` which owns the `OatDexFile`s
+      // with type lookup tables. Do not let dex files have dangling pointers.
+      // We should clean up the ownership of these `OatDexFiles`.
+      dex_file->SetOatDexFile(nullptr);
+
       opened_dex_files_.emplace_back(dex_file.release());
     }
     return true;
@@ -852,14 +857,14 @@ void OatTest::TestZipFileInput(bool verify, CopyOption copy) {
       ASSERT_EQ(0, memcmp(&dex_file1_data->GetHeader(),
                           &opened_dex_file1->GetHeader(),
                           dex_file1_data->GetHeader().file_size_));
-      ASSERT_EQ(DexFileLoader::GetMultiDexLocation(0, zip_file.GetFilename().c_str()),
+      ASSERT_EQ(DexFileLoader::GetMultiDexLocation(zip_file.GetFilename().c_str(), 0),
                 opened_dex_file1->GetLocation());
 
       ASSERT_EQ(dex_file2_data->GetHeader().file_size_, opened_dex_file2->GetHeader().file_size_);
       ASSERT_EQ(0, memcmp(&dex_file2_data->GetHeader(),
                           &opened_dex_file2->GetHeader(),
                           dex_file2_data->GetHeader().file_size_));
-      ASSERT_EQ(DexFileLoader::GetMultiDexLocation(1, zip_file.GetFilename().c_str()),
+      ASSERT_EQ(DexFileLoader::GetMultiDexLocation(zip_file.GetFilename().c_str(), 1),
                 opened_dex_file2->GetLocation());
     }
   }
@@ -901,14 +906,14 @@ void OatTest::TestZipFileInput(bool verify, CopyOption copy) {
       ASSERT_EQ(0, memcmp(&dex_file1_data->GetHeader(),
                           &opened_dex_file1->GetHeader(),
                           dex_file1_data->GetHeader().file_size_));
-      ASSERT_EQ(DexFileLoader::GetMultiDexLocation(0, zip_file.GetFilename().c_str()),
+      ASSERT_EQ(DexFileLoader::GetMultiDexLocation(zip_file.GetFilename().c_str(), 0),
                 opened_dex_file1->GetLocation());
 
       ASSERT_EQ(dex_file2_data->GetHeader().file_size_, opened_dex_file2->GetHeader().file_size_);
       ASSERT_EQ(0, memcmp(&dex_file2_data->GetHeader(),
                           &opened_dex_file2->GetHeader(),
                           dex_file2_data->GetHeader().file_size_));
-      ASSERT_EQ(DexFileLoader::GetMultiDexLocation(1, zip_file.GetFilename().c_str()),
+      ASSERT_EQ(DexFileLoader::GetMultiDexLocation(zip_file.GetFilename().c_str(), 1),
                 opened_dex_file2->GetLocation());
     }
   }
@@ -1031,8 +1036,8 @@ TEST_F(OatTest, AlignmentCheck) {
     EXPECT_EQ(method_index, accessor.NumMethods());
   }
 
-  // Check DexLayoutSections alignment.
-  EXPECT_TRUE(IsAligned<alignof(DexLayoutSections)>(oat_dex_file->GetDexLayoutSections()));
+  // Check DexProfileMetadata alignment.
+  EXPECT_TRUE(IsAligned<alignof(DexProfileMetadata)>(oat_dex_file->GetDexProfileMetadata()));
 }
 
 }  // namespace linker

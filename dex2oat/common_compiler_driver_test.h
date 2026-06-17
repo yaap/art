@@ -24,6 +24,7 @@
 #include "common_compiler_test.h"
 #include "base/hash_set.h"
 #include "base/mem_map.h"
+#include "driver/image_class_map.h"
 
 namespace art {
 
@@ -57,7 +58,7 @@ class CommonCompilerDriverTest : public CommonCompilerTest {
   void TearDown() override;
 
   // Get the set of image classes given to the compiler-driver in SetUp.
-  virtual std::unique_ptr<HashSet<std::string>> GetImageClasses();
+  virtual ImageClassMap GetImageClasses();
 
   virtual ProfileCompilationInfo* GetProfileCompilationInfo();
 

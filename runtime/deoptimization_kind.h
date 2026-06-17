@@ -32,7 +32,8 @@ enum class DeoptimizationKind {
   kCHA,
   kDebugging,
   kFullFrame,
-  kLast = kFullFrame
+  kMethodHandleTypeMismatch,
+  kLast = kMethodHandleTypeMismatch,
 };
 
 inline const char* GetDeoptimizationKindName(DeoptimizationKind kind) {
@@ -46,6 +47,8 @@ inline const char* GetDeoptimizationKindName(DeoptimizationKind kind) {
     case DeoptimizationKind::kCHA: return "class hierarchy analysis";
     case DeoptimizationKind::kDebugging: return "Deopt requested for debug support";
     case DeoptimizationKind::kFullFrame: return "full frame";
+    case DeoptimizationKind::kMethodHandleTypeMismatch:
+      return "MethodHandle's type does not match callsite";
   }
   LOG(FATAL) << "Unexpected kind " << static_cast<size_t>(kind);
   UNREACHABLE();

@@ -40,6 +40,8 @@ class OatdumpPprofTest(unittest.TestCase):
 
       with open(oatdump_file_path, 'w') as f:
         f.write("""
+OatDexFile:
+location: /system_ext/priv-app/SystemUIGoogle/SystemUIGoogle.apk!classes2.dex
 1: Landroid/app/Activity; (2 methods)
   1: void android.app.Activity.<init>() (dex_method_idx=0)
     CODE: (offset=0x00001234 size=64)

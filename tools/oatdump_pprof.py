@@ -91,10 +91,12 @@ def load_proguard_map(map_file_path):
 
 
 def stream_and_parse_oatdump(paths, proguard_map=None, is_host_file=False):
-  """Yields (oat_file, package, class, method, size) tuples from oatdump."""
+  """Yields (oat_file, dex_file, package, class, method, size) tuples from oatdump."""
+  current_dex_file = None
   current_obfuscated_class_name = None
   current_method_name = None
 
+  dex_file_regex = re.compile(r'^location:\s*(.*?)$')
   class_regex = re.compile(r'^\s*[0-9a-fA-F]+:\s+L([^;]+);')
   method_regex = re.compile(
       r'\s(?:[^\s.]+\.)*([a-zA-Z0-9_$<>]+\(.*\))\s+\(dex_method_idx='
@@ -127,11 +129,19 @@ def stream_and_parse_oatdump(paths, proguard_map=None, is_host_file=False):
       lines_iterator = process.stdout
 
     for line in lines_iterator:
-      class_match = class_regex.search(line)
-      if class_match:
-        current_obfuscated_class_name = class_match.group(1).replace('/', '.')
+      oat_dex_file_match = dex_file_regex.search(line)
+      if oat_dex_file_match:
+        current_dex_file = oat_dex_file_match.group(1)
+        current_obfuscated_class_name = None
         current_method_name = None
         continue
+
+      if current_dex_file:
+        class_match = class_regex.search(line)
+        if class_match:
+          current_obfuscated_class_name = class_match.group(1).replace('/', '.')
+          current_method_name = None
+          continue
 
       if current_obfuscated_class_name:
         method_match = method_regex.search(line)
@@ -176,6 +186,7 @@ def stream_and_parse_oatdump(paths, proguard_map=None, is_host_file=False):
         if package and class_name and method_to_process:
           yield (
               current_oat_file,
+              current_dex_file,
               package,
               class_name,
               method_to_process,
@@ -196,7 +207,7 @@ def stream_and_parse_oatdump(paths, proguard_map=None, is_host_file=False):
         )
 
 
-def generate_pprof_report(data, output_path, argv):
+def generate_pprof_report(data, output_path, dex_file_oriented, argv):
   """Generates a pprof file from the parsed oatdump data."""
   profile = profile_pb2.Profile()
   # Use a dictionary for efficient string-to-ID mapping and a list to maintain
@@ -221,7 +232,7 @@ def generate_pprof_report(data, output_path, argv):
   st_size.type = get_string_id('space')
   st_size.unit = get_string_id('bytes')
 
-  for oat_file, package_name, class_name, method_name, size in data:
+  for oat_file, dex_file, package_name, class_name, method_name, size in data:
     if size == 0:
       continue
 
@@ -230,11 +241,14 @@ def generate_pprof_report(data, output_path, argv):
 
     # Generate a stack trace for the sample with the following hierarchy:
     #   - Oat file path (to identify where the code comes from)
+    #   - [Optional] Dex file path (to identify where the dex code comes from)
     #   - Package name parts, e.g. 'android', 'app'
     #   - Class name, e.g. 'Activity'
     #   - Fully qualified method name, e.g. 'android.app.Activity.onCreate(android.os.Bundle)'
     stack_frames = []
     stack_frames.append((oat_file, os.path.basename(oat_file)))
+    if dex_file_oriented:
+      stack_frames.append((dex_file, dex_file))
     package_parts = package_name.split('.')
     current_package = ''
     for part in package_parts:
@@ -396,6 +410,11 @@ def main(argv):
   parser.add_argument(
       '--map', help='Optional path to a Proguard deobfuscation map file.'
   )
+  parser.add_argument(
+      '--dex-file-oriented',
+      action='store_true',
+      help='If set, groups the flame graph by dex files.',
+  )
   args = parser.parse_args(argv)
 
   oat_files = []
@@ -424,7 +443,7 @@ def main(argv):
     print('No methods found in oatdump. The report will be empty.')
   else:
     print(f'Generating pprof report to {args.output}...')
-    generate_pprof_report(parsed_data, args.output, sys.argv)
+    generate_pprof_report(parsed_data, args.output, args.dex_file_oriented, sys.argv)
     print('Done.')
     print(f'Report saved to: {os.path.abspath(args.output)}')
     print(f'Tip: To upload to pprof web UI, run:')

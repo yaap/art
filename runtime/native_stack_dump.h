@@ -39,7 +39,6 @@ std::string StripParameters(std::string name);
 void DumpNativeStack(std::ostream& os,
                      pid_t tid,
                      const char* prefix = "",
-                     ArtMethod* current_method = nullptr,
                      void* ucontext = nullptr,
                      bool skip_frames = true)
     NO_THREAD_SAFETY_ANALYSIS;
@@ -48,7 +47,6 @@ void DumpNativeStack(std::ostream& os,
                      unwindstack::AndroidLocalUnwinder& unwinder,
                      pid_t tid,
                      const char* prefix = "",
-                     ArtMethod* current_method = nullptr,
                      void* ucontext = nullptr,
                      bool skip_frames = true)
     NO_THREAD_SAFETY_ANALYSIS;

@@ -49,6 +49,11 @@ class HiddenApiFinder {
   void CollectAccesses(VeridexResolver* resolver, const ClassFilter& class_filter);
   void CheckMethod(uint32_t method_idx, VeridexResolver* resolver, MethodReference ref);
   void CheckField(uint32_t field_idx, VeridexResolver* resolver, MethodReference ref);
+  void DumpInternal(std::ostream& os,
+                    HiddenApiStats* stats,
+                    const std::string& name,
+                    const std::vector<MethodReference>& references,
+                    const std::string& type);
   void DumpReferences(std::ostream& os, const std::vector<MethodReference>& references);
 
   const HiddenApi& hidden_api_;

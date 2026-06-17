@@ -29,13 +29,13 @@
 #include "base/gc_visited_arena_pool.h"
 #include "base/macros.h"
 #include "base/mutex.h"
+#include "base/offsets.h"
 #include "garbage_collector.h"
 #include "gc/accounting/atomic_stack.h"
 #include "gc/accounting/bitmap-inl.h"
 #include "gc/accounting/heap_bitmap.h"
 #include "gc_root.h"
 #include "immune_spaces.h"
-#include "offsets.h"
 #include "scoped_thread_priority_change.h"
 
 namespace art HIDDEN {
@@ -209,6 +209,22 @@ class MarkCompact final : public GarbageCollector {
   // other data structures as the moving space gets completely evicted into new
   // zygote-space.
   void ResetGenerationalState();
+
+  // See comment for the following Getters and Setters below at the declaration
+  // of 'moving_space_pages_info_'.
+  uint32_t GetPreCompactMovingSpaceOffsets(size_t idx) const {
+    return moving_space_pages_info_[idx];
+  }
+  void SetPreCompactMovingSpaceOffsets(size_t idx, uint32_t val) {
+    moving_space_pages_info_[idx] = val;
+  }
+  uint32_t GetBlackAllocPagesFirstChunkSize(size_t idx) const {
+    return moving_space_pages_info_[idx];
+  }
+  void SetBlackAllocPagesFirstChunkSize(size_t idx, uint32_t val) {
+    moving_space_pages_info_[idx] = val;
+  }
+  uint32_t* GetMovingSpacePagesLiveBytesArr() { return moving_space_pages_info_; }
 
   // In copy-mode of userfaultfd, we don't need to reach a 'processed' state as
   // it's given that processing thread also copies the page, thereby mapping it.
@@ -522,7 +538,7 @@ class MarkCompact final : public GarbageCollector {
       REQUIRES(Locks::heap_bitmap_lock_);
   // Scan (only) immune spaces looking for references into the garbage collected
   // spaces.
-  void UpdateAndMarkModUnion() REQUIRES_SHARED(Locks::mutator_lock_)
+  NO_INLINE void UpdateAndMarkModUnion() REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(Locks::heap_bitmap_lock_);
   // Scan mod-union and card tables, covering all the spaces, to identify dirty objects.
   // These are in 'minimum age' cards, which is 'kCardAged' in case of concurrent (second round)
@@ -707,7 +723,8 @@ class MarkCompact final : public GarbageCollector {
   void SetBitForMidToOldPromotion(uint8_t* obj);
   // Scan old-gen for young GCs by looking for cards that are at least 'aged' in
   // the card-table corresponding to moving and non-moving spaces.
-  void ScanOldGenObjects() REQUIRES(Locks::heap_bitmap_lock_) REQUIRES_SHARED(Locks::mutator_lock_);
+  NO_INLINE void ScanOldGenObjects() REQUIRES(Locks::heap_bitmap_lock_)
+      REQUIRES_SHARED(Locks::mutator_lock_);
   // Return free pages from 'from-space' to be reused. Returns nullptr if 'size'
   // worth of contiguous pages are not available. 'size' must be a multiple of
   // page-size.
@@ -915,20 +932,23 @@ class MarkCompact final : public GarbageCollector {
 
   // Mark bits for non-moving space
   accounting::ContinuousSpaceBitmap* non_moving_space_bitmap_;
+  // Mark bits for large-object space
+  accounting::LargeObjectBitmap* large_object_space_bitmap_;
   // Array of moving-space's pages' compaction status, which is stored in the
   // least-significant byte. kProcessed entries also contain the from-space
   // offset of the page which contains the compacted contents of the ith
   // to-space page.
   Atomic<uint32_t>* moving_pages_status_;
-  // For pages before black allocations, pre_compact_offset_moving_space_[i]
-  // holds offset within the space from where the objects need to be copied in
-  // the ith post-compact page.
-  // Otherwise, black_alloc_pages_first_chunk_size_[i] holds the size of first
-  // non-empty chunk in the ith black-allocations page.
-  union {
-    uint32_t* pre_compact_offset_moving_space_;
-    uint32_t* black_alloc_pages_first_chunk_size_;
-  };
+  // For pages before black allocations, moving_space_pages_info_[i] holds
+  // offset within the space from where the objects need to be copied in the ith
+  // post-compact page.
+  // Otherwise, moving_space_pages_info_[i] holds the size of first non-empty
+  // chunk in the ith black-allocations page.
+  // This array is live during compaction and gets initialized in
+  // PrepareFroCompaction(). Prior to that we may use the array in the full-heap
+  // GC case in PrepareForCompaction() for temporarily storing live-bytes of
+  // every moving space page.
+  uint32_t* moving_space_pages_info_;
   // first_objs_moving_space_[i] is the pre-compact address of the object which
   // would overlap with the starting boundary of the ith post-compact page.
   ObjReference* first_objs_moving_space_;
@@ -1047,10 +1067,6 @@ class MarkCompact final : public GarbageCollector {
   // TODO: Must be replaced with an efficient mechanism eventually. Or ensure
   // that double updation doesn't happen in the first place.
   std::unique_ptr<std::unordered_set<void*>> updated_roots_ GUARDED_BY(lock_);
-  // TODO: Remove once an efficient mechanism to deal with double root updation
-  // is incorporated.
-  void* stack_high_addr_;
-  void* stack_low_addr_;
   // Following values for logging purposes
   void* prev_post_compact_end_;
   void* prev_black_dense_end_;

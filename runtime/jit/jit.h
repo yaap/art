@@ -19,12 +19,15 @@
 
 #include <android-base/unique_fd.h>
 
+#include <cstdint>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "app_info.h"
 #include "base/histogram-inl.h"
 #include "base/macros.h"
 #include "base/mutex.h"
+#include "base/offsets.h"
 #include "base/timing_logger.h"
 #include "compilation_kind.h"
 #include "handle.h"
@@ -32,7 +35,7 @@
 #include "jit/debugger_interface.h"
 #include "jit_options.h"
 #include "obj_ptr.h"
-#include "offsets.h"
+#include "runtime.h"
 #include "thread_pool.h"
 
 namespace art HIDDEN {
@@ -41,8 +44,8 @@ class ArtMethod;
 class ClassLinker;
 class DexFile;
 class OatDexFile;
+class OatFile;
 class RootVisitor;
-struct RuntimeArgumentMap;
 union JValue;
 
 namespace mirror {
@@ -62,18 +65,17 @@ class JitOptions;
 
 static constexpr int16_t kJitCheckForOSR = -1;
 static constexpr int16_t kJitHotnessDisabled = -2;
-
-// The frequency at which we are going to check if we want to do fast
-// compilation. Only the main thread will request fast compilations.
-static constexpr int16_t kFastCompilerFrequencyCheck = 1024;
-static_assert(IsPowerOfTwo(kFastCompilerFrequencyCheck), "Must be a power of two");
+static constexpr uint16_t kIndividualSharedMethodHotnessThreshold = 0x3f;
 
 // Implemented and provided by the compiler library.
 class JitCompilerInterface {
  public:
   virtual ~JitCompilerInterface() {}
-  virtual bool CompileMethod(
-      Thread* self, JitMemoryRegion* region, ArtMethod* method, CompilationKind compilation_kind)
+  virtual bool CompileMethod(Thread* self,
+                             JitMemoryRegion* region,
+                             ArtMethod* method,
+                             CompilationKind compilation_kind,
+                             bool dynamic_instrumentation = false)
       REQUIRES_SHARED(Locks::mutator_lock_) = 0;
   virtual void TypesLoaded(mirror::Class**, size_t count)
       REQUIRES_SHARED(Locks::mutator_lock_) = 0;
@@ -111,6 +113,12 @@ struct OsrData {
   static constexpr MemberOffset MemoryOffset() {
     return MemberOffset(OFFSETOF_MEMBER(OsrData, memory));
   }
+};
+
+// Info about a method that resides in shared memory (shared between zygote and apps).
+// We keep the info here to avoid dirtying the `ArtMethod`'s page.
+struct SharedMethodInfo {
+  uint8_t counter = kIndividualSharedMethodHotnessThreshold;
 };
 
 /**
@@ -199,7 +207,9 @@ class Jit {
   EXPORT bool CompileMethod(ArtMethod* method,
                             Thread* self,
                             CompilationKind compilation_kind,
-                            bool prejit) REQUIRES_SHARED(Locks::mutator_lock_);
+                            bool prejit,
+                            bool dynamic_instrumentation = false)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   void VisitRoots(RootVisitor* visitor);
 
@@ -268,16 +278,6 @@ class Jit {
 
   ALWAYS_INLINE void AddSamples(Thread* self, ArtMethod* method)
       REQUIRES_SHARED(Locks::mutator_lock_);
-
-  void NotifyInterpreterToCompiledCodeTransition(Thread* self, ArtMethod* caller)
-      REQUIRES_SHARED(Locks::mutator_lock_) {
-    AddSamples(self, caller);
-  }
-
-  void NotifyCompiledCodeToInterpreterTransition(Thread* self, ArtMethod* callee)
-      REQUIRES_SHARED(Locks::mutator_lock_) {
-    AddSamples(self, callee);
-  }
 
   // Starts the profile saver if the config options allow profile recording.
   // The profile will be stored in the specified `profile_filename` and will contain
@@ -375,6 +375,8 @@ class Jit {
   // at the point of loading the dex files.
   void RegisterDexFiles(const std::vector<std::unique_ptr<const DexFile>>& dex_files,
                         jobject class_loader);
+  // Register the compiler filter for the given type of code.
+  void RegisterAppInfo(AppInfo::CodeType code_type, const std::string& compiler_filter);
 
   // Called by the compiler to know whether it can directly encode the
   // method/class/string.
@@ -394,17 +396,27 @@ class Jit {
   // class path methods.
   void NotifyZygoteCompilationDone();
 
-  EXPORT void EnqueueOptimizedCompilation(ArtMethod* method, Thread* self);
+  EXPORT void EnqueueOptimizedCompilation(ArtMethod* method, Thread* self)
+      REQUIRES_SHARED(Locks::mutator_lock_);
   EXPORT void EnqueueBaselineCompilation(ArtMethod* method, Thread* self)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   EXPORT void MaybeEnqueueCompilation(ArtMethod* method, Thread* self)
       REQUIRES_SHARED(Locks::mutator_lock_);
-  EXPORT void MaybeEnqueueFastCompilation(ArtMethod* method, Thread* self)
-      REQUIRES_SHARED(Locks::mutator_lock_);
 
   EXPORT static bool TryPatternMatch(ArtMethod* method, CompilationKind compilation_kind)
       REQUIRES_SHARED(Locks::mutator_lock_);
+
+  // Get a snapshot of the current info for a shared method. The argument must be a shared method.
+  SharedMethodInfo GetSharedMethodInfo(ArtMethod* method);
+
+  bool UseFastCompiler() const {
+    // Check for java debuggable here, as we can change to java debuggable and back. For example,
+    // when a precise method trace is requested we move to java debuggable and transition back
+    // once tracing is stopped.
+    return use_fast_compiler_ && !Runtime::Current()->IsJavaDebuggable();
+  }
+  static uint16_t GetInitialHotnessThreshold();
 
  private:
   Jit(JitCodeCache* code_cache, JitOptions* options);
@@ -433,7 +445,8 @@ class Jit {
   bool CompileMethodInternal(ArtMethod* method,
                              Thread* self,
                              CompilationKind compilation_kind,
-                             bool prejit)
+                             bool prejit,
+                             bool dynamic_instrumentation = false)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // JIT compiler
@@ -449,6 +462,7 @@ class Jit {
   Mutex boot_completed_lock_;
   bool boot_completed_ GUARDED_BY(boot_completed_lock_) = false;
   std::deque<Task*> tasks_after_boot_ GUARDED_BY(boot_completed_lock_);
+  bool use_fast_compiler_ = false;
 
   // Performance monitoring.
   CumulativeLogger cumulative_timings_;
@@ -475,9 +489,8 @@ class Jit {
   // recomputing it.
   size_t fd_methods_size_;
 
-  // Map of hotness counters for methods which we want to share the memory
-  // between the zygote and apps.
-  std::map<ArtMethod*, uint16_t> shared_method_counters_;
+  // Map from shared methods to their info.
+  std::unordered_map<ArtMethod*, SharedMethodInfo> shared_method_info_map_;
 
   friend class art::jit::JitCompileTask;
 

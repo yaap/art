@@ -19,35 +19,35 @@ import java.util.HashMap;
 
 public class Main {
 
-  public static long test_virtual(HashMap map) {
-    Integer intobj = new Integer(0);
-    String s = "asdf";
-    long start = System.currentTimeMillis();
-    for (int i = 0; i < 10000; i++) {
-        map.put(intobj, s);
+    public static long test_virtual(HashMap map) {
+        Integer intobj = new Integer(0);
+        String s = "asdf";
+        long start = System.currentTimeMillis();
+        for (int i = 0; i < 10000; i++) {
+            map.put(intobj, s);
+        }
+        long end = System.currentTimeMillis();
+        return (end - start);
     }
-    long end = System.currentTimeMillis();
-    return (end - start);
-  }
 
-  public static long test_interface(Map map) {
-    Integer intobj = new Integer(0);
-    String s = "asdf";
-    long start = System.currentTimeMillis();
-    for (int i = 0; i < 10000; i++) {
-        map.put(intobj, s);
+    public static long test_interface(Map map) {
+        Integer intobj = new Integer(0);
+        String s = "asdf";
+        long start = System.currentTimeMillis();
+        for (int i = 0; i < 10000; i++) {
+            map.put(intobj, s);
+        }
+        long end = System.currentTimeMillis();
+        return (end - start);
     }
-    long end = System.currentTimeMillis();
-    return (end - start);
-  }
 
-  public static void main(String[] args) {
-    HashMap hashmap = new HashMap();
-    long elapsed = test_virtual(hashmap);
-    System.out.println("test_virtual done");
-    hashmap.clear();
+    public static void main(String[] args) {
+        HashMap hashmap = new HashMap();
+        long elapsed = test_virtual(hashmap);
+        System.out.println("test_virtual done");
+        hashmap.clear();
 
-    elapsed = test_interface(hashmap);
-    System.out.println("test_interface done");
-  }
+        elapsed = test_interface(hashmap);
+        System.out.println("test_interface done");
+    }
 }

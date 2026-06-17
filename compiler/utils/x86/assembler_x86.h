@@ -25,11 +25,11 @@
 #include "base/bit_utils.h"
 #include "base/globals.h"
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "base/pointer_size.h"
 #include "constants_x86.h"
 #include "heap_poisoning.h"
 #include "managed_register_x86.h"
-#include "offsets.h"
 #include "utils/assembler.h"
 
 namespace art HIDDEN {

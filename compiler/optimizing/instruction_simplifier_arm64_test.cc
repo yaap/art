@@ -82,5 +82,41 @@ TEST_F(InstructionSimplifierArm64Test, SubRightSubLeftShlRegressionTest) {
   EXPECT_TRUE(or3->IsInBlock());
 }
 
+TEST_F(InstructionSimplifierArm64Test, Shl0) {
+  HBasicBlock* block = InitEntryMainExitGraph();
+
+  HInstruction* param0 = MakeParam(DataType::Type::kInt32);
+  HInstruction* const0 = graph_->GetIntConstant(0);
+  HShl* shl = MakeBinOp<HShl>(block, DataType::Type::kInt32, param0, const0);
+  MakeReturn(block, shl);
+
+  graph_->BuildDominatorTree();
+  InstructionSimplifierArm64 simplifier(graph_, /*codegen=*/ nullptr, /*stats=*/ nullptr);
+  simplifier.Run();
+
+  EXPECT_INS_RETAINED(shl);  // The arm64 simplifier does not simplify shift by 0.
+}
+
+TEST_F(InstructionSimplifierArm64Test, SubRightSubLeftShl0) {
+  HBasicBlock* block = InitEntryMainExitGraph();
+
+  HInstruction* param0 = MakeParam(DataType::Type::kInt32);
+  HInstruction* param1 = MakeParam(DataType::Type::kInt32);
+  HInstruction* param2 = MakeParam(DataType::Type::kInt32);
+  HInstruction* const0 = graph_->GetIntConstant(0);
+  HShl* shl = MakeBinOp<HShl>(block, DataType::Type::kInt32, param0, const0);
+  HSub* sub1 = MakeBinOp<HSub>(block, DataType::Type::kInt32, shl, param1);
+  HSub* sub2 = MakeBinOp<HSub>(block, DataType::Type::kInt32, param2, sub1);
+  MakeReturn(block, sub2);
+
+  graph_->BuildDominatorTree();
+  InstructionSimplifierArm64 simplifier(graph_, /*codegen=*/ nullptr, /*stats=*/ nullptr);
+  simplifier.Run();
+
+  EXPECT_INS_RETAINED(shl);  // The arm64 simplifier does not simplify shift by 0.
+  EXPECT_INS_RETAINED(sub1);
+  EXPECT_INS_RETAINED(sub2);
+}
+
 }  // namespace arm64
 }  // namespace art

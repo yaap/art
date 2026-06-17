@@ -39,6 +39,7 @@
 #include "dex/signature-inl.h"
 #include "driver/compiler_driver.h"
 #include "driver/compiler_options.h"
+#include "driver/image_class_map-inl.h"
 #include "gc/space/image_space.h"
 #include "image_writer.h"
 #include "linker/elf_writer.h"
@@ -112,9 +113,7 @@ class ImageTest : public CommonCompilerDriverTest {
     options->push_back(std::make_pair("compilercallbacks", callbacks_.get()));
   }
 
-  std::unique_ptr<HashSet<std::string>> GetImageClasses() override {
-    return std::make_unique<HashSet<std::string>>(image_classes_);
-  }
+  ImageClassMap GetImageClasses() override;
 
   ArtMethod* FindCopiedMethod(ArtMethod* origin, ObjPtr<mirror::Class> klass)
       REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -136,6 +135,38 @@ class ImageTest : public CommonCompilerDriverTest {
   // By default we compile with "speed-profile" and an empty profile. This compiles only JNI stubs.
   CompilerFilter::Filter compiler_filter_ = CompilerFilter::kSpeedProfile;
 };
+
+inline ImageClassMap ImageTest::GetImageClasses() {
+  CHECK(compiler_options_ != nullptr);
+  CHECK(!compiler_options_->GetDexFilesForOatFile().empty());
+  ImageClassMap image_classes;
+  for (const std::string& d : image_classes_) {
+    std::string_view descriptor(d);
+    size_t array_dim = descriptor.find_first_not_of('[');
+    CHECK_NE(array_dim, std::string_view::npos);
+    descriptor.remove_prefix(array_dim);
+    TypeReference type_ref(nullptr, dex::TypeIndex(0u));
+    if (descriptor[0] != 'L') {
+      // Attribute primitives to the first dex file.
+      const DexFile* dex_file = compiler_options_->GetDexFilesForOatFile().front();
+      const dex::TypeId* type_id = dex_file->FindTypeId(descriptor);
+      CHECK(type_id != nullptr);
+      type_ref = TypeReference(dex_file, dex_file->GetIndexForTypeId(*type_id));
+    } else {
+      for (const DexFile* dex_file : compiler_options_->GetDexFilesForOatFile()) {
+        const dex::TypeId* type_id = dex_file->FindTypeId(descriptor);
+        if (type_id != nullptr &&
+            dex_file->FindClassDef(dex_file->GetIndexForTypeId(*type_id)) != nullptr) {
+          type_ref = TypeReference(dex_file, dex_file->GetIndexForTypeId(*type_id));
+          break;
+        }
+      }
+    }
+    CHECK(type_ref.dex_file != nullptr) << descriptor;
+    image_classes.Add(type_ref, array_dim);
+  }
+  return image_classes;
+}
 
 inline CompilationHelper::~CompilationHelper() {
   for (ScratchFile& image_file : image_files) {
@@ -315,7 +346,7 @@ inline void ImageTest::DoCompile(ImageHeader::StorageMode storage_mode,
                                           oat_writer->GetBssSize(),
                                           oat_writer->GetBssMethodsOffset(),
                                           oat_writer->GetBssRootsOffset(),
-                                          oat_writer->GetVdexSize());
+                                          oat_writer->GetBssStringsOffset());
 
         writer->UpdateOatFileLayout(i,
                                     elf_writer->GetLoadedSize(),
@@ -377,7 +408,6 @@ inline void ImageTest::Compile(
   // Set inline filter values.
   compiler_options_->SetInlineMaxCodeUnits(CompilerOptions::kDefaultInlineMaxCodeUnits);
   compiler_options_->SetMaxImageBlockSize(max_image_block_size);
-  image_classes_.clear();
   if (!extra_dex.empty()) {
     helper.extra_dex = extra_dex;
     helper.extra_dex_files = OpenTestDexFiles(extra_dex.c_str());

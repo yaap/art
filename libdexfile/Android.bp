@@ -36,7 +36,6 @@ cc_defaults {
         "dex/descriptors_names.cc",
         "dex/dex_file.cc",
         "dex/dex_file_exception_helpers.cc",
-        "dex/dex_file_layout.cc",
         "dex/dex_file_loader.cc",
         "dex/dex_file_tracking_registrar.cc",
         "dex/dex_file_verifier.cc",
@@ -159,7 +158,6 @@ gensrcs {
     tools: ["generate_operator_out"],
     srcs: [
         "dex/dex_file.h",
-        "dex/dex_file_layout.h",
         "dex/dex_instruction.h",
         "dex/dex_instruction_utils.h",
         "dex/invoke_type.h",
@@ -360,10 +358,14 @@ cc_library_headers {
 }
 
 // Make dex_instruction_list.h available for tools/jvmti-agents/titrace
+// Make utf-inl.h available for libnativehelper.
 cc_library_headers {
     name: "libdexfile_all_headers",
     defaults: ["art_defaults"],
-    visibility: ["//art:__subpackages__"],
+    visibility: [
+        "//art:__subpackages__",
+        "//libnativehelper",
+    ],
     host_supported: true,
     export_include_dirs: ["."],
 
@@ -371,6 +373,14 @@ cc_library_headers {
         "com.android.art",
         "com.android.art.debug",
     ],
+    target: {
+        windows: {
+            enabled: true,
+        },
+        darwin: {
+            enabled: true,
+        },
+    },
 }
 
 art_cc_defaults {

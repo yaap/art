@@ -38,7 +38,6 @@
 #include "base/utils.h"
 #include "class_linker.h"
 #include "class_loader_context.h"
-#include "com_android_art_rw_flags.h"
 #include "common_runtime_test.h"
 #include "dexopt_test.h"
 #include "oat.h"
@@ -154,14 +153,13 @@ class OatFileAssistantTest : public OatFileAssistantBaseTest,
   // Verifies the current version of `GetDexOptNeeded` (called from artd).
   void VerifyGetDexOptNeeded(OatFileAssistant* assistant,
                              CompilerFilter::Filter compiler_filter,
-                             OatFileAssistant::DexOptTrigger dexopt_trigger,
+                             const OatFileAssistant::DexoptTrigger& dexopt_trigger,
                              bool expected_dexopt_needed,
                              bool expected_is_vdex_usable,
                              OatFileAssistant::Location expected_location) {
     OatFileAssistant::DexOptStatus status;
-    EXPECT_EQ(
-        assistant->GetDexOptNeeded(compiler_filter, dexopt_trigger, &status),
-        expected_dexopt_needed);
+    EXPECT_EQ(assistant->GetDexOptNeeded(compiler_filter, dexopt_trigger, &status),
+              expected_dexopt_needed);
     EXPECT_EQ(status.IsVdexUsable(), expected_is_vdex_usable);
     EXPECT_EQ(status.GetLocation(), expected_location);
   }
@@ -210,9 +208,9 @@ class OatFileAssistantTest : public OatFileAssistantBaseTest,
                 .image_locations = runtime_->GetImageLocations(),
                 .boot_class_path = runtime_->GetBootClassPath(),
                 .boot_class_path_locations = runtime_->GetBootClassPathLocations(),
-                .boot_class_path_files = !runtime_->GetBootClassPathFiles().empty() ?
-                                             runtime_->GetBootClassPathFiles() :
-                                             std::optional<ArrayRef<File>>(),
+                .boot_class_path_files = !runtime_->GetBootClassPathFiles().empty()
+                                             ? runtime_->GetBootClassPathFiles()
+                                             : std::optional<ArrayRef<File>>(),
                 .deny_art_apex_data_files = runtime_->DenyArtApexDataFiles(),
                 .sdk_version = runtime_->GetSdkVersion(),
             }));
@@ -251,8 +249,11 @@ class OatFileAssistantTest : public OatFileAssistantBaseTest,
 
   std::unique_ptr<ClassLoaderContext> default_context_ = InitializeDefaultContext();
   bool with_runtime_;
-  const OatFileAssistant::DexOptTrigger default_trigger_{
-      .targetFilterIsBetter = true, .primaryBootImageBecomesUsable = true, .needExtraction = true};
+  const OatFileAssistant::DexoptTrigger default_trigger_{
+      .dexopt_comparators = {OatFileAssistant::DexoptComparator::kComparingCompilerFilter,
+                             OatFileAssistant::DexoptComparator::kComparingPrimaryBootImageStatus,
+                             OatFileAssistant::DexoptComparator::kComparingExtractionStatus},
+      .custom_comparator_reason = std::nullopt};
   std::unique_ptr<OatFileAssistantContext> ofa_context_;
   std::vector<std::unique_ptr<const DexFile>> opened_dex_files_;
 };
@@ -269,10 +270,10 @@ TEST_P(OatFileAssistantTest, RelativeEncodedDexLocation) {
 
   // Create the oat file with relative encoded dex location.
   std::vector<std::string> args = {
-    "--dex-file=" + dex_location,
-    "--dex-location=" + std::string("RelativeEncodedDexLocation.jar"),
-    "--oat-file=" + odex_location,
-    "--compiler-filter=speed"
+      "--dex-file=" + dex_location,
+      "--dex-location=" + std::string("RelativeEncodedDexLocation.jar"),
+      "--oat-file=" + odex_location,
+      "--compiler-filter=speed",
   };
 
   std::string error_msg;
@@ -846,7 +847,7 @@ TEST_P(OatFileAssistantTest, VdexUpToDateNoOat) {
   std::string oat_location;
   std::string error_msg;
   ASSERT_TRUE(OatFileAssistant::DexLocationToOatFilename(
-      dex_location, kRuntimeISA, /* deny_art_apex_data_files= */false, &oat_location, &error_msg))
+      dex_location, kRuntimeISA, /*deny_art_apex_data_files=*/false, &oat_location, &error_msg))
       << error_msg;
 
   Copy(GetDexSrc1(), dex_location);
@@ -896,8 +897,10 @@ TEST_P(OatFileAssistantTest, ProfileOatUpToDate) {
   EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
             oat_file_assistant.GetDexOptNeeded(CompilerFilter::kVerify, /*profile_changed=*/false));
 
-  OatFileAssistant::DexOptTrigger profile_changed_trigger = default_trigger_;
-  profile_changed_trigger.targetFilterIsSame = true;
+  OatFileAssistant::DexoptTrigger profile_changed_trigger = {
+      .dexopt_comparators = {OatFileAssistant::DexoptComparator::kComparingCompilerFilter,
+                             OatFileAssistant::DexoptComparator::kCustomTargetIsBetterThanCurrent},
+      .custom_comparator_reason = "profile changed"};
 
   VerifyGetDexOptNeeded(&oat_file_assistant,
                         CompilerFilter::kSpeedProfile,
@@ -1354,8 +1357,7 @@ static std::string MakePathRelative(const std::string& target) {
 
   // Drop the common prefix of the paths. Because we reversed the path
   // components, this becomes the common suffix of target_path and cwd_path.
-  while (!target_path.empty() && !cwd_path.empty()
-      && target_path.back() == cwd_path.back()) {
+  while (!target_path.empty() && !cwd_path.empty() && target_path.back() == cwd_path.back()) {
     target_path.pop_back();
     cwd_path.pop_back();
   }
@@ -1461,31 +1463,16 @@ TEST_P(OatFileAssistantTest, AssumedValuesOutOfDate) {
     auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
     OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
-    if (com::android::art::rw::flags::assume_value_sdk_int()) {
-      // When the runtime SDK_INT differs from the compiled SDK_INT, reject the ODEX file.
-      // Note that the VDEX remains usable.
-      EXPECT_EQ(OatFileAssistant::kOatAssumedValuesOutOfDate, oat_file_assistant.OdexFileStatus());
-      EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OatFileStatus());
-      VerifyGetDexOptNeededDefault(&oat_file_assistant,
-                                   CompilerFilter::kSpeed,
-                                   /*expected_dexopt_needed=*/true,
-                                   /*expected_is_vdex_usable=*/true,
-                                   /*expected_location=*/OatFileAssistant::kLocationOdex,
-                                   /*expected_legacy_result=*/-OatFileAssistant::kDex2OatForFilter);
-    } else {
-      // Otherwise, when assumed values for SDK_INT are disabled, ODEX compilation and loading are
-      // not affected.
-      EXPECT_EQ(OatFileAssistant::kOatUpToDate, oat_file_assistant.OdexFileStatus());
-      EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OatFileStatus());
-      VerifyGetDexOptNeededDefault(&oat_file_assistant,
-                                   CompilerFilter::kSpeed,
-                                   /*expected_dexopt_needed=*/false,
-                                   /*expected_is_vdex_usable=*/true,
-                                   /*expected_location=*/OatFileAssistant::kLocationOdex,
-                                   /*expected_legacy_result=*/OatFileAssistant::kNoDexOptNeeded);
-      EXPECT_EQ(OatFileAssistant::kNoDexOptNeeded,
-                oat_file_assistant.GetDexOptNeeded(CompilerFilter::kSpeed));
-    }
+    // When the runtime SDK_INT differs from the compiled SDK_INT, reject the ODEX file.
+    // Note that the VDEX remains usable.
+    EXPECT_EQ(OatFileAssistant::kOatAssumedValuesOutOfDate, oat_file_assistant.OdexFileStatus());
+    EXPECT_EQ(OatFileAssistant::kOatCannotOpen, oat_file_assistant.OatFileStatus());
+    VerifyGetDexOptNeededDefault(&oat_file_assistant,
+                                 CompilerFilter::kSpeed,
+                                 /*expected_dexopt_needed=*/true,
+                                 /*expected_is_vdex_usable=*/true,
+                                 /*expected_location=*/OatFileAssistant::kLocationOdex,
+                                 /*expected_legacy_result=*/-OatFileAssistant::kDex2OatForFilter);
   }
 }
 
@@ -1531,9 +1518,7 @@ class RaceGenerateTask : public Task {
     CHECK_EQ(loaded_oat_file_, oat_file);
   }
 
-  const OatFile* GetLoadedOatFile() const {
-    return loaded_oat_file_;
-  }
+  const OatFile* GetLoadedOatFile() const { return loaded_oat_file_; }
 
  private:
   OatFileAssistantBaseTest& test_;
@@ -1663,10 +1648,10 @@ TEST(OatFileAssistantUtilsTest, DexLocationToOdexFilename) {
 // match the OatFileAssistant::DexOptStatus values.
 TEST_F(OatFileAssistantBaseTest, DexOptStatusValues) {
   std::pair<OatFileAssistant::DexOptNeeded, const char*> mapping[] = {
-    {OatFileAssistant::kNoDexOptNeeded, "NO_DEXOPT_NEEDED"},
-    {OatFileAssistant::kDex2OatFromScratch, "DEX2OAT_FROM_SCRATCH"},
-    {OatFileAssistant::kDex2OatForBootImage, "DEX2OAT_FOR_BOOT_IMAGE"},
-    {OatFileAssistant::kDex2OatForFilter, "DEX2OAT_FOR_FILTER"},
+      {OatFileAssistant::kNoDexOptNeeded, "NO_DEXOPT_NEEDED"},
+      {OatFileAssistant::kDex2OatFromScratch, "DEX2OAT_FROM_SCRATCH"},
+      {OatFileAssistant::kDex2OatForBootImage, "DEX2OAT_FOR_BOOT_IMAGE"},
+      {OatFileAssistant::kDex2OatForFilter, "DEX2OAT_FOR_FILTER"},
   };
 
   ScopedObjectAccess soa(Thread::Current());
@@ -1713,7 +1698,7 @@ TEST_P(OatFileAssistantTest, GetDexOptNeededWithOutOfDateContext) {
     std::unique_ptr<ClassLoaderContext> updated_context = ClassLoaderContext::Create(context_str);
     ASSERT_TRUE(updated_context != nullptr);
     std::vector<int> context_fds;
-    ASSERT_TRUE(updated_context->OpenDexFiles("", context_fds,  /*only_read_checksums*/ true));
+    ASSERT_TRUE(updated_context->OpenDexFiles("", context_fds, /*only_read_checksums=*/true));
 
     auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
@@ -1762,7 +1747,9 @@ TEST_P(OatFileAssistantTest, Downgrade) {
   auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
-  OatFileAssistant::DexOptTrigger downgrade_trigger{.targetFilterIsWorse = true};
+  OatFileAssistant::DexoptTrigger downgrade_trigger{
+      .dexopt_comparators = {OatFileAssistant::DexoptComparator::kComparingCompilerFilterReversed},
+      .custom_comparator_reason = std::nullopt};
 
   VerifyGetDexOptNeeded(&oat_file_assistant,
                         CompilerFilter::kSpeed,
@@ -1805,7 +1792,9 @@ TEST_P(OatFileAssistantTest, DowngradeNoOdex) {
   auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
-  OatFileAssistant::DexOptTrigger downgrade_trigger{.targetFilterIsWorse = true};
+  OatFileAssistant::DexoptTrigger downgrade_trigger{
+      .dexopt_comparators = {OatFileAssistant::DexoptComparator::kComparingCompilerFilterReversed},
+      .custom_comparator_reason = std::nullopt};
 
   VerifyGetDexOptNeeded(&oat_file_assistant,
                         CompilerFilter::kSpeed,
@@ -1882,10 +1871,9 @@ TEST_P(OatFileAssistantTest, Force) {
   auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
-  OatFileAssistant::DexOptTrigger force_trigger{.targetFilterIsBetter = true,
-                                                .targetFilterIsSame = true,
-                                                .targetFilterIsWorse = true,
-                                                .primaryBootImageBecomesUsable = true};
+  OatFileAssistant::DexoptTrigger force_trigger{
+      .dexopt_comparators = {OatFileAssistant::DexoptComparator::kCustomTargetIsBetterThanCurrent},
+      .custom_comparator_reason = "force recompilation"};
 
   VerifyGetDexOptNeeded(&oat_file_assistant,
                         CompilerFilter::kSpeed,
@@ -1924,10 +1912,9 @@ TEST_P(OatFileAssistantTest, ForceNoOdex) {
   auto scoped_maybe_without_runtime = ScopedMaybeWithoutRuntime();
 
   OatFileAssistant oat_file_assistant = CreateOatFileAssistant(dex_location.c_str());
-  OatFileAssistant::DexOptTrigger force_trigger{.targetFilterIsBetter = true,
-                                                .targetFilterIsSame = true,
-                                                .targetFilterIsWorse = true,
-                                                .primaryBootImageBecomesUsable = true};
+  OatFileAssistant::DexoptTrigger force_trigger{
+      .dexopt_comparators = {OatFileAssistant::DexoptComparator::kCustomTargetIsBetterThanCurrent},
+      .custom_comparator_reason = "force recompilation"};
 
   VerifyGetDexOptNeeded(&oat_file_assistant,
                         CompilerFilter::kSpeed,
@@ -2674,6 +2661,10 @@ TEST_F(OatFileAssistantBaseTest, GetDexLocation) {
 // Test that a dex file on the platform location gets the right hiddenapi domain,
 // regardless of whether it has a backing oat file.
 TEST_F(OatFileAssistantBaseTest, SystemFrameworkDir) {
+  // Host tests rely on ANDROID_ROOT, but it's not supported by
+  // OatFileManager::OpenDexFilesFromOat.
+  TEST_DISABLED_FOR_HOST();
+
   std::string filebase = "OatFileAssistantTestSystemFrameworkDir";
   std::string dex_location = GetAndroidRoot() + "/framework/" + filebase + ".jar";
   Copy(GetDexSrc1(), dex_location);

@@ -323,7 +323,11 @@ art_cc_defaults {
         "art_gtest_common_defaults",
         "libartd-gtest_static_defaults",
     ],
-    test_suites: ["art-host-tests"],
+    target: {
+        host: {
+            test_suites: ["art-host-tests"],
+        },
+    },
     test_options: {
         test_suite_tag: ["art-host-gtest"],
     },
@@ -922,7 +926,6 @@ cc_defaults {
         "497-inlining-and-class-loader/clear_dex_cache.cc",
         "543-env-long-ref/env_long_ref.cc",
         "566-polymorphic-inlining/polymorphic_inline.cc",
-        "570-checker-osr/osr.cc",
         "595-profile-saving/profile-saving.cc",
         "596-app-images/app_images.cc",
         "596-monitor-inflation/monitor_inflation.cc",
@@ -957,11 +960,13 @@ cc_defaults {
         "2040-huge-native-alloc/huge_native_buf.cc",
         "2048-bad-native-registry/native_finalizer.cc",
         "2235-JdkUnsafeTest/unsafe_test.cc",
+        "2237-checker-simulator/checker_simulator_jni.cc",
         "2246-trace-v2/dump_trace.cc",
         "2262-miranda-methods/jni_invoke.cc",
         "2270-mh-internal-hiddenapi-use/mh-internal-hidden-api.cc",
         "2275-pthread-name/native_getname.cc",
         "2392-virtual-thread-pinning-jni/jni.cc",
+        "2400-setstaticfield-uninitialized/jni.cc",
         "common/runtime_state.cc",
         "common/stack_inspect.cc",
     ],
@@ -1441,16 +1446,19 @@ cc_genrule {
 }
 
 art_cc_test {
-    name: "ArtTest",
+    name: "art-test-target",
     data: [
         // We need the ART testing apex, which contains debug binaries and other utilities.
         ":com.android.art.testing",
         ":art-test-target-apex",
         // Archive which contains all run-test data and test-specific bash scripts to run them.
-        ":art-test-target-fg",
+        ":art-run-test-target-tgz-fg",
     ],
-    test_suites: ["general-tests"],
-    test_config: "ArtTest.xml",
+    test_suites: [
+        "general-tests",
+        "mts-art",
+    ],
+    test_config: "art-test-target.xml",
 }
 
 csuite_test {
@@ -2080,4 +2088,172 @@ phony {
         // TESTING_ART_APEX
         "com.android.art.testing",
     ],
+}
+
+art_host_test_data {
+    name: "art_host_test_data",
+}
+
+test_suite_package {
+    name: "art-host-tests",
+    include_host_shared_libs_in_main_zip: true,
+    art_data_zips: [
+        ":art_host_test_data",
+        ":art_host_test_data_symlink",
+        ":art_test_common_host_jars_zip",
+        ":apex_icu_dat_zip",
+        ":art_common_host_test_libs_zip",
+    ],
+}
+
+genrule {
+    name: "art_test_common_host_jars_zip",
+    device_first_srcs: [
+        ":art-bootclasspath-fragment{.encoded_jars_zip}",
+        ":conscrypt-host", //conscrypt.jar
+        ":core-icu4j-host", //core-icu4j.jar
+    ],
+    tools: ["soong_zip"],
+    out: ["art_test_common_host_jars_zip.zip"],
+    cmd: "TEMP_DIR=$(genDir)/tmp && rm -rf $$TEMP_DIR && " +
+        "LIB_DIR=$$TEMP_DIR/host/testcases/art_common/out/host/linux-x86/apex/com.android.art/javalib && " +
+        "CONSCRYPT_DIR=$$TEMP_DIR/host/testcases/art_common/out/host/linux-x86/apex/com.android.conscrypt/javalib && " +
+        "CORE_ICU4J_DIR=$$TEMP_DIR/host/testcases/art_common/out/host/linux-x86/apex/com.android.i18n/javalib && " +
+        "mkdir -p $$LIB_DIR && " +
+        "mkdir -p $$CONSCRYPT_DIR && " +
+        "mkdir -p $$CORE_ICU4J_DIR && " +
+        "unzip $(location :art-bootclasspath-fragment{.encoded_jars_zip}) -d $$LIB_DIR/ && " +
+        "cp $(location :conscrypt-host) $$CONSCRYPT_DIR/conscrypt.jar && " +
+        "cp $(location :core-icu4j-host) $$CORE_ICU4J_DIR/core-icu4j.jar && " +
+        "$(location soong_zip) -o $(out) -C $$TEMP_DIR -D $$TEMP_DIR/host",
+}
+
+genrule {
+    name: "apex_icu_dat_zip",
+    srcs: [
+        ":icu_dat",
+    ],
+    tools: ["soong_zip"],
+    out: ["apex_icu_dat.zip"],
+    cmd: "TEMP_DIR=$(genDir)/tmp32 && rm -rf $$TEMP_DIR && " +
+        "LIB_DIR=$$TEMP_DIR/host/testcases/art_common/out/host/linux-x86/com.android.i18n/etc/icu && " +
+        "mkdir -p $$LIB_DIR && " +
+        "cp $(location :icu_dat) $$LIB_DIR && " +
+        "$(location soong_zip) -o $(out) -C $$TEMP_DIR -D $$TEMP_DIR/host",
+}
+
+genrule_defaults {
+    name: "art_common_host_test_libs_zip_defaults",
+    host_supported: true,
+    device_supported: false,
+    srcs: [
+        ":libbase",
+        ":libc++",
+        ":libicu",
+        ":libicu_jni",
+        ":liblog",
+        ":libsigchain",
+        ":libunwindstack",
+        ":libziparchive",
+        ":libjavacore",
+        ":libandroidio",
+        ":libopenjdkd",
+        ":liblz4",
+        ":liblzma",
+        ":libcrypto",
+        ":libz",
+        ":libicuuc",
+        ":libicui18n",
+        ":libexpat",
+    ],
+    tools: ["soong_zip"],
+    cmd: "TEMP_DIR=$(genDir)/tmp && rm -rf $$TEMP_DIR && " +
+        "LIB_SUBDIR=$$(echo $$CC_MULTILIB | sed 's/lib32/lib/') && " +
+        "LIB_DIR=$$TEMP_DIR/host/testcases/art_common/out/host/linux-x86/$$LIB_SUBDIR && " +
+        "mkdir -p $$LIB_DIR && " +
+        "cp $(location :libbase) $$LIB_DIR/libbase.so && " +
+        "cp $(location :libc++) $$LIB_DIR/libc++.so && " +
+        "cp $(location :libicu) $$LIB_DIR/libicu.so && " +
+        "cp $(location :libicu_jni) $$LIB_DIR/libicu_jni.so && " +
+        "cp $(location :liblog) $$LIB_DIR/liblog.so && " +
+        "cp $(location :libsigchain) $$LIB_DIR/libsigchain.so && " +
+        "cp $(location :libunwindstack) $$LIB_DIR/libunwindstack.so && " +
+        "cp $(location :libziparchive) $$LIB_DIR/libziparchive.so && " +
+        "cp $(location :libjavacore) $$LIB_DIR/libjavacore.so && " +
+        "cp $(location :libandroidio) $$LIB_DIR/libandroidio.so && " +
+        "cp $(location :libopenjdkd) $$LIB_DIR/libopenjdkd.so && " +
+        "cp $(location :liblz4) $$LIB_DIR/liblz4.so && " +
+        "cp $(location :liblzma) $$LIB_DIR/liblzma.so && " +
+        "cp $(location :libcrypto) $$LIB_DIR/libcrypto-host.so && " +
+        "cp $(location :libz) $$LIB_DIR/libz-host.so && " +
+        "cp $(location :libicuuc) $$LIB_DIR/libicuuc-host.so && " +
+        "cp $(location :libicui18n) $$LIB_DIR/libicui18n-host.so && " +
+        "cp $(location :libexpat) $$LIB_DIR/libexpat-host.so && " +
+        "$(location soong_zip) -o $(out) -C $$TEMP_DIR -D $$TEMP_DIR/host",
+}
+
+// This module and art_common_host_test_second_arch_libs are intentionally
+// defined separately, despite their identical configurations.
+// This is necessary because the final art_common_host_test_libs_zip target
+// requires both 32-bit and 64-bit libraries to ensure parity with the
+// legacy art-host-tests.zip.
+// A single genrule does not permit listing the same dependency in both
+// host_first_srcs and host_second_srcs, as it would trigger a duplicate
+// source error. By creating two distinct targets, the build system
+// generates one for the primary (e.g., 64-bit) and one for the secondary
+// (e.g., 32-bit) multilib architecture.
+cc_genrule {
+    name: "art_common_host_test_first_arch_libs",
+    compile_multilib: "64",
+    out: ["art_common_host_test_first_arch_libs.zip"],
+    defaults: ["art_common_host_test_libs_zip_defaults"],
+}
+
+cc_genrule {
+    name: "art_common_host_test_second_arch_libs",
+    compile_multilib: "32",
+    out: ["art_common_host_test_second_arch_libs.zip"],
+    defaults: ["art_common_host_test_libs_zip_defaults"],
+}
+
+// This rule packages a set of shared libraries (.so) required by art-host-tests.
+// The tests are executed by a test runner that needs to find and load these
+// shared libraries at runtime. This is necessary for the gtest framework which
+// dynamically loads these dependencies.
+genrule {
+    name: "art_common_host_test_libs_zip",
+    tools: ["merge_zips"],
+    host_first_srcs: [
+        ":art_common_host_test_first_arch_libs",
+        ":art_boot_images{.zip}",
+    ],
+    host_second_srcs: [
+        ":art_common_host_test_second_arch_libs",
+    ],
+    out: ["art_common_host_test_libs_zip.zip"],
+    cmd: "$(location merge_zips) $(out) $(in)",
+}
+
+// This genrule creates symbolic links required for the art-host-tests.zip
+// package.
+//
+// These symlinks (e.g., dalvikvm -> dalvikvm64) are necessary for art
+// host tests (e.g., dex2oat_test) that execute binaries using their
+// non-suffixed names (e.g., 'dex2oatd'). Without them, tests fail with
+// 'No such file or directory' errors.
+genrule {
+    name: "art_host_test_data_symlink",
+    out: ["art_host_test_data_symlink.zip"],
+    tools: ["soong_zip"],
+    cmd: "TMP_DIR=$(genDir)/staging && " +
+        "BIN_DIR=$${TMP_DIR}/host/testcases/art_common/out/host/linux-x86/bin && " +
+        "mkdir -p $${BIN_DIR} && " +
+        "ln -sf dalvikvm64 $${BIN_DIR}/dalvikvm && " +
+        "ln -sf dex2oat64 $${BIN_DIR}/dex2oat && " +
+        "ln -sf dex2oatd64 $${BIN_DIR}/dex2oatd && " +
+        "ln -sf find_unshared_pages64 $${BIN_DIR}/find_unshared_pages && " +
+        "ln -sf imgdiag64 $${BIN_DIR}/imgdiag && " +
+        "ln -sf imgdiagd64 $${BIN_DIR}/imgdiagd && " +
+        "ln -sf pageinfo64 $${BIN_DIR}/pageinfo && " +
+        "$(location soong_zip) -o $(out) -C $${TMP_DIR} -D $${TMP_DIR}",
 }

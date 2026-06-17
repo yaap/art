@@ -1,4 +1,3 @@
-%def header():
 /*
  * Copyright (C) 2023 The Android Open Source Project
  *
@@ -85,6 +84,7 @@
     .global \name
     .balign 16
 \name:
+%   pass
 .endm
 
 .macro SIZE name
@@ -99,6 +99,7 @@
     /* Cache alignment for function entry */
     .balign 16
 \name:
+%   pass
 .endm
 
 .macro NAME_END name
@@ -109,14 +110,14 @@
 // references there), but there is no kDontSave runtime method. So just use the kSaveRefsOnly
 // runtime method.
 .macro NTERP_TRAMPOLINE name, helper
-ENTRY \name
+  ENTRY \name
     SETUP_SAVE_REFS_ONLY_FRAME
     call \helper
     RESTORE_SAVE_REFS_ONLY_FRAME
     ld t0, THREAD_EXCEPTION_OFFSET(xSELF)
     bnez t0, nterp_deliver_pending_exception
     ret
-END \name
+  END \name
 .endm
 
 // Unpack code items from dex format.
@@ -218,30 +219,6 @@ END \name
     slliw \reg, \reg, ${handler_size_bits}
     add \reg, xIBASE, \reg
     jr \reg
-.endm
-
-.macro FETCH_FROM_THREAD_CACHE reg, miss_label, z0, z1
-    // See art::InterpreterCache::IndexOf() for computing index of key within cache array.
-    // Entry address:
-    //   xSELF + OFFSET + ((xPC>>2 & xFF) << 4)
-    // = xSELF + OFFSET + ((xPC & xFF<<2) << 2)
-    // = xSELF + ((OFFSET>>2 + (xPC & xFF<<2)) << 2)
-    // => ANDI, ADD, SH2ADD
-#if (THREAD_INTERPRETER_CACHE_SIZE_LOG2 != 8)
-#error Expected interpreter cache array size = 256 elements
-#endif
-#if (THREAD_INTERPRETER_CACHE_SIZE_SHIFT != 2)
-#error Expected interpreter cache entry size = 16 bytes
-#endif
-#if ((THREAD_INTERPRETER_CACHE_OFFSET & 0x3) != 0)
-#error Expected interpreter cache offset to be 4-byte aligned
-#endif
-    andi \z0, xPC, 0xFF << 2
-    addi \z0, \z0, THREAD_INTERPRETER_CACHE_OFFSET >> 2
-    sh2add \z0, \z0, xSELF  // z0 := entry's address
-    ld \z1, (\z0)           // z1 := dex PC
-    bne xPC, \z1, \miss_label
-    ld \reg, 8(\z0)         // value: depends on context; see call site
 .endm
 
 // Inputs:
@@ -368,7 +345,6 @@ END \name
 %  else:
      sh2add $reg, $vreg, xFP  // vreg addr in register array
      lw $reg, ($reg)          // reg := fp[vreg]
-%#:
 
 // Typed write, defaults to 32-bit write.
 // Note: Incorrect for an object ref; it requires 2nd SW into xREFS.
@@ -381,7 +357,6 @@ END \name
      sw $reg, ($z0)            // fp[vreg] := reg
      sh2add $z0, $vreg, xREFS  // vreg addr in reference array
      sw zero, ($z0)            // refs[vreg] := null
-%#:
 
 // Floating-point read, defaults to 32-bit read.
 // Clobbers: reg, vreg
@@ -391,7 +366,6 @@ END \name
 %  else:
      sh2add $vreg, $vreg, xFP  // vreg addr in register array
      flw $reg, ($vreg)         // reg := fp[vreg]
-%#:
 
 // Floating-point write, defaults to 32-bit write.
 // Clobbers: reg, z0
@@ -403,9 +377,7 @@ END \name
      fsw $reg, ($z0)           // fp[vreg] := reg
      sh2add $z0, $vreg, xREFS  // vreg addr in reference array
      sw zero, ($z0)            // refs[vreg] := null
-%#:
 
-%def entry():
 /*
  * ArtMethod entry point.
  *
@@ -445,6 +417,7 @@ OAT_ENTRY ExecuteNterpWithClinitImpl
     .hidden EndExecuteNterpWithClinitImpl
     .global EndExecuteNterpWithClinitImpl
 EndExecuteNterpWithClinitImpl:
+%   pass
 
 OAT_ENTRY ExecuteNterpImpl
    .cfi_startproc
@@ -541,11 +514,11 @@ OAT_ENTRY ExecuteNterpImpl
 %  store_float_outs_to_vregs(outs="t2", shorty="t1", fp="t0", z0="t3", D="s0", F="s4", J="s5", next=".Lentry_go")
 
 .Lentry_go:
-    la xIBASE, artNterpAsmInstructionStart
-    START_EXECUTING_INSTRUCTIONS
-    // NOTE: no fallthrough
-    // cfi info continues, and covers the whole nterp implementation.
-    SIZE ExecuteNterpImpl
+   la xIBASE, artNterpAsmInstructionStart
+   START_EXECUTING_INSTRUCTIONS
+   // NOTE: no fallthrough
+   // cfi info continues, and covers the whole nterp implementation.
+   SIZE ExecuteNterpImpl
 
 %def footer():
 /*
@@ -554,12 +527,12 @@ OAT_ENTRY ExecuteNterpImpl
  * ===========================================================================
  */
 
-    .text
-    .align  2
+  .text
+  .align  2
 
 
-// Enclose all code below in a symbol (which gets printed in backtraces).
-NAME_START nterp_helper
+  // Enclose all code below in a symbol (which gets printed in backtraces).
+  NAME_START nterp_helper
 
 common_errArrayIndex:
     EXPORT_PC
@@ -577,37 +550,37 @@ common_errNullObject:
     call art_quick_throw_null_pointer_exception
 
 NterpInvokeVirtual:
-%  nterp_invoke_virtual()
+%   nterp_invoke_virtual()
 NterpInvokeSuper:
-%  nterp_invoke_super()
+%   nterp_invoke_super()
 NterpInvokeDirect:
-%  nterp_invoke_direct()
+%   nterp_invoke_direct()
 NterpInvokeStringInit:
-%  nterp_invoke_string_init()
+%   nterp_invoke_string_init()
 NterpInvokeStatic:
-%  nterp_invoke_static()
+%   nterp_invoke_static()
 NterpInvokeInterface:
-%  nterp_invoke_interface()
+%   nterp_invoke_interface()
 NterpInvokePolymorphic:
-%  nterp_invoke_polymorphic()
+%   nterp_invoke_polymorphic()
 NterpInvokeCustom:
-%  nterp_invoke_custom()
+%   nterp_invoke_custom()
 NterpInvokeVirtualRange:
-%  nterp_invoke_virtual_range()
+%   nterp_invoke_virtual_range()
 NterpInvokeSuperRange:
-%  nterp_invoke_super_range()
+%   nterp_invoke_super_range()
 NterpInvokeDirectRange:
-%  nterp_invoke_direct_range()
+%   nterp_invoke_direct_range()
 NterpInvokeStringInitRange:
-%  nterp_invoke_string_init_range()
+%   nterp_invoke_string_init_range()
 NterpInvokeStaticRange:
-%  nterp_invoke_static_range()
+%   nterp_invoke_static_range()
 NterpInvokeInterfaceRange:
-%  nterp_invoke_interface_range()
+%   nterp_invoke_interface_range()
 NterpInvokePolymorphicRange:
-%  nterp_invoke_polymorphic_range()
+%   nterp_invoke_polymorphic_range()
 NterpInvokeCustomRange:
-%  nterp_invoke_custom_range()
+%   nterp_invoke_custom_range()
 
 NterpHotnessCheck:
     ld a0, (sp)
@@ -627,79 +600,79 @@ NterpHotnessCheck:
     GOTO_OPCODE t0
 
 3:
-   CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=4f, if_not_hot=1b
+    CHECK_AND_UPDATE_SHARED_MEMORY_METHOD if_hot=4f, if_not_hot=1b
 4:
-   mv a1, xPC
-   mv a2, xFP
-   call nterp_hot_method  // args a0, a1, a2
-   beqz a0, 2b
+    mv a1, xPC
+    mv a2, xFP
+    call nterp_hot_method  // args a0, a1, a2
+    beqz a0, 2b
 
-   // a0 = OsrData*
-   // Drop most of the current nterp frame, but keep the callee-saves.
-   // The nterp callee-saves (count and layout) match the OSR frame's callee-saves.
-   ld sp, -8(xREFS)  // caller's interpreted frame pointer
-   .cfi_def_cfa sp, NTERP_SIZE_SAVE_CALLEE_SAVES
-   lwu t0, OSR_DATA_FRAME_SIZE(a0)
-   addi t0, t0, -NTERP_SIZE_SAVE_CALLEE_SAVES  // t0 := osr frame - callee saves, in bytes
-   mv s7, sp         // Remember CFA in a callee-save register.
-   .cfi_def_cfa_register s7
-   sub sp, sp, t0    // OSR size guaranteed to be stack aligned (16 bytes).
+    // a0 = OsrData*
+    // Drop most of the current nterp frame, but keep the callee-saves.
+    // The nterp callee-saves (count and layout) match the OSR frame's callee-saves.
+    ld sp, -8(xREFS)  // caller's interpreted frame pointer
+    .cfi_def_cfa sp, NTERP_SIZE_SAVE_CALLEE_SAVES
+    lwu t0, OSR_DATA_FRAME_SIZE(a0)
+    addi t0, t0, -NTERP_SIZE_SAVE_CALLEE_SAVES  // t0 := osr frame - callee saves, in bytes
+    mv s7, sp         // Remember CFA in a callee-save register.
+    .cfi_def_cfa_register s7
+    sub sp, sp, t0    // OSR size guaranteed to be stack aligned (16 bytes).
 
-   addi t1, a0, OSR_DATA_MEMORY  // t1 := read start
-   add t1, t1, t0                // t1 := read end (exclusive)
-   mv t2, s7                     // t2 := write end (exclusive)
-   // t0 >= 8 (OSR places ArtMethod* at bottom of frame), so loop will terminate.
+    addi t1, a0, OSR_DATA_MEMORY  // t1 := read start
+    add t1, t1, t0                // t1 := read end (exclusive)
+    mv t2, s7                     // t2 := write end (exclusive)
+    // t0 >= 8 (OSR places ArtMethod* at bottom of frame), so loop will terminate.
 .Lhotspill_osr_copy_loop:
-   addi t1, t1, -8
-   ld t3, (t1)
-   addi t2, t2, -8
-   sd t3, (t2)
-   bne t2, sp, .Lhotspill_osr_copy_loop
+    addi t1, t1, -8
+    ld t3, (t1)
+    addi t2, t2, -8
+    sd t3, (t2)
+    bne t2, sp, .Lhotspill_osr_copy_loop
 
-   ld s8, OSR_DATA_NATIVE_PC(a0)  // s8 := native PC; jump after free
-   call free  // arg a0; release OsrData*
-   jr s8      // Jump to the compiled code.
+    ld s8, OSR_DATA_NATIVE_PC(a0)  // s8 := native PC; jump after free
+    call free  // arg a0; release OsrData*
+    jr s8      // Jump to the compiled code.
 
-// This is the logical end of ExecuteNterpImpl, where the frame info applies.
-.cfi_endproc
+    // This is the logical end of ExecuteNterpImpl, where the frame info applies.
+    .cfi_endproc
 
 NterpToNterpInstance:
-%  nterp_to_nterp_instance()
+%   nterp_to_nterp_instance()
 NterpToNterpStringInit:
-%  nterp_to_nterp_string_init()
+%   nterp_to_nterp_string_init()
 NterpToNterpStatic:
-%  nterp_to_nterp_static()
+%   nterp_to_nterp_static()
 NterpToNterpInstanceRange:
-%  nterp_to_nterp_instance_range()
+%   nterp_to_nterp_instance_range()
 NterpToNterpStringInitRange:
-%  nterp_to_nterp_string_init_range()
+%   nterp_to_nterp_string_init_range()
 NterpToNterpStaticRange:
-%  nterp_to_nterp_static_range()
+%   nterp_to_nterp_static_range()
 
-NAME_END nterp_helper
+  NAME_END nterp_helper
 
-// EndExecuteNterpImpl includes the methods after .cfi_endproc, as we want the runtime to see them
-// as part of the Nterp PCs. This label marks the end of PCs contained by the OatQuickMethodHeader
-// created for the interpreter entry point.
-    .type EndExecuteNterpImpl, @function
-    .hidden EndExecuteNterpImpl
-    .global EndExecuteNterpImpl
-EndExecuteNterpImpl:
+  // EndExecuteNterpImpl includes the methods after .cfi_endproc, as we want the runtime to see them
+  // as part of the Nterp PCs. This label marks the end of PCs contained by the OatQuickMethodHeader
+  // created for the interpreter entry point.
+  .type EndExecuteNterpImpl, @function
+  .hidden EndExecuteNterpImpl
+  .global EndExecuteNterpImpl
+  EndExecuteNterpImpl:
 
-// Entrypoints into runtime.
-NTERP_TRAMPOLINE nterp_allocate_object, NterpAllocateObject
-NTERP_TRAMPOLINE nterp_filled_new_array, NterpFilledNewArray
-NTERP_TRAMPOLINE nterp_filled_new_array_range, NterpFilledNewArrayRange
-NTERP_TRAMPOLINE nterp_get_class, NterpGetClass
-NTERP_TRAMPOLINE nterp_get_instance_field_offset, NterpGetInstanceFieldOffset
-NTERP_TRAMPOLINE nterp_get_method, NterpGetMethod
-NTERP_TRAMPOLINE nterp_get_static_field, NterpGetStaticField
-NTERP_TRAMPOLINE nterp_hot_method, NterpHotMethod
-NTERP_TRAMPOLINE nterp_load_object, NterpLoadObject
+  // Entrypoints into runtime.
+  NTERP_TRAMPOLINE nterp_allocate_object, NterpAllocateObject
+  NTERP_TRAMPOLINE nterp_filled_new_array, NterpFilledNewArray
+  NTERP_TRAMPOLINE nterp_filled_new_array_range, NterpFilledNewArrayRange
+  NTERP_TRAMPOLINE nterp_get_class, NterpGetClass
+  NTERP_TRAMPOLINE nterp_get_instance_field_offset, NterpGetInstanceFieldOffset
+  NTERP_TRAMPOLINE nterp_get_method, NterpGetMethod
+  NTERP_TRAMPOLINE nterp_get_static_field, NterpGetStaticField
+  NTERP_TRAMPOLINE nterp_hot_method, NterpHotMethod
+  NTERP_TRAMPOLINE nterp_load_object, NterpLoadObject
 
-ENTRY nterp_deliver_pending_exception
-    DELIVER_PENDING_EXCEPTION
-END nterp_deliver_pending_exception
+  ENTRY nterp_deliver_pending_exception
+      DELIVER_PENDING_EXCEPTION
+  END nterp_deliver_pending_exception
 
 // gen_mterp.py will inline the following definitions
 // within [ExecuteNterpImpl, EndExecuteNterpImpl).
@@ -707,7 +680,7 @@ END nterp_deliver_pending_exception
     .type artNterpAsmInstructionStart, @function
     .hidden artNterpAsmInstructionStart
     .global artNterpAsmInstructionStart
-artNterpAsmInstructionStart = .L_op_nop
+    artNterpAsmInstructionStart = ${opcode_name_prefix}op_nop
     .text
 
 %def instruction_end():
@@ -721,15 +694,40 @@ artNterpAsmInstructionEnd:
     GET_INST_OPCODE t0
     GOTO_OPCODE t0
 
+%def fetch_from_thread_cache(reg, miss_label, z0, z1):
+    // See art::InterpreterCache::IndexOf() for computing index of key within cache array.
+    // Entry address:
+    //   xSELF + OFFSET + ((xPC>>2 & xFF) << 4)
+    // = xSELF + OFFSET + ((xPC & xFF<<2) << 2)
+    // = xSELF + ((OFFSET>>2 + (xPC & xFF<<2)) << 2)
+    // => ANDI, ADD, SH2ADD
+#if (THREAD_INTERPRETER_CACHE_SIZE_LOG2 != 8)
+#error Expected interpreter cache array size = 256 elements
+#endif
+#if (THREAD_INTERPRETER_CACHE_KEY_TO_ENTRY_SHIFT != 2)
+#error Expected interpreter cache key to entry shift 2
+#endif
+#if ((THREAD_INTERPRETER_CACHE_OFFSET & 0x3) != 0)
+#error Expected interpreter cache offset to be 4-byte aligned
+#endif
+    andi ${z0}, xPC, THREAD_INTERPRETER_CACHE_KEY_MASK
+    addi ${z0}, ${z0}, THREAD_INTERPRETER_CACHE_OFFSET >> 2
+    sh2add ${z0}, ${z0}, xSELF  // z0 := entry's address
+    ld ${z1}, (${z0})           // z1 := dex PC
+    bne xPC, ${z1}, ${miss_label}
+    ld ${reg}, 8(${z0})         // value: depends on context; see call site
+
 %def opcode_pre():
 %   pass
-%def opcode_name_prefix():
-%   return "nterp_"
+%def opcode_name_prefixes():
+%   return ["nterp_"]
 %def opcode_start():
-    NAME_START nterp_${opcode}
+  NAME_START ${opcode}
+%   pass
 %def opcode_end():
-    NAME_END nterp_${opcode}
+  NAME_END ${opcode}
 %def opcode_slow_path_start(name):
-    NAME_START ${name}
+  NAME_START ${name}
+%   pass
 %def opcode_slow_path_end(name):
-    NAME_END ${name}
+  NAME_END ${name}

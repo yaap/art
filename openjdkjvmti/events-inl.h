@@ -407,8 +407,7 @@ inline bool EventHandler::ShouldDispatch<ArtJvmtiEvent::kFieldModification>(
     [[maybe_unused]] jvalue val) const {
   art::ReaderMutexLock lk(art::Thread::Current(), env->event_info_mutex_);
   return ShouldDispatchOnThread<ArtJvmtiEvent::kFieldModification>(env, thread) &&
-      env->modify_watched_fields.find(
-          art::jni::DecodeArtField(field)) != env->modify_watched_fields.end();
+      env->modify_watched_fields.find(field) != env->modify_watched_fields.end();
 }
 
 template <>
@@ -424,8 +423,7 @@ inline bool EventHandler::ShouldDispatch<ArtJvmtiEvent::kFieldAccess>(
     jfieldID field) const {
   art::ReaderMutexLock lk(art::Thread::Current(), env->event_info_mutex_);
   return ShouldDispatchOnThread<ArtJvmtiEvent::kFieldAccess>(env, thread) &&
-      env->access_watched_fields.find(
-          art::jni::DecodeArtField(field)) != env->access_watched_fields.end();
+      env->access_watched_fields.find(field) != env->access_watched_fields.end();
 }
 
 // Need to give custom specializations for FramePop since it needs to filter out which particular

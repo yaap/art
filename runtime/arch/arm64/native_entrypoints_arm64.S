@@ -89,3 +89,8 @@ ENTRY art_jni_dlsym_lookup_stub
 1:
     ret             // restore regs and return to caller to handle exception.
 END art_jni_dlsym_lookup_stub
+
+ENTRY art_quick_generic_jni_trampoline_simulator
+    // Simulator is supported only on x86_64 hosts.
+    brk 0                           // Unreachable.
+END art_quick_generic_jni_trampoline_simulator

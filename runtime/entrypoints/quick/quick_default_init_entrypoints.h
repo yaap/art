@@ -82,7 +82,15 @@ static void DefaultInitEntryPoints(JniEntryPoints* jpoints,
   qpoints->SetJniMethodEntryHook(art_jni_method_entry_hook);
 
   // Locks
-  if (UNLIKELY(VLOG_IS_ON(systrace_lock_logging))) {
+  bool use_lock_slow_path = VLOG_IS_ON(systrace_lock_logging);
+
+#ifdef ART_USE_RESTRICTED_MODE
+  // The simulator cannot accurately simulate the exclusive access instructions that the fast path
+  // uses. Use slow paths instead.
+  use_lock_slow_path = true;
+#endif  // ART_USE_RESTRICTED_MODE
+
+  if (UNLIKELY(use_lock_slow_path)) {
     qpoints->SetJniLockObject(art_jni_lock_object_no_inline);
     qpoints->SetJniUnlockObject(art_jni_unlock_object_no_inline);
     qpoints->SetLockObject(art_quick_lock_object_no_inline);

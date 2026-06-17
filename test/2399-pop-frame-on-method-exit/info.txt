@@ -1,0 +1,2 @@
+Test method exit callback is not called again when popping the frame from the
+method exit callback.

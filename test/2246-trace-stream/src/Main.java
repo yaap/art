@@ -76,7 +76,7 @@ public class Main {
                 }
                 VMDebug.$noinline$stopMethodTracing();
                 out_file.close();
-                parser.CheckTraceFileFormat(file, expected_version, "TestThread2246");
+                parser.CheckTraceFileFormat(file, expected_version, "TestThread2246", null);
                 file.delete();
             } catch (Exception e) {
                 System.out.println("Exception in thread " + e);
@@ -105,7 +105,7 @@ public class Main {
             m.doSomeWorkThrow();
             VMDebug.$noinline$stopMethodTracing();
             main_out_file.close();
-            parser.CheckTraceFileFormat(file, expected_version, "main");
+            parser.CheckTraceFileFormat(file, expected_version, "main", null);
             file.delete();
         } finally {
           file.delete();

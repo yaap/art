@@ -28,6 +28,7 @@
 #include "base/casts.h"
 #include "base/logging.h"
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "base/pointer_size.h"
 #include "base/runtime_debug.h"
 #include "dex/dex_file_structs.h"
@@ -38,7 +39,6 @@
 #include "gc_root.h"
 #include "intrinsics_enum.h"
 #include "obj_ptr.h"
-#include "offsets.h"
 #include "read_barrier_option.h"
 
 namespace art HIDDEN {
@@ -286,8 +286,7 @@ class EXPORT ArtMethod final {
     static_assert((kAccCopied & kAccIntrinsicBits) != 0,
                   "kAccCopied deliberately overlaps intrinsic bits");
     const bool copied = (access_flags & (kAccIntrinsic | kAccCopied)) == kAccCopied;
-    // (IsMiranda() || IsDefaultConflicting()) implies copied
-    DCHECK(!(IsMiranda(access_flags) || IsDefaultConflicting(access_flags)) || copied)
+    DCHECK_IMPLIES(IsMiranda(access_flags) || IsDefaultConflicting(access_flags), copied)
         << "Miranda or default-conflict methods must always be copied.";
     return copied;
   }
@@ -931,9 +930,9 @@ class EXPORT ArtMethod final {
   }
 
   static bool NeedsCodeItem(uint32_t access_flags) {
-    return !IsNative(access_flags) &&
-           !IsAbstract(access_flags) &&
-           !IsDefaultConflicting(access_flags);
+    DCHECK_EQ(IsInvokable(access_flags),
+              !IsAbstract(access_flags) && !IsDefaultConflicting(access_flags));
+    return !IsNative(access_flags) && IsInvokable(access_flags);
   }
 
   void SetCodeItem(const dex::CodeItem* code_item)

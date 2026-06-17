@@ -86,7 +86,7 @@ class StubTest : public CommonRuntimeTest {
                                       Thread* self, ArtMethod* referrer, size_t hidden) {
     // Push a transition back into managed code onto the linked list in thread.
     ManagedStack fragment;
-    self->PushManagedStackFragment(&fragment);
+    ScopedManagedStackFragment smsf(self, &fragment);
 
     size_t result;
     size_t fpr_result = 0;
@@ -393,8 +393,6 @@ class StubTest : public CommonRuntimeTest {
     LOG(WARNING) << "Was asked to invoke for an architecture I do not understand.";
     result = 0;
 #endif
-    // Pop transition.
-    self->PopManagedStackFragment(fragment);
 
     fp_result = fpr_result;
     EXPECT_EQ(0U, fp_result);

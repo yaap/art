@@ -96,6 +96,14 @@ class SlowPathCode : public DeletableArenaObject<kArenaAllocSlowPaths> {
 
   virtual void EmitNativeCode(CodeGenerator* codegen) = 0;
 
+  // Returns true if the native code generated for this slow path is identical to
+  // the code generated for the slow path for provided `instruction`.
+  virtual bool EmitsSameNativeCodeAsSlowPathForInstruction(
+      [[maybe_unused]] const HInstruction* instruction,
+      [[maybe_unused]] const CodeGenerator* codegen) const {
+    return false;
+  }
+
   // Save live core and floating-point caller-save registers and
   // update the stack mask in `locations` for registers holding object
   // references.
@@ -206,7 +214,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
     // Note that this follows the current calling convention.
     return GetFrameSize()
         + static_cast<size_t>(InstructionSetPointerSize(GetInstructionSet()))  // Art method
-        + parameter->GetIndex() * kVRegSize;
+        + parameter->GetInputVRegIndex() * kVRegSize;
   }
 
   virtual void Initialize() = 0;
@@ -244,6 +252,8 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   // Get the size of the target SIMD register in bytes.
   virtual size_t GetSIMDRegisterWidth() const = 0;
+  virtual bool HasOverlappingFPVecRegisters() const { return false; }
+
   virtual uintptr_t GetAddressOf(HBasicBlock* block) = 0;
   void InitializeCodeGeneration(size_t number_of_spill_slots,
                                 size_t maximum_safepoint_spill_size,
@@ -263,6 +273,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   size_t GetNumberOfCoreRegisters() const { return number_of_core_registers_; }
   size_t GetNumberOfFloatingPointRegisters() const { return number_of_fpu_registers_; }
+  size_t GetNumberOfVectorRegisters() const { return number_of_vector_registers_; }
 
   virtual void ComputeSpillMask() {
     spilled_registers_ = allocated_registers_.Intersect(callee_saves_);
@@ -272,6 +283,8 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   virtual void DumpCoreRegister(std::ostream& stream, int reg) const = 0;
   virtual void DumpFloatingPointRegister(std::ostream& stream, int reg) const = 0;
+  virtual void DumpVectorRegister(std::ostream& stream, int reg) const;  // Default: unreachable.
+
   virtual InstructionSet GetInstructionSet() const = 0;
 
   // Saves the register in the stack. Returns the size taken on stack.
@@ -477,7 +490,17 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
     // If the target class is in the boot or app image, it's non-moveable and it doesn't matter
     // if we compare it with a from-space or to-space reference, the result is the same.
     // It's OK to traverse a class hierarchy jumping between from-space and to-space.
-    return EmitReadBarrier() && !instance_of->GetTargetClass()->IsInImage();
+    if (EmitBakerReadBarrier()) {
+      HInstruction* target_class = instance_of->GetTargetClass();
+      if (target_class->IsLoadClass()) {
+        return !target_class->AsLoadClass()->IsInImage();
+      } else {
+        DCHECK(target_class->IsFieldAccess());
+        // This could be more precise. Assuming the worst.
+        return true;
+      }
+    }
+    return false;
   }
 
   ReadBarrierOption ReadBarrierOptionForInstanceOf(HInstanceOf* instance_of) {
@@ -491,8 +514,9 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
       case TypeCheckKind::kClassHierarchyCheck:
       case TypeCheckKind::kArrayObjectCheck:
       case TypeCheckKind::kInterfaceCheck: {
+        DCHECK(check_cast->GetTargetClass()->IsLoadClass());
         bool needs_read_barrier =
-            EmitReadBarrier() && !check_cast->GetTargetClass()->IsInImage();
+            EmitReadBarrier() && !check_cast->GetTargetClass()->AsLoadClass()->IsInImage();
         // We do not emit read barriers for HCheckCast, so we can get false negatives
         // and the slow path shall re-check and simply return if the cast is actually OK.
         return !needs_read_barrier;
@@ -542,6 +566,14 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
     allocated_registers_.AddFpuRegisterSet(registers);
   }
 
+  void AddAllocatedVectorRegisterSet(uint32_t registers) {
+    allocated_registers_.AddVecRegisterSet(registers);
+  }
+
+  void AddAllocatedRegisterSet(PhysicalRegisterType register_type, uint32_t registers) {
+    allocated_registers_.AddRegisterSet(register_type, registers);
+  }
+
   void AddAllocatedCoreRegister(uint32_t reg) {
     allocated_registers_.AddCoreRegister(reg);
   }
@@ -550,10 +582,16 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
     allocated_registers_.AddFpuRegister(reg);
   }
 
-  bool HasAllocatedRegister(bool is_core, int reg) const {
-    return is_core
-        ? allocated_registers_.ContainsCoreRegister(reg)
-        : allocated_registers_.ContainsFpuRegister(reg);
+  void AddAllocatedVectorRegister(uint32_t reg) {
+    allocated_registers_.AddVecRegister(reg);
+  }
+
+  void AddAllocatedRegister(PhysicalRegisterType register_type, uint32_t reg) {
+    allocated_registers_.AddRegister(register_type, reg);
+  }
+
+  RegisterSet GetAllocatedRegisters() const {
+    return allocated_registers_;
   }
 
   // Type consistency check, used only in debug builds.
@@ -783,6 +821,8 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   static QuickEntrypointEnum GetArrayAllocationEntrypoint(size_t component_size_shift);
   static ScaleFactor ScaleFactorForType(DataType::Type type);
 
+  static void CopyConstantTableData(HLoadConstantTableEntry* load, /*out*/ uint8_t* buffer);
+
   ArrayRef<const uint8_t> GetCode() const {
     return ArrayRef<const uint8_t>(GetAssembler().CodeBufferBaseAddress(),
                                    GetAssembler().CodeSize());
@@ -790,6 +830,14 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   virtual HGraphVisitor* GetLocationBuilder() = 0;
   virtual HGraphVisitor* GetInstructionVisitor() = 0;
+
+  // Returns true if `invoke` is an intrinsic with code generation that it is truly there and
+  // call-free (not unimplemented, no bail on instruction features, or call on slow path).
+  //
+  // TODO: Avoid wasting Arena memory. This is done by calling the locations builder on the
+  // instruction and clearing out the locations once result is known. We assume this call only has
+  // creating locations as side effects!
+  virtual bool IsIntrinsicCallFree(HInvoke* invoke) const = 0;
 
  protected:
   // Patch info used for recording locations of required linker patches and their targets,
@@ -811,6 +859,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
   CodeGenerator(HGraph* graph,
                 size_t number_of_core_registers,
                 size_t number_of_fpu_registers,
+                size_t number_of_vector_registers,
                 RegisterSet callee_saves,
                 const CompilerOptions& compiler_options,
                 OptimizingCompilerStats* stats,
@@ -917,6 +966,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   size_t number_of_core_registers_;
   size_t number_of_fpu_registers_;
+  size_t number_of_vector_registers_;
 
   // The order to use for code generation.
   const ArenaVector<HBasicBlock*>* block_order_;
@@ -975,6 +1025,7 @@ class CodeGenerator : public DeletableArenaObject<kArenaAllocCodeGenerator> {
 
   friend class OptimizingCFITest;
   friend class RegisterAllocatorTest;
+  friend class CodegenTest;
   ART_FRIEND_TEST(CodegenTest, ARM64FrameSizeSIMD);
   ART_FRIEND_TEST(CodegenTest, ARM64FrameSizeNoSIMD);
 
@@ -1068,7 +1119,7 @@ class SlowPathGenerator {
         InstructionType* other_instruction = it.first;
         SlowPathCodeType* other_slow_path = down_cast<SlowPathCodeType*>(it.second);
         // Determine if the instructions allow for slow-path sharing.
-        if (HaveSameLiveRegisters(instruction, other_instruction) &&
+        if (other_slow_path->EmitsSameNativeCodeAsSlowPathForInstruction(instruction, codegen_) &&
             HaveSameStackMap(instruction, other_instruction)) {
           // Can share: reuse existing one.
           return other_slow_path;
@@ -1088,19 +1139,6 @@ class SlowPathGenerator {
   }
 
  private:
-  // Tests if both instructions have same set of live physical registers. This ensures
-  // the slow-path has exactly the same preamble on saving these registers to stack.
-  bool HaveSameLiveRegisters(const InstructionType* i1, const InstructionType* i2) const {
-    const uint32_t core_spill = ~codegen_->GetCoreSpillMask();
-    const uint32_t fpu_spill = ~codegen_->GetFpuSpillMask();
-    RegisterSet* live1 = i1->GetLocations()->GetLiveRegisters();
-    RegisterSet* live2 = i2->GetLocations()->GetLiveRegisters();
-    return (((live1->GetCoreRegisterSet() & core_spill) ==
-             (live2->GetCoreRegisterSet() & core_spill)) &&
-            ((live1->GetFpuRegisterSet() & fpu_spill) ==
-             (live2->GetFpuRegisterSet() & fpu_spill)));
-  }
-
   // Tests if both instructions have the same stack map. This ensures the interpreter
   // will find exactly the same dex-registers at the same entries.
   bool HaveSameStackMap(const InstructionType* i1, const InstructionType* i2) const {
@@ -1142,6 +1180,43 @@ class InstructionCodeGenerator : public HGraphVisitor {
   // TODO: under current regime, only deopt sharing make sense; extend later.
   SlowPathGenerator<HDeoptimize> deopt_slow_paths_;
 };
+
+// Tests if slow-paths for both instructions save the same set of live registers.
+//
+// Although, in general, the implementation of a slow-path depends on its type and target
+// architecture, it typically includes the following:
+// * Saving live caller-save registers (all or those required by the custom slow-path calling
+//   convention) — preamble.
+// * Preparing arguments for and calling the corresponding runtime entry point.
+//
+// For such slow-paths, this method can be used to check that they have the same preamble,
+// which is a required condition for deduplication.
+inline bool HaveSameSlowPathSavedRegisters(const HInstruction* i1,
+                                           const HInstruction* i2,
+                                           const CodeGenerator* codegen) {
+  // CodeGenerator::GetSlowPathSpills returns the set of live registers that will be saved
+  // in an instruction's slow-path (unrelated to the save location). Currently, concrete
+  // implementations of SlowPathCode::SaveLiveRegisters also use this method.
+  RegisterSet spills1 = codegen->GetSlowPathSpills(i1->GetLocations());
+  RegisterSet spills2 = codegen->GetSlowPathSpills(i2->GetLocations());
+  return spills1.GetCoreRegisterSet() == spills2.GetCoreRegisterSet() &&
+         spills1.GetFpuRegisterSet() == spills2.GetFpuRegisterSet();
+}
+
+// Returns true if both instructions are Deoptimize and have the same kind and slow-path spills.
+inline bool IsDeoptWithSameKindAndSlowPathSavedRegisters(const HInstruction* i1,
+                                                         const HInstruction* i2,
+                                                         const CodeGenerator* codegen) {
+  if (!i1->IsDeoptimize() || !i2->IsDeoptimize()) {
+    return false;
+  }
+  // Check that slow-paths have the same argument-preparation part.
+  if (i1->AsDeoptimize()->GetDeoptimizationKind() != i2->AsDeoptimize()->GetDeoptimizationKind()) {
+    return false;
+  }
+  // Check that slow-paths have the same preamble.
+  return HaveSameSlowPathSavedRegisters(i1, i2, codegen);
+}
 
 }  // namespace art
 

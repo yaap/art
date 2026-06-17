@@ -1,0 +1,2 @@
+Regression test for the fast compiler which used to wrongly type dex registers
+for shift long instructions.

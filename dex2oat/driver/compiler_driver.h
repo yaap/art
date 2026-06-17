@@ -26,7 +26,6 @@
 #include "base/array_ref.h"
 #include "base/bit_utils.h"
 #include "base/bit_vector.h"
-#include "base/hash_set.h"
 #include "base/mutex.h"
 #include "base/os.h"
 #include "base/quasi_atomic.h"
@@ -64,6 +63,7 @@ class CompilerOptions;
 class DexCompilationUnit;
 class DexFile;
 template<class T> class Handle;
+class ImageClassMap;
 struct InlineIGetIPutData;
 class InstructionSetFeatures;
 class InternTable;
@@ -105,7 +105,7 @@ class CompilerDriver {
   void PreCompile(jobject class_loader,
                   const std::vector<const DexFile*>& dex_files,
                   TimingLogger* timings,
-                  /*inout*/ HashSet<std::string>* image_classes)
+                  /*inout*/ ImageClassMap* image_classes)
       REQUIRES(!Locks::mutator_lock_);
   void CompileAll(jobject class_loader,
                   const std::vector<const DexFile*>& dex_files,
@@ -160,37 +160,6 @@ class CompilerDriver {
                                      const DexCompilationUnit* mUnit)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  // Resolve a field. Returns null on failure, including incompatible class change.
-  // NOTE: Unlike ClassLinker's ResolveField(), this method enforces is_static.
-  ArtField* ResolveField(const ScopedObjectAccess& soa,
-                         Handle<mirror::DexCache> dex_cache,
-                         Handle<mirror::ClassLoader> class_loader,
-                         uint32_t field_idx,
-                         bool is_static)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  // Can we fast-path an IGET/IPUT access to an instance field? If yes, compute the field offset.
-  std::pair<bool, bool> IsFastInstanceField(ObjPtr<mirror::DexCache> dex_cache,
-                                            ObjPtr<mirror::Class> referrer_class,
-                                            ArtField* resolved_field,
-                                            uint16_t field_idx)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  void ProcessedInstanceField(bool resolved);
-  void ProcessedStaticField(bool resolved, bool local);
-
-  // Can we fast path instance field access? Computes field's offset and volatility.
-  bool ComputeInstanceFieldInfo(uint32_t field_idx, const DexCompilationUnit* mUnit, bool is_put,
-                                MemberOffset* field_offset, bool* is_volatile)
-      REQUIRES(!Locks::mutator_lock_);
-
-  ArtField* ComputeInstanceFieldInfo(uint32_t field_idx,
-                                     const DexCompilationUnit* mUnit,
-                                     bool is_put,
-                                     const ScopedObjectAccess& soa)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-
   size_t GetThreadCount() const {
     return parallel_thread_count_;
   }
@@ -230,7 +199,7 @@ class CompilerDriver {
  private:
   void LoadImageClasses(TimingLogger* timings,
                         jobject class_loader,
-                        /*inout*/ HashSet<std::string>* image_classes)
+                        /*inout*/ ImageClassMap* image_classes)
       REQUIRES(!Locks::mutator_lock_);
 
   // Attempt to resolve all type, methods, fields, and strings
@@ -283,7 +252,7 @@ class CompilerDriver {
                          TimingLogger* timings)
       REQUIRES(!Locks::mutator_lock_);
 
-  void UpdateImageClasses(TimingLogger* timings, /*inout*/ HashSet<std::string>* image_classes)
+  void UpdateImageClasses(TimingLogger* timings, /*inout*/ ImageClassMap* image_classes)
       REQUIRES(!Locks::mutator_lock_);
 
   void Compile(jobject class_loader,

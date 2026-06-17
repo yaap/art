@@ -21,6 +21,7 @@ import com.android.ahat.heapdump.AhatClassInstance;
 import com.android.ahat.heapdump.AhatClassObj;
 import com.android.ahat.heapdump.AhatHeap;
 import com.android.ahat.heapdump.AhatInstance;
+import com.android.ahat.heapdump.AhatMessageInstance;
 import com.android.ahat.heapdump.AhatSnapshot;
 import com.android.ahat.heapdump.DiffFields;
 import com.android.ahat.heapdump.DiffedFieldValue;
@@ -97,7 +98,15 @@ class ObjectHandler implements AhatHandler {
         inst.getTotalRetainedSize(), base.getTotalRetainedSize());
     SizeTable.end(doc);
 
+    // Specialized handling for some types.
     printBitmap(doc, inst);
+    if (inst.isMessageInstance()) {
+      printMessageInfo(doc, inst.asMessageInstance());
+    }
+    if (inst.isInstanceOfClass("android.os.Looper")) {
+      printLooperInfo(doc, inst);
+    }
+
     if (inst.isClassInstance()) {
       printClassInstanceFields(doc, query, inst.asClassInstance());
     } else if (inst.isArrayInstance()) {
@@ -133,7 +142,7 @@ class ObjectHandler implements AhatHandler {
     }
 
     List<Value> elements = array.getValues();
-    SubsetSelector<Value> selector = new SubsetSelector(query, ARRAY_ELEMENTS_ID, elements);
+    SubsetSelector<Value> selector = new SubsetSelector<>(query, ARRAY_ELEMENTS_ID, elements);
     int i = 0;
     for (Value current : selector.selected()) {
       DocString delta = new DocString();
@@ -169,7 +178,7 @@ class ObjectHandler implements AhatHandler {
     }
 
     List<DiffedFieldValue> fields = DiffFields.diff(current, baseline);
-    SubsetSelector<DiffedFieldValue> selector = new SubsetSelector(query, id, fields);
+    SubsetSelector<DiffedFieldValue> selector = new SubsetSelector<>(query, id, fields);
 
     doc.table(
         new Column("Type"),
@@ -231,7 +240,7 @@ class ObjectHandler implements AhatHandler {
     } else {
       doc.table(new Column("Object"));
       List<AhatInstance> references = inst.getReverseReferences();
-      SubsetSelector<AhatInstance> selector = new SubsetSelector(query, REFS_ID, references);
+      SubsetSelector<AhatInstance> selector = new SubsetSelector<>(query, REFS_ID, references);
       for (AhatInstance ref : selector.selected()) {
         doc.row(Summarizer.summarize(ref));
       }
@@ -254,6 +263,58 @@ class ObjectHandler implements AhatHandler {
       doc.println(DocString.image(
             DocString.formattedUri("bitmap?id=0x%x", bitmap.getId()), "bitmap image"));
     }
+  }
+
+  private void printMessageInfo(Doc doc, AhatMessageInstance msg) {
+    doc.section("Message Info");
+    doc.descriptions();
+
+    AhatInstance looper = msg.getLooper();
+    if (looper != null) {
+      AhatInstance thread = looper.getRefField("mThread");
+      doc.description(DocString.text("Looper Thread"), Summarizer.summarize(thread));
+    }
+
+    long when = msg.getWhen();
+    long uptime = mSnapshot.getUptimeMillis();
+    doc.description(DocString.text("When"), DocString.duration(when - uptime));
+
+    AhatMessageInstance next = msg.getNextInQueue();
+    if (next != null) {
+      doc.description(DocString.text("Next in Queue"), Summarizer.summarize(next));
+    }
+
+    AhatMessageInstance prev = msg.getPrev();
+    if (prev != null) {
+      doc.description(DocString.text("Previous in Queue"), Summarizer.summarize(prev));
+    }
+
+    doc.end();
+  }
+
+  private void printLooperInfo(Doc doc, AhatInstance looper) {
+    doc.section("Looper Info");
+    AhatMessageInstance.MessageDumpData data = mSnapshot.getMessageDumpData();
+    if (data != null) {
+      // The number of Loopers should be small, so it's fine to just iterate through all instances
+      // to find the matching one.
+      for (AhatMessageInstance.MessageDumpData.LooperInfo info : data.loopers) {
+        if (info.looper.getId() == looper.getId()) {
+          doc.descriptions();
+          doc.description(DocString.text("Thread"), Summarizer.summarize(info.thread));
+          doc.description(DocString.text("Thread Name"), DocString.text(info.threadName));
+          doc.description(DocString.text("Message Count"), DocString.format("%,d", info.messages.size()));
+          doc.description(DocString.text("Total Retained Size"), DocString.text(info.retainedSize.toString()));
+          if (!info.messages.isEmpty()) {
+            doc.description(DocString.text("Head"), Summarizer.summarize(info.messages.get(0)));
+          }
+          doc.end();
+          break;
+        }
+      }
+    }
+    doc.println(DocString.link(DocString.uri("/objects?id=0&heap=app&class=android.os.Looper"),
+        DocString.text("View all loopers")));
   }
 
   private void printSamplePath(Doc doc, Query query, AhatInstance inst) {

@@ -17,50 +17,50 @@
 import java.util.concurrent.*;
 
 public class Main {
-  public Main() {
-  }
+    public Main() {
+    }
 
-  void $noinline$f(Runnable r) throws Exception {
-    $noinline$g(r);
-  }
+    void $noinline$f(Runnable r) throws Exception {
+        $noinline$g(r);
+    }
 
-  void $noinline$g(Runnable r) {
-    $noinline$h(r);
-  }
+    void $noinline$g(Runnable r) {
+        $noinline$h(r);
+    }
 
-  void $noinline$h(Runnable r) {
-    r.run();
-  }
+    void $noinline$h(Runnable r) {
+        r.run();
+    }
 
-  public native void resetTest();
-  public native void waitAndInstrumentStack(Thread t);
-  public native void doSelfStackWalk();
+    public native void resetTest();
+    public native void waitAndInstrumentStack(Thread t);
+    public native void doSelfStackWalk();
 
-  void testConcurrent() throws Exception {
-    resetTest();
-    final Thread current = Thread.currentThread();
-    Thread t = new Thread(() -> {
-      try {
-        this.waitAndInstrumentStack(current);
-      } catch (Exception e) {
-        throw new Error("Fail!", e);
-      }
-    });
-    t.start();
-    $noinline$f(() -> {
-      try {
-        this.doSelfStackWalk();
-      } catch (Exception e) {
-        throw new Error("Fail!", e);
-      }
-    });
-    t.join();
-  }
+    void testConcurrent() throws Exception {
+        resetTest();
+        final Thread current = Thread.currentThread();
+        Thread t = new Thread(() -> {
+            try {
+                this.waitAndInstrumentStack(current);
+            } catch (Exception e) {
+                throw new Error("Fail!", e);
+            }
+        });
+        t.start();
+        $noinline$f(() -> {
+            try {
+                this.doSelfStackWalk();
+            } catch (Exception e) {
+                throw new Error("Fail!", e);
+            }
+        });
+        t.join();
+    }
 
-  public static void main(String[] args) throws Exception {
-    System.loadLibrary(args[0]);
-    Main st = new Main();
-    st.testConcurrent();
-    System.out.println("Done");
-  }
+    public static void main(String[] args) throws Exception {
+        System.loadLibrary(args[0]);
+        Main st = new Main();
+        st.testConcurrent();
+        System.out.println("Done");
+    }
 }

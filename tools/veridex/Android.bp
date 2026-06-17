@@ -57,13 +57,6 @@ cc_binary {
     },
 }
 
-// Expose the appcompat.sh script for use by the build.
-sh_binary_host {
-    name: "veridex-appcompat",
-    src: "appcompat.sh",
-    filename_from_src: true,
-}
-
 genrule {
     name: "system_stub_dex_d8_input_jar",
     visibility: ["//visibility:private"],
@@ -140,6 +133,7 @@ genrule {
 
 python_binary_host {
     name: "appcompat",
+    visibility: ["//visibility:private"],
     srcs: ["appcompat.py"],
     data: [
         ":veridex",
@@ -148,30 +142,15 @@ python_binary_host {
     ],
     device_common_data: [
         ":platform-bootclasspath{hiddenapi-flags.csv}",
+        ":platform-bootclasspath{hiddenapi-flagged-apis.csv}",
     ],
 }
 
-// TODO: Remove `veridex_zip` and `appcompat.sh` after migrating
-//       `GtsUnofficialApisUsageTestCases` and `GtsNetUnofficialApisUsageTestCases` to use appcompat.
-java_genrule {
-    name: "veridex_zip",
-    srcs: [
-        "appcompat.sh",
-        ":platform-bootclasspath{hiddenapi-flags.csv}",
-        ":org.apache.http.legacy-stubs.zip",
-        ":system-stubs.zip",
-    ],
-    tools: [
-        "soong_zip",
-        "veridex",
-    ],
-    out: ["veridex.zip"],
-    cmd: "mkdir -p $(genDir)/tmp &&" +
-        "$(locations soong_zip) -o $(out)" +
-        " -C `dirname $(location appcompat.sh)` -f $(location appcompat.sh)" +
-        " -C `dirname $(location :platform-bootclasspath{hiddenapi-flags.csv})` -f $(location :platform-bootclasspath{hiddenapi-flags.csv})" +
-        " -C `dirname $(location veridex)` -f $(location veridex)" +
-        " -C `dirname $(location :org.apache.http.legacy-stubs.zip)` -f $(location :org.apache.http.legacy-stubs.zip)" +
-        " -C `dirname $(location :system-stubs.zip)` -f $(location :system-stubs.zip)",
+// This is used in `GtsUnofficialApisUsageTestCases`
+genrule {
+    name: "appcompat_bin",
+    tools: [":appcompat"],
+    out: ["appcompat"],
+    cmd: "cp $(location :appcompat) $(out)",
     visibility: ["//visibility:public"],
 }

@@ -611,7 +611,7 @@ END art_quick_do_long_jump
 
 
 .macro DEOPT_OR_RESTORE_SAVE_EVERYTHING_FRAME_AND_RETURN_A0 temp, is_ref
-  ld      \temp, THREAD_DEOPT_CHECK_REQUIRED_OFFSET(xSELF)
+  lwu     \temp, THREAD_DEOPT_CHECK_REQUIRED_OFFSET(xSELF)
   CFI_REMEMBER_STATE
   bnez    \temp, 2f
   RESTORE_SAVE_EVERYTHING_FRAME /* load_a0= */ 0

@@ -1,0 +1,1 @@
+Regression test for b/479959182 (VarHandle CAS result finalization with LSE and CC read barriers).

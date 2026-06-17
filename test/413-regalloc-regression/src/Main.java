@@ -15,27 +15,27 @@
  */
 
 public class Main {
-  private Object[] data;
-  private int size;
+    private Object[] data;
+    private int size;
 
-  public Main() {
-    data = new Object[4];
-    size = 0;
-  }
-
-  public void removeElementAt(int index) {
-    for (int i = index; i < size - 1; i++) {
-      data[i] = data[i + 1];
+    public Main() {
+        data = new Object[4];
+        size = 0;
     }
-    data[--size] = null;
-  }
 
-  public static void main(String[] args) {
-    Main main = new Main();
-    main.size++;
-    main.removeElementAt(0);
-    if (main.size != 0) {
-      throw new Error("Unexpected size");
+    public void removeElementAt(int index) {
+        for (int i = index; i < size - 1; i++) {
+            data[i] = data[i + 1];
+        }
+        data[--size] = null;
     }
-  }
+
+    public static void main(String[] args) {
+        Main main = new Main();
+        main.size++;
+        main.removeElementAt(0);
+        if (main.size != 0) {
+            throw new Error("Unexpected size");
+        }
+    }
 }

@@ -21,11 +21,11 @@
 
 #include "base/locks.h"
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "base/runtime_debug.h"
 #include "gc_root.h"
 #include "jni.h"
 #include "mirror/object_reference.h"
-#include "offsets.h"
 #include "read_barrier_config.h"
 
 namespace art HIDDEN {

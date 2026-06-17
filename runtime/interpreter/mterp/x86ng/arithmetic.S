@@ -1,4 +1,4 @@
-%def bindiv(result="", special="", rem=""):
+%def bindiv(result="", special="", rem=False):
 /*
  * 32-bit binary div/rem operation.  Handles special case of op0=minint and
  * op1=-1.
@@ -13,19 +13,19 @@
     je      common_errDivideByZero
     movl    %eax, %edx
     orl     %ecx, %edx
-    testl   $$0xFFFFFF00, %edx              # If both arguments are less
-                                            #   than 8-bit and +ve
-    jz      .L${opcode}_8                   # Do 8-bit divide
-    testl   $$0xFFFF0000, %edx              # If both arguments are less
-                                            #   than 16-bit and +ve
-    jz      .L${opcode}_16                  # Do 16-bit divide
+    testl   $$0xFFFFFF00, %edx              // If both arguments are less
+                                            //   than 8-bit and +ve
+    jz      .L${opcode}_8                   // Do 8-bit divide
+    testl   $$0xFFFF0000, %edx              // If both arguments are less
+                                            //   than 16-bit and +ve
+    jz      .L${opcode}_16                  // Do 16-bit divide
     cmpl    $$-1, %ecx
     jne     .L${opcode}_32
     cmpl    $$0x80000000, %eax
     jne     .L${opcode}_32
     movl    $special, $result
     jmp     .L${opcode}_finish
-%  add_slow_path(bindiv_helper, result, rem)
+%   add_slow_path(bindiv_helper, result, rem)
 
 %def bindiv_helper(result, rem):
 .L${opcode}_32:
@@ -33,14 +33,13 @@
     idivl   %ecx
     jmp     .L${opcode}_finish
 .L${opcode}_8:
-    div     %cl                             # 8-bit divide otherwise.
-                                            # Remainder in %ah, quotient in %al
-    .if $rem
-    movl    %eax, %edx
-    shr     $$8, %edx
-    .else
-    andl    $$0x000000FF, %eax
-    .endif
+    div     %cl                             // 8-bit divide otherwise.
+                                            // Remainder in %ah, quotient in %al
+%   if rem:
+      movl    %eax, %edx
+      shr     $$8, %edx
+%   else:
+      andl    $$0x000000FF, %eax
     jmp     .L${opcode}_finish
 .L${opcode}_16:
     xorl    %edx, %edx                      # Clear %edx before divide
@@ -72,7 +71,7 @@
     SET_VREG $result, rINST
     mov     LOCAL0(%esp), rIBASE
     ADVANCE_PC_FETCH_AND_GOTO_NEXT 1
-%  add_slow_path(bindiv2addr_helper, result)
+%   add_slow_path(bindiv2addr_helper, result)
 
 %def bindiv2addr_helper(result):
 .L${opcode}_continue_div2addr:
@@ -262,7 +261,7 @@
     CLEAR_WIDE_REF rINST
     ADVANCE_PC_FETCH_AND_GOTO_NEXT 1
 
-%def cvtfp_int(srcdouble="1", tgtlong="1"):
+%def cvtfp_int(srcdouble=False, tgtlong=False):
 /* On fp to int conversions, Java requires that
  * if the result > maxint, it should be clamped to maxint.  If it is less
  * than minint, it should be clamped to minint.  If it is a nan, the result
@@ -273,11 +272,10 @@
     /* float/double to int/long vA, vB */
     movzbl  rINSTbl, %ecx                   # ecx <- A+
     sarl    $$4, rINST                      # rINST <- B
-    .if $srcdouble
-    fldl    VREG_ADDRESS(rINST)             # %st0 <- vB
-    .else
-    flds    VREG_ADDRESS(rINST)             # %st0 <- vB
-    .endif
+%   if srcdouble:
+      fldl    VREG_ADDRESS(rINST)           # %st0 <- vB
+%   else:
+      flds    VREG_ADDRESS(rINST)           # %st0 <- vB
     ftst
     fnstcw  LOCAL0(%esp)                    # remember original rounding mode
     movzwl  LOCAL0(%esp), %eax
@@ -285,29 +283,26 @@
     movw    %ax, LOCAL0+2(%esp)
     fldcw   LOCAL0+2(%esp)                  # set "to zero" rounding mode
     andb    $$0xf, %cl                      # ecx <- A
-    .if $tgtlong
-    fistpll VREG_ADDRESS(%ecx)              # convert and store
-    .else
-    fistpl  VREG_ADDRESS(%ecx)              # convert and store
-    .endif
+%   if tgtlong:
+      fistpll VREG_ADDRESS(%ecx)            # convert and store
+%   else:
+      fistpl  VREG_ADDRESS(%ecx)            # convert and store
     fldcw   LOCAL0(%esp)                    # restore previous rounding mode
-    .if $tgtlong
-    movl    $$0x80000000, %eax
-    xorl    VREG_HIGH_ADDRESS(%ecx), %eax
-    orl     VREG_ADDRESS(%ecx), %eax
-    .else
-    cmpl    $$0x80000000, VREG_ADDRESS(%ecx)
-    .endif
+%   if tgtlong:
+      movl    $$0x80000000, %eax
+      xorl    VREG_HIGH_ADDRESS(%ecx), %eax
+      orl     VREG_ADDRESS(%ecx), %eax
+%   else:
+      cmpl    $$0x80000000, VREG_ADDRESS(%ecx)
     je      .L${opcode}_special_case # fix up result
 
 .L${opcode}_finish:
     xor     %eax, %eax
     mov     %eax, VREG_REF_ADDRESS(%ecx)
-    .if $tgtlong
-    mov     %eax, VREG_REF_HIGH_ADDRESS(%ecx)
-    .endif
+%   if tgtlong:
+      mov     %eax, VREG_REF_HIGH_ADDRESS(%ecx)
     ADVANCE_PC_FETCH_AND_GOTO_NEXT 1
-%  add_slow_path(cvtfp_int_helper, tgtlong)
+%   add_slow_path(cvtfp_int_helper, tgtlong)
 
 %def cvtfp_int_helper(tgtlong):
 .L${opcode}_special_case:
@@ -315,15 +310,13 @@
     sahf
     jp      .L${opcode}_isNaN
     adcl    $$-1, VREG_ADDRESS(%ecx)
-    .if $tgtlong
-    adcl    $$-1, VREG_HIGH_ADDRESS(%ecx)
-    .endif
-   jmp      .L${opcode}_finish
+%   if tgtlong:
+      adcl    $$-1, VREG_HIGH_ADDRESS(%ecx)
+    jmp      .L${opcode}_finish
 .L${opcode}_isNaN:
     movl    $$0, VREG_ADDRESS(%ecx)
-    .if $tgtlong
-    movl    $$0, VREG_HIGH_ADDRESS(%ecx)
-    .endif
+%   if tgtlong:
+      movl    $$0, VREG_HIGH_ADDRESS(%ecx)
     jmp     .L${opcode}_finish
 
 %def shop2addr(result="%eax", instr=""):
@@ -420,7 +413,7 @@
     jmp     .L${opcode}_finish
 
 %def op_div_int():
-%  bindiv(result="%eax", special="$0x80000000", rem="0")
+%  bindiv(result="%eax", special="$0x80000000")
 
 %def op_div_int_2addr():
 %  bindiv2addr(result="%eax", special="$0x80000000")
@@ -684,7 +677,7 @@
 %  binopWide2addr(instr1="orl", instr2="orl")
 
 %def op_rem_int():
-%  bindiv(result="rIBASE", special="$0", rem="1")
+%  bindiv(result="rIBASE", special="$0", rem=True)
 
 %def op_rem_int_2addr():
 %  bindiv2addr(result="rIBASE", special="$0")

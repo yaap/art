@@ -109,3 +109,96 @@ DEFINE_FUNCTION art_jni_dlsym_lookup_stub
 .Lno_native_code_found:
     ret
 END_FUNCTION art_jni_dlsym_lookup_stub
+
+    /*
+     * Simulator's Generic JNI stub - native part.
+     *
+     * When this is called, artQuickGenericJniTrampoline has already setup the new native frame on
+     * the simulated (quick) stack. This stub will reserve an equal space on the hardware (native)
+     * stack and copy across the native frame from the simulated stack to the newly reserved area
+     * on the hardware stack before doing the native call.
+     *
+     * See comments for StackType in thread.h for more information on the types of stack being
+     * used.
+     *
+     * On entry:
+     *   rdi = native function pointer
+     *   rsi = simulated_reserved_area pointer
+     *   rdx = out_fp_result pointer
+     */
+DEFINE_FUNCTION art_quick_generic_jni_trampoline_simulator
+    PUSH_ARG rdi    // native function pointer
+    PUSH_ARG rsi    // simulated_reserved_area pointer
+    PUSH_ARG rdx    // out_fp_result pointer
+    PUSH r12        // callee saved
+    PUSH rbp        // callee saved
+
+    movq %rsp, %rbp
+    CFI_DEF_CFA_REGISTER(rbp)
+    subq LITERAL(GENERIC_JNI_TRAMPOLINE_RESERVED_AREA), %rsp
+
+    // prepare for memcpy call
+    // (native stack ptr, simulator reserved area ptr, length of reserved area)
+    movq %rsp, %rdi           // pass SP to param 0
+    // The simulated reserved area is still in rsi which is passed as param 1
+    movq LITERAL(GENERIC_JNI_TRAMPOLINE_RESERVED_AREA), %rdx  // pass the length of memory to copy
+
+    call SYMBOL(memcpy)
+
+    // 120 bytes is the constant offset from the top of the reserved area to the pointer which
+    // points to the JNI stack args on the simulated stack. Space is always reserved for the
+    // maximum number of arguments so we can always load them all, even if some are unused.
+    //
+    // See a diagram near art_quick_generic_jni_trampoline and the number of native args from
+    // BuildNativeCallFrameStateMachine:
+    // 8 FP regs, 6 GP regs, Hidden arg = 120 bytes
+    movq (120)(%rsp), %r12
+    // def r12: delta between JNI stack args on the simulated stack and the simulated reserved area
+    // ptr.
+    subq 24(%rbp), %r12
+
+    // Load parameters from frame into registers.
+    movq 0(%rsp), %rdi
+    movq 8(%rsp), %rsi
+    movq 16(%rsp), %rdx
+    movq 24(%rsp), %rcx
+    movq 32(%rsp), %r8
+    movq 40(%rsp), %r9
+
+    movq 48(%rsp), %xmm0
+    movq 56(%rsp), %xmm1
+    movq 64(%rsp), %xmm2
+    movq 72(%rsp), %xmm3
+    movq 80(%rsp), %xmm4
+    movq 88(%rsp), %xmm5
+    movq 96(%rsp), %xmm6
+    movq 104(%rsp), %xmm7
+
+    // Save call target in scratch register.
+    movq (32)(%rbp), %r11
+
+    // Load hidden arg (rax) for @CriticalNative.
+    movq 112(%rsp), %rax
+    // Increase rsp from the reserved area pointer on the hardware stack, to point to the JNI stack
+    // args on the hardware stack.
+    addq %r12, %rsp
+
+    // native call
+    call *%r11
+
+    // Tear down the reserved area on the hardware stack. The reserved area on the simulated stack
+    // will be torn down after we return to art_quick_generic_jni_trampoline.
+    movq %rbp, %rsp
+
+    // Load out_fp_result pointer
+    movq 16(%rbp), %rsi
+    movq %xmm0, (%rsi)
+
+    POP rbp
+    POP r12
+    POP_ARG rdx
+    POP_ARG rsi
+    POP_ARG rdi
+
+    ret
+END_FUNCTION art_quick_generic_jni_trampoline_simulator

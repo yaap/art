@@ -22,6 +22,8 @@
 
 #include <android-base/logging.h>
 
+#include "macros.h"
+
 namespace art {
 
 /**
@@ -183,6 +185,10 @@ class ArrayRef {
     DCHECK_LE(pos, size());
     DCHECK_LE(length, size() - pos);
     return ArrayRef<const T>(data() + pos, length);
+  }
+
+  static constexpr size_t ArrayOffset() {
+    return OFFSETOF_MEMBER(ArrayRef, array_);
   }
 
  private:

@@ -18,9 +18,15 @@ import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 
-public class Main {
+interface Itf {
+    public int someMethod();
+    public default int someDefaultMethod() { return 42; }
+}
+
+public class Main implements Itf {
     private static final String TEMP_FILE_NAME_PREFIX = "test";
     private static final String TEMP_FILE_NAME_SUFFIX = ".trace";
     private static final int WALL_CLOCK_FLAG = 0x010;
@@ -28,6 +34,30 @@ public class Main {
     private static final int STREAMING_DUAL_CLOCK_VERSION = 1;
     private static final int STREAMING_WALL_CLOCK_VERSION = 1;
     private static File file;
+
+    public int someMethod() {
+        return 3;
+    }
+
+    static class MyProxy implements InvocationHandler {
+
+      private Object obj;
+
+      public static Object newInstance(Object obj) {
+        return java.lang.reflect.Proxy.newProxyInstance(
+            obj.getClass().getClassLoader(),
+            obj.getClass().getInterfaces(),
+            new MyProxy(obj));
+      }
+
+      private MyProxy(Object obj) {
+        this.obj = obj;
+      }
+
+      public Object invoke(Object proxy, Method m, Object[] args) throws Throwable {
+        return m.invoke(obj, args);
+      }
+    }
 
     public static void main(String[] args) throws Exception {
         System.loadLibrary(args[0]);
@@ -40,20 +70,24 @@ public class Main {
         ensureJitCompiled(Main.class, "$noinline$doSomeWorkJIT");
 
         System.out.println("***** streaming test - dual clock *******");
-        testTracing(/* streaming=*/true, /* flags= */ 0);
+        testTracing(/* streaming=*/true, /* flags= */ 0, /* test_overflow= */ false);
 
         System.out.println("***** streaming test - wall clock *******");
-        testTracing(/* streaming=*/true, /* flags= */ WALL_CLOCK_FLAG);
+        testTracing(/* streaming=*/true, /* flags= */ WALL_CLOCK_FLAG, /* test_overflow= */ false);
 
         System.out.println("***** non-streaming test - dual clock *******");
-        testTracing(/* streaming=*/false, /* flags= */ 0);
+        testTracing(/* streaming=*/false, /* flags= */ 0, /* test_overflow= */ false);
 
         System.out.println("***** non-streaming test - wall clock *******");
-        testTracing(/* streaming=*/false, /* flags= */ WALL_CLOCK_FLAG);
+        testTracing(/* streaming=*/false, /* flags= */ WALL_CLOCK_FLAG, /* test_overflow= */ false);
+
+        System.out.println("***** non-streaming test - wall clock - buffer overflow  *******");
+        testTracing(/* streaming=*/false, /* flags= */ WALL_CLOCK_FLAG, /* test_overflow= */ true);
     }
 
-    public static void testTracing(boolean streaming, int flags) throws Exception {
+    public static void testTracing(boolean streaming, int flags, boolean test_overflow) throws Exception {
         Main m = new Main();
+        final long num_iterations = test_overflow? (32 * 1024) : 20;
         Thread t = new Thread(() -> {
             try {
                 file = createTempFile();
@@ -62,13 +96,23 @@ public class Main {
                         file.getPath(), out_file.getFD(), 0, flags, false, 0, streaming);
                 Main m1 = new Main();
                 m1.$noinline$doSomeWork();
+
+                // Use some proxy methods
+                Itf foo = (Itf) MyProxy.newInstance(new Main());
+                foo.someMethod();
+                foo.someDefaultMethod();
+
                 // Call JITed code multiple times to flush out any issues with timestamps.
-                for (int i = 0; i < 20; i++) {
+                for (long i = 0; i < num_iterations; i++) {
                     m.$noinline$doSomeWorkJIT();
                 }
                 VMDebug.$noinline$stopMethodTracing();
                 out_file.close();
-                dumpTrace(file.getAbsolutePath(), "TestThread2246");
+                if (test_overflow) {
+                  dumpTrace(file.getAbsolutePath(), "TestThread2246", "stopMethodTracing");
+                } else {
+                  dumpTrace(file.getAbsolutePath(), "TestThread2246", null);
+                }
                 file.delete();
             } catch (Exception e) {
                 System.out.println("Exception in thread " + e);
@@ -91,13 +135,17 @@ public class Main {
                     file.getPath(), main_out_file.getFD(), 0, flags, false, 0, streaming);
             m.$noinline$doSomeWork();
             // Call JITed code multiple times to flush out any issues with timestamps.
-            for (int i = 0; i < 20; i++) {
+            for (int i = 0; i < num_iterations; i++) {
                 m.$noinline$doSomeWorkJIT();
             }
             m.doSomeWorkThrow();
             VMDebug.$noinline$stopMethodTracing();
             main_out_file.close();
-            dumpTrace(file.getAbsolutePath(), "main");
+            if (test_overflow) {
+                dumpTrace(file.getAbsolutePath(), "main", "stopMethodTracing");
+            } else {
+                dumpTrace(file.getAbsolutePath(), "main", null);
+            }
             file.delete();
         } finally {
             file.delete();
@@ -177,5 +225,5 @@ public class Main {
     }
 
     private static native void ensureJitCompiled(Class<?> cls, String methodName);
-    private static native void dumpTrace(String fileName, String threadName);
+    private static native void dumpTrace(String fileName, String threadName, String methodNameFilter);
 }

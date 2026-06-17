@@ -375,7 +375,7 @@ OatFileBase* OatFileBase::OpenOatFileFromSdm(const std::string& sdm_filename,
 
   ret->PreSetup(elf_filename);
 
-  ret->vdex_ = VdexFile::OpenFromDm(dm_filename, ret->vdex_begin_, ret->vdex_end_, error_msg);
+  ret->vdex_ = VdexFile::OpenFromDm(dm_filename, error_msg);
   if (ret->vdex_ == nullptr) {
     return nullptr;
   }
@@ -391,12 +391,7 @@ OatFileBase* OatFileBase::OpenOatFileFromSdm(const std::string& sdm_filename,
 }
 
 bool OatFileBase::LoadVdex(const std::string& vdex_filename, bool low_4gb, std::string* error_msg) {
-  vdex_ = VdexFile::OpenAtAddress(vdex_begin_,
-                                  vdex_end_ - vdex_begin_,
-                                  /*mmap_reuse=*/vdex_begin_ != nullptr,
-                                  vdex_filename,
-                                  low_4gb,
-                                  error_msg);
+  vdex_ = VdexFile::Open(vdex_filename, low_4gb, error_msg);
   if (vdex_.get() == nullptr) {
     *error_msg = StringPrintf("Failed to load vdex file '%s' %s",
                               vdex_filename.c_str(),
@@ -416,15 +411,12 @@ bool OatFileBase::LoadVdex(int vdex_fd,
     if (rc == -1) {
       PLOG(WARNING) << "Failed getting length of vdex file";
     } else {
-      vdex_ = VdexFile::OpenAtAddress(vdex_begin_,
-                                      vdex_end_ - vdex_begin_,
-                                      /*mmap_reuse=*/vdex_begin_ != nullptr,
-                                      vdex_fd,
-                                      /*start=*/0,
-                                      s.st_size,
-                                      vdex_filename,
-                                      low_4gb,
-                                      error_msg);
+      vdex_ = VdexFile::Open(vdex_fd,
+                             /*start=*/0,
+                             s.st_size,
+                             vdex_filename,
+                             low_4gb,
+                             error_msg);
       if (vdex_.get() == nullptr) {
         *error_msg = "Failed opening vdex file.";
         return false;
@@ -488,20 +480,9 @@ bool OatFileBase::ComputeFields(const std::string& file_path, std::string* error
         const_cast<uint8_t*>(FindDynamicSymbolAddress("oatbssmethods", &symbol_error_msg));
     // Find bss roots if present.
     bss_roots_ = const_cast<uint8_t*>(FindDynamicSymbolAddress("oatbssroots", &symbol_error_msg));
-  }
-
-  vdex_begin_ = const_cast<uint8_t*>(FindDynamicSymbolAddress("oatdex", &symbol_error_msg));
-  if (vdex_begin_ == nullptr) {
-    // No .vdex section.
-    vdex_end_ = nullptr;
-  } else {
-    vdex_end_ = const_cast<uint8_t*>(FindDynamicSymbolAddress("oatdexlastword", &symbol_error_msg));
-    if (vdex_end_ == nullptr) {
-      *error_msg = StringPrintf("Failed to find oatdexlastword symbol in '%s'", file_path.c_str());
-      return false;
-    }
-    // Readjust to be non-inclusive upper bound.
-    vdex_end_ += sizeof(uint32_t);
+    // Find bss strings if present.
+    bss_strings_ =
+        const_cast<uint8_t*>(FindDynamicSymbolAddress("oatbssstrings", &symbol_error_msg));
   }
 
   return true;
@@ -660,9 +641,9 @@ static bool ComputeAndCheckTypeLookupTableData(const DexFile::Header& header,
 }
 
 bool OatFileBase::Setup(const std::vector<const DexFile*>& dex_files, std::string* error_msg) {
-  uint32_t i = 0;
   const uint8_t* type_lookup_table_start = nullptr;
-  for (const DexFile* dex_file : dex_files) {
+  for (size_t i = 0; i < dex_files.size(); ++i) {
+    const DexFile* dex_file = dex_files[i];
     // Defensively verify external dex file checksum. `OatFileAssistant`
     // expects this check to happen during oat file setup when the oat file
     // does not contain dex code.
@@ -676,7 +657,7 @@ bool OatFileBase::Setup(const std::vector<const DexFile*>& dex_files, std::strin
     std::string dex_location = dex_file->GetLocation();
     std::string canonical_location = DexFileLoader::GetDexCanonicalLocation(dex_location.c_str());
 
-    type_lookup_table_start = vdex_->GetNextTypeLookupTableData(type_lookup_table_start, i++);
+    type_lookup_table_start = vdex_->GetNextTypeLookupTableData(type_lookup_table_start, i);
     const uint8_t* type_lookup_table_data = nullptr;
     if (!ComputeAndCheckTypeLookupTableData(dex_file->GetHeader(),
                                             type_lookup_table_start,
@@ -694,7 +675,8 @@ bool OatFileBase::Setup(const std::vector<const DexFile*>& dex_files, std::strin
                                               dex_file->GetSha1(),
                                               dex_location,
                                               canonical_location,
-                                              type_lookup_table_data);
+                                              type_lookup_table_data,
+                                              i);
     oat_dex_files_storage_.push_back(oat_dex_file);
 
     // Add the location and canonical location (if different) to the oat_dex_files_ table.
@@ -706,7 +688,7 @@ bool OatFileBase::Setup(const std::vector<const DexFile*>& dex_files, std::strin
     }
   }
   // Now that we've created all the OatDexFile, update the dex files.
-  for (i = 0; i < dex_files.size(); ++i) {
+  for (size_t i = 0; i < dex_files.size(); ++i) {
     dex_files[i]->SetOatDexFile(oat_dex_files_storage_[i]);
   }
   return true;
@@ -764,24 +746,30 @@ bool OatFileBase::Setup(int zip_fd,
   if (!IsAlignedParam(bss_begin_, MemMap::GetPageSize()) ||
       !IsAlignedParam(bss_methods_, static_cast<size_t>(pointer_size)) ||
       !IsAlignedParam(bss_roots_, static_cast<size_t>(pointer_size)) ||
+      !IsAlignedParam(bss_strings_, sizeof(GcRoot<mirror::Object>)) ||
       !IsAligned<alignof(GcRoot<mirror::Object>)>(bss_end_)) {
     *error_msg = ErrorPrintf(
-        "unaligned bss symbol(s): begin = %p, methods_ = %p, roots = %p, end = %p",
+        "unaligned bss symbol(s): begin = %p, methods_ = %p, roots = %p, strings = %p, end = %p",
         bss_begin_,
         bss_methods_,
         bss_roots_,
+        bss_strings_,
         bss_end_);
     return false;
   }
 
   if ((bss_methods_ != nullptr && (bss_methods_ < bss_begin_ || bss_methods_ > bss_end_)) ||
       (bss_roots_ != nullptr && (bss_roots_ < bss_begin_ || bss_roots_ > bss_end_)) ||
-      (bss_methods_ != nullptr && bss_roots_ != nullptr && bss_methods_ > bss_roots_)) {
+      (bss_strings_ != nullptr && (bss_strings_ < bss_begin_ || bss_strings_ > bss_end_)) ||
+      (bss_methods_ != nullptr && bss_roots_ != nullptr && bss_methods_ > bss_roots_) ||
+      (bss_strings_ != nullptr && (bss_roots_ == nullptr || bss_roots_ > bss_strings_))) {
     *error_msg = ErrorPrintf(
-        "bss symbol(s) outside .bss or unordered: begin = %p, methods = %p, roots = %p, end = %p",
+        "bss symbol(s) outside .bss or unordered, or strings present without roots: "
+            "begin = %p, methods = %p, roots = %p, strings = %p, end = %p",
         bss_begin_,
         bss_methods_,
         bss_roots_,
+        bss_strings_,
         bss_end_);
     return false;
   }
@@ -848,9 +836,7 @@ bool OatFileBase::Setup(int zip_fd,
       }
     }
     // Check that the base location of a multidex location matches the last seen primary location.
-    if (is_multidex &&
-        (!dex_file_location.starts_with(primary_location) ||
-             dex_file_location[primary_location.size()] != DexFileLoader::kMultiDexSeparator)) {
+    if (is_multidex && DexFileLoader::GetBaseLocation(dex_file_location) != primary_location) {
       *error_msg = ErrorPrintf("unexpected multidex location '%s', unrelated to '%s'",
                                dex_file_location.c_str(),
                                std::string(primary_location).c_str());
@@ -1094,17 +1080,18 @@ bool OatFileBase::Setup(int zip_fd,
       return false;
     }
 
-    uint32_t dex_layout_sections_offset;
-    if (UNLIKELY(!ReadOatDexFileData(*this, &oat, &dex_layout_sections_offset))) {
-      *error_msg = ErrorPrintf(
-          "OatDexFile #%zd for '%s' truncated after dex layout sections offset",
-          i,
-          dex_file_location.c_str());
+    uint32_t dex_profile_metadata_offset;
+    if (UNLIKELY(!ReadOatDexFileData(*this, &oat, &dex_profile_metadata_offset))) {
+      *error_msg =
+          ErrorPrintf("OatDexFile #%zd for '%s' truncated after dex profile metadata offset",
+                      i,
+                      dex_file_location.c_str());
       return false;
     }
-    const DexLayoutSections* const dex_layout_sections = dex_layout_sections_offset != 0
-        ? reinterpret_cast<const DexLayoutSections*>(Begin() + dex_layout_sections_offset)
-        : nullptr;
+    const DexProfileMetadata* dex_profile_metadata =
+        dex_profile_metadata_offset != 0
+            ? reinterpret_cast<const DexProfileMetadata*>(Begin() + dex_profile_metadata_offset)
+            : nullptr;
 
     BssMappingInfo bss_mapping_info;
     if (!ReadBssMappingInfo(
@@ -1125,7 +1112,8 @@ bool OatFileBase::Setup(int zip_fd,
                        lookup_table_data,
                        bss_mapping_info,
                        class_offsets_pointer,
-                       dex_layout_sections);
+                       dex_profile_metadata,
+                       i);
     oat_dex_files_storage_.push_back(oat_dex_file);
 
     // Add the location and canonical location (if different) to the oat_dex_files_ table.
@@ -1865,7 +1853,7 @@ class OatFileBackedByVdex final : public OatFileBase {
           return nullptr;
         }
         // Create the OatDexFile and add it to the owning container.
-        std::string location = DexFileLoader::GetMultiDexLocation(i, dex_location.c_str());
+        std::string location = DexFileLoader::GetMultiDexLocation(dex_location.c_str(), i);
         std::string canonical_location = DexFileLoader::GetDexCanonicalLocation(location.c_str());
         type_lookup_table_start = vdex_file->GetNextTypeLookupTableData(type_lookup_table_start, i);
         const uint8_t* type_lookup_table_data = nullptr;
@@ -1885,7 +1873,8 @@ class OatFileBackedByVdex final : public OatFileBase {
                                                   header->signature_,
                                                   location,
                                                   canonical_location,
-                                                  type_lookup_table_data);
+                                                  type_lookup_table_data,
+                                                  i);
         oat_file->oat_dex_files_storage_.push_back(oat_dex_file);
 
         std::string_view key(oat_dex_file->GetDexFileLocation());
@@ -2159,10 +2148,8 @@ OatFile::OatFile(const std::string& location, bool is_executable)
       bss_end_(nullptr),
       bss_methods_(nullptr),
       bss_roots_(nullptr),
+      bss_strings_(nullptr),
       is_executable_(is_executable),
-      vdex_begin_(nullptr),
-      vdex_end_(nullptr),
-      app_image_begin_(nullptr),
       secondary_lookup_lock_("OatFile secondary lookup lock", kOatFileSecondaryLookupLock) {
   CHECK(!location_.empty());
 }
@@ -2240,6 +2227,16 @@ ArrayRef<GcRoot<mirror::Object>> OatFile::GetBssGcRoots() const {
   }
 }
 
+ArrayRef<GcRoot<mirror::Object>> OatFile::GetBssStrings() const {
+  if (bss_strings_ != nullptr) {
+    auto* strings = reinterpret_cast<GcRoot<mirror::Object>*>(bss_strings_);
+    auto* strings_end = reinterpret_cast<GcRoot<mirror::Object>*>(bss_end_);
+    return ArrayRef<GcRoot<mirror::Object>>(strings, strings_end - strings);
+  } else {
+    return ArrayRef<GcRoot<mirror::Object>>();
+  }
+}
+
 const OatDexFile* OatFile::GetOatDexFile(const char* dex_location, std::string* error_msg) const {
   // NOTE: We assume here that the canonical location for a given dex_location never
   // changes. If it does (i.e. some symlink used by the filename changes) we may return
@@ -2295,6 +2292,36 @@ const OatDexFile* OatFile::GetOatDexFile(const char* dex_location, std::string* 
   return oat_dex_file;
 }
 
+std::unique_ptr<const DexFile> OatFile::OpenOatDexFile(const char* location,
+                                                       std::string* error_msg) const {
+  DCHECK(error_msg != nullptr);
+  std::unique_ptr<const DexFile> dex_file;
+  const OatDexFile* oat_dex_file = GetOatDexFile(location, error_msg);
+  if (oat_dex_file == nullptr) {
+    return std::unique_ptr<const DexFile>();
+  }
+  std::string inner_error_msg;
+  dex_file = oat_dex_file->OpenDexFile(&inner_error_msg);
+  if (dex_file == nullptr) {
+    *error_msg = StringPrintf("Failed to open dex file %s from within oat file %s error '%s'",
+                              location,
+                              GetLocation().c_str(),
+                              inner_error_msg.c_str());
+    return std::unique_ptr<const DexFile>();
+  }
+
+  if (dex_file->GetLocationChecksum() != oat_dex_file->GetDexFileLocationChecksum()) {
+    CHECK(dex_file->GetSha1() != oat_dex_file->GetSha1());
+    *error_msg = StringPrintf("Checksums do not match for %s: %x vs %x",
+                              location,
+                              dex_file->GetLocationChecksum(),
+                              oat_dex_file->GetDexFileLocationChecksum());
+    return std::unique_ptr<const DexFile>();
+  }
+  CHECK(dex_file->GetSha1() == oat_dex_file->GetSha1());
+  return dex_file;
+}
+
 OatDexFile::OatDexFile(const OatFile* oat_file,
                        const std::string& dex_file_location,
                        const std::string& canonical_dex_file_location,
@@ -2306,20 +2333,22 @@ OatDexFile::OatDexFile(const OatFile* oat_file,
                        const uint8_t* lookup_table_data,
                        const OatFile::BssMappingInfo& bss_mapping_info,
                        const uint32_t* oat_class_offsets_pointer,
-                       const DexLayoutSections* dex_layout_sections)
+                       const DexProfileMetadata* dex_profile_metadata,
+                       uint32_t vdex_index)
     : oat_file_(oat_file),
       dex_file_location_(dex_file_location),
       canonical_dex_file_location_(canonical_dex_file_location),
       dex_file_magic_(dex_file_magic),
       dex_file_location_checksum_(dex_file_location_checksum),
       dex_file_sha1_(dex_file_sha1),
+      vdex_index_(vdex_index),
       dex_file_container_(dex_file_container),
       dex_file_pointer_(dex_file_pointer),
       lookup_table_data_(lookup_table_data),
       bss_mapping_info_(bss_mapping_info),
       oat_class_offsets_pointer_(oat_class_offsets_pointer),
       lookup_table_(),
-      dex_layout_sections_(dex_layout_sections) {
+      dex_profile_metadata_(dex_profile_metadata) {
   InitializeTypeLookupTable();
   DCHECK(!IsBackedByVdexOnly());
 }
@@ -2352,13 +2381,15 @@ OatDexFile::OatDexFile(const OatFile* oat_file,
                        DexFile::Sha1 dex_file_sha1,
                        const std::string& dex_file_location,
                        const std::string& canonical_dex_file_location,
-                       const uint8_t* lookup_table_data)
+                       const uint8_t* lookup_table_data,
+                       uint32_t vdex_index)
     : oat_file_(oat_file),
       dex_file_location_(dex_file_location),
       canonical_dex_file_location_(canonical_dex_file_location),
       dex_file_magic_(dex_file_magic),
       dex_file_location_checksum_(dex_file_location_checksum),
       dex_file_sha1_(dex_file_sha1),
+      vdex_index_(vdex_index),
       dex_file_container_(dex_file_container),
       dex_file_pointer_(dex_file_pointer),
       lookup_table_data_(lookup_table_data) {
@@ -2626,7 +2657,9 @@ static void DCheckIndexToBssMapping(const OatFile* oat_file,
   }
 }
 
-void OatFile::InitializeRelocations() const {
+void OatFile::InitializeRelocations(ArtMethod* resolution_method,
+                                    const void* boot_image_begin,
+                                    const void* app_image_begin) const {
   DCHECK(IsExecutable());
 
   // Initialize the .data.img.rel.ro section.
@@ -2637,15 +2670,14 @@ void OatFile::InitializeRelocations() const {
                 reloc_begin,
                 DataImgRelRoSize(),
                 PROT_READ | PROT_WRITE);
-    uint32_t boot_image_begin = Runtime::Current()->GetHeap()->GetBootImagesStartAddress();
+    CHECK(boot_image_begin != nullptr);
     for (const uint32_t& relocation : GetBootImageRelocations()) {
-      const_cast<uint32_t&>(relocation) += boot_image_begin;
+      const_cast<uint32_t&>(relocation) += reinterpret_cast32<uint32_t>(boot_image_begin);
     }
     if (!GetAppImageRelocations().empty()) {
-      CHECK(app_image_begin_ != nullptr);
-      uint32_t app_image_begin = reinterpret_cast32<uint32_t>(app_image_begin_);
+      CHECK(app_image_begin != nullptr);
       for (const uint32_t& relocation : GetAppImageRelocations()) {
-        const_cast<uint32_t&>(relocation) += app_image_begin;
+        const_cast<uint32_t&>(relocation) += reinterpret_cast32<uint32_t>(app_image_begin);
       }
     }
     CheckedCall(mprotect,
@@ -2678,7 +2710,6 @@ void OatFile::InitializeRelocations() const {
 
   // Initialize the .bss section.
   // TODO: Pre-initialize from boot/app image?
-  ArtMethod* resolution_method = Runtime::Current()->GetResolutionMethod();
   for (ArtMethod*& entry : GetBssMethods()) {
     entry = resolution_method;
   }

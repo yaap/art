@@ -145,6 +145,7 @@ template<typename T>
 constexpr bool IsPowerOfTwo(T x) {
   static_assert(std::is_integral_v<T>, "T must be integral");
   // TODO: assert unsigned. There is currently many uses with signed values.
+  DCHECK_NE(x, static_cast<T>(0));
   return (x & (x - 1)) == 0;
 }
 

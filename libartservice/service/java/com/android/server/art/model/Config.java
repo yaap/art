@@ -16,16 +16,15 @@
 
 package com.android.server.art.model;
 
-import static com.android.server.art.ArtManagerLocal.AdjustCompilerFilterCallback;
-import static com.android.server.art.ArtManagerLocal.BatchDexoptStartCallback;
-import static com.android.server.art.ArtManagerLocal.DexoptDoneCallback;
-import static com.android.server.art.ArtManagerLocal.ScheduleBackgroundDexoptJobCallback;
-
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.server.art.ArtManagerLocal;
+import com.android.server.art.ArtManagerLocal.AdjustCompilerFilterCallback;
+import com.android.server.art.ArtManagerLocal.BatchDexoptStartCallback;
+import com.android.server.art.ArtManagerLocal.DexoptDoneCallback;
+import com.android.server.art.ArtManagerLocal.ScheduleBackgroundDexoptJobCallback;
 
 import com.google.auto.value.AutoValue;
 

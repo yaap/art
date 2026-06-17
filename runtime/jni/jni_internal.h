@@ -20,6 +20,7 @@
 #include <jni.h>
 #include <iosfwd>
 
+#include "art_field.h"
 #include "base/locks.h"
 #include "base/macros.h"
 #include "reflective_handle.h"
@@ -81,6 +82,9 @@ ArtField* FindFieldJNI(const ScopedObjectAccess& soa,
                        bool is_static,
                        void* caller_address) REQUIRES_SHARED(Locks::mutator_lock_);
 
+EXPORT ArtField* DecodeArtFieldInternal(jfieldID fid) REQUIRES_SHARED(Locks::mutator_lock_);
+EXPORT jfieldID EncodeArtFieldInternal(ArtField* field) REQUIRES_SHARED(Locks::mutator_lock_);
+
 namespace jni {
 
 // We want to maintain a branchless fast-path for performance reasons. The JniIdManager is the
@@ -101,11 +105,11 @@ static bool IsIndexId(jfieldID fid) {
 
 template <bool kEnableIndexIds = true>
 ALWAYS_INLINE
-static inline ArtField* DecodeArtField(jfieldID fid) {
+static inline ArtField* DecodeArtField(jfieldID fid) REQUIRES_SHARED(Locks::mutator_lock_) {
   if (IsIndexId<kEnableIndexIds>(fid)) {
     return Runtime::Current()->GetJniIdManager()->DecodeFieldId(fid);
   } else {
-    return reinterpret_cast<ArtField*>(fid);
+    return DecodeArtFieldInternal(fid);
   }
 }
 
@@ -115,7 +119,7 @@ ALWAYS_INLINE static inline jfieldID EncodeArtField(ReflectiveHandle<ArtField> f
   if (kEnableIndexIds && Runtime::Current()->GetJniIdType() != JniIdType::kPointer) {
     return Runtime::Current()->GetJniIdManager()->EncodeFieldId(field);
   } else {
-    return reinterpret_cast<jfieldID>(field.Get());
+    return EncodeArtFieldInternal(field.Get());
   }
 }
 
@@ -125,7 +129,7 @@ static inline jfieldID EncodeArtField(ArtField* field) REQUIRES_SHARED(Locks::mu
   if (kEnableIndexIds && Runtime::Current()->GetJniIdType() != JniIdType::kPointer) {
     return Runtime::Current()->GetJniIdManager()->EncodeFieldId(field);
   } else {
-    return reinterpret_cast<jfieldID>(field);
+    return EncodeArtFieldInternal(field);
   }
 }
 

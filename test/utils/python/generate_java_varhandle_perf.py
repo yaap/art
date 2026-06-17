@@ -86,7 +86,7 @@ class Benchmark:
             value2 = VALUES[self.vartype][1],
             value1_byte_array = VALUES["byte[]"][self.byteorder][0],
             value2_byte_array = VALUES["byte[]"][self.byteorder][1],
-            loop = "for (int pass = 0; pass < 100; ++pass)",
+            loop = "for (int pass = 0; pass < innerIterations(); ++pass)",
             iters = ITERATIONS)
 
 
@@ -493,7 +493,7 @@ def benchmark_selector(benchmark_to_run):
   else:
     return (
         [BenchUnsafe(UNSAFE_CAS, static, vartype, method)
-            for method in ["compareAndSwap", "compareAndSet"]
+            for method in ["compareAndSet"]
             for static in [True, False]
             for vartype in ["int", "String"]])
 

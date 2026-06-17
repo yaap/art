@@ -122,6 +122,7 @@ public abstract class Value {
    * @param value the value to get the type of
    * @return the value's type
    */
+  @SuppressWarnings("AmbiguousMethodReference") // Suppress warning about potential ambiguity for method references (static vs instance method with same name).
   public static Type getType(Value value) {
     return value == null ? Type.OBJECT : value.getType();
   }
@@ -129,6 +130,7 @@ public abstract class Value {
   /**
    * Return the type of the given value.
    */
+  @SuppressWarnings("AmbiguousMethodReference") // Suppress warning about potential ambiguity for method references (static vs instance method with same name).
   abstract Type getType();
 
   /**
@@ -148,6 +150,25 @@ public abstract class Value {
    * @return the AhatInstance packed into this value
    */
   public AhatInstance asAhatInstance() {
+    return null;
+  }
+
+  /**
+   * Returns true if the Value is a boolean.
+   *
+   * @return true if the value is a boolean.
+   */
+  public boolean isBoolean() {
+    return false;
+  }
+
+  /**
+   * Returns the Value as a boolean if it is one.
+   * Returns null if the Value does not represent a boolean.
+   *
+   * @return the boolean packed into this value
+   */
+  public Boolean asBoolean() {
     return null;
   }
 
@@ -212,6 +233,7 @@ public abstract class Value {
   @Override
   public abstract String toString();
 
+  @SuppressWarnings("AmbiguousMethodReference") // Suppress warning about potential ambiguity for method references (static vs instance method with same name).
   Value getBaseline() {
     return this;
   }
@@ -224,6 +246,7 @@ public abstract class Value {
    * @return the baseline of the value
    * @see Diffable#getBaseline
    */
+  @SuppressWarnings("AmbiguousMethodReference") // Suppress warning about potential ambiguity for method references (static vs instance method with same name).
   public static Value getBaseline(Value value) {
     return value == null ? null : value.getBaseline();
   }
@@ -244,6 +267,16 @@ public abstract class Value {
     @Override
     Type getType() {
       return Type.BOOLEAN;
+    }
+
+    @Override
+    public boolean isBoolean() {
+      return true;
+    }
+
+    @Override
+    public Boolean asBoolean() {
+      return mBool;
     }
 
     @Override

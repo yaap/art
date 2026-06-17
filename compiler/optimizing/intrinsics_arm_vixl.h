@@ -31,7 +31,7 @@ class CodeGeneratorARMVIXL;
 
 class IntrinsicLocationsBuilderARMVIXL final : public IntrinsicVisitor {
  public:
-  explicit IntrinsicLocationsBuilderARMVIXL(CodeGeneratorARMVIXL* codegen);
+  explicit IntrinsicLocationsBuilderARMVIXL(const CodeGeneratorARMVIXL* codegen);
 
   // Define visitor methods.
 
@@ -47,8 +47,8 @@ class IntrinsicLocationsBuilderARMVIXL final : public IntrinsicVisitor {
 
  private:
   ArenaAllocator* const allocator_;
-  CodeGeneratorARMVIXL* const codegen_;
-  ArmVIXLAssembler* const assembler_;
+  const CodeGeneratorARMVIXL* const codegen_;
+  const ArmVIXLAssembler* const assembler_;
   const ArmInstructionSetFeatures& features_;
 
   DISALLOW_COPY_AND_ASSIGN(IntrinsicLocationsBuilderARMVIXL);

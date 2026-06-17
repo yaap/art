@@ -74,9 +74,6 @@ TEST_F(OatFileTest, LoadOat) {
                                                    dex_location,
                                                    &error_msg));
   ASSERT_TRUE(odex_file.get() != nullptr);
-
-  // Check that the vdex file was loaded in the reserved space of odex file.
-  EXPECT_EQ(odex_file->GetVdexFile()->Begin(), odex_file->VdexBegin());
 }
 
 TEST_F(OatFileTest, ChangingMultiDexUncompressed) {

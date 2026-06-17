@@ -41,8 +41,11 @@ class JitCompiler : public JitCompilerInterface {
   virtual ~JitCompiler();
 
   // Compilation entrypoint. Returns whether the compilation succeeded.
-  bool CompileMethod(
-      Thread* self, JitMemoryRegion* region, ArtMethod* method, CompilationKind kind)
+  bool CompileMethod(Thread* self,
+                     JitMemoryRegion* region,
+                     ArtMethod* method,
+                     CompilationKind kind,
+                     bool dynamic_instrumentation = false)
       REQUIRES_SHARED(Locks::mutator_lock_) override;
 
   const CompilerOptions& GetCompilerOptions() const {

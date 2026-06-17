@@ -18,7 +18,6 @@
 %    get_vreg("t1", "t1", is_unsigned=True)  # t1 = fp[B], zext
 %  else:
 %    get_vreg("t1", "t1", is_wide=is_wide)  # t1 := fp[B]
-%#:
    and t2, t2, 0xF       // t2 := A
    FETCH_ADVANCE_INST 1  // advance xPC, load xINST
    GET_INST_OPCODE t3    // t3 holds next opcode
@@ -26,7 +25,6 @@
      SET_VREG_OBJECT t1, t2, z0=t0  // refs[A] := fp[B]
 %  else:
 %    set_vreg("t1", "t2", z0="t0", is_wide=is_wide)  # fp[A] := fp[B]
-%#:
    GOTO_OPCODE t3       // continue to next
 
 // move/from16 vAA, vBBBB
@@ -39,14 +37,12 @@
 %    get_vreg("t1", "t1", is_unsigned=True)  # t1 = fp[BBBB], zext
 %  else:
 %    get_vreg("t1", "t1", is_wide=is_wide)  # t1 := fp[BBBB]
-%#:
    FETCH_ADVANCE_INST 2  // advance xPC, load xINST
    GET_INST_OPCODE t3    // t3 := next opcode
 %  if is_object:
      SET_VREG_OBJECT t1, t2, z0=t0  // refs[AA] := fp[BBBB]
 %  else:
 %    set_vreg("t1", "t2", z0="t0", is_wide=is_wide)  # fp[AA] := fp[BBBB]
-%#:
    GOTO_OPCODE t3        // continue to next
 
 // move/16 vAAAA, vBBBB
@@ -59,14 +55,12 @@
 %    get_vreg("t1", "t1", is_unsigned=True)  # t1 = fp[BBBB], zext
 %  else:
 %    get_vreg("t1", "t1", is_wide=is_wide)  # t1 := fp[BBBB]
-%#:
    FETCH_ADVANCE_INST 3  // advance xPC, load xINST
    GET_INST_OPCODE t3    // t3 := next opcode
 %  if is_object:
      SET_VREG_OBJECT t1, t2, z0=t0  // refs[AAAA] := fp[BBBB]
 %  else:
 %    set_vreg("t1", "t2", z0="t0", is_wide=is_wide)  # fp[AAAA] := fp[BBBB]
-%#:
    GOTO_OPCODE t3        // continue to next
 
 // move-wide vA, vB
@@ -112,7 +106,6 @@
      SET_VREG_OBJECT a0, t1, z0=t0  // refs[AA] := a0
 %  else:
 %    set_vreg("a0", "t1", z0="t0", is_wide=is_wide)  # fp[AA] := a0
-%#:
    GOTO_OPCODE t2        // continue to next
 
 // move-result-wide vAA
@@ -226,7 +219,7 @@
 // Format 21c: AA|1a BBBB
 %def op_const_string(jumbo=False):
    // Fast path: string from thread-local cache.
-   FETCH_FROM_THREAD_CACHE /*object*/a0, .L${opcode}_slow, t0, t1
+%  fetch_from_thread_cache(/*object*/"a0", f".L{opcode}_slow", "t0", "t1")
    TEST_IF_MARKING t2, .L${opcode}_mark
 
 .L${opcode}_resume:
@@ -258,7 +251,7 @@
 // Format 21c: AA|1c BBBB
 %def op_const_class():
    // Fast path: klass reference from thread-local cache.
-   FETCH_FROM_THREAD_CACHE /*object*/a0, .L${opcode}_slow, t0, t1
+%  fetch_from_thread_cache(/*object*/"a0", f".L{opcode}_slow", "t0", "t1")
    TEST_IF_MARKING t2, .L${opcode}_mark
 
 .L${opcode}_resume:

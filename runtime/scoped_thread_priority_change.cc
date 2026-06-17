@@ -38,6 +38,9 @@ void ScopedPriorityChange::SetToNormalOrBetter() {
       // Should succeed on Android; will probably fail elsewhere.
       int ret = setpriority(PRIO_PROCESS, 0, 0);
       if (ret == 0) {
+        // Maintain old niceness in thread structure, so we can determine "real" niceness without
+        // acquiring the mutator lock.
+        self_->SetNicenessBeforeBoost(old_niceness);
         priority_changed_ = true;
       }
     } else if (old_niceness > 0) {
@@ -50,8 +53,11 @@ void ScopedPriorityChange::SetToNormalOrBetter() {
 
 void ScopedPriorityChange::ResetInternal() {
   DCHECK(priority_changed_);
+  DCHECK_GT(self_->GetNicenessBeforeBoost(), 0);
   DCHECK(com::android::libcore::niceness_apis());
   Locks::mutator_lock_->AssertSharedHeld(self_);
+  self_->SetNicenessBeforeBoost(Thread::kNotBoosted);  // Do this even if getpriority() test
+                                                       // fails.
   if (getpriority(PRIO_PROCESS, 0) == 0) {
     // We changed priority and nobody visibly altered it in the interim; change it to the current
     // cached value.

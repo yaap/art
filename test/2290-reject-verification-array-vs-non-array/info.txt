@@ -1,0 +1,2 @@
+Tests that we don't allow mixing of array and non-array types,
+even for unresolved types.

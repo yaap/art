@@ -57,7 +57,7 @@
 %def op_invoke_virtual(range=""):
    EXPORT_PC
    FETCH s7, count=2                // s7 := F|E|D|C or CCCC (range)
-   FETCH_FROM_THREAD_CACHE a0, /*slow path*/2f, t0, t1
+%  fetch_from_thread_cache("a0", /*slow path*/"2f", "t0", "t1")
                                     // a0 := method idx of resolved virtual method
 1:
 %  fetch_receiver(reg="a1", vreg="s7", range=range)
@@ -89,7 +89,7 @@
 %def op_invoke_super(range=""):
    EXPORT_PC
    FETCH s7, count=2              // s7 := F|E|D|C or CCCC (range)
-   FETCH_FROM_THREAD_CACHE a0, /*slow path*/2f, t0, t1
+%  fetch_from_thread_cache("a0", /*slow path*/"2f", "t0", "t1")
                                   // a0 := ArtMethod*
 1:
 %  fetch_receiver(reg="a1", vreg="s7", range=range)
@@ -115,7 +115,7 @@
 %def op_invoke_direct(range=""):
    EXPORT_PC
    FETCH s7, count=2               // s7 := F|E|D|C or CCCC (range)
-   FETCH_FROM_THREAD_CACHE a0, /*slow path*/2f, t0, t1
+%  fetch_from_thread_cache("a0", /*slow path*/"2f", "t0", "t1")
                                    // a0 := ArtMethod*, never String.<init>
 1:
 %  fetch_receiver(reg="a1", vreg="s7", range=range)
@@ -141,7 +141,7 @@
    EXPORT_PC
    // TODO: Unnecessary if A=0, and unnecessary if nterp-to-nterp.
    FETCH s7, count=2               // s7 := F|E|D|C or CCCC (range)
-   FETCH_FROM_THREAD_CACHE a0, /*slow path*/1f, t0, t1
+%  fetch_from_thread_cache("a0", /*slow path*/"1f", "t0", "t1")
                                    // a0 := ArtMethod*
    tail NterpInvokeStatic${range}  // arg a0, s7
 1:
@@ -163,7 +163,7 @@
    // (1) ArtMethod*
    // (2) ArtMethod* with LSB #1 set (default method)
    // (3) method index << 16 with LSB #0 set (j.l.Object method)
-   FETCH_FROM_THREAD_CACHE a0, /*slow path*/5f, t0, t1
+%  fetch_from_thread_cache("a0", /*slow path*/"5f", "t0", "t1")
 1:
 %  fetch_receiver(reg="a1", vreg="s7", range=range)
                           // a1 := fp[C] (this)
@@ -412,7 +412,6 @@
 %    try_simple_args_range(vC="s7", z0="t0", z1="t1", z2="t2", z3="t3", z4="t4", skip=f".L{uniq}_01", uniq=uniq)
 %  else:
 %    try_simple_args(v_fedc="s7", z0="t0", z1="t1", skip=f".L{uniq}_01", uniq=uniq)
-%#:
    jalr s8                       // (regular) args a0 - a5, (range) args a0 - a7 and stack
    j .L${uniq}_next_op
 
@@ -433,7 +432,6 @@
 %    slow_setup_args_range(shorty="s9", vC="s7", z0="t0", z1="t1", z2="t2", z3="t3", z4="t4", z5="t5", z6="t6", z7="s10", uniq=uniq)
 %  else:
 %    slow_setup_args(shorty="s9", vregs="s7", z0="t0", z1="t1", z2="t2", z3="t3", z4="t4", z5="t5", z6="t6", uniq=uniq)
-%#:
    jalr s8                       // args in a0-a5, fa0-fa4
 %  maybe_float_returned(shorty="s9", z0="t0", z1="t1", uniq=f"{uniq}_1")
                                  // a0 := fa0 if float return
@@ -459,7 +457,6 @@
 %    slow_setup_args_string_init_range(shorty="s9", vC="s7", z0="t0", z1="t1", z2="t2", z3="t3", uniq=uniq)
 %  else:
 %    slow_setup_args_string_init(shorty="s9", v_fedc="s7", z0="t0", z1="t1", z2="t2", uniq=uniq)
-%#:
    jalr s8              // args (regular) a0 - a5, (range) a0 - a5
 
 .L${uniq}_next_op:
@@ -486,7 +483,6 @@
 %    try_simple_args_range(vC="s7", z0="t0", z1="t1", z2="t2", z3="t3", z4="t4", arg_start="0", skip=f".L{uniq}_01", uniq=uniq)
 %  else:
 %    try_simple_args(v_fedc="s7", z0="t0", z1="t1", arg_start="0", skip=f".L{uniq}_01", uniq=uniq)
-%#:
    jalr s8                     // args (regular) a0 - a5, (range) a0 - a7 and maybe stack
    j .L${uniq}_next_op
 
@@ -507,7 +503,6 @@
 %    slow_setup_args_range(shorty="s9", vC="s7", z0="t0", z1="t1", z2="t2", z3="t3", z4="t4", z5="t5", z6="t6", z7="s10", arg_start="0", uniq=uniq)
 %  else:
 %    slow_setup_args(shorty="s9", vregs="s7", z0="t0", z1="t1", z2="t2", z3="t3", z4="t4", z5="t5", z6="t6", arg_start="0", uniq=uniq)
-%#:
    jalr s8                     // args (regular) a0 - a5 and fa0 - fa4, (range) a0 - a7 and fa0 - fa7 and maybe stack
 %  maybe_float_returned(shorty="s9", z0="t0", z1="t1", uniq=f"{uniq}_1")
                                // a0 := fa0 if float return
@@ -541,7 +536,6 @@
 %    try_simple_args_range(vC="s7", z0="t1", z1="t2", z2="t3", z3="t4", z4="t5", skip=f".L{uniq}_01", uniq=uniq)
 %  else:
 %    try_simple_args(v_fedc="s7", z0="t1", z1="t2", skip=f".L{uniq}_01", uniq=uniq)
-%#:
    jalr s8                     // args (regular) a0 - a5 and t0, (range) a0 - a7 and t0 and maybe stack
    j .L${uniq}_next_op
 
@@ -563,7 +557,6 @@
 %    slow_setup_args_range(shorty="s9", vC="s7", z0="s10", z1="t1", z2="t2", z3="t3", z4="t4", z5="t5", z6="t6", z7="s11", uniq=uniq)
 %  else:
 %    slow_setup_args(shorty="s9", vregs="s7", z0="s10", z1="t1", z2="t2", z3="t3", z4="t4", z5="t5", z6="t6", uniq=uniq)
-%#:
    jalr s8                     // args (regular) a0 - a5, fa0 - fa4, t0, (range) a0 - a7, fa0 - fa7, t0
 %  maybe_float_returned(shorty="s9", z0="t0", z1="t1", uniq=f"{uniq}_1")
                                // a0 := fa0 if float return
@@ -582,7 +575,6 @@
 %    slow_setup_args_range(shorty="a0", vC="s7", z0="t0", z1="t1", z2="t2", z3="t3", z4="t4", z5="t5", z6="t6", z7="s8", uniq=uniq)
 %  else:
 %    slow_setup_args(shorty="a0", vregs="s7", z0="t0", z1="t1", z2="t2", z3="t3", z4="t4", z5="t5", z6="t6", uniq=uniq)
-%#:
    // Managed ABI argument regs get spilled to stack and consumed by artInvokePolymorphic.
    call art_quick_invoke_polymorphic  // args a1 - a7, fa0 - fa7, and maybe stack
    // Note: If float return, artInvokePolymorphic will place the value in A0, as Nterp expects.
@@ -600,7 +592,6 @@
 %    slow_setup_args_range(shorty="s7", vC="s8", z0="t0", z1="t1", z2="t2", z3="t3", z4="t4", z5="t5", z6="t6", z7="s9", arg_start="0", uniq=uniq)
 %  else:
 %    slow_setup_args(shorty="s7", vregs="s8", z0="t0", z1="t1", z2="t2", z3="t3", z4="t4", z5="t5", z6="t6", arg_start="0", uniq=uniq)
-%#:
    // Managed ABI argument regs get spilled to stack and consumed by artInvokeCustom.
    call art_quick_invoke_custom  // args a0 - a7, fa0 - fa7, and maybe stack
    // Note: If float return, artInvokeCustom will place the value in A0, as Nterp expects.
@@ -695,7 +686,6 @@
    srliw $z0, xINST, 12              // z0 := A
 %  if arg_start == "0":
      beqz $z0, .L${uniq}_simple_done  // A = 0: no further args.
-%#:
    li $z1, 2
    blt $z0, $z1, .L${uniq}_simple_1  // A = 1
    beq $z0, $z1, .L${uniq}_simple_2  // A = 2
@@ -721,9 +711,9 @@
 %  if arg_start == "0":
      andi $z1, $v_fedc, 0xF          // z1 := C
      GET_VREG_OBJECT a1, $z1
-   // instance: a1 already set to "this"
+     // instance: a1 already set to "this"
 .L${uniq}_simple_done:
-
+%    pass
 
 // Range variant.
 %def try_simple_args_range(vC="", z0="", z1="", z2="", z3="", z4="", skip="", arg_start="1", uniq=""):
@@ -741,7 +731,6 @@
      li $z2, 2
      blt $z0, $z2, .L${uniq}_simple_done  // AA = 1, and a1 already loaded.
      sh2add $z1, $vC, xFP               // z1 := &FP[CCCC]
-%#:
    // Here: z0, z1, z2 same values for static vs instance.
    beq $z0, $z2, .L${uniq}_simple_2  // AA = 2
    li $z2, 4
@@ -791,9 +780,9 @@
 .L${uniq}_simple_1:
 %  if arg_start == "0":  # static:
      lwu a1, 0*4($z1)
-%#:
+%  pass
 .L${uniq}_simple_done:
-
+%  pass
 
 // Check if a 0/1 arg invoke form is possible, set up a2 and fa0 if needed.
 // If a return value expected, move possible float return to a0.
@@ -805,7 +794,6 @@
      srliw $y0, xINST, 8   // y0 := AA
 %  else:
      srliw $y0, xINST, 12  // y0 := A
-%#:
    addi $y0, $y0, -2       // y0 := A - 2 or (range) AA - 2
    bgtz $y0, $skip         // 2+ args: slow path
    beqz $y0, .L${uniq}_01_shorty  // this and 1 arg: determine arg type with shorty
@@ -822,7 +810,6 @@
 %    get_shorty_for_interface_save_a0_a1_t0(shorty=shorty, y0=y1, y1=y2, y2="xINST")
 %  else:
 %    get_shorty_save_a0_a1(shorty=shorty, y0=y1, y1=y2)
-%#:
    // shorty assigned
    bltz $y0, $call         // Scalar return, 0 args: make the call.
    // ins = 2: this and 1 arg. Load arg type.
@@ -836,7 +823,6 @@
      andi $z2, $z2, 0xF    // z2 := D
      sh2add $z2, $z2, xFP  // z2 := &fp[D]
      lwu a2, ($z2)         // a2 := fp[D], zext
-%#:
    beq $z0, $z1, $call     // ref type: LWU into a2
    // non-'L' type
    fmv.w.x fa0, a2         // overload of managed ABI, for one arg
@@ -850,7 +836,6 @@
      srliw $y0, xINST, 8     // y0 := AA
 %  else:
      srliw $y0, xINST, 12    // y0 := A
-%#:
    addi $y0, $y0, -1         // y0 := A - 1 or (range) AA - 1
    bgtz $y0, $skip           // 2+ args: slow path
    beqz $y0, .L${uniq}_01_shorty  // 1 arg: determine arg type with shorty
@@ -873,7 +858,6 @@
 %  else:
      andi $z2, $vreg, 0xF    // z2 := C
      sh2add $z2, $z2, xFP    // z2 := &fp[C]
-%#:
    lwu a1, ($z2)             // a1 := fp[C] or (range) fp[CCCC], zext
    beq $z0, $z1, $call       // ref type: LWU into a1
    // non-'L' type
@@ -904,6 +888,7 @@
    // If fa0 carries a 64-bit float, then fmv.x.d works as expected.
    fmv.x.d a0, fa0
 .L${uniq}_float_return_done:
+%  pass
 
 
 // Hardcoded:
@@ -1007,8 +992,9 @@
 %  load_vreg_in_fpr(fpr="fa3", shorty=z0, vregs=z1, D=z2, F=z3, J=z4, z0=z5, done=f".L{uniq}_slow_done", uniq=f"{uniq}_3")
 %  if arg_start == "0":  # static can place G into fa4; instance has only 4 args.
 %    load_vreg_in_fpr(fpr="fa4", shorty=z0, vregs=z1, D=z2, F=z3, J=z4, z0=z5, done=f".L{uniq}_slow_done", uniq=f"{uniq}_4")
-%#:
+%  pass
 .L${uniq}_slow_done:
+%  pass
 
 
 // String-init variant: up to 4 args, no long/double/float args.
@@ -1052,6 +1038,7 @@
    zext.w a1, a1
 .L${uniq}_slow_1:
    // "this" never read in string-init
+%  pass
 
 
 // Range and static-range variant.
@@ -1102,6 +1089,7 @@
    sh2add $z2, $z2, $z1       // z2 := loop guard, addr of one slot past top of xFP array
 %  copy_vregs_to_out(out=z0, fp=z1, fp_top=z2, z0=z3, uniq=uniq)
 .L${uniq}_slow_done:
+%  pass
 
 
 // String-init variant: up to 4 args, no long/float/double args.
@@ -1138,6 +1126,7 @@
    zext.w a1, a1
 .L${uniq}_slow_1:
    // "this" never read in string-init
+%  pass
 
 
 // Iterate through 4-bit vreg ids in the "vregs" register, load a non-FP value
@@ -1169,6 +1158,7 @@
    srliw $vregs, $vregs, 4   // shift out a skipped arg
    j .L${uniq}_gpr_find
 .L${uniq}_gpr_set:
+%  pass
 
 
 // Iterate through 4-bit vreg ids in the "vregs" register, load a float or double
@@ -1196,6 +1186,7 @@
    GET_VREG_DOUBLE $fpr, $z0
    srliw $vregs, $vregs, 8   // shift out the processed arg, a vreg pair
 .L${uniq}_fpr_set:
+%  pass
 
 
 // Range variant
@@ -1225,6 +1216,7 @@
    addi $idx, $idx, 1
    j .L${uniq}_gpr_range_find
 .L${uniq}_gpr_range_done:
+%  pass
 
 
 // Range variant.
@@ -1251,6 +1243,7 @@
    GET_VREG_DOUBLE $fpr, $z0
    addi $idx, $idx, 2
 .L${uniq}_fpr_range_set:
+%  pass
 
 
 %def is_out_stack_needed(needed="", shorty="", D="", F="", z0="", uniq=""):
@@ -1262,6 +1255,7 @@
    beq $z0, $D, .L${uniq}_scan_arg
    li $needed, 1
 .L${uniq}_scan_done:
+%  pass
 
 
 %def is_out_stack_needed_float(needed="", shorty="", D="", F="", z0="", uniq=""):
@@ -1276,6 +1270,7 @@
 .L${uniq}_scan_float_found:
    li $needed, 1
 .L${uniq}_scan_float_done:
+%  pass
 
 
 %def copy_vregs_to_out(out="", fp="", fp_top="", z0="", uniq=""):
@@ -1294,6 +1289,7 @@
    addi $out, $out, 8
    j .L${uniq}_copy_wide
 .L${uniq}_copy_done:
+%  pass
 
 
 // NterpToNterpInstance
@@ -1346,7 +1342,6 @@
 %    n2n_arg_move_range(refs="s8", fp="s9", regs="s11", vC="s7", z0="t0", z1="t1", z2="t2", z3="t3", z4="t4", z5="t5", a1_instance=a1_instance, how_vC=how_vC, uniq=uniq)
 %  else:
 %    n2n_arg_move(refs="s8", fp="s9", pc="s10", regs="s11", v_fedc="s7", z0="t0", z1="t1", z2="t2", z3="t3", a1_instance=a1_instance, how_vC=how_vC, uniq=uniq)
-%#:
    mv xREFS, s8
    mv xFP, s9
    mv xPC, s10
@@ -1445,7 +1440,6 @@
 
 %  if not a1_instance:
      beqz $z0, .L${uniq}_arg_done
-%#:
    // A >= 1, decide and branch
    li $z1, 2
    sub $z2, $regs, $z0        // z2 := regs - A; vC's index in fp
@@ -1491,6 +1485,7 @@
      sw a1, (0*4)($z2)        // refs[C] := a1
 %  elif how_vC == "skip":
      // string init doesn't read "this"
+%    pass
 %  elif how_vC == "load":
      // static method loads vC just like other vregs
      andi $z0, $v_fedc, 0xF   // z0 := C
@@ -1498,8 +1493,9 @@
      sw $z1, (0*4)($z3)       // fp[C] := z1
      GET_VREG_OBJECT $z0, $z0  // z0 := xREFS[C]
      sw $z0, (0*4)($z2)       // refs[C] := z0
-%#:
+%  pass
 .L${uniq}_arg_done:
+%  pass
 
 
 %def n2n_arg_move_range(refs="", fp="", regs="", vC="", z0="", z1="", z2="", z3="", z4="", z5="", a1_instance=True, how_vC="", uniq=""):
@@ -1507,7 +1503,6 @@
 
 %  if not a1_instance:
      beqz $z0, .L${uniq}_arg_range_done
-%#:
    // AA >= 1, iterator setup
    sub $z4, $regs, $z0     // z4 := regs - AA; starting idx in fp and refs
    sh2add $z1, $vC, xREFS  // z1 := addr of xREFS[CCCC]
@@ -1523,12 +1518,12 @@
      sw a1, ($z4)
 %  elif how_vC == "skip":
      // string init doesn't read "this"
+%    pass
 %  elif how_vC == "load":
      lw $z0, ($z1)
      lw $z5, ($z2)
      sw $z0, ($z3)
      sw $z5, ($z4)
-%#:
    addi $z1, $z1, 4
    addi $z2, $z2, 4
    addi $z3, $z3, 4
@@ -1546,6 +1541,7 @@
    addi $z4, $z4, 8
    j .L${uniq}_arg_range_copy_wide
 .L${uniq}_arg_range_done:
+%  pass
 
 
 //

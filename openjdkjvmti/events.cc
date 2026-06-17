@@ -1048,8 +1048,7 @@ class JvmtiMethodTraceListener final : public art::instrumentation::Instrumentat
 
   EventHandler* const event_handler_;
 
-  mutable art::Mutex non_standard_exits_lock_
-      ACQUIRED_BEFORE(art::Locks::instrument_entrypoints_lock_);
+  mutable art::Mutex non_standard_exits_lock_ BOTTOM_MUTEX_ACQUIRED_AFTER;
 
   std::unordered_map<const art::ShadowFrame*, NonStandardExitEventInfo> non_standard_exits_
       GUARDED_BY(non_standard_exits_lock_);

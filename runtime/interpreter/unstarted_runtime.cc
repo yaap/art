@@ -61,6 +61,7 @@
 #include "nativehelper/scoped_local_ref.h"
 #include "nth_caller_visitor.h"
 #include "reflection.h"
+#include "runtime.h"
 #include "thread-inl.h"
 #include "unstarted_runtime_list.h"
 #include "well_known_classes-inl.h"
@@ -757,6 +758,10 @@ void UnstartedRuntime::UnstartedJNIExecutableGetParameterTypesInternal(
   }
 
   ArtMethod* method = executable->GetArtMethod();
+  if (method == nullptr) {
+    result->SetL(nullptr);
+    return;
+  }
   const dex::TypeList* params = method->GetParameterTypeList();
   if (params == nullptr) {
     result->SetL(nullptr);
@@ -1598,7 +1603,8 @@ void UnstartedRuntime::UnstartedRuntimeAvailableProcessors(Thread* self,
     // 8 as a conservative upper approximation.
     result->SetI(8);
   } else if (CheckCallers(shadow_frame,
-                          { "void java.util.concurrent.ConcurrentHashMap.<clinit>()" })) {
+                          {"void java.util.concurrent.ConcurrentHashMap.runtimeSetup()",
+                           "void java.util.concurrent.ConcurrentHashMap.<clinit>()"})) {
     // ConcurrentHashMap uses it for striding. 8 still seems an OK general value, as it's likely
     // a good upper bound.
     // TODO: Consider resetting in the zygote?
@@ -1613,12 +1619,12 @@ void UnstartedRuntime::UnstartedRuntimeAvailableProcessors(Thread* self,
 
 void UnstartedRuntime::UnstartedUnsafeCompareAndSwapLong(
     Thread* self, ShadowFrame* shadow_frame, JValue* result, size_t arg_offset) {
-  UnstartedJdkUnsafeCompareAndSwapLong(self, shadow_frame, result, arg_offset);
+  UnstartedJdkUnsafeCompareAndSetLong(self, shadow_frame, result, arg_offset);
 }
 
 void UnstartedRuntime::UnstartedUnsafeCompareAndSwapObject(
     Thread* self, ShadowFrame* shadow_frame, JValue* result, size_t arg_offset) {
-  UnstartedJdkUnsafeCompareAndSwapObject(self, shadow_frame, result, arg_offset);
+  UnstartedJdkUnsafeCompareAndSetReference(self, shadow_frame, result, arg_offset);
 }
 
 void UnstartedRuntime::UnstartedUnsafeGetObjectVolatile(
@@ -1634,22 +1640,31 @@ void UnstartedRuntime::UnstartedUnsafePutObjectVolatile(
 }
 
 void UnstartedRuntime::UnstartedUnsafePutOrderedObject(
-    Thread* self, ShadowFrame* shadow_frame, JValue* result, size_t arg_offset)
+    Thread* self, ShadowFrame* shadow_frame, [[maybe_unused]] JValue* result, size_t arg_offset)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  UnstartedJdkUnsafePutOrderedObject(self, shadow_frame, result, arg_offset);
+  // Argument 0 is the Unsafe instance, skip.
+  mirror::Object* obj = shadow_frame->GetVRegReference(arg_offset + 1);
+  if (obj == nullptr) {
+    AbortTransactionOrFail(self, "Cannot access null object, retry at runtime.");
+    return;
+  }
+  int64_t offset = shadow_frame->GetVRegLong(arg_offset + 2);
+  mirror::Object* new_value = shadow_frame->GetVRegReference(arg_offset + 4);
+  std::atomic_thread_fence(std::memory_order_release);
+  Runtime* runtime = Runtime::Current();
+  if (runtime->IsActiveTransaction()) {
+    if (runtime->GetClassLinker()->TransactionWriteConstraint(self, obj) ||
+        runtime->GetClassLinker()->TransactionWriteValueConstraint(self, new_value)) {
+      DCHECK(self->IsExceptionPending());
+      return;
+    }
+    obj->SetFieldObject<true>(MemberOffset(offset), new_value);
+  } else {
+    obj->SetFieldObject<false>(MemberOffset(offset), new_value);
+  }
 }
 
 void UnstartedRuntime::UnstartedJdkUnsafeCompareAndSetLong(
-    Thread* self, ShadowFrame* shadow_frame, JValue* result, size_t arg_offset) {
-  UnstartedJdkUnsafeCompareAndSwapLong(self, shadow_frame, result, arg_offset);
-}
-
-void UnstartedRuntime::UnstartedJdkUnsafeCompareAndSetReference(
-    Thread* self, ShadowFrame* shadow_frame, JValue* result, size_t arg_offset) {
-  UnstartedJdkUnsafeCompareAndSwapObject(self, shadow_frame, result, arg_offset);
-}
-
-void UnstartedRuntime::UnstartedJdkUnsafeCompareAndSwapLong(
     Thread* self, ShadowFrame* shadow_frame, JValue* result, size_t arg_offset) {
   // Argument 0 is the Unsafe instance, skip.
   mirror::Object* obj = shadow_frame->GetVRegReference(arg_offset + 1);
@@ -1679,7 +1694,7 @@ void UnstartedRuntime::UnstartedJdkUnsafeCompareAndSwapLong(
   result->SetZ(success ? 1 : 0);
 }
 
-void UnstartedRuntime::UnstartedJdkUnsafeCompareAndSwapObject(
+void UnstartedRuntime::UnstartedJdkUnsafeCompareAndSetReference(
     Thread* self, ShadowFrame* shadow_frame, JValue* result, size_t arg_offset) {
   // Argument 0 is the Unsafe instance, skip.
   mirror::Object* obj = shadow_frame->GetVRegReference(arg_offset + 1);
@@ -1768,33 +1783,6 @@ void UnstartedRuntime::UnstartedJdkUnsafePutReferenceVolatile(Thread* self,
     obj->SetFieldObjectVolatile<true>(MemberOffset(offset), value);
   } else {
     obj->SetFieldObjectVolatile<false>(MemberOffset(offset), value);
-  }
-}
-
-void UnstartedRuntime::UnstartedJdkUnsafePutOrderedObject(Thread* self,
-                                                          ShadowFrame* shadow_frame,
-                                                          [[maybe_unused]] JValue* result,
-                                                          size_t arg_offset)
-    REQUIRES_SHARED(Locks::mutator_lock_) {
-  // Argument 0 is the Unsafe instance, skip.
-  mirror::Object* obj = shadow_frame->GetVRegReference(arg_offset + 1);
-  if (obj == nullptr) {
-    AbortTransactionOrFail(self, "Cannot access null object, retry at runtime.");
-    return;
-  }
-  int64_t offset = shadow_frame->GetVRegLong(arg_offset + 2);
-  mirror::Object* new_value = shadow_frame->GetVRegReference(arg_offset + 4);
-  std::atomic_thread_fence(std::memory_order_release);
-  Runtime* runtime = Runtime::Current();
-  if (runtime->IsActiveTransaction()) {
-    if (runtime->GetClassLinker()->TransactionWriteConstraint(self, obj) ||
-        runtime->GetClassLinker()->TransactionWriteValueConstraint(self, new_value)) {
-      DCHECK(self->IsExceptionPending());
-      return;
-    }
-    obj->SetFieldObject<true>(MemberOffset(offset), new_value);
-  } else {
-    obj->SetFieldObject<false>(MemberOffset(offset), new_value);
   }
 }
 
@@ -2010,17 +1998,6 @@ void UnstartedRuntime::UnstartedJNIMathExp([[maybe_unused]] Thread* self,
   result->SetD(exp(value.GetD()));
 }
 
-void UnstartedRuntime::UnstartedJNIAtomicLongVMSupportsCS8(
-    [[maybe_unused]] Thread* self,
-    [[maybe_unused]] ArtMethod* method,
-    [[maybe_unused]] mirror::Object* receiver,
-    [[maybe_unused]] uint32_t* args,
-    JValue* result) {
-  result->SetZ(QuasiAtomic::LongAtomicsUseMutexes(Runtime::Current()->GetInstructionSet())
-                   ? 0
-                   : 1);
-}
-
 void UnstartedRuntime::UnstartedJNIClassGetNameNative(Thread* self,
                                                       [[maybe_unused]] ArtMethod* method,
                                                       mirror::Object* receiver,
@@ -2164,6 +2141,16 @@ void UnstartedRuntime::UnstartedJNIThrowableNativeFillInStackTrace(
     [[maybe_unused]] uint32_t* args,
     JValue* result) {
   ScopedObjectAccessUnchecked soa(self);
+  Runtime* runtime = Runtime::Current();
+  if (runtime->IsActiveTransaction()) {
+    // Abort the transaction.
+    // The stack trace contains pointers to methods which would be bogus when written
+    // to the image. We would need to check if all classes owning these methods are
+    // image classes and then we would need to fix up these pointers in `ImageWriter`.
+    DCHECK(runtime->IsAotCompiler());
+    runtime->GetClassLinker()->AbortTransactionF(self, "Stack trace not supported for dex2oat");
+    return;
+  }
   result->SetL(self->CreateInternalStackTrace(soa));
 }
 
@@ -2173,7 +2160,7 @@ void UnstartedRuntime::UnstartedJNIUnsafeCompareAndSwapInt(
     mirror::Object* receiver,
     uint32_t* args,
     JValue* result) {
-  UnstartedJNIJdkUnsafeCompareAndSwapInt(self, method, receiver, args, result);
+  UnstartedJNIJdkUnsafeCompareAndSetInt(self, method, receiver, args, result);
 }
 
 void UnstartedRuntime::UnstartedJNIUnsafeGetIntVolatile(Thread* self,
@@ -2215,10 +2202,10 @@ void UnstartedRuntime::UnstartedJNIJdkUnsafeAddressSize([[maybe_unused]] Thread*
                                                         [[maybe_unused]] mirror::Object* receiver,
                                                         [[maybe_unused]] uint32_t* args,
                                                         JValue* result) {
-  result->SetI(sizeof(void*));
+  result->SetI(static_cast<jint>(Runtime::Current()->GetClassLinker()->GetImagePointerSize()));
 }
 
-void UnstartedRuntime::UnstartedJNIJdkUnsafeCompareAndSwapInt(
+void UnstartedRuntime::UnstartedJNIJdkUnsafeCompareAndSetInt(
     Thread* self,
     [[maybe_unused]] ArtMethod* method,
     [[maybe_unused]] mirror::Object* receiver,
@@ -2254,15 +2241,6 @@ void UnstartedRuntime::UnstartedJNIJdkUnsafeCompareAndSwapInt(
   result->SetZ(success ? JNI_TRUE : JNI_FALSE);
 }
 
-void UnstartedRuntime::UnstartedJNIJdkUnsafeCompareAndSetInt(
-    Thread* self,
-    ArtMethod* method,
-    mirror::Object* receiver,
-    uint32_t* args,
-    JValue* result) {
-  UnstartedJNIJdkUnsafeCompareAndSwapInt(self, method, receiver, args, result);
-}
-
 void UnstartedRuntime::UnstartedJNIJdkUnsafeGetIntVolatile(
     Thread* self,
     [[maybe_unused]] ArtMethod* method,
@@ -2271,7 +2249,7 @@ void UnstartedRuntime::UnstartedJNIJdkUnsafeGetIntVolatile(
     JValue* result) {
   ObjPtr<mirror::Object> obj = reinterpret_cast32<mirror::Object*>(args[0]);
   if (obj == nullptr) {
-    AbortTransactionOrFail(self, "Unsafe.compareAndSwapIntVolatile with null object.");
+    AbortTransactionOrFail(self, "Unsafe.getIntVolatile with null object.");
     return;
   }
 
@@ -2480,11 +2458,9 @@ void UnstartedRuntime::Invoke(Thread* self, const CodeItemDataAccessor& accessor
     result->SetL(nullptr);
 
     // Push the shadow frame. This is so the failing method can be seen in abort dumps.
-    self->PushShadowFrame(shadow_frame);
+    ScopedShadowFrame pusher(self, shadow_frame);
 
     (*iter->second)(self, shadow_frame, result, arg_offset);
-
-    self->PopShadowFrame();
   } else {
     if (!EnsureInitialized(self, shadow_frame)) {
       return;

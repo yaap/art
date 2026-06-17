@@ -19,12 +19,13 @@
 
 #include <stdlib.h>
 
+#include <memory>
 #include <string>
 #include <string_view>
-
-#include <android-base/logging.h>
+#include <vector>
 
 #include "arch/instruction_set.h"
+#include "base/os.h"
 
 namespace art {
 
@@ -85,6 +86,10 @@ std::string GetAndroidExpandSafe(/*out*/ std::string* error_msg);
 // Find $ART_APEX_DATA, /data/misc/apexdata/com.android.art, or abort.
 std::string GetArtApexData();
 
+// Returns the list of boot image profiles (e.g. /apex/com.android.conscrypt/etc/boot-image.prof).
+std::vector<std::string> GetMainlineBootImageProfilePaths(
+    const std::vector<std::string>& mainline_bcp_jars);
+
 // Returns the directory that contains the prebuilt version of the primary boot image (i.e., the one
 // generated at build time).
 std::string GetPrebuiltPrimaryBootImageDir();
@@ -128,8 +133,12 @@ void OverrideDalvikCacheSubDirectory(std::string sub_dir);
 // `have_android_data` will be set to true if we have an ANDROID_DATA that exists,
 // `dalvik_cache_exists` will be true if there is a dalvik-cache directory that is present.
 // The flag `is_global_cache` tells whether this cache is /data/dalvik-cache.
-void GetDalvikCache(const char* subdir, bool create_if_absent, std::string* dalvik_cache,
-                    bool* have_android_data, bool* dalvik_cache_exists, bool* is_global_cache);
+void GetDalvikCache(const char* subdir,
+                    bool create_if_absent,
+                    std::string* dalvik_cache,
+                    bool* have_android_data,
+                    bool* dalvik_cache_exists,
+                    bool* is_global_cache);
 
 // Returns the absolute dalvik-cache path for a DexFile or OatFile. The path returned will be
 // rooted at `cache_location`.
@@ -196,26 +205,26 @@ std::string GetSystemOdexFilenameForApex(std::string_view location, InstructionS
 std::string ReplaceFileExtension(std::string_view filename, std::string_view new_extension);
 
 // Return whether the location is on /apex/com.android.art
-inline bool LocationIsOnArtModule(std::string_view location) {
-  // No need to check the environment variable - on device it's never set, and on host paths
-  // aren't necessarily absolute so we cannot check that the environment variable is a prefix
-  // anyway. Instead look for the apex directory anywhere in the path on host, to match e.g.
-  // out/host/linux-x86/apex/com.android.art/... (from -Xbootclasspath-locations) and
-  // /full/path/to/android/build/root/out/host/linux-x86/apex/com.android.art/...
+inline bool LocationIsOnArtModule(std::string_view dex_location) {
 #ifdef ART_TARGET_ANDROID
-  return location.starts_with(kAndroidArtApexDefaultPath);
+  // We assume it's a dex location, so ignore ANDROID_ROOT in the prefix (see DexFile.location_).
+  return dex_location.starts_with(kAndroidArtApexDefaultPath);
 #else
-  return location.find(kAndroidArtApexDefaultPath) != std::string::npos;
+  // On host paths aren't necessarily absolute, which means we cannot check for a prefix starting
+  // with ANDROID_ROOT. Instead look for the apex directory anywhere in the path on host, to match
+  // e.g. out/host/linux-x86/apex/com.android.art/... (from -Xbootclasspath-locations) and
+  // /full/path/to/android/build/root/out/host/linux-x86/apex/com.android.art/...
+  return dex_location.find(kAndroidArtApexDefaultPath) != std::string::npos;
 #endif
 }
 
 // Return whether the location is on /apex/com.android.conscrypt
-inline bool LocationIsOnConscryptModule(std::string_view location) {
-  // See comment in LocationIsOnArtModule.
+inline bool LocationIsOnConscryptModule(std::string_view dex_location) {
+  // See comments in LocationIsOnArtModule.
 #ifdef ART_TARGET_ANDROID
-  return location.starts_with(kAndroidConscryptApexDefaultPath);
+  return dex_location.starts_with(kAndroidConscryptApexDefaultPath);
 #else
-  return location.find(kAndroidConscryptApexDefaultPath) != std::string::npos;
+  return dex_location.find(kAndroidConscryptApexDefaultPath) != std::string::npos;
 #endif
 }
 
@@ -228,18 +237,21 @@ bool LocationIsOnSystem(const std::string& location);
 // Return whether the location is on system_ext
 bool LocationIsOnSystemExt(const std::string& location);
 
-// Return whether the location is on system/framework (i.e. $ANDROID_ROOT/framework).
-bool LocationIsOnSystemFramework(std::string_view location);
+// Return whether the location is on /system/framework. It is taken as a dex location, so
+// ANDROID_ROOT is ignored (see DexFile.location_).
+bool LocationIsOnSystemFramework(std::string_view dex_location);
 
-// Return whether the location is on system_ext/framework
-bool LocationIsOnSystemExtFramework(std::string_view location);
+// Return whether the location is on /system_ext/framework. It is taken as a dex location, so
+// ANDROID_ROOT and SYSTEM_EXT_ROOT are ignored (see DexFile.location_).
+bool LocationIsOnSystemExtFramework(std::string_view dex_location);
 
-// Return whether the location is on /apex/.
-bool LocationIsOnApex(std::string_view location);
+// Return whether the location is on /apex/. It is taken as a dex location, so ANDROID_ROOT is
+// ignored (see DexFile.location_).
+bool LocationIsOnApex(std::string_view dex_location);
 
 // If the given location is /apex/<apexname>/..., return <apexname>, otherwise return an empty
 // string. Note that the result is a view into full_path and is valid only as long as it is.
-std::string_view ApexNameFromLocation(std::string_view full_path);
+std::string_view ApexNameFromLocation(std::string_view dex_location);
 
 // Returns whether the location is trusted for loading oat files. Trusted locations are protected
 // by dm-verity or fs-verity. The recognized locations are on /system or
@@ -256,6 +268,21 @@ int DupCloexec(int fd);
 // Returns true if `path` begins with a slash.
 inline bool IsAbsoluteLocation(const std::string& path) { return !path.empty() && path[0] == '/'; }
 
+struct CompiledBootClasspathFds {
+  std::vector<std::unique_ptr<File>> files;
+  std::vector<int> image_fds;
+  std::vector<int> oat_fds;
+  std::vector<int> vdex_fds;
+};
+
+// Opens the FDs for the compiled boot classpath artifacts (image, oat, vdex) if they exist.
+// Returns a struct containing the opened files and vectors of their raw FDs.
+// If an artifact does not exist, it's assigned an FD of -1.
+bool OpenCompiledBootClasspathFdsIfAny(const std::vector<std::string>& bcp_jars,
+                                       InstructionSet isa,
+                                       const std::vector<std::string>& boot_image_locations,
+                                       CompiledBootClasspathFds* class_path_fds,
+                                       std::string* error_msg);
 }  // namespace art
 
 #endif  // ART_LIBARTBASE_BASE_FILE_UTILS_H_

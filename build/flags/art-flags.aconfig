@@ -35,19 +35,6 @@ flag {
   is_exported: true
 }
 
-# Flag for better spill slot reuse in the register allocator.
-flag {
-  name: "reg_alloc_spill_slot_reuse"
-  namespace: "art_performance"
-  description: "Flag to control spill slot reuse in register allocator"
-  bug: "264678256"
-  is_fixed_read_only: true
-  is_exported: false
-  metadata {
-      purpose: PURPOSE_BUGFIX
-  }
-}
-
 # Flag for better handling of `Location::kNoOutputOverlap` in the register allocator.
 flag {
   name: "reg_alloc_no_output_overlap"
@@ -67,6 +54,36 @@ flag {
   namespace: "art_performance"
   description: "Flag to control whether `const-string` interns are strong or weak"
   bug: "117621117"
+  is_fixed_read_only: true
+  is_exported: false
+}
+
+# Flag for register allocation improvements in loops.
+flag {
+  name: "reg_alloc_loops"
+  namespace: "art_performance"
+  description: "Flag to control whether register allocation improvements for loops are enabled"
+  bug: "449684446"
+  is_fixed_read_only: true
+  is_exported: false
+}
+
+# Flag for loading managed string references from .data.img.rel.ro.
+flag {
+  name: "load_string_img_rel_ro"
+  namespace: "art_performance"
+  description: "Flag to control whether loading string references from .data.img.rel.ro is enabled"
+  bug: "475414908"
+  is_fixed_read_only: true
+  is_exported: false
+}
+
+# Flag for x86/x86-64 optimizations with LEA instructions.
+flag {
+  name: "x86_lea_optimizations"
+  namespace: "art_performance"
+  description: "Flag to control whether optimizations with x86/x86-64 LEA instructions are enabled"
+  bug: "481977362"
   is_fixed_read_only: true
   is_exported: false
 }
@@ -162,15 +179,6 @@ flag {
 }
 
 flag {
-  name: "dexopt_secondary_isa_only_when_needed"
-  namespace: "art_cloud"
-  description: "Flag to enable secondary ISA dexopt only when needed"
-  bug: "306362133"
-  is_fixed_read_only: true
-  is_exported: false
-}
-
-flag {
   name: "art_managed_install_files_validation_api"
   namespace: "art_cloud"
   description: "Flag for the validation API for ART-managed install files (.sdm, .dm, etc.)"
@@ -205,3 +213,13 @@ flag {
   is_fixed_read_only: true
   is_exported: true
 }
+
+flag {
+  name: "value_classes"
+  namespace: "core_libraries"
+  description: "Flag to treat certain classes as value-based classes"
+  bug: "488315413"
+  is_fixed_read_only: true
+  is_exported: true
+}
+

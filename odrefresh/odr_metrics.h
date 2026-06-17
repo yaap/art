@@ -132,9 +132,6 @@ class OdrMetrics final {
   // Sets the BCP compilation type.
   void SetBcpCompilationType(Stage stage, BcpCompilationType type);
 
-  // Captures the current free space as the end free space.
-  void CaptureSpaceFreeEnd();
-
   // Records metrics into an OdrMetricsRecord.
   OdrMetricsRecord ToRecord() const;
 
@@ -142,7 +139,6 @@ class OdrMetrics final {
   OdrMetrics(const OdrMetrics&) = delete;
   OdrMetrics operator=(const OdrMetrics&) = delete;
 
-  static int32_t GetFreeSpaceMiB(const std::string& path);
   static void WriteToFile(const std::string& path, const OdrMetrics* metrics);
 
   static OdrMetricsRecord::Dex2OatExecResult
@@ -158,9 +154,6 @@ class OdrMetrics final {
   Trigger trigger_ = Trigger::kUnknown;
   Stage stage_ = Stage::kUnknown;
   Status status_ = Status::kUnknown;
-
-  int32_t cache_space_free_start_mib_ = 0;
-  int32_t cache_space_free_end_mib_ = 0;
 
   // The total time spent on compiling primary BCP.
   int32_t primary_bcp_compilation_millis_ = 0;

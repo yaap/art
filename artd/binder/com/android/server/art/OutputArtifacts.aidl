@@ -32,8 +32,11 @@ parcelable OutputArtifacts {
          */
         com.android.server.art.FsPermission dirFsPermission;
 
-        /** The permission of the files. */
-        com.android.server.art.FsPermission fileFsPermission;
+        /** The permission of the ODEX and ART files. */
+        com.android.server.art.FsPermission odexFileFsPermission;
+
+        /** The permission of the VDEX files. */
+        com.android.server.art.FsPermission vdexFileFsPermission;
 
         /** The tuple used for looking up for the SELinux context. */
         parcelable SeContext {

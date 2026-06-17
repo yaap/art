@@ -31,6 +31,10 @@
 #include "mirror/object_array-inl.h"
 #include "mirror/object_array.h"
 #include "mirror/throwable.h"
+#include "mirror/virtual_thread_context-inl.h"
+#include "mirror/virtual_thread_context.h"
+#include "mirror/virtual_thread_frame-inl.h"
+#include "mirror/virtual_thread_frame.h"
 #include "monitor.h"
 #include "obj_ptr.h"
 #include "runtime.h"
@@ -86,18 +90,13 @@ struct VirtualThreadParkingVisitor final : public StackVisitor {
       return false;
     }
 
-    if (!shadow_frame->GetLockCountData().IsEmpty()) {
-      reason_ = kMonitor;
+    ArtMethod* method = shadow_frame->GetMethod();
+    DCHECK(method != nullptr);
+    if (method->IsClassInitializer()) {
+      reason_ = kCriticalSection;
       return false;
     }
 
-    // If the verifier was able to verify the locks are balanced, the interpreter won't update the
-    // lock cound data. We need to walk the stack to find the locks here. Or should we just have an
-    // increment/decrement counter?
-    Monitor::VisitLocks(this, LockVisitingCallback, this);
-    if (reason_ == kMonitor) {
-      return false;
-    }
     DCHECK(reason_ == kNoReason);
 
     shadow_frame_count_++;
@@ -118,11 +117,12 @@ struct VirtualThreadParkingVisitor final : public StackVisitor {
   PinningReason reason_;
 };
 
-bool VirtualThreadPark(ObjPtr<mirror::Object> v_context,
+bool VirtualThreadPark(ObjPtr<mirror::VirtualThreadContext> v_context,
                        ObjPtr<mirror::Object> parked_states,
                        ObjPtr<mirror::Throwable> vm_error,
                        bool is_continuation_api,
                        PinningReason& reason_) {
+  CHECK(kIsVirtualThreadEnabled);
   Thread* self = Thread::Current();
   if (self->AreVirtualThreadFlagsEnabled(kContinuation) != is_continuation_api) {
     self->ThrowNewExceptionF("Ljava/lang/IllegalStateException;",
@@ -133,7 +133,7 @@ bool VirtualThreadPark(ObjPtr<mirror::Object> v_context,
 
   StackHandleScope<9> hs(self);
 
-  Handle<mirror::Object> v_context_h = hs.NewHandle(v_context);
+  Handle<mirror::VirtualThreadContext> v_context_h = hs.NewHandle(v_context);
   Handle<mirror::Object> parked_states_h = hs.NewHandle(parked_states);
   Handle<mirror::Object> opeer_h = hs.NewHandle(self->GetPeer());
   Handle<mirror::Throwable> vm_error_h = hs.NewHandle(vm_error);
@@ -144,8 +144,7 @@ bool VirtualThreadPark(ObjPtr<mirror::Object> v_context,
   DCHECK_NE(dump_visitor.reason_, kUnsupportedFrame) << "JIT / AOT frame isn't supported.";
   reason_ = dump_visitor.reason_;
   if (dump_visitor.reason_ != kNoReason) {
-    WellKnownClasses::dalvik_system_VirtualThreadContext_pinnedCarrierThread->SetObject<false>(
-        v_context_h.Get(), opeer_h.Get());
+    v_context_h->SetPinnedCarrierThread(opeer_h.Get());
     // Return to the java code to park the carrier thread
     return false;
   }
@@ -154,15 +153,15 @@ bool VirtualThreadPark(ObjPtr<mirror::Object> v_context,
 
   DCHECK(!Runtime::Current()->IsActiveTransaction());
 
-  Handle<mirror::ObjectArray<mirror::Object>> frames_h =
-      hs.NewHandle(mirror::ObjectArray<mirror::Object>::Alloc(
+  Handle<mirror::ObjectArray<mirror::VirtualThreadFrame>> frames_h =
+      hs.NewHandle(mirror::ObjectArray<mirror::VirtualThreadFrame>::Alloc(
           self,
           WellKnownClasses::ToClass(WellKnownClasses::dalvik_system_VirtualThreadFrame__array),
           num_frames));
 
-  MutableHandle<mirror::Object> vtf = hs.NewHandle<mirror::Object>(nullptr);
+  MutableHandle<mirror::VirtualThreadFrame> vtf = hs.NewHandle<mirror::VirtualThreadFrame>(nullptr);
   MutableHandle<mirror::ByteArray> frame_bytes = hs.NewHandle<mirror::ByteArray>(nullptr);
-  MutableHandle<mirror::Object> declaring_class = hs.NewHandle<mirror::Object>(nullptr);
+  MutableHandle<mirror::Class> declaring_class = hs.NewHandle<mirror::Class>(nullptr);
   MutableHandle<mirror::ObjectArray<mirror::Object>> refs =
       hs.NewHandle<mirror::ObjectArray<mirror::Object>>(nullptr);
 
@@ -174,8 +173,7 @@ bool VirtualThreadPark(ObjPtr<mirror::Object> v_context,
     size_t num_vergs = sf->NumberOfVRegs();
     int32_t non_vref_size = ShadowFrame::ComputeSizeWithoutReferences(num_vergs);
 
-    vtf.Assign(WellKnownClasses::dalvik_system_VirtualThreadFrame.Get()->Alloc(
-        self, Runtime::Current()->GetHeap()->GetCurrentAllocator()));
+    vtf.Assign(mirror::VirtualThreadFrame::Alloc(self));
     frame_bytes.Assign(mirror::ByteArray::Alloc(self, non_vref_size));
     declaring_class.Assign(sf->GetMethod()->GetDeclaringClass());
     refs.Assign(mirror::ObjectArray<mirror::Object>::Alloc(
@@ -194,14 +192,11 @@ bool VirtualThreadPark(ObjPtr<mirror::Object> v_context,
     }
 
     if (!areRefsAllNull) {
-      WellKnownClasses::dalvik_system_VirtualThreadFrame_refs->SetObject<false>(vtf.Get(),
-                                                                                refs.Get());
+      vtf->SetRefs(refs.Get());
     }
     frame_bytes->Memcpy(0, reinterpret_cast<const int8_t*>(sf), 0, non_vref_size);
-    WellKnownClasses::dalvik_system_VirtualThreadFrame_frame->SetObject<false>(vtf.Get(),
-                                                                               frame_bytes.Get());
-    WellKnownClasses::dalvik_system_VirtualThreadFrame_declaringClass->SetObject<false>(
-        vtf.Get(), declaring_class.Get());
+    vtf->SetFrame(frame_bytes.Get());
+    vtf->SetDeclaringClass(declaring_class.Get());
     frames_h->Set(i, vtf.Get());
   }
 
@@ -210,11 +205,7 @@ bool VirtualThreadPark(ObjPtr<mirror::Object> v_context,
     // Consider handling it in another way, e.g. pinning virtual thread, in the future.
     return false;
   }
-
-  WellKnownClasses::dalvik_system_VirtualThreadParkedStates_frames->SetObject<false>(
-      parked_states_h.Get(), frames_h.Get());
-  WellKnownClasses::dalvik_system_VirtualThreadContext_parkedStates->SetObject<false>(
-      v_context_h.Get(), parked_states_h.Get());
+  v_context_h->SetFramesArray(parked_states_h.Get(), frames_h.Get());
   self->SetVirtualThreadFlags(VirtualThreadFlag::kParking, true);
 
   // Throw a VirtualThreadParkingError to unwind the stack and park the virtual thread.

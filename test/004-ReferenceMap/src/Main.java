@@ -15,30 +15,30 @@
  */
 
 public class Main {
-  public Main() {
-  }
+    public Main() {
+    }
 
-  Object f() {
-    Object x[] = new Object[2];
-    Object y = null;
-    try {
-      y = new Object();
-      x[2] = y;  // out-of-bound exception
-    } catch(Exception ex) {
-      if (y == null) {
-        x[1] = new Object();
-      }
-    } finally {
-      x[1] = y;
-      refmap(0);
-    };
-    return y;
-  }
-  native int refmap(int x);
+    Object f() {
+        Object x[] = new Object[2];
+        Object y = null;
+        try {
+            y = new Object();
+            x[2] = y;  // out-of-bound exception
+        } catch(Exception ex) {
+            if (y == null) {
+                x[1] = new Object();
+            }
+        } finally {
+            x[1] = y;
+            refmap(0);
+        };
+        return y;
+    }
+    native int refmap(int x);
 
-  public static void main(String[] args) {
-    System.loadLibrary(args[0]);
-    Main rm = new Main();
-    rm.f();
-  }
+    public static void main(String[] args) {
+        System.loadLibrary(args[0]);
+        Main rm = new Main();
+        rm.f();
+    }
 }

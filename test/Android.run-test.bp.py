@@ -16,11 +16,9 @@
 
 """ This script generates the Android.run-test.bp build file"""
 
-import glob
-import json
 import os
 import textwrap
-import sys
+from typing import List
 
 def main():
   os.chdir(os.path.dirname(__file__))
@@ -31,6 +29,7 @@ def main():
 
       TEST_BUILD_COMMON_ARGS = "$(location run_test_build.py) --out $(out) " +
           "--bootclasspath $(location :art-run-test-bootclasspath) " +
+          "--systemmodule $(location :art-run-test-system-module{{.zip}}) " +
           "--d8 $(location d8) " +
           "--jasmin $(location jasmin) " +
           "--rewrapper $(location rewrapper) " +
@@ -39,7 +38,7 @@ def main():
           "--zipalign $(location zipalign) "
     """).lstrip())
     for mode in ["host", "target", "jvm"]:
-      names = []
+      names: List[str] = []
       # Group the tests into shards based on the last two digits of the test number.
       # This keeps the number of generated genrules low so we don't overwhelm soong,
       # but it still allows iterating on single test without recompiling all tests.
@@ -118,8 +117,9 @@ def main():
                 "jvmti-common/*.java",
                 "utils/python/**/*.py",
                 ":art-run-test-bootclasspath",
+                ":art-run-test-system-module{{.zip}}",
                 ":development_docs",
-                ":asm-9.6-filegroup",
+                ":ow2-asm",
                 ":ojluni-AbstractCollection",
                 "988-method-trace/expected-stdout.txt",
                 "988-method-trace/expected-stderr.txt",
@@ -131,6 +131,7 @@ def main():
                 // Files needed to generate runner scripts.
                 "testrunner/*.py",
                 "knownfailures.json",
+                "knownfailures.py",
                 "default_run.py",
                 "globals.py",
                 "run-test",
@@ -147,13 +148,13 @@ def main():
         }}
         """))
 
-      name = "art-test-{mode}".format(mode=mode)
+      name = "art-run-test-{mode}-tgz".format(mode=mode)
       srcs = ("\n"+" "*16).join('":{}-tmp",'.format(n) for n in names)
       deps = ("\n"+" "*16).join('"{}",'.format(n) for n in names)
       f.write(textwrap.dedent(f"""
         java_genrule {{
             name: "{name}-tmp",
-            out: ["{name}.tgz"],
+            out: ["art-test-{mode}.tgz"],
             srcs: [
                 {srcs}
             ],

@@ -67,6 +67,7 @@
         <option name="push" value="class_verification_fuzzer_corpus.zip->/data/local/tmp/art_standalone_runtime_tests/class_verification_fuzzer_corpus.zip" />
         <option name="push" value="optimized_compiler_fuzzer_corpus.zip->/data/local/tmp/art_standalone_runtime_tests/optimized_compiler_fuzzer_corpus.zip" />
         <option name="push" value="baseline_compiler_fuzzer_corpus.zip->/data/local/tmp/art_standalone_runtime_tests/baseline_compiler_fuzzer_corpus.zip" />
+        <option name="push" value="fast_compiler_fuzzer_corpus.zip->/data/local/tmp/art_standalone_runtime_tests/fast_compiler_fuzzer_corpus.zip" />
     </target_preparer>
 
     <target_preparer class="com.android.compatibility.common.tradefed.targetprep.FilePusher">

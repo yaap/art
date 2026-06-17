@@ -86,7 +86,7 @@ inline void Object::FastVisitReferences(const Visitor& visitor,
 
   VisitInstanceFieldsReferences<kVerifyFlags, kReadBarrierOption>(klass, visitor);
   // Record with no references will return from previous if block.
-  if ((class_flags & (kClassFlagNormal | kClassFlagRecord)) != 0) {
+  if ((class_flags & kClassFlagNormal) != 0) {
     CheckNormalClass<kVerifyFlags>(klass);
     DCHECK(klass->IsInstantiableNonArray()) << klass->PrettyDescriptor();
     return;

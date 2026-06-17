@@ -101,8 +101,8 @@ struct ArtJvmTiEnv : public jvmtiEnv {
   // or by putting a list in the ClassExt of a field's DeclaringClass.
   // TODO Maybe just have an extension to let one put a watch on every field, that would probably be
   // good enough maybe since you probably want either a few or all/almost all of them.
-  std::unordered_set<art::ArtField*> access_watched_fields GUARDED_BY(event_info_mutex_);
-  std::unordered_set<art::ArtField*> modify_watched_fields GUARDED_BY(event_info_mutex_);
+  std::unordered_set<jfieldID> access_watched_fields GUARDED_BY(event_info_mutex_);
+  std::unordered_set<jfieldID> modify_watched_fields GUARDED_BY(event_info_mutex_);
 
   // Set of breakpoints is unique to each jvmtiEnv.
   std::unordered_set<Breakpoint> breakpoints GUARDED_BY(event_info_mutex_);

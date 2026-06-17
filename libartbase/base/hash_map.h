@@ -28,12 +28,14 @@ class HashMapHashWrapper {
  public:
   HashMapHashWrapper() : hash_fn_(HashFn()) {}
   explicit HashMapHashWrapper(const HashFn& hashfn) : hash_fn_(hashfn) {}
-  size_t operator()(const Key& key) const {
-    return hash_fn_(key);
-  }
 
   size_t operator()(const std::pair<Key, Value>& pair) const {
     return hash_fn_(pair.first);
+  }
+
+  template <typename K>
+  size_t operator()(const K& key) const {
+    return hash_fn_(key);
   }
 
  private:
@@ -45,13 +47,14 @@ class HashMapPredWrapper {
  public:
   HashMapPredWrapper() : pred_fn_(PredFn()) {}
   explicit HashMapPredWrapper(const PredFn& predfn) : pred_fn_(predfn) {}
-  bool operator()(const std::pair<Key, Value>& a, const std::pair<Key, Value>& b) const {
-    return pred_fn_(a.first, b.first);
+
+  bool operator()(const std::pair<Key, Value>& lhs, const std::pair<Key, Value>& rhs) const {
+    return pred_fn_(lhs.first, rhs.first);
   }
 
-  template <typename Element>
-  bool operator()(const std::pair<Key, Value>& a, const Element& element) const {
-    return pred_fn_(a.first, element);
+  template <typename K>
+  bool operator()(const std::pair<Key, Value>& lhs, const K& rhs) const {
+    return pred_fn_(lhs.first, rhs);
   }
 
  private:

@@ -21,12 +21,20 @@
 #include "art_field-inl.h"
 #include "base/bit_utils.h"
 #include "base/casts.h"
+#include "base/locks.h"
 #include "base/logging.h"
+#include "base/sdk_version.h"
+#include "class_root-inl.h"
 #include "dex/dex_file-inl.h"
 #include "driver/compiler_options.h"
 #include "intrinsics_enum.h"
+#include "mirror/method_type.h"
+#include "mirror/object.h"
+#include "obj_ptr.h"
 #include "optimizing/data_type.h"
+#include "handle_cache-inl.h"
 #include "optimizing/nodes.h"
+#include "runtime.h"
 
 namespace art HIDDEN {
 
@@ -39,7 +47,12 @@ class HConstantFoldingVisitor final : public CRTPGraphVisitor<HConstantFoldingVi
                                    OptimizingCompilerStats* stats)
       : CRTPGraphVisitor(graph),
         compiler_options_(compiler_options),
-        stats_(stats) {}
+        stats_(stats),
+        optimizations_occurred_(false) {}
+
+  bool OptimizationsOccurred() const {
+    return optimizations_occurred_;
+  }
 
  private:
   // Forward visit functions using the base class forwarding except for those we forward below.
@@ -71,7 +84,12 @@ class HConstantFoldingVisitor final : public CRTPGraphVisitor<HConstantFoldingVi
   void VisitIf(HIf* inst);
   void VisitInvoke(HInvoke* inst);
   void VisitTypeConversion(HTypeConversion* inst);
-  void VisitStaticFieldGet(HStaticFieldGet* instruction);
+  void VisitStaticFieldGet(HStaticFieldGet* inst);
+  void VisitInstanceFieldGet(HInstanceFieldGet* inst);
+  void VisitLoadConstantTableEntry(HLoadConstantTableEntry* inst);
+
+  void FoldFieldValue(HFieldAccess* inst, ObjPtr<mirror::Object> receiver)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   void PropagateValue(HBasicBlock* starting_block,
                       HInstruction* variable,
@@ -90,6 +108,8 @@ class HConstantFoldingVisitor final : public CRTPGraphVisitor<HConstantFoldingVi
   const CompilerOptions& compiler_options_;
 
   OptimizingCompilerStats* stats_;
+
+  bool optimizations_occurred_;
 
   template <typename T> friend class CRTPGraphVisitor;
 
@@ -132,6 +152,52 @@ class InstructionWithAbsorbingInputSimplifier final
     return &InstructionWithAbsorbingInputSimplifier::HandleShift;
   }
 
+  // Forward `Equal` and `NotEqual` to `HandleEquality()`.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HEqual*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitEqual);
+    return &InstructionWithAbsorbingInputSimplifier::HandleEquality;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HNotEqual*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitNotEqual);
+    return &InstructionWithAbsorbingInputSimplifier::HandleEquality;
+  }
+
+  // Forward `{Above,Below}{,OrEqual}` to `HandleUnsignedInequality()`.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HAbove*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitAbove);
+    return &InstructionWithAbsorbingInputSimplifier::HandleUnsignedInequality;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HAboveOrEqual*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitAboveOrEqual);
+    return &InstructionWithAbsorbingInputSimplifier::HandleUnsignedInequality;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HBelow*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitBelow);
+    return &InstructionWithAbsorbingInputSimplifier::HandleUnsignedInequality;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HBelowOrEqual*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitBelowOrEqual);
+    return &InstructionWithAbsorbingInputSimplifier::HandleUnsignedInequality;
+  }
+
+  // Forward `{GreaterThan,LessThan}{,OrEqual}` to `HandleInequality()`.
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HGreaterThan*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitGreaterThan);
+    return &InstructionWithAbsorbingInputSimplifier::HandleInequality;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HGreaterThanOrEqual*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitGreaterThanOrEqual);
+    return &InstructionWithAbsorbingInputSimplifier::HandleInequality;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HLessThan*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitLessThan);
+    return &InstructionWithAbsorbingInputSimplifier::HandleInequality;
+  }
+  static constexpr auto ForwardVisit(void (CRTPGraphVisitor::*visit)(HLessThanOrEqual*)) {
+    DCHECK(visit == &CRTPGraphVisitor::VisitLessThanOrEqual);
+    return &InstructionWithAbsorbingInputSimplifier::HandleInequality;
+  }
+
   void SetReplacement(HInstruction* replacement) {
     DCHECK(!should_replace_);
     DCHECK(replacement_ == nullptr);
@@ -141,19 +207,9 @@ class InstructionWithAbsorbingInputSimplifier final
   }
 
   void HandleShift(HBinaryOperation* shift);
-
-  void VisitEqual(HEqual* instruction);
-  void VisitNotEqual(HNotEqual* instruction);
-
-  void VisitAbove(HAbove* instruction);
-  void VisitAboveOrEqual(HAboveOrEqual* instruction);
-  void VisitBelow(HBelow* instruction);
-  void VisitBelowOrEqual(HBelowOrEqual* instruction);
-
-  void VisitGreaterThan(HGreaterThan* instruction);
-  void VisitGreaterThanOrEqual(HGreaterThanOrEqual* instruction);
-  void VisitLessThan(HLessThan* instruction);
-  void VisitLessThanOrEqual(HLessThanOrEqual* instruction);
+  void HandleEquality(HBinaryOperation* instruction);
+  void HandleUnsignedInequality(HCondition* instruction);
+  void HandleInequality(HCondition* instruction);
 
   void VisitAnd(HAnd* instruction);
   void VisitCompare(HCompare* instruction);
@@ -176,7 +232,7 @@ bool HConstantFolding::Run() {
   // another instruction, may possibly be used to turn that second
   // instruction into a constant as well.
   visitor.VisitReversePostOrder();
-  return true;
+  return visitor.OptimizationsOccurred();
 }
 
 void HConstantFoldingVisitor::VisitUnaryOperation(HUnaryOperation* inst) {
@@ -186,6 +242,7 @@ void HConstantFoldingVisitor::VisitUnaryOperation(HUnaryOperation* inst) {
   if (constant != nullptr) {
     inst->ReplaceWith(constant);
     inst->GetBlock()->RemoveInstruction(inst);
+    optimizations_occurred_ = true;
   } else if (inst->InputAt(0)->IsSelect() && inst->InputAt(0)->HasOnlyOneNonEnvironmentUse()) {
     // Try to replace the select's inputs in Select+UnaryOperation cases. We can do this if both
     // inputs to the select are constants, and this is the only use of the select.
@@ -205,50 +262,89 @@ void HConstantFoldingVisitor::VisitUnaryOperation(HUnaryOperation* inst) {
     select->UpdateType();
     inst->ReplaceWith(select);
     inst->GetBlock()->RemoveInstruction(inst);
+    optimizations_occurred_ = true;
   }
 }
+
+namespace {
+
+// Similar to HasOnlyOneNonEnvironmentUse but allows several uses iff they are equal. Since this
+// will be used only for binops, it will be relatively fast. Relevant for
+// TryRemoveBinaryOperationViaSelect.
+bool OnlyOneNonEnvironmentUseAllowingDuplicates(HSelect* select) {
+  if (select->HasEnvironmentUses()) {
+    return false;
+  }
+  const HUseList<HInstruction*>& use_list = select->GetUses();
+  DCHECK(!use_list.empty());
+  HInstruction* user = use_list.front().GetUser();
+  for (auto& use : use_list) {
+    if (use.GetUser() != user) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // anonymous namespace
 
 bool HConstantFoldingVisitor::TryRemoveBinaryOperationViaSelect(HBinaryOperation* inst) {
   HInstruction* left = inst->GetLeft();
   HInstruction* right = inst->GetRight();
-  if (left->IsSelect() == right->IsSelect()) {
-    // If both of them are constants, HandleBinaryOperation already tried the static evaluation. If
-    // both of them are selects, then we can't simplify.
-    // TODO(solanes): Technically, if both of them are selects we could simplify iff both select's
-    // conditions are equal e.g. Add(Select(1, 2, cond), Select(3, 4, cond)) could be replaced with
-    // Select(4, 6, cond). This seems very unlikely to happen so we don't implement it.
+  const bool left_is_select = left->IsSelect();
+  const bool right_is_select = right->IsSelect();
+
+  if (!left_is_select && !right_is_select) {
+    // If both of them are constants, HandleBinaryOperation already tried the static evaluation and
+    // failed.
     return false;
   }
 
-  const bool left_is_select = left->IsSelect();
-  HSelect* select = left_is_select ? left->AsSelect() : right->AsSelect();
-  HInstruction* maybe_constant = left_is_select ? right : left;
-
-  if (select->HasOnlyOneNonEnvironmentUse()) {
-    // Try to replace the select's inputs in Select+BinaryOperation. We can do this if both
-    // inputs to the select are constants, and this is the only use of the select.
-    HConstant* false_constant =
-        inst->TryStaticEvaluation(left_is_select ? select->GetFalseValue() : maybe_constant,
-                                  left_is_select ? maybe_constant : select->GetFalseValue());
-    if (false_constant == nullptr) {
-      return false;
-    }
-    HConstant* true_constant =
-        inst->TryStaticEvaluation(left_is_select ? select->GetTrueValue() : maybe_constant,
-                                  left_is_select ? maybe_constant : select->GetTrueValue());
-    if (true_constant == nullptr) {
-      return false;
-    }
-    DCHECK_EQ(select->InputAt(0), select->GetFalseValue());
-    DCHECK_EQ(select->InputAt(1), select->GetTrueValue());
-    select->ReplaceInput(false_constant, 0);
-    select->ReplaceInput(true_constant, 1);
-    select->UpdateType();
-    inst->ReplaceWith(select);
-    inst->GetBlock()->RemoveInstruction(inst);
-    return true;
+  if (left_is_select &&
+      right_is_select &&
+      left->AsSelect()->GetCondition() != right->AsSelect()->GetCondition()) {
+    // If both of them are selects, this optimization can only be done when both conditions are the
+    // same.
+    return false;
   }
-  return false;
+
+  HSelect* select_to_update = nullptr;
+  if (left_is_select && OnlyOneNonEnvironmentUseAllowingDuplicates(left->AsSelect())) {
+    select_to_update = left->AsSelect();
+  } else if (right_is_select && OnlyOneNonEnvironmentUseAllowingDuplicates(right->AsSelect())) {
+    select_to_update = right->AsSelect();
+  }
+
+  if (select_to_update == nullptr) {
+    // Can't perform the optimization if there's no select with only one non environment use as the
+    // select's result will be used by other instructions.
+    return false;
+  }
+
+  // Try to replace the select's inputs in Select+BinaryOperation. We can do this if both
+  // inputs to the select are constants i.e. if TryStaticEvaluation returns an HConstant.
+  HInstruction* left_false_value = left_is_select ? left->AsSelect()->GetFalseValue() : left;
+  HInstruction* right_false_value = right_is_select ? right->AsSelect()->GetFalseValue() : right;
+  HConstant* false_constant = inst->TryStaticEvaluation(left_false_value, right_false_value);
+  if (false_constant == nullptr) {
+    return false;
+  }
+
+  HInstruction* left_true_value = left_is_select ? left->AsSelect()->GetTrueValue() : left;
+  HInstruction* right_true_value = right_is_select ? right->AsSelect()->GetTrueValue() : right;
+  HConstant* true_constant = inst->TryStaticEvaluation(left_true_value, right_true_value);
+  if (true_constant == nullptr) {
+    return false;
+  }
+
+  DCHECK_EQ(select_to_update->InputAt(0), select_to_update->GetFalseValue());
+  DCHECK_EQ(select_to_update->InputAt(1), select_to_update->GetTrueValue());
+  select_to_update->ReplaceInput(false_constant, 0);
+  select_to_update->ReplaceInput(true_constant, 1);
+  select_to_update->UpdateType();
+  inst->ReplaceWith(select_to_update);
+  inst->GetBlock()->RemoveInstruction(inst);
+  return true;
 }
 
 template <typename InstructionType>
@@ -274,8 +370,10 @@ ALWAYS_INLINE inline void HConstantFoldingVisitor::HandleBinaryOperation(Instruc
   if (replace) {
     inst->ReplaceWith(replacement);
     inst->GetBlock()->RemoveInstruction(inst);
+    optimizations_occurred_ = true;
   } else if (TryRemoveBinaryOperationViaSelect(inst)) {
     // Already replaced inside TryRemoveBinaryOperationViaSelect.
+    optimizations_occurred_ = true;
   }
 }
 
@@ -285,6 +383,7 @@ void HConstantFoldingVisitor::VisitDivZeroCheck(HDivZeroCheck* inst) {
   if (check_input->IsConstant() && !check_input->AsConstant()->IsArithmeticZero()) {
     inst->ReplaceWith(check_input);
     inst->GetBlock()->RemoveInstruction(inst);
+    optimizations_occurred_ = true;
   }
 }
 
@@ -310,6 +409,13 @@ void HConstantFoldingVisitor::PropagateValue(HBasicBlock* starting_block,
     DCHECK_GE(uses_after, 1u) << "we must at least have the use in the if clause.";
     DCHECK_GE(uses_before, uses_after);
     MaybeRecordStat(stats_, MethodCompilationStat::kPropagatedIfValue, uses_before - uses_after);
+    if (uses_before != uses_after) {
+      optimizations_occurred_ = true;
+    }
+  } else {
+    // Optimization might not actually happen, but calculating it is slow. Pessimistically assume
+    // that optimization happened.
+    optimizations_occurred_ = true;
   }
 }
 
@@ -479,6 +585,7 @@ void HConstantFoldingVisitor::FoldReverseIntrinsic(HInvoke* inst) {
         GetGraph()->GetLongConstant(ReverseBits64(input->AsLongConstant()->GetValue())));
   }
   inst->GetBlock()->RemoveInstruction(inst);
+  optimizations_occurred_ = true;
 }
 
 void HConstantFoldingVisitor::FoldReverseBytesIntrinsic(HInvoke* inst) {
@@ -500,10 +607,11 @@ void HConstantFoldingVisitor::FoldReverseBytesIntrinsic(HInvoke* inst) {
     inst->ReplaceWith(GetGraph()->GetLongConstant(BSWAP(input->AsLongConstant()->GetValue())));
   } else {
     DCHECK(input->IsIntConstant());
-    inst->ReplaceWith(GetGraph()->GetIntConstant(
-        BSWAP(dchecked_integral_cast<int16_t>(input->AsIntConstant()->GetValue()))));
+    inst->ReplaceWith(
+        GetGraph()->GetIntConstant(BSWAP<int16_t>(input->AsIntConstant()->GetValue())));
   }
   inst->GetBlock()->RemoveInstruction(inst);
+  optimizations_occurred_ = true;
 }
 
 void HConstantFoldingVisitor::FoldBitCountIntrinsic(HInvoke* inst) {
@@ -524,6 +632,7 @@ void HConstantFoldingVisitor::FoldBitCountIntrinsic(HInvoke* inst) {
                    POPCOUNT(input->AsLongConstant()->GetValue());
   inst->ReplaceWith(GetGraph()->GetIntConstant(result));
   inst->GetBlock()->RemoveInstruction(inst);
+  optimizations_occurred_ = true;
 }
 
 void HConstantFoldingVisitor::FoldDivideUnsignedIntrinsic(HInvoke* inst) {
@@ -570,6 +679,7 @@ void HConstantFoldingVisitor::FoldDivideUnsignedIntrinsic(HInvoke* inst) {
   }
 
   inst->GetBlock()->RemoveInstruction(inst);
+  optimizations_occurred_ = true;
 }
 
 void HConstantFoldingVisitor::FoldHighestOneBitIntrinsic(HInvoke* inst) {
@@ -592,6 +702,7 @@ void HConstantFoldingVisitor::FoldHighestOneBitIntrinsic(HInvoke* inst) {
         GetGraph()->GetLongConstant(HighestOneBitValue(input->AsLongConstant()->GetValue())));
   }
   inst->GetBlock()->RemoveInstruction(inst);
+  optimizations_occurred_ = true;
 }
 
 void HConstantFoldingVisitor::FoldLowestOneBitIntrinsic(HInvoke* inst) {
@@ -614,6 +725,7 @@ void HConstantFoldingVisitor::FoldLowestOneBitIntrinsic(HInvoke* inst) {
         GetGraph()->GetLongConstant(LowestOneBitValue(input->AsLongConstant()->GetValue())));
   }
   inst->GetBlock()->RemoveInstruction(inst);
+  optimizations_occurred_ = true;
 }
 
 void HConstantFoldingVisitor::FoldNumberOfLeadingZerosIntrinsic(HInvoke* inst) {
@@ -635,6 +747,7 @@ void HConstantFoldingVisitor::FoldNumberOfLeadingZerosIntrinsic(HInvoke* inst) {
                                         JAVASTYLE_CLZ(input->AsLongConstant()->GetValue());
   inst->ReplaceWith(GetGraph()->GetIntConstant(result));
   inst->GetBlock()->RemoveInstruction(inst);
+  optimizations_occurred_ = true;
 }
 
 void HConstantFoldingVisitor::FoldNumberOfTrailingZerosIntrinsic(HInvoke* inst) {
@@ -656,6 +769,7 @@ void HConstantFoldingVisitor::FoldNumberOfTrailingZerosIntrinsic(HInvoke* inst) 
                                         JAVASTYLE_CTZ(input->AsLongConstant()->GetValue());
   inst->ReplaceWith(GetGraph()->GetIntConstant(result));
   inst->GetBlock()->RemoveInstruction(inst);
+  optimizations_occurred_ = true;
 }
 
 void HConstantFoldingVisitor::VisitArrayLength(HArrayLength* inst) {
@@ -667,6 +781,7 @@ void HConstantFoldingVisitor::VisitArrayLength(HArrayLength* inst) {
     const dex::StringId& string_id = dex_file.GetStringId(load_string->GetStringIndex());
     inst->ReplaceWith(GetGraph()->GetIntConstant(
         dchecked_integral_cast<int32_t>(dex_file.GetStringUtf16Length(string_id))));
+    optimizations_occurred_ = true;
   }
 }
 
@@ -677,6 +792,7 @@ void HConstantFoldingVisitor::VisitTypeConversion(HTypeConversion* inst) {
   if (constant != nullptr) {
     inst->ReplaceWith(constant);
     inst->GetBlock()->RemoveInstruction(inst);
+    optimizations_occurred_ = true;
   } else if (inst->InputAt(0)->IsSelect() && inst->InputAt(0)->HasOnlyOneNonEnvironmentUse()) {
     // Try to replace the select's inputs in Select+TypeConversion. We can do this if both
     // inputs to the select are constants, and this is the only use of the select.
@@ -696,7 +812,67 @@ void HConstantFoldingVisitor::VisitTypeConversion(HTypeConversion* inst) {
     select->UpdateType();
     inst->ReplaceWith(select);
     inst->GetBlock()->RemoveInstruction(inst);
+    optimizations_occurred_ = true;
   }
+}
+
+static bool IsUnmodifiableAndInitialized(ArtField* field, const CompilerOptions& compiler_options)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  DCHECK(field->IsStatic()) << field->PrettyField();
+  DCHECK(field->IsFinal()) << field->PrettyField();
+
+  if (field->IsWriteProtected()) {
+    return false;
+  }
+
+  if (!field->GetDeclaringClass()->IsVisiblyInitialized()) {
+    return false;
+  }
+
+  if (field->IsMonotonic()) {
+    return true;
+  }
+
+  uint32_t target_sdk_version = Runtime::Current()->GetTargetSdkVersion();
+  // If target_sdk_verson is not yet set then no assumptions about static final fields can be made.
+  if (IsSdkVersionUnset(target_sdk_version) ||
+      IsSdkVersionSetAndAtMost(target_sdk_version, SdkVersion::kB)) {
+    return false;
+  }
+
+  ObjPtr<mirror::Class> field_type = field->LookupResolvedType();
+  if (field_type == nullptr) {
+    return false;
+  }
+
+  if (field_type->IsBootStrapClassLoaded()) {
+    // These classes are abstract and exact implementations are exposed neither to apps
+    // nor in the platform, hence plain comparison instead of subtype checks.
+    if (field_type == GetClassRoot(ClassRoot::kJavaLangInvokeMethodHandle) ||
+        field_type == GetClassRoot(ClassRoot::kJavaLangInvokeVarHandle) ||
+        field_type == WellKnownClasses::ToClass(
+            WellKnownClasses::java_util_concurrent_atomic_AIFU) ||
+        field_type == WellKnownClasses::ToClass(
+            WellKnownClasses::java_util_concurrent_atomic_ALFU) ||
+        field_type == WellKnownClasses::ToClass(
+            WellKnownClasses::java_util_concurrent_atomic_ARFU) ||
+        // Unsafe classes are final and there is only one instance of them.
+        field_type == WellKnownClasses::ToClass(
+            WellKnownClasses::jdk_internal_misc_Unsafe) ||
+        field_type == WellKnownClasses::ToClass(
+            WellKnownClasses::sun_misc_Unsafe)) {
+      return true;
+    }
+  }
+
+  // Can't use Runtime::GetSdkVersion in the compiler. See Runtime.sdk_version_ comment.
+  uint32_t assumed_sdk_int = compiler_options.GetAssumeValueOptions().SdkInt();
+  if (IsSdkVersionUnset(assumed_sdk_int) ||
+      IsSdkVersionSetAndAtMost(assumed_sdk_int, SdkVersion::kB)) {
+    return false;
+  }
+
+  return true;
 }
 
 void HConstantFoldingVisitor::VisitStaticFieldGet(HStaticFieldGet* instruction) {
@@ -705,17 +881,150 @@ void HConstantFoldingVisitor::VisitStaticFieldGet(HStaticFieldGet* instruction) 
     return;
   }
 
+  // Handle kInt32 separately first, as it has a special case for assumed values.
+  if (instruction->GetFieldType() == DataType::Type::kInt32) {
+    int32_t assumed_value;
+    if (compiler_options_.GetAssumeValueOptions().MaybeGetAssumedValue(field, &assumed_value)) {
+      instruction->ReplaceWith(GetGraph()->GetIntConstant(assumed_value));
+      instruction->GetBlock()->RemoveInstruction(instruction);
+      optimizations_occurred_ = true;
+      return;
+    }
+  }
+
+  // JNI can modify static final fields in debuggable runtime.
+  if (GetGraph()->IsDebuggable()) {
+    return;
+  }
+
+  ScopedObjectAccess soa(Thread::Current());
+
+  if (!IsUnmodifiableAndInitialized(field, compiler_options_)) {
+    return;
+  }
+
+  FoldFieldValue(instruction, field->GetDeclaringClass());
+}
+
+void HConstantFoldingVisitor::VisitInstanceFieldGet(HInstanceFieldGet* inst) {
+  // IsDebuggable() check is not needed here as monotonic fields can not be modified.
+  ArtField* field = inst->GetFieldInfo().GetField();
+  if (!field->IsMonotonic()) {
+    return;
+  }
+  DCHECK(field->IsFinal());
+  HInstruction* input = inst->InputAt(0u);
+  if (input->IsFieldAccess() &&
+      input->AsFieldAccess()->HasConstantValue()) {
+    Handle<mirror::Object> receiver = input->AsFieldAccess()->GetConstantValue();
+    ScopedObjectAccess soa(Thread::Current());
+    FoldFieldValue(inst, receiver.Get());
+  }
+}
+
+void HConstantFoldingVisitor::VisitLoadConstantTableEntry(HLoadConstantTableEntry* inst) {
+  if (inst->GetIndex()->IsIntConstant()) {
+    size_t index = dchecked_integral_cast<size_t>(inst->GetIndex()->AsIntConstant()->GetValue());
+    DCHECK_LT(index, inst->GetNumEntries());
+    int64_t value = inst->GetEntry(index);
+    HInstruction* constant = nullptr;
+    if (inst->GetType() == DataType::Type::kInt64) {
+      constant = GetGraph()->GetLongConstant(value);
+    } else if (inst->GetType() == DataType::Type::kFloat64) {
+      constant = GetGraph()->GetDoubleConstant(bit_cast<double, int64_t>(value));
+    } else if (inst->GetType() == DataType::Type::kFloat32) {
+      constant = GetGraph()->GetFloatConstant(
+          bit_cast<float, uint32_t>(dchecked_integral_cast<uint32_t>(value)));
+    } else {
+      constant = GetGraph()->GetIntConstant(dchecked_integral_cast<int32_t>(value));
+    }
+    inst->ReplaceWith(constant);
+    inst->GetBlock()->RemoveInstruction(inst);
+    optimizations_occurred_ = true;
+  }
+}
+
+void HConstantFoldingVisitor::FoldFieldValue(HFieldAccess* instruction,
+                                             ObjPtr<mirror::Object> receiver) {
+  ArtField* field = instruction->GetFieldInfo().GetField();
+  DCHECK_IMPLIES(field->IsStatic(), IsUnmodifiableAndInitialized(field, compiler_options_))
+      << field->PrettyField();
+  DCHECK_IMPLIES(!field->IsStatic(), field->IsMonotonic()) << field->PrettyField();
+  DCHECK(!receiver.IsNull());
+  HConstant* constant = nullptr;
   switch (instruction->GetFieldType()) {
+    case DataType::Type::kBool: {
+      uint8_t value = field->GetBoolean(receiver);
+      constant = GetGraph()->GetConstant(DataType::Type::kBool, value);
+      break;
+    }
+    case DataType::Type::kInt8: {
+      int8_t value = field->GetByte(receiver);
+      constant = GetGraph()->GetConstant(DataType::Type::kInt8, value);
+      break;
+    }
+    case DataType::Type::kUint16: {
+      uint16_t value = field->GetChar(receiver);
+      constant = GetGraph()->GetConstant(DataType::Type::kUint16, value);
+      break;
+    }
+    case DataType::Type::kInt16: {
+      int16_t value = field->GetShort(receiver);
+      constant = GetGraph()->GetConstant(DataType::Type::kInt16, value);
+      break;
+    }
     case DataType::Type::kInt32: {
-      int32_t assumed_value;
-      if (compiler_options_.GetAssumeValueOptions().MaybeGetAssumedValue(field, &assumed_value)) {
-        instruction->ReplaceWith(GetGraph()->GetIntConstant(assumed_value));
-        instruction->GetBlock()->RemoveInstruction(instruction);
+      uint32_t value = field->Get32(receiver);
+      constant = GetGraph()->GetIntConstant(value);
+      break;
+    }
+    case DataType::Type::kFloat32: {
+      // On x86-32 ArtField::GetFloat might canonicalize NaNs when floats are put and read
+      // back from FP register stack.
+      uint32_t raw_bits = field->Get32(receiver);
+      float value = bit_cast<float, uint32_t>(raw_bits);
+      constant = GetGraph()->GetFloatConstant(value);
+      break;
+    }
+    case DataType::Type::kInt64: {
+      uint64_t value = field->Get64(receiver);
+      constant = GetGraph()->GetLongConstant(static_cast<int64_t>(value));
+      break;
+    }
+    case DataType::Type::kFloat64: {
+      // On x86-32 ArtField::GetDouble might canonicalize NaNs when doubles are put and read
+      // back from FP register stack.
+      uint64_t raw_bits = field->Get64(receiver);
+      double value = bit_cast<double, uint64_t>(raw_bits);
+      constant = GetGraph()->GetDoubleConstant(value);
+      break;
+    }
+    case DataType::Type::kReference: {
+      if (instruction->HasConstantValue()) {
+        // Constant folding is run multiple times. Setting value only once, but making sure that
+        // its value is still the same.
+        DCHECK_EQ(field->GetObject(receiver),
+                  instruction->GetConstantValue().Get());
+      } else {
+        ObjPtr<mirror::Object> obj = field->GetObject(receiver);
+        if (obj.IsNull()) {
+          constant = GetGraph()->GetNullConstant();
+        } else {
+          instruction->SetConstantValue(
+              GetGraph()->GetHandleCache()->GetHandles()->NewHandle(obj));
+          optimizations_occurred_ = true;
+        }
       }
       break;
     }
     default:
       break;
+  }
+
+  if (constant != nullptr) {
+    instruction->ReplaceWith(constant);
+    instruction->GetBlock()->RemoveInstruction(instruction);
+    optimizations_occurred_ = true;
   }
 }
 
@@ -731,160 +1040,129 @@ void InstructionWithAbsorbingInputSimplifier::HandleShift(HBinaryOperation* inst
   }
 }
 
-void InstructionWithAbsorbingInputSimplifier::VisitEqual(HEqual* instruction) {
+static ObjPtr<mirror::Object> ExtractConstant(HInstruction* inst)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  if (inst->IsLoadClass()) {
+    Handle<mirror::Class> cls = inst->AsLoadClass()->GetClass();
+    if (cls.GetReference() != nullptr) {
+      return cls.Get();
+    }
+  }
+
+  if (inst->IsLoadString()) {
+    Handle<mirror::String> string = inst->AsLoadString()->GetString();
+    if (string.GetReference() != nullptr) {
+      return string.Get();
+    }
+  }
+
+  if (inst->IsLoadMethodType()) {
+    Handle<mirror::MethodType> method_type = inst->AsLoadMethodType()->GetMethodType();
+    if (method_type.GetReference() != nullptr) {
+      return method_type.Get();
+    }
+  }
+
+  if (inst->IsFieldAccess()) {
+    HFieldAccess* field_access = inst->AsFieldAccess();
+    if (field_access->HasConstantValue()) {
+      return field_access->GetConstantValue().Get();
+    }
+  }
+
+  return nullptr;
+}
+
+void InstructionWithAbsorbingInputSimplifier::HandleEquality(HBinaryOperation* instruction) {
+  DCHECK(instruction->IsEqual() || instruction->IsNotEqual());
+  auto reverse_for_not_equal = [instruction](bool result) {
+    return result != instruction->IsNotEqual();
+  };
   HInstruction* left = instruction->GetLeft();
   HInstruction* right = instruction->GetRight();
   if (left == right && !DataType::IsFloatingPointType(left->GetType())) {
     // Replace code looking like
-    //    EQUAL lhs, lhs
-    //    CONSTANT true
+    //    EQUAL/NOT_EQUAL lhs, lhs
+    //    CONSTANT true/false
     // We don't perform this optimizations for FP types since Double.NaN != Double.NaN, which is the
     // opposite value.
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 1));
+    bool result = reverse_for_not_equal(true);
+    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, result ? 1 : 0));
   } else if ((left->IsNullConstant() && !right->CanBeNull()) ||
              (right->IsNullConstant() && !left->CanBeNull())) {
     // Replace code looking like
-    //    EQUAL lhs, null
+    //    EQUAL/NOT_EQUAL lhs, null
     // where lhs cannot be null with
-    //    CONSTANT false
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 0));
+    //    CONSTANT false/true
+    bool result = reverse_for_not_equal(false);
+    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, result ? 1 : 0));
+  } else {
+    ScopedObjectAccess soa(Thread::Current());
+    ObjPtr<mirror::Object> maybe_left_constant = ExtractConstant(left);
+    if (maybe_left_constant != nullptr) {
+      ObjPtr<mirror::Object> maybe_right_constant = ExtractConstant(right);
+      if (maybe_right_constant != nullptr) {
+        bool result = reverse_for_not_equal(maybe_left_constant == maybe_right_constant);
+        SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, result ? 1 : 0));
+      }
+    }
   }
 }
 
-void InstructionWithAbsorbingInputSimplifier::VisitNotEqual(HNotEqual* instruction) {
-  HInstruction* left = instruction->GetLeft();
-  HInstruction* right = instruction->GetRight();
-  if (left == right && !DataType::IsFloatingPointType(left->GetType())) {
-    // Replace code looking like
-    //    NOT_EQUAL lhs, lhs
-    //    CONSTANT false
-    // We don't perform this optimizations for FP types since Double.NaN != Double.NaN, which is the
-    // opposite value.
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 0));
-  } else if ((left->IsNullConstant() && !right->CanBeNull()) ||
-             (right->IsNullConstant() && !left->CanBeNull())) {
-    // Replace code looking like
-    //    NOT_EQUAL lhs, null
-    // where lhs cannot be null with
-    //    CONSTANT true
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 1));
-  }
-}
-
-void InstructionWithAbsorbingInputSimplifier::VisitAbove(HAbove* instruction) {
+void InstructionWithAbsorbingInputSimplifier::HandleUnsignedInequality(HCondition* instruction) {
+  DCHECK(instruction->IsAbove() ||
+         instruction->IsAboveOrEqual() ||
+         instruction->IsBelow() ||
+         instruction->IsBelowOrEqual());
   HInstruction* left = instruction->GetLeft();
   HInstruction* right = instruction->GetRight();
   if (left == right) {
     // Replace code looking like
-    //    ABOVE lhs, lhs
-    //    CONSTANT false
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 0));
-  } else if (left->IsConstant() && left->AsConstant()->IsArithmeticZero()) {
-    // Replace code looking like
-    //    ABOVE dst, 0, src  // unsigned 0 > src is always false
+    //    ABOVE/ABOVE_OR_EQUAL/BELOW/BELOW_OR_EQUAL lhs, lhs
     // with
-    //    CONSTANT false
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 0));
+    //    CONSTANT false/true/false/true
+    bool result = instruction->IsAboveOrEqual() || instruction->IsBelowOrEqual();
+    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, result ? 1 : 0));
+    return;
+  }
+  HInstruction* check_for_zero =
+      (instruction->IsAbove() || instruction->IsBelowOrEqual()) ? left : right;
+  if (check_for_zero->IsConstant() && check_for_zero->AsConstant()->IsArithmeticZero()) {
+    // Replace code looking like
+    //    ABOVE/BELOW_OR_EQUAL 0, rhs
+    // with
+    //    CONSTANT false/true
+    // and
+    //    ABOVE_OR_EQUAL/BELOW lhs, 0
+    // with
+    //    CONSTANT true/false
+    bool result = instruction->IsAboveOrEqual() || instruction->IsBelowOrEqual();
+    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, result ? 1 : 0));
   }
 }
 
-void InstructionWithAbsorbingInputSimplifier::VisitAboveOrEqual(HAboveOrEqual* instruction) {
+void InstructionWithAbsorbingInputSimplifier::HandleInequality(HCondition* instruction) {
+  DCHECK(instruction->IsGreaterThan() ||
+         instruction->IsGreaterThanOrEqual() ||
+         instruction->IsLessThan() ||
+         instruction->IsLessThanOrEqual());
   HInstruction* left = instruction->GetLeft();
   HInstruction* right = instruction->GetRight();
   if (left == right) {
     // Replace code looking like
-    //    ABOVE_OR_EQUAL lhs, lhs
-    //    CONSTANT true
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 1));
-  } else if (right->IsConstant() && right->AsConstant()->IsArithmeticZero()) {
-    // Replace code looking like
-    //    ABOVE_OR_EQUAL dst, src, 0  // unsigned src >= 0 is always true
+    //    GREATER_THAN/GREATER_THAN_OR_EQUAL/LESS_THAN/LESS_THAN_OR_EQUAL lhs, lhs
     // with
-    //    CONSTANT true
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 1));
-  }
-}
-
-void InstructionWithAbsorbingInputSimplifier::VisitBelow(HBelow* instruction) {
-  HInstruction* left = instruction->GetLeft();
-  HInstruction* right = instruction->GetRight();
-  if (left == right) {
-    // Replace code looking like
-    //    BELOW lhs, lhs
-    //    CONSTANT false
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 0));
-  } else if (right->IsConstant() && right->AsConstant()->IsArithmeticZero()) {
-    // Replace code looking like
-    //    BELOW dst, src, 0  // unsigned src < 0 is always false
-    // with
-    //    CONSTANT false
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 0));
-  }
-}
-
-void InstructionWithAbsorbingInputSimplifier::VisitBelowOrEqual(HBelowOrEqual* instruction) {
-  HInstruction* left = instruction->GetLeft();
-  HInstruction* right = instruction->GetRight();
-  if (left == right) {
-    // Replace code looking like
-    //    BELOW_OR_EQUAL lhs, lhs
-    //    CONSTANT true
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 1));
-  } else if (left->IsConstant() && left->AsConstant()->IsArithmeticZero()) {
-    // Replace code looking like
-    //    BELOW_OR_EQUAL dst, 0, src  // unsigned 0 <= src is always true
-    // with
-    //    CONSTANT true
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 1));
-  }
-}
-
-void InstructionWithAbsorbingInputSimplifier::VisitGreaterThan(HGreaterThan* instruction) {
-  HInstruction* left = instruction->GetLeft();
-  HInstruction* right = instruction->GetRight();
-  if (left == right &&
-      (!DataType::IsFloatingPointType(left->GetType()) || instruction->IsLtBias())) {
-    // Replace code looking like
-    //    GREATER_THAN lhs, lhs
-    //    CONSTANT false
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 0));
-  }
-}
-
-void InstructionWithAbsorbingInputSimplifier::VisitGreaterThanOrEqual(
-    HGreaterThanOrEqual* instruction) {
-  HInstruction* left = instruction->GetLeft();
-  HInstruction* right = instruction->GetRight();
-  if (left == right &&
-      (!DataType::IsFloatingPointType(left->GetType()) || instruction->IsGtBias())) {
-    // Replace code looking like
-    //    GREATER_THAN_OR_EQUAL lhs, lhs
-    //    CONSTANT true
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 1));
-  }
-}
-
-void InstructionWithAbsorbingInputSimplifier::VisitLessThan(HLessThan* instruction) {
-  HInstruction* left = instruction->GetLeft();
-  HInstruction* right = instruction->GetRight();
-  if (left == right &&
-      (!DataType::IsFloatingPointType(left->GetType()) || instruction->IsGtBias())) {
-    // Replace code looking like
-    //    LESS_THAN lhs, lhs
-    //    CONSTANT false
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 0));
-  }
-}
-
-void InstructionWithAbsorbingInputSimplifier::VisitLessThanOrEqual(HLessThanOrEqual* instruction) {
-  HInstruction* left = instruction->GetLeft();
-  HInstruction* right = instruction->GetRight();
-  if (left == right &&
-      (!DataType::IsFloatingPointType(left->GetType()) || instruction->IsLtBias())) {
-    // Replace code looking like
-    //    LESS_THAN_OR_EQUAL lhs, lhs
-    //    CONSTANT true
-    SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, 1));
+    //    CONSTANT false/true/false/true
+    // For FP types, check if NaN comparison yields the same result.
+    auto same_result_for_nan = [instruction]() {
+      return (instruction->IsGreaterThan() || instruction->IsLessThanOrEqual())
+          ? instruction->IsLtBias()
+          : instruction->IsGtBias();
+    };
+    if ((!DataType::IsFloatingPointType(left->GetType()) || same_result_for_nan())) {
+      bool result = instruction->IsGreaterThanOrEqual() || instruction->IsLessThanOrEqual();
+      SetReplacement(GetGraph()->GetConstant(DataType::Type::kBool, result ? 1 : 0));
+    }
   }
 }
 
@@ -919,20 +1197,37 @@ void InstructionWithAbsorbingInputSimplifier::VisitAnd(HAnd* instruction) {
 }
 
 void InstructionWithAbsorbingInputSimplifier::VisitCompare(HCompare* instruction) {
-  HConstant* input_cst = instruction->GetConstantRight();
-  if (input_cst != nullptr) {
-    HInstruction* input_value = instruction->GetLeastConstantLeft();
-    if (DataType::IsFloatingPointType(input_value->GetType()) &&
-        ((input_cst->IsFloatConstant() && input_cst->AsFloatConstant()->IsNaN()) ||
-         (input_cst->IsDoubleConstant() && input_cst->AsDoubleConstant()->IsNaN()))) {
+  HInstruction* left = instruction->GetLeft();
+  HInstruction* right = instruction->GetRight();
+  DataType::Type type = left->GetType();
+
+  if (DataType::IsFloatingPointType(type)) {
+    // FP comparisons
+    HConstant* input_cst = instruction->GetConstantRight();
+    if (input_cst != nullptr) {
+      if ((input_cst->IsFloatConstant() && input_cst->AsFloatConstant()->IsNaN()) ||
+          (input_cst->IsDoubleConstant() && input_cst->AsDoubleConstant()->IsNaN())) {
+        // Replace code looking like
+        //    CMP{G,L}-{FLOAT,DOUBLE} dst, src, NaN
+        // with
+        //    CONSTANT +1 (gt bias)
+        // or
+        //    CONSTANT -1 (lt bias)
+        SetReplacement(GetGraph()->GetIntConstant(instruction->IsGtBias() ? 1 : -1));
+        return;
+      }
+    }
+    // For left == right on FP, we cannot simplify to 0 because NaN != NaN.
+    // The result of cmpg(NaN, NaN) is 1, and cmpl(NaN, NaN) is -1.
+  } else {
+    // Integral comparisons
+    if (left == right) {
       // Replace code looking like
-      //    CMP{G,L}-{FLOAT,DOUBLE} dst, src, NaN
+      //    COMPARE lhs, lhs
       // with
-      //    CONSTANT +1 (gt bias)
-      // or
-      //    CONSTANT -1 (lt bias)
-      SetReplacement(GetGraph()->GetConstant(DataType::Type::kInt32,
-                                             (instruction->IsGtBias() ? 1 : -1)));
+      //    CONSTANT 0
+      SetReplacement(GetGraph()->GetIntConstant(0));
+      return;
     }
   }
 }

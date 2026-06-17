@@ -102,7 +102,7 @@ class RegionSpace final : public ContinuousMemMapAllocSpace {
   EXPORT size_t AllocationSizeNonvirtual(mirror::Object* obj, size_t* usable_size)
       REQUIRES_SHARED(Locks::mutator_lock_) REQUIRES(!region_lock_);
 
-  size_t Free(Thread*, mirror::Object*) override {
+  size_t Free(Thread*, mirror::Object*) override REQUIRES_SHARED(Locks::mutator_lock_) {
     UNIMPLEMENTED(FATAL);
     return 0;
   }

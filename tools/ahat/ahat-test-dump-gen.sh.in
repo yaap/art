@@ -28,13 +28,15 @@
 # running the script that should be safe to ignore, as long as you see
 # etc/test-dump.hprof and etc/test-dump-base.hprof being generated.
 
+set -e
+
 AHAT_ETC_DIR=${ANDROID_BUILD_TOP}/art/tools/ahat/etc
 AHAT_TEST_DUMP_JAR=@AHAT_TEST_DUMP_JAR@
 AHAT_TEST_DUMP_MAP=$(dirname ${AHAT_TEST_DUMP_JAR})/../proguard_dictionary
 
 # Build required dependencies.
-m build-art-host libahat-test-jni
-
+./art/tools/buildbot-build.sh --host --skip-run-tests-build
+m libahat-test-jni
 
 # test-dump.hprof
 art --no-compile -cp ${AHAT_TEST_DUMP_JAR} Main ${AHAT_ETC_DIR}/test-dump.hprof

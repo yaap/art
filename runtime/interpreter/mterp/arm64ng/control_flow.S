@@ -13,13 +13,13 @@
     cmp     w2, w3                      // compare (vA, vB)
     b.${condition} 1f
     FETCH_ADVANCE_INST 2
-    GET_INST_OPCODE ip                  // extract opcode from wINST
-    GOTO_OPCODE ip                      // jump to next instruction
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
+    GOTO_OPCODE                         // jump to next instruction
 1:
     FETCH_S wINST, 1                    // wINST<- branch offset, in code units
     BRANCH
 
-%def zcmp(compare="1", branch=""):
+%def zcmp(compare=False, branch=""):
     /*
      * Generic one-operand compare-and-branch operation.  Provide a "condition"
      * fragment that specifies the comparison to perform.
@@ -29,13 +29,12 @@
     /* if-cmp vAA, +BBBB */
     lsr     w0, wINST, #8               // w0<- AA
     GET_VREG w2, w0                     // w2<- vAA
-    .if ${compare}
-    cmp     w2, #0                      // compare (vA, 0)
-    .endif
+%   if compare:
+      cmp     w2, #0                    // compare (vA, 0)
     ${branch} 1f
     FETCH_ADVANCE_INST 2
-    GET_INST_OPCODE ip                  // extract opcode from wINST
-    GOTO_OPCODE ip                      // jump to next instruction
+    PREPARE_OPCODE_DISPATCH             // insert opcode to xIBASE
+    GOTO_OPCODE                         // jump to next instruction
 1:
     FETCH_S wINST, 1                    // w1<- branch offset, in code units
     BRANCH
@@ -82,37 +81,37 @@
 %  bincmp(condition="eq")
 
 %def op_if_eqz():
-%  zcmp(compare="0", branch="cbz     w2,")
+%  zcmp(branch="cbz     w2,")
 
 %def op_if_ge():
 %  bincmp(condition="ge")
 
 %def op_if_gez():
-%  zcmp(compare="0", branch="tbz     w2, #31,")
+%  zcmp(branch="tbz     w2, #31,")
 
 %def op_if_gt():
 %  bincmp(condition="gt")
 
 %def op_if_gtz():
-%  zcmp(branch="b.gt")
+%  zcmp(compare=True, branch="b.gt")
 
 %def op_if_le():
 %  bincmp(condition="le")
 
 %def op_if_lez():
-%  zcmp(branch="b.le")
+%  zcmp(compare=True, branch="b.le")
 
 %def op_if_lt():
 %  bincmp(condition="lt")
 
 %def op_if_ltz():
-%  zcmp(compare="0", branch="tbnz    w2, #31,")
+%  zcmp(branch="tbnz    w2, #31,")
 
 %def op_if_ne():
 %  bincmp(condition="ne")
 
 %def op_if_nez():
-%  zcmp(compare="0", branch="cbnz    w2,")
+%  zcmp(branch="cbnz    w2,")
 
 %def op_packed_switch(func="NterpDoPackedSwitch"):
 /*
@@ -141,43 +140,48 @@
 /*
  * Return a 32-bit value.
  */
-%def op_return(is_object="0", is_void="0", is_wide="0"):
-    .if $is_void
+%def op_return(is_object=False, is_void=False, is_wide=False):
+%   if is_void:
       // Thread fence for constructor
       dmb ishst
-    .else
+%   else:
       lsr     w2, wINST, #8               // w2<- AA
-      .if $is_wide
+%     if is_wide:
         GET_VREG_WIDE x0, w2                // x0<- vAA
         // In case we're going back to compiled code, put the
         // result also in d0
         fmov d0, x0
-      .else
+%     else:
         GET_VREG w0, w2                     // r0<- vAA
-        .if !$is_object
-        // In case we're going back to compiled code, put the
-        // result also in s0.
-        fmov s0, w0
-        .endif
-      .endif
-    .endif
-    .cfi_remember_state
-    ldr ip, [xREFS, #-8]
-    mov sp, ip
-    .cfi_def_cfa sp, CALLEE_SAVES_SIZE
-    RESTORE_ALL_CALLEE_SAVES
-    ret
-    .cfi_restore_state
-    CFI_DEF_CFA_BREG_PLUS_UCONST CFI_REFS, -8, CALLEE_SAVES_SIZE
+%       if is_object:
+.L${opcode}_restore_registers_and_return:  // `return-wide` handler jumps here to shorten the code.
+%         pass
+%       else:
+          // In case we're going back to compiled code, put the
+          // result also in s0.
+          fmov s0, w0
+%   if is_wide:
+      // To fit the handler in the 64B, jump to the code in `return-object`.
+%     return_object_opcode = re.sub("return_wide", "return_object", opcode);
+      b .L${return_object_opcode}_restore_registers_and_return
+%   else:
+      .cfi_remember_state
+      ldr ip, [xREFS, #-8]
+      mov sp, ip
+      .cfi_def_cfa sp, CALLEE_SAVES_SIZE
+      RESTORE_ALL_CALLEE_SAVES
+      ret
+      .cfi_restore_state
+      CFI_DEF_CFA_BREG_PLUS_UCONST CFI_REFS, -8, CALLEE_SAVES_SIZE
 
 %def op_return_object():
-%  op_return(is_object="1", is_void="0", is_wide="0")
+%  op_return(is_object=True)
 
 %def op_return_void():
-%  op_return(is_object="0", is_void="1", is_wide="0")
+%  op_return(is_void=True)
 
 %def op_return_wide():
-%  op_return(is_object="0", is_void="0", is_wide="1")
+%  op_return(is_wide=True)
 
 %def op_throw():
   EXPORT_PC

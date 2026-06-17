@@ -39,14 +39,14 @@ public class ProguardMap {
   private static final Version LINE_MAPPING_BEHAVIOR_CHANGE_VERSION = new Version(3, 1, 4);
 
   private static class FrameData {
-    public FrameData(String clearMethodName) {
+    FrameData(String clearMethodName) {
       this.clearMethodName = clearMethodName;
     }
 
     private final String clearMethodName;
     private final TreeMap<Integer, LineNumberMapping> lineNumbers = new TreeMap<>();
 
-    public int getClearLine(int obfuscatedLine) {
+    int getClearLine(int obfuscatedLine) {
       var lineNumberEntry = lineNumbers.floorEntry(obfuscatedLine);
       LineNumberMapping mapping = lineNumberEntry == null ? null : lineNumberEntry.getValue();
       if (mapping != null && mapping.hasObfuscatedLine(obfuscatedLine)) {
@@ -58,30 +58,30 @@ public class ProguardMap {
   }
 
   private static class LineRange {
-    public LineRange(int start, int end) {
+    LineRange(int start, int end) {
       this.start = start;
       this.end = end;
     }
 
-    public boolean hasLine(int lineNumber) {
+    boolean hasLine(int lineNumber) {
       return (lineNumber >= start && lineNumber <= end);
     }
 
-    public final int start;
-    public final int end;
+    final int start;
+    final int end;
   }
 
   private static class LineNumberMapping {
-    public LineNumberMapping(LineRange obfuscatedRange, LineRange clearRange) {
+    LineNumberMapping(LineRange obfuscatedRange, LineRange clearRange) {
       this.obfuscatedRange = obfuscatedRange;
       this.clearRange = clearRange;
     }
 
-    public boolean hasObfuscatedLine(int lineNumber) {
+    boolean hasObfuscatedLine(int lineNumber) {
       return obfuscatedRange.hasLine(lineNumber);
     }
 
-    public int mapObfuscatedLine(int lineNumber) {
+    int mapObfuscatedLine(int lineNumber) {
       int mappedLine = clearRange.start + lineNumber - obfuscatedRange.start;
       if (!clearRange.hasLine(mappedLine)) {
         // If the mapped line ends out outside of range, it would be past the end, so just limit it
@@ -91,8 +91,8 @@ public class ProguardMap {
       return mappedLine;
     }
 
-    public final LineRange obfuscatedRange;
-    public final LineRange clearRange;
+    final LineRange obfuscatedRange;
+    final LineRange clearRange;
   }
 
   private static class ClassData {
@@ -105,16 +105,16 @@ public class ProguardMap {
     private final Map<String, FrameData> mFrames = new HashMap<String, FrameData>();
 
     // Constructs a ClassData object for a class with the given clear name.
-    public ClassData(String clearName) {
+    ClassData(String clearName) {
       mClearName = clearName;
     }
 
     // Returns the clear name of the class.
-    public String getClearName() {
+    String getClearName() {
       return mClearName;
     }
 
-    public void addField(String obfuscatedName, String clearName) {
+    void addField(String obfuscatedName, String clearName) {
       mFields.put(obfuscatedName, clearName);
     }
 
@@ -122,14 +122,15 @@ public class ProguardMap {
     // obfuscated name. Returns the original obfuscated name if a clear
     // name for the field could not be determined.
     // TODO: Do we need to take into account the type of the field to
-    // propery determine the clear name?
-    public String getField(String obfuscatedName) {
+    // properly determine the clear name?
+    String getField(String obfuscatedName) {
       String clearField = mFields.get(obfuscatedName);
       return clearField == null ? obfuscatedName : clearField;
     }
 
-    public void addFrame(String obfuscatedMethodName, String clearMethodName,
+    void addFrame(String obfuscatedMethodName, String clearMethodName,
             String clearSignature, LineRange obfuscatedLine, LineRange clearRange) {
+
         String key = obfuscatedMethodName + clearSignature;
         FrameData data = mFrames.get(key);
         if (data == null) {
@@ -140,8 +141,8 @@ public class ProguardMap {
         mFrames.put(key, data);
     }
 
-    public Frame getFrame(String clearClassName, String obfuscatedMethodName,
-        String clearSignature, String obfuscatedFilename, int obfuscatedLine) {
+    Frame getFrame(String clearClassName, String obfuscatedMethodName,
+        String clearSignature, int obfuscatedLine) {
       String key = obfuscatedMethodName + clearSignature;
       FrameData frame = mFrames.get(key);
       if (frame == null) {
@@ -355,7 +356,7 @@ public class ProguardMap {
     final int minor;
     final int build;
 
-    public Version(int major, int minor, int build) {
+    Version(int major, int minor, int build) {
       this.major = major;
       this.minor = minor;
       this.build = build;
@@ -462,7 +463,7 @@ public class ProguardMap {
           obfuscatedFilename, obfuscatedLine);
     }
     return classData.getFrame(clearClassName, obfuscatedMethodName, clearSignature,
-        obfuscatedFilename, obfuscatedLine);
+        obfuscatedLine);
   }
 
   // Converts a proguard-formatted method signature into a Java formatted

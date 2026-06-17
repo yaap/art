@@ -30,19 +30,23 @@
 
 #include "common_runtime_test.h"
 
+#include "art_method-inl.h"
 #include "base/array_ref.h"
 #include "base/file_utils.h"
 #include "base/macros.h"
 #include "base/mem_map.h"
 #include "base/unix_file/fd_file.h"
 #include "base/utils.h"
+#include "compiler_callbacks.h"
 #include "dex/art_dex_file_loader.h"
 #include "dex/dex_file-inl.h"
 #include "dex/dex_file_loader.h"
 #include "dex/method_reference.h"
 #include "dex/type_reference.h"
 #include "gc/space/image_space.h"
+#include "handle_scope-inl.h"
 #include "intern_table-inl.h"
+#include "jni/java_vm_ext.h"
 #include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread-current-inl.h"
@@ -71,6 +75,20 @@ class Dex2oatImageTest : public CommonRuntimeTest {
   void SetUpRuntimeOptions(RuntimeOptions* options) override {
     // Disable implicit dex2oat invocations when loading image spaces.
     options->emplace_back("-Xnoimage-dex2oat", nullptr);
+    // Apply overrides.
+    for (const auto& [prefix, replacement] : runtime_option_overrides_) {
+      auto it = std::find_if(options->begin(),
+                             options->end(),
+                             [&](std::pair<std::string, const void*>& entry) {
+                               return entry.first.starts_with(prefix);
+                             });
+      CHECK(it != options->end()) << prefix;
+      *it = replacement;
+    }
+    // Destroy compiler callbacks if requested.
+    if (runtime_option_no_compiler_callbacks_) {
+      callbacks_.reset();
+    }
   }
 
   static void WriteLine(File* file, std::string line) {
@@ -170,6 +188,16 @@ class Dex2oatImageTest : public CommonRuntimeTest {
   void DisableImageDex2Oat() {
     Runtime::Current()->image_dex2oat_enabled_ = false;
   }
+
+  void FakeRuntimeStart() {
+    Runtime::Current()->started_ = true;
+  }
+
+  // Maps prefix to a replacement runtime option.
+  std::vector<std::pair<std::string, std::pair<std::string, const void*>>>
+      runtime_option_overrides_;
+  // Allow creating `Runtime` without compiler callbacks.
+  bool runtime_option_no_compiler_callbacks_ = false;
 };
 
 TEST_F(Dex2oatImageTest, TestModesAndFilters) {
@@ -703,6 +731,9 @@ TEST_F(Dex2oatImageTest, TestExtension) {
 }
 
 TEST_F(Dex2oatImageTest, InlinedString) {
+  // TODO(b/480856545): investigate and fix SIGSEGV that happens on LUCI
+  TEST_DISABLED_ON_VM();
+
   ScratchDir scratch;
   const std::string& scratch_dir = scratch.GetPath();
   std::string image_dir = scratch_dir + GetInstructionSetString(kRuntimeISA);
@@ -788,51 +819,153 @@ TEST_F(Dex2oatImageTest, InlinedString) {
   bool ext_ok = CompileBootImage(extra_args, filename_prefix, extension_dex_files, &error_msg);
   ASSERT_TRUE(ext_ok) << error_msg;
 
-  // Load the three-component primary boot image and single-component extension.
-  std::vector<std::unique_ptr<gc::space::ImageSpace>> boot_image_spaces;
-  MemMap extra_reservation = MemMap::Invalid();
-  ScopedObjectAccess soa(Thread::Current());
-  bool load_ok = gc::space::ImageSpace::LoadBootImage(
-      /*boot_class_path=*/ bcp,
-      /*boot_class_path_locations=*/ bcp,
-      /*boot_class_path_files=*/ {},
-      /*boot_class_path_image_files=*/ {},
-      /*boot_class_path_vdex_files=*/ {},
-      /*boot_class_path_oat_files=*/ {},
-      {base_location, extension_location},
-      kRuntimeISA,
-      /*relocate=*/ false,
-      /*executable=*/ true,
-      /*extra_reservation_size=*/ 0u,
-      /*allow_in_memory_compilation=*/ true,
-      Runtime::GetApexVersions(ArrayRef<const std::string>(bcp)),
-      &boot_image_spaces,
-      &extra_reservation);
-  ASSERT_TRUE(load_ok);
-  ASSERT_EQ(4u, boot_image_spaces.size());
+  {
+    // Load the three-component primary boot image and single-component extension.
+    std::vector<std::unique_ptr<gc::space::ImageSpace>> boot_image_spaces;
+    MemMap extra_reservation = MemMap::Invalid();
+    ScopedObjectAccess soa(Thread::Current());
+    bool load_ok = gc::space::ImageSpace::LoadBootImage(
+        /*boot_class_path=*/ bcp,
+        /*boot_class_path_locations=*/ bcp,
+        /*boot_class_path_files=*/ {},
+        /*boot_class_path_image_files=*/ {},
+        /*boot_class_path_vdex_files=*/ {},
+        /*boot_class_path_oat_files=*/ {},
+        {base_location, extension_location},
+        kRuntimeISA,
+        /*relocate=*/ false,
+        /*executable=*/ true,
+        /*extra_reservation_size=*/ 0u,
+        /*allow_in_memory_compilation=*/ true,
+        Runtime::GetApexVersions(ArrayRef<const std::string>(bcp)),
+        &boot_image_spaces,
+        &extra_reservation);
+    ASSERT_TRUE(load_ok);
+    ASSERT_EQ(4u, boot_image_spaces.size());
 
-  // Check that there is no String .bss entry in any boot image oat file.
-  for (const std::unique_ptr<gc::space::ImageSpace>& space : boot_image_spaces) {
-    const OatFile* oat_file = space->GetOatFile();
-    ASSERT_TRUE(oat_file != nullptr);
-    for (const auto& info : oat_file->GetBcpBssInfo()) {
-      ASSERT_TRUE(info.string_bss_mapping == nullptr);
+    // Check that there is no String .bss entry in any boot image oat file.
+    for (const std::unique_ptr<gc::space::ImageSpace>& space : boot_image_spaces) {
+      const OatFile* oat_file = space->GetOatFile();
+      ASSERT_TRUE(oat_file != nullptr);
+      for (const auto& info : oat_file->GetBcpBssInfo()) {
+        ASSERT_TRUE(info.string_bss_mapping == nullptr);
+      }
+    }
+
+    // Check the presence of the inlined string in the boot image extension.
+    if (com::android::art::flags::weak_const_string()) {
+      const char kStringToFind[] = "Unique string for gtests from StringLiterals";
+      const size_t kStringToFindUtf16Length = /* Same as ASCII length. */ strlen(kStringToFind);
+      gc::space::ImageSpace* extension_space = boot_image_spaces.back().get();
+      const ImageSection& extension_interns =
+          extension_space->GetImageHeader().GetInternedStringsSection();
+      ASSERT_NE(extension_interns.Size(), 0u);
+      const uint8_t* intern_data = extension_space->Begin() + extension_interns.Offset();
+      size_t read_count;
+      InternTable::UnorderedSet intern_set(intern_data, /*make_copy_of_data=*/ false, &read_count);
+      auto it = intern_set.find(InternTable::Utf8String(kStringToFindUtf16Length, kStringToFind));
+      ASSERT_TRUE(it != intern_set.end());
     }
   }
 
-  // Check the presence of the inlined string in the boot image extension.
-  if (com::android::art::flags::weak_const_string()) {
-    const char kStringToFind[] = "Unique string for gtests from StringLiterals";
-    const size_t kStringToFindUtf16Length = /* Same as ASCII length. */ strlen(kStringToFind);
-    gc::space::ImageSpace* extension_space = boot_image_spaces.back().get();
-    const ImageSection& extension_interns =
-        extension_space->GetImageHeader().GetInternedStringsSection();
-    ASSERT_NE(extension_interns.Size(), 0u);
-    const uint8_t* intern_data = extension_space->Begin() + extension_interns.Offset();
-    size_t read_count;
-    InternTable::UnorderedSet intern_set(intern_data, /*make_copy_of_data=*/ false, &read_count);
-    auto it = intern_set.find(InternTable::Utf8String(kStringToFindUtf16Length, kStringToFind));
-    ASSERT_TRUE(it != intern_set.end());
+  // Also compile the `InlinedString` as an app with app image. We need an app image profile.
+  ScratchFile app_profile_file;
+  GenerateProfile(extension_dex_files,
+                  app_profile_file.GetFile(),
+                  /*method_frequency=*/ 1u,
+                  /*type_frequency=*/ 1u);
+  std::string primary_bcp_string = android::base::Join(primary_dex_files, ':');
+  std::string app_jar_name = extension_dex_files[0];
+  std::string app_odex_name = ReplaceFileExtension(app_jar_name, kOdexExtension);
+  std::string app_image_name = ReplaceFileExtension(app_jar_name, kArtExtension);
+  std::vector<std::string> argv;
+  bool success = StartDex2OatCommandLine(&argv, &error_msg, /*use_runtime_bcp_and_image=*/ false);
+  ASSERT_TRUE(success) << error_msg;
+  argv.insert(argv.end(),
+              {
+                  "--profile-file=" + app_profile_file.GetFilename(),
+                  "--runtime-arg",
+                  "-Xbootclasspath:" + primary_bcp_string,
+                  "--runtime-arg",
+                  "-Xbootclasspath-locations:" + primary_bcp_string,
+                  "--boot-image=" + base_location,
+                  "--dex-file=" + app_jar_name,
+                  "--dex-location=" + app_jar_name,
+                  "--oat-file=" + app_odex_name,
+                  "--app-image-file=" + app_image_name,
+              });
+  bool app_ok = RunDex2Oat(argv, &error_msg);
+  ASSERT_TRUE(app_ok) << error_msg;
+
+  // Destroy the current `Runtime` and create a new one with the compiled primary boot image.
+  runtime_.reset();
+  ASSERT_TRUE(Runtime::Current() == nullptr);
+  runtime_option_overrides_.push_back(
+      std::make_pair("-Xbootclasspath:",
+                     std::make_pair("-Xbootclasspath:" + primary_bcp_string, nullptr)));
+  runtime_option_overrides_.push_back(
+      std::make_pair("-Xbootclasspath-locations:",
+                     std::make_pair("-Xbootclasspath-locations:" + primary_bcp_string, nullptr)));
+  runtime_option_overrides_.push_back(
+      std::make_pair("-Ximage:", std::make_pair("-Ximage:" + base_location, nullptr)));
+  use_boot_image_ = true;
+  runtime_option_no_compiler_callbacks_ = true;
+  CreateRuntime();
+  ASSERT_TRUE(Runtime::Current() != nullptr);
+  FakeRuntimeStart();  // Allow execution of compiled code from the oat file.
+
+  // Load the compiled `InlinedString` dex file with its app image.
+  std::unique_ptr<OatFile> oat_file(OatFile::Open(/*zip_fd=*/ -1,
+                                                  app_odex_name,
+                                                  app_odex_name,
+                                                  /*executable=*/ true,
+                                                  /*low_4gb=*/ false,
+                                                  app_jar_name,
+                                                  &error_msg));
+  ASSERT_TRUE(oat_file != nullptr) << error_msg;
+  ASSERT_TRUE(oat_file->IsExecutable());
+  ASSERT_EQ(1u, oat_file->GetOatDexFiles().size());
+  std::unique_ptr<const DexFile> dex_file = oat_file->GetOatDexFiles()[0]->OpenDexFile(&error_msg);
+  ASSERT_TRUE(dex_file != nullptr) << error_msg;
+
+  Thread* self = Thread::Current();
+  jweak weak_str;
+  {
+    // Create a class loader for the `InlinedString` dex file.
+    ScopedObjectAccess soa(self);
+    ClassLinker* cl = Runtime::Current()->GetClassLinker();
+    jobject class_loader = cl->CreatePathClassLoader(self, {dex_file.get()});
+    ASSERT_TRUE(class_loader != nullptr);
+
+    // Load the `InlinedString` class, find and call the `getUniqueStringFromStringLiterals()`
+    // method and convert the result to a weak global.
+    static const char kDescriptor[] = "LInlinedString;";
+    StackHandleScope<2u> hs(self);
+    Handle<mirror::ClassLoader> h_class_loader =
+        hs.NewHandle(soa.Decode<mirror::ClassLoader>(class_loader));
+    Handle<mirror::Class> klass =
+        hs.NewHandle(cl->FindClass(self, kDescriptor, strlen(kDescriptor), h_class_loader));
+    ASSERT_TRUE(klass != nullptr);
+    ASSERT_TRUE(
+        cl->EnsureInitialized(self, klass, /*can_init_fields=*/ true, /*can_init_parents=*/ true));
+    ArtMethod* method = klass->FindClassMethod("getUniqueStringFromStringLiterals",
+                                               "()Ljava/lang/String;",
+                                               kRuntimePointerSize);
+    ASSERT_TRUE(method != nullptr);
+    // The call puts the string to the `DexCache` and the .bss strings section.
+    ObjPtr<mirror::Object> str = method->InvokeStatic<'L'>(self);
+    ASSERT_TRUE(str != nullptr);
+    ASSERT_TRUE(str->IsString());
+    ASSERT_TRUE(soa.Vm() != nullptr);
+    weak_str = soa.Vm()->AddWeakGlobalRef(self, str);
+  }
+  // Collect garbage and check that the `weak_str` is cleared if the weak `const-string`
+  // interns feature is enabled.
+  runtime_->GetHeap()->CollectGarbage(/*clear_soft_references=*/ true);
+  {
+    ScopedObjectAccess soa(self);
+    bool is_cleared = soa.Decode<mirror::Object>(weak_str) == nullptr;
+    ASSERT_EQ(com::android::art::flags::weak_const_string(), is_cleared);
   }
 }
 

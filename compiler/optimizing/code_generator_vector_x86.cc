@@ -43,7 +43,7 @@ void LocationsBuilderX86::VisitVecReplicateScalar(HVecReplicateScalar* instructi
     case DataType::Type::kInt16:
     case DataType::Type::kInt32:
       locations->SetInAt(0, is_zero ? Location::ConstantLocation(input)
-                                    : Location::RequiresRegister());
+                                    : Location::RequiresCoreRegister());
       locations->SetOut(Location::RequiresFpuRegister());
       break;
     case DataType::Type::kFloat32:
@@ -75,7 +75,7 @@ void InstructionCodeGeneratorX86::VisitVecReplicateScalar(HVecReplicateScalar* i
     case DataType::Type::kUint8:
     case DataType::Type::kInt8:
       DCHECK_EQ(16u, instruction->GetVectorLength());
-      __ movd(dst, locations->InAt(0).AsRegister<Register>());
+      __ movd(dst, locations->InAt(0).AsCoreRegister<Register>());
       __ punpcklbw(dst, dst);
       __ punpcklwd(dst, dst);
       __ pshufd(dst, dst, Immediate(0));
@@ -83,20 +83,20 @@ void InstructionCodeGeneratorX86::VisitVecReplicateScalar(HVecReplicateScalar* i
     case DataType::Type::kUint16:
     case DataType::Type::kInt16:
       DCHECK_EQ(8u, instruction->GetVectorLength());
-      __ movd(dst, locations->InAt(0).AsRegister<Register>());
+      __ movd(dst, locations->InAt(0).AsCoreRegister<Register>());
       __ punpcklwd(dst, dst);
       __ pshufd(dst, dst, Immediate(0));
       break;
     case DataType::Type::kInt32:
       DCHECK_EQ(4u, instruction->GetVectorLength());
-      __ movd(dst, locations->InAt(0).AsRegister<Register>());
+      __ movd(dst, locations->InAt(0).AsCoreRegister<Register>());
       __ pshufd(dst, dst, Immediate(0));
       break;
     case DataType::Type::kInt64: {
       DCHECK_EQ(2u, instruction->GetVectorLength());
       XmmRegister tmp = locations->GetTemp(0).AsFpuRegister<XmmRegister>();
-      __ movd(dst, locations->InAt(0).AsRegisterPairLow<Register>());
-      __ movd(tmp, locations->InAt(0).AsRegisterPairHigh<Register>());
+      __ movd(dst, locations->InAt(0).AsCoreRegisterPairLow<Register>());
+      __ movd(tmp, locations->InAt(0).AsCoreRegisterPairHigh<Register>());
       __ punpckldq(dst, tmp);
       __ punpcklqdq(dst, dst);
       break;
@@ -131,7 +131,7 @@ void LocationsBuilderX86::VisitVecExtractScalar(HVecExtractScalar* instruction) 
     case DataType::Type::kInt16:
     case DataType::Type::kInt32:
       locations->SetInAt(0, Location::RequiresFpuRegister());
-      locations->SetOut(Location::RequiresRegister());
+      locations->SetOut(Location::RequiresCoreRegister());
       break;
     case DataType::Type::kFloat32:
     case DataType::Type::kFloat64:
@@ -158,14 +158,14 @@ void InstructionCodeGeneratorX86::VisitVecExtractScalar(HVecExtractScalar* instr
     case DataType::Type::kInt32:
       DCHECK_LE(4u, instruction->GetVectorLength());
       DCHECK_LE(instruction->GetVectorLength(), 16u);
-      __ movd(locations->Out().AsRegister<Register>(), src);
+      __ movd(locations->Out().AsCoreRegister<Register>(), src);
       break;
     case DataType::Type::kInt64: {
       DCHECK_EQ(2u, instruction->GetVectorLength());
       XmmRegister tmp = locations->GetTemp(0).AsFpuRegister<XmmRegister>();
-      __ movd(locations->Out().AsRegisterPairLow<Register>(), src);
+      __ movd(locations->Out().AsCoreRegisterPairLow<Register>(), src);
       __ pshufd(tmp, src, Immediate(1));
-      __ movd(locations->Out().AsRegisterPairHigh<Register>(), tmp);
+      __ movd(locations->Out().AsCoreRegisterPairHigh<Register>(), tmp);
       break;
     }
     case DataType::Type::kFloat32:
@@ -1095,7 +1095,7 @@ void LocationsBuilderX86::VisitVecSetScalars(HVecSetScalars* instruction) {
     case DataType::Type::kInt16:
     case DataType::Type::kInt32:
       locations->SetInAt(0, is_zero ? Location::ConstantLocation(input)
-                                    : Location::RequiresRegister());
+                                    : Location::RequiresCoreRegister());
       locations->SetOut(Location::RequiresFpuRegister());
       break;
     case DataType::Type::kFloat32:
@@ -1136,14 +1136,14 @@ void InstructionCodeGeneratorX86::VisitVecSetScalars(HVecSetScalars* instruction
       UNREACHABLE();
     case DataType::Type::kInt32:
       DCHECK_EQ(4u, instruction->GetVectorLength());
-      __ movd(dst, locations->InAt(0).AsRegister<Register>());
+      __ movd(dst, locations->InAt(0).AsCoreRegister<Register>());
       break;
     case DataType::Type::kInt64: {
       DCHECK_EQ(2u, instruction->GetVectorLength());
       XmmRegister tmp = locations->GetTemp(0).AsFpuRegister<XmmRegister>();
       __ xorps(tmp, tmp);
-      __ movd(dst, locations->InAt(0).AsRegisterPairLow<Register>());
-      __ movd(tmp, locations->InAt(0).AsRegisterPairHigh<Register>());
+      __ movd(dst, locations->InAt(0).AsCoreRegisterPairLow<Register>());
+      __ movd(tmp, locations->InAt(0).AsCoreRegisterPairHigh<Register>());
       __ punpckldq(dst, tmp);
       break;
     }
@@ -1250,7 +1250,7 @@ static void CreateVecMemLocations(ArenaAllocator* allocator,
     case DataType::Type::kInt64:
     case DataType::Type::kFloat32:
     case DataType::Type::kFloat64:
-      locations->SetInAt(0, Location::RequiresRegister());
+      locations->SetInAt(0, Location::RequiresCoreRegister());
       locations->SetInAt(1, Location::RegisterOrConstant(instruction->InputAt(1)));
       if (is_load) {
         locations->SetOut(Location::RequiresFpuRegister());
@@ -1279,7 +1279,7 @@ static Address VecAddress(LocationSummary* locations, size_t size, bool is_strin
   uint32_t offset = is_string_char_at
       ? mirror::String::ValueOffset().Uint32Value()
       : mirror::Array::DataOffset(size).Uint32Value();
-  return CodeGeneratorX86::ArrayAddress(base.AsRegister<Register>(), index, scale, offset);
+  return CodeGeneratorX86::ArrayAddress(base.AsCoreRegister<Register>(), index, scale, offset);
 }
 
 void LocationsBuilderX86::VisitVecLoad(HVecLoad* instruction) {
@@ -1308,7 +1308,8 @@ void InstructionCodeGeneratorX86::VisitVecLoad(HVecLoad* instruction) {
         static_assert(static_cast<uint32_t>(mirror::StringCompressionFlag::kCompressed) == 0u,
                       "Expecting 0=compressed, 1=uncompressed");
         uint32_t count_offset = mirror::String::CountOffset().Uint32Value();
-        __ testb(Address(locations->InAt(0).AsRegister<Register>(), count_offset), Immediate(1));
+        __ testb(Address(locations->InAt(0).AsCoreRegister<Register>(), count_offset),
+                 Immediate(1));
         __ j(kNotZero, &not_compressed);
         // Zero extend 8 compressed bytes into 8 chars.
         __ movsd(reg, VecAddress(locations, 1, instruction->IsStringCharAt()));

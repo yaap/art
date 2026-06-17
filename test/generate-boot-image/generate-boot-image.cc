@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "android-base/parsebool.h"
+#include "android-base/logging.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
 #include "arch/instruction_set.h"

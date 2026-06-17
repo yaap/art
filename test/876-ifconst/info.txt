@@ -1,0 +1,2 @@
+Regression test for the fast compiler when handling branches on compile-time
+evaluated conditions.

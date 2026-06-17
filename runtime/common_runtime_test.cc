@@ -88,7 +88,10 @@ CommonRuntimeTestImpl::~CommonRuntimeTestImpl() {
 
 void CommonRuntimeTestImpl::SetUp() {
   CommonArtTestImpl::SetUp();
+  CreateRuntime();
+}
 
+void CommonRuntimeTestImpl::CreateRuntime() {
   std::string min_heap_string(StringPrintf("-Xms%zdm", gc::Heap::kDefaultInitialSize / MB));
   std::string max_heap_string(StringPrintf("-Xmx%zdm", gc::Heap::kDefaultMaximumSize / MB));
 

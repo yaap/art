@@ -71,6 +71,7 @@ inline bool IsAdrpPatch(const LinkerPatch& patch) {
     case LinkerPatch::Type::kPublicTypeBssEntry:
     case LinkerPatch::Type::kPackageTypeBssEntry:
     case LinkerPatch::Type::kStringRelative:
+    case LinkerPatch::Type::kStringAppImageRelRo:
     case LinkerPatch::Type::kStringBssEntry:
     case LinkerPatch::Type::kMethodTypeBssEntry:
       return patch.LiteralOffset() == patch.PcInsnOffset();
@@ -280,6 +281,7 @@ void Arm64RelativePatcher::PatchPcRelativeReference(std::vector<uint8_t>* code,
              patch.GetType() == LinkerPatch::Type::kTypeBssEntry ||
              patch.GetType() == LinkerPatch::Type::kPublicTypeBssEntry ||
              patch.GetType() == LinkerPatch::Type::kPackageTypeBssEntry ||
+             patch.GetType() == LinkerPatch::Type::kStringAppImageRelRo ||
              patch.GetType() == LinkerPatch::Type::kStringBssEntry ||
              patch.GetType() == LinkerPatch::Type::kMethodTypeBssEntry) << patch.GetType();
       DCHECK_EQ(insn & 0xbfbffc00, 0xb9000000) << std::hex << insn;

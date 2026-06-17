@@ -15,31 +15,31 @@
  */
 
 public class Main {
-  public static void main(String[] args) {
-    System.loadLibrary(args[0]);
-    // Compile it to ensure we're calling compiled code.
-    ensureJitCompiled(Main.class, "myMethod");
-    myMethod(1, 2, 3, 4);
-  }
-
-  public static void assertEquals(float expected, float actual) {
-    if (expected != actual) {
-      throw new Error("Expected " + expected + " got " + actual);
+    public static void main(String[] args) {
+        System.loadLibrary(args[0]);
+        // Compile it to ensure we're calling compiled code.
+        ensureJitCompiled(Main.class, "myMethod");
+        myMethod(1, 2, 3, 4);
     }
-  }
 
-  public static void assertEquals(double expected, double actual) {
-    if (expected != actual) {
-      throw new Error("Expected " + expected + " got " + actual);
+    public static void assertEquals(float expected, float actual) {
+        if (expected != actual) {
+            throw new Error("Expected " + expected + " got " + actual);
+        }
     }
-  }
 
-  public static void myMethod(float a, double b, float c, float d) {
-    assertEquals(1, a);
-    assertEquals(2, b);
-    assertEquals(3, c);
-    assertEquals(4, d);
-  }
+    public static void assertEquals(double expected, double actual) {
+        if (expected != actual) {
+            throw new Error("Expected " + expected + " got " + actual);
+        }
+    }
 
-  public static native void ensureJitCompiled(Class<?> cls, String name);
+    public static void myMethod(float a, double b, float c, float d) {
+        assertEquals(1, a);
+        assertEquals(2, b);
+        assertEquals(3, c);
+        assertEquals(4, d);
+    }
+
+    public static native void ensureJitCompiled(Class<?> cls, String name);
 }

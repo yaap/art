@@ -61,6 +61,7 @@
 #include "dex/code_item_accessors-inl.h"
 #include "dex/descriptors_names.h"
 #include "dex/dex_file-inl.h"
+#include "dex/dex_file_profile.h"
 #include "dex/dex_instruction-inl.h"
 #include "dex/string_reference.h"
 #include "dex/type_lookup_table.h"
@@ -132,6 +133,31 @@ const DexFile* OpenDexFile(const OatDexFile* oat_dex_file, std::string* error_ms
   return ret;
 }
 
+bool OpenImageDexFiles(gc::space::ImageSpace* space,
+                       std::vector<std::unique_ptr<const DexFile>>* out_dex_files,
+                       std::string* error_msg)
+    REQUIRES(!Locks::dex_lock_)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  ScopedAssertNoThreadSuspension nts(__FUNCTION__);
+  const ImageHeader& header = space->GetImageHeader();
+  ObjPtr<mirror::Object> dex_caches_object = header.GetImageRoot(ImageHeader::kDexCaches);
+  DCHECK(dex_caches_object != nullptr);
+  ObjPtr<mirror::ObjectArray<mirror::DexCache>> dex_caches =
+      dex_caches_object->AsObjectArray<mirror::DexCache>();
+  const OatFile* oat_file = space->GetOatFile();
+  for (auto dex_cache : dex_caches->Iterate()) {
+    std::string dex_file_location(dex_cache->GetLocation()->ToModifiedUtf8());
+    std::unique_ptr<const DexFile> dex_file =
+        oat_file->OpenOatDexFile(dex_file_location.c_str(), error_msg);
+    if (dex_file == nullptr) {
+      return false;
+    }
+    dex_cache->SetDexFile(dex_file.get());
+    out_dex_files->push_back(std::move(dex_file));
+  }
+  return true;
+}
+
 template <typename ElfTypes>
 class OatSymbolizer final {
  public:
@@ -186,7 +212,7 @@ class OatSymbolizer final {
                                     oat_file_->BssSize(),
                                     oat_file_->BssMethodsOffset(),
                                     oat_file_->BssRootsOffset(),
-                                    oat_file_->VdexSize());
+                                    oat_file_->BssStringsOffset());
     builder_->WriteDynamicSection();
 
     const OatHeader& oat_header = oat_file_->GetOatHeader();
@@ -514,9 +540,9 @@ class OatDumper {
 
     // If set, adjust relative address to be searched
     if (options_.addr2instr_ != 0) {
-      resolved_addr2instr_ = options_.addr2instr_ + oat_header.GetExecutableOffset();
-      os << "SEARCH ADDRESS (executable offset + input):\n";
-      os << StringPrintf("0x%08zx\n\n", AdjustOffset(resolved_addr2instr_));
+      resolved_addr2instr_ = options_.addr2instr_;
+      os << "SEARCH ADDRESS:\n";
+      os << StringPrintf("0x%08x\n\n", resolved_addr2instr_);
     }
 
     // Dump .data.img.rel.ro entries.
@@ -543,14 +569,17 @@ class OatDumper {
         continue;
       }
 
-      const DexLayoutSections* const layout_sections = oat_dex_file->GetDexLayoutSections();
-      if (layout_sections != nullptr) {
-        os << "Layout data\n";
-        os << *layout_sections;
-        os << "\n";
+      const DexProfileMetadata* const profile_metadata = oat_dex_file->GetDexProfileMetadata();
+      if (profile_metadata != nullptr) {
+        os << "Profile metadata for dex file " << std::setw(2) << i << " -"
+           << " Classes(startup: " << std::setw(5) << profile_metadata->num_startup_classes
+           << ", total: " << std::setw(5) << dex_file->NumClassDefs() << "),"
+           << " Methods(startup: " << std::setw(5) << profile_metadata->num_startup_methods
+           << ", total: " << std::setw(5) << dex_file->NumMethodIds() << ")\n";
       }
 
       if (!options_.dump_header_only_) {
+        os << "\n";
         DumpBssMappings(os,
                         dex_file,
                         oat_dex_file->GetMethodBssMapping(),
@@ -561,6 +590,7 @@ class OatDumper {
                         oat_dex_file->GetMethodTypeBssMapping());
       }
     }
+    os << "\n";
 
     if (!options_.dump_header_only_) {
       Runtime* const runtime = Runtime::Current();
@@ -1049,10 +1079,11 @@ class OatDumper {
     uint32_t code_offset = oat_method.GetCodeOffset();
     uint32_t code_size = oat_method.GetQuickCodeSize();
     if (resolved_addr2instr_ != 0) {
-      if (resolved_addr2instr_ > code_offset + code_size) {
-        return success;
-      } else {
+      if (resolved_addr2instr_ >= AdjustOffset(code_offset) &&
+          resolved_addr2instr_ < AdjustOffset(code_offset) + code_size) {
         *addr_found = true;  // stop analyzing file at next iteration
+      } else {
+        return success;
       }
     }
 
@@ -1422,7 +1453,9 @@ class OatDumper {
           soa.Self(),
           vios,
           dex_method_idx,
-          dex_file,
+          // Note this may be different than `dex_file` in case the file was
+          // already registered.
+          dex_cache->GetDexFile(),
           dex_cache,
           *options_.class_loader_,
           class_def,
@@ -1856,7 +1889,9 @@ class ImageDumper {
         indent_os << "\n";
       },  image_space_.Begin(), image_header_.GetPointerSize());
       // Dump the large objects separately.
-      heap->GetLargeObjectsSpace()->GetLiveBitmap()->Walk(dump_visitor);
+      if (heap->GetLargeObjectsSpace() != nullptr) {
+        heap->GetLargeObjectsSpace()->GetLiveBitmap()->Walk(dump_visitor);
+      }
       indent_os << "\n";
     }
     os << "STATS:\n" << std::flush;
@@ -2477,7 +2512,7 @@ static int DumpImages(Runtime* runtime, OatDumperOptions* options, std::ostream*
     // Open dex files for the image.
     ScopedObjectAccess soa(Thread::Current());
     std::vector<std::unique_ptr<const DexFile>> dex_files;
-    if (!runtime->GetClassLinker()->OpenImageDexFiles(space.get(), &dex_files, &error_msg)) {
+    if (!OpenImageDexFiles(space.get(), &dex_files, &error_msg)) {
       LOG(ERROR) << "Failed to open app image dex files " << options->app_image_ << " with error "
                  << error_msg;
       return EXIT_FAILURE;
@@ -3137,6 +3172,8 @@ struct OatdumpArgs : public CmdlineArgs {
       imt_stat_dump_ = true;
     } else if (option == "--dump-method-and-offset-as-json") {
       dump_method_and_offset_as_json = true;
+    } else if (option == "--allow-profile-code") {
+      allow_profile_code_ = true;
     } else {
       return kParseUnknownArgument;
     }

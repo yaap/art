@@ -61,6 +61,7 @@
 #include "thread-inl.h"
 #include "thread_list.h"
 #include "well_known_classes-inl.h"
+#include "write_barrier.h"
 
 namespace art HIDDEN {
 namespace jit {
@@ -802,21 +803,21 @@ bool JitCodeCache::Commit(Thread* self,
         ScopedDebugDisallowReadBarriers sddrb(self);
         zygote_map_.Put(code_ptr, method);
       } else {
-        ScopedDebugDisallowReadBarriers sddrb(self);
         WriterMutexLock mu2(self, *Locks::jit_mutator_lock_);
-        method_code_map_.Put(code_ptr, method);
+        {
+          ScopedDebugDisallowReadBarriers sddrb(self);
+          method_code_map_.Put(code_ptr, method);
+        }
 
         // Searching for MethodType-s in roots. They need to be treated as strongly reachable while
         // the corresponding ArtMethod is not removed.
         ObjPtr<mirror::Class> method_type_class =
-            WellKnownClasses::java_lang_invoke_MethodType.Get<kWithoutReadBarrier>();
+            WellKnownClasses::java_lang_invoke_MethodType.Get();
 
         for (const Handle<mirror::Object>& root : roots) {
-          ObjPtr<mirror::Class> klass = root->GetClass<kDefaultVerifyFlags, kWithoutReadBarrier>();
+          ObjPtr<mirror::Class> klass = root->GetClass<kDefaultVerifyFlags>();
           if ((com::android::art::flags::weak_const_string() && klass->IsStringClass()) ||
-              klass == method_type_class ||
-              klass == ReadBarrier::IsMarked(method_type_class.Ptr()) ||
-              ReadBarrier::IsMarked(klass.Ptr()) == method_type_class) {
+              klass == method_type_class) {
             auto it = method_code_map_reversed_.FindOrAdd(method, std::vector<const void*>());
             std::vector<const void*>& code_ptrs = it->second;
 
@@ -825,7 +826,7 @@ bool JitCodeCache::Commit(Thread* self,
 
             // `String`s (with `weak_const_string` enabled) and `MethodType`s are strong
             // GC roots and need a write barrier.
-            WriteBarrier::ForEveryFieldWrite(method->GetDeclaringClass<kWithoutReadBarrier>());
+            WriteBarrier::ForEveryFieldWrite(method->GetDeclaringClass());
             break;
           }
         }
@@ -1543,8 +1544,8 @@ void JitCodeCache::GetProfiledMethods(const std::set<std::string>& dex_base_loca
   ScopedTrace trace(__FUNCTION__);
   Thread* self = Thread::Current();
 
-  // Preserve class loaders to prevent unloading while we're processing
-  // ArtMethods.
+  // Preserve class loaders to prevent ArtMethod and ProfilingInfo objects from being unloaded while
+  // we're processing them.
   VariableSizedHandleScope handles(self);
   Runtime::Current()->GetClassLinker()->GetClassLoaders(self, &handles);
 
@@ -1557,99 +1558,96 @@ void JitCodeCache::GetProfiledMethods(const std::set<std::string>& dex_base_loca
   WaitUntilInlineCacheAccessible(self);
 
   SafeMap<ArtMethod*, ProfilingInfo*> profiling_infos;
-  std::vector<ArtMethod*> copies;
   {
     MutexLock mu(self, *Locks::jit_lock_);
     profiling_infos = profiling_infos_;
-    ReaderMutexLock mu2(self, *Locks::jit_mutator_lock_);
-    for (const auto& entry : method_code_map_) {
-      copies.push_back(entry.second);
-    }
   }
-  for (ArtMethod* method : copies) {
-    auto it = profiling_infos.find(method);
-    ProfilingInfo* info = (it == profiling_infos.end()) ? nullptr : it->second;
+  for (const auto [method, info] : profiling_infos) {
+    // The code below can take a lot of time, so we explicitly check for suspension requests at
+    // every iteration.
+    self->AllowThreadSuspension();
+
     const DexFile* dex_file = method->GetDexFile();
     const std::string base_location = DexFileLoader::GetBaseLocation(dex_file->GetLocation());
     if (!ContainsElement(dex_base_locations, base_location)) {
       // Skip dex files which are not profiled.
       continue;
     }
+
+    // If the method is still baseline compiled and doesn't meet the inline cache threshold, don't
+    // save the inline caches because they might be incomplete.
+    // Although we don't deoptimize for incomplete inline caches in AOT-compiled code, inlining
+    // leads to larger generated code.
+    // If the inline cache is empty the compiler will generate a regular invoke virtual/interface.
+    const void* entry_point = method->GetEntryPointFromQuickCompiledCode();
+    if (ContainsPc(entry_point) &&
+        CodeInfo::IsBaseline(
+            OatQuickMethodHeader::FromEntryPoint(entry_point)->GetOptimizedCodeInfoPtr()) &&
+        (ProfilingInfo::GetOptimizeThreshold() - info->GetBaselineHotnessCount()) <
+            inline_cache_threshold) {
+      continue;
+    }
+
     std::vector<ProfileMethodInfo::ProfileInlineCache> inline_caches;
 
-    if (info != nullptr) {
-      // If the method is still baseline compiled and doesn't meet the inline cache threshold, don't
-      // save the inline caches because they might be incomplete.
-      // Although we don't deoptimize for incomplete inline caches in AOT-compiled code, inlining
-      // leads to larger generated code.
-      // If the inline cache is empty the compiler will generate a regular invoke virtual/interface.
-      const void* entry_point = method->GetEntryPointFromQuickCompiledCode();
-      if (ContainsPc(entry_point) &&
-          CodeInfo::IsBaseline(
-              OatQuickMethodHeader::FromEntryPoint(entry_point)->GetOptimizedCodeInfoPtr()) &&
-          (ProfilingInfo::GetOptimizeThreshold() - info->GetBaselineHotnessCount()) <
-              inline_cache_threshold) {
-        methods.emplace_back(/*ProfileMethodInfo*/
-            MethodReference(dex_file, method->GetDexMethodIndex()), inline_caches);
-        continue;
+    for (size_t i = 0; i < info->number_of_inline_caches_; ++i) {
+      std::vector<TypeReference> profile_classes;
+      const InlineCache& cache = info->GetInlineCaches()[i];
+      ArtMethod* caller = info->GetMethod();
+      bool is_missing_types = false;
+      for (size_t k = 0; k < InlineCache::kIndividualCacheSize; k++) {
+        mirror::Class* cls = cache.classes_[k].Read();
+        if (cls == nullptr) {
+          break;
+        }
+
+        // Check if the receiver is in the boot class path or if it's in the
+        // same class loader as the caller. If not, skip it, as there is not
+        // much we can do during AOT.
+        if (!cls->IsBootStrapClassLoaded() &&
+            caller->GetClassLoader() != cls->GetClassLoader()) {
+          is_missing_types = true;
+          continue;
+        }
+
+        const DexFile* class_dex_file = nullptr;
+        dex::TypeIndex type_index;
+
+        if (cls->GetDexCache() == nullptr) {
+          DCHECK(cls->IsArrayClass()) << cls->PrettyClass();
+          // Make a best effort to find the type index in the method's dex file.
+          // We could search all open dex files but that might turn expensive
+          // and probably not worth it.
+          class_dex_file = dex_file;
+          type_index = cls->FindTypeIndexInOtherDexFile(*dex_file);
+        } else {
+          class_dex_file = &(cls->GetDexFile());
+          type_index = cls->GetDexTypeIndex();
+        }
+        if (!type_index.IsValid()) {
+          // Could be a proxy class or an array for which we couldn't find the type index.
+          is_missing_types = true;
+          continue;
+        }
+        if (ContainsElement(dex_base_locations,
+                            DexFileLoader::GetBaseLocation(class_dex_file->GetLocation()))) {
+          // Only consider classes from the same apk (including multidex).
+          profile_classes.emplace_back(/*ProfileMethodInfo::ProfileClassReference*/
+              class_dex_file, type_index);
+        } else {
+          is_missing_types = true;
+        }
       }
-
-      for (size_t i = 0; i < info->number_of_inline_caches_; ++i) {
-        std::vector<TypeReference> profile_classes;
-        const InlineCache& cache = info->GetInlineCaches()[i];
-        ArtMethod* caller = info->GetMethod();
-        bool is_missing_types = false;
-        for (size_t k = 0; k < InlineCache::kIndividualCacheSize; k++) {
-          mirror::Class* cls = cache.classes_[k].Read();
-          if (cls == nullptr) {
-            break;
-          }
-
-          // Check if the receiver is in the boot class path or if it's in the
-          // same class loader as the caller. If not, skip it, as there is not
-          // much we can do during AOT.
-          if (!cls->IsBootStrapClassLoaded() &&
-              caller->GetClassLoader() != cls->GetClassLoader()) {
-            is_missing_types = true;
-            continue;
-          }
-
-          const DexFile* class_dex_file = nullptr;
-          dex::TypeIndex type_index;
-
-          if (cls->GetDexCache() == nullptr) {
-            DCHECK(cls->IsArrayClass()) << cls->PrettyClass();
-            // Make a best effort to find the type index in the method's dex file.
-            // We could search all open dex files but that might turn expensive
-            // and probably not worth it.
-            class_dex_file = dex_file;
-            type_index = cls->FindTypeIndexInOtherDexFile(*dex_file);
-          } else {
-            class_dex_file = &(cls->GetDexFile());
-            type_index = cls->GetDexTypeIndex();
-          }
-          if (!type_index.IsValid()) {
-            // Could be a proxy class or an array for which we couldn't find the type index.
-            is_missing_types = true;
-            continue;
-          }
-          if (ContainsElement(dex_base_locations,
-                              DexFileLoader::GetBaseLocation(class_dex_file->GetLocation()))) {
-            // Only consider classes from the same apk (including multidex).
-            profile_classes.emplace_back(/*ProfileMethodInfo::ProfileClassReference*/
-                class_dex_file, type_index);
-          } else {
-            is_missing_types = true;
-          }
-        }
-        if (!profile_classes.empty()) {
-          inline_caches.emplace_back(/*ProfileMethodInfo::ProfileInlineCache*/
-              cache.dex_pc_, is_missing_types, profile_classes);
-        }
+      if (!profile_classes.empty()) {
+        inline_caches.emplace_back(/*ProfileMethodInfo::ProfileInlineCache*/
+            cache.dex_pc_, is_missing_types, profile_classes);
       }
     }
-    methods.emplace_back(/*ProfileMethodInfo*/
-        MethodReference(dex_file, method->GetDexMethodIndex()), inline_caches);
+
+    if (!inline_caches.empty()) {
+      methods.emplace_back(/*ProfileMethodInfo*/
+          MethodReference(dex_file, method->GetDexMethodIndex()), inline_caches);
+    }
   }
 }
 
@@ -1660,87 +1658,51 @@ bool JitCodeCache::IsOsrCompiled(ArtMethod* method) {
   return osr_code_map_.find(method) != osr_code_map_.end();
 }
 
-bool JitCodeCache::NotifyCompilationOf(ArtMethod* method,
-                                       Thread* self,
-                                       CompilationKind compilation_kind,
-                                       bool prejit) {
-  if (compilation_kind != CompilationKind::kOsr) {
-    const void* existing_entry_point = method->GetEntryPointFromQuickCompiledCode();
-    if (ContainsPc(existing_entry_point)) {
-      CompilationKind existing_kind = CodeInfo::GetCompilationKind(
-          OatQuickMethodHeader::FromEntryPoint(existing_entry_point)->GetOptimizedCodeInfoPtr());
-      if (static_cast<size_t>(existing_kind >= compilation_kind)) {
-        // The existing entry point is either already baseline, or optimized. No
-        // need to compile.
-        VLOG(jit) << "Not compiling "
-                  << method->PrettyMethod() << " " << compilation_kind
-                  << " because it has already been compiled " << existing_kind;
-        return false;
-      }
-    }
+bool JitCodeCache::HasCompiledCodeFor(ArtMethod* method,
+                                      Thread* self,
+                                      CompilationKind compilation_kind) {
+  if (compilation_kind == CompilationKind::kOsr) {
+    DCHECK(!method->IsNative());
+    return IsOsrCompiled(method);
   }
 
-  if (method->NeedsClinitCheckBeforeCall() && !prejit) {
-    // We do not need a synchronization barrier for checking the visibly initialized status
-    // or checking the initialized status just for requesting visible initialization.
-    ClassStatus status = method->GetDeclaringClass()
-        ->GetStatus<kDefaultVerifyFlags, /*kWithSynchronizationBarrier=*/ false>();
-    if (status != ClassStatus::kVisiblyInitialized) {
-      // Unless we're pre-jitting, we currently don't save the JIT compiled code if we cannot
-      // update the entrypoint due to needing an initialization check.
-      if (status == ClassStatus::kInitialized) {
-        // Request visible initialization but do not block to allow compiling other methods.
-        // Hopefully, this will complete by the time the method becomes hot again.
-        Runtime::Current()->GetClassLinker()->MakeInitializedClassesVisiblyInitialized(
-            self, /*wait=*/ false);
-      }
-      VLOG(jit) << "Not compiling "
-                << method->PrettyMethod()
-                << " because it has the resolution stub";
-      return false;
-    }
+  const void* existing_entry_point = method->GetEntryPointFromQuickCompiledCode();
+  if (ContainsPc(existing_entry_point)) {
+    CompilationKind existing_kind = CodeInfo::GetCompilationKind(
+        OatQuickMethodHeader::FromEntryPoint(existing_entry_point)->GetOptimizedCodeInfoPtr());
+    return existing_kind >= compilation_kind;
+  }
+
+  if (LIKELY(!method->IsNative())) {
+    return false;
   }
 
   ScopedDebugDisallowReadBarriers sddrb(self);
-  if (compilation_kind == CompilationKind::kOsr) {
-    ReaderMutexLock mu(self, *Locks::jit_mutator_lock_);
-    if (osr_code_map_.find(method) != osr_code_map_.end()) {
-      return false;
-    }
+  JniStubKey key(method);
+  MutexLock mu2(self, *Locks::jit_lock_);
+  WriterMutexLock mu(self, *Locks::jit_mutator_lock_);
+  auto it = jni_stubs_map_.find(key);
+  if (it == jni_stubs_map_.end()) {
+    it = jni_stubs_map_.Put(key, JniStubData{});
+    it->second.AddMethod(method);
+    return false;
   }
-
-  if (UNLIKELY(method->IsNative())) {
-    JniStubKey key(method);
-    MutexLock mu2(self, *Locks::jit_lock_);
-    WriterMutexLock mu(self, *Locks::jit_mutator_lock_);
-    auto it = jni_stubs_map_.find(key);
-    bool new_compilation = false;
-    if (it == jni_stubs_map_.end()) {
-      // Create a new entry to mark the stub as being compiled.
-      it = jni_stubs_map_.Put(key, JniStubData{});
-      new_compilation = true;
+  // We have code for the native method, update all entrypoints.
+  JniStubData* data = &it->second;
+  data->AddMethod(method);
+  if (data->IsCompiled()) {
+    OatQuickMethodHeader* method_header = OatQuickMethodHeader::FromCodePointer(data->GetCode());
+    const void* entrypoint = method_header->GetEntryPoint();
+    // Update also entrypoints of other methods held by the JniStubData.
+    // We could simply update the entrypoint of `method` but if the last JIT GC has
+    // changed these entrypoints to GenericJNI in preparation for a full GC, we may
+    // as well change them back as this stub shall not be collected anyway and this
+    // can avoid a few expensive GenericJNI calls.
+    for (ArtMethod* m : it->second.GetMethods()) {
+      zombie_jni_code_.erase(m);
+      processed_zombie_jni_code_.erase(m);
     }
-    JniStubData* data = &it->second;
-    data->AddMethod(method);
-    if (data->IsCompiled()) {
-      OatQuickMethodHeader* method_header = OatQuickMethodHeader::FromCodePointer(data->GetCode());
-      const void* entrypoint = method_header->GetEntryPoint();
-      // Update also entrypoints of other methods held by the JniStubData.
-      // We could simply update the entrypoint of `method` but if the last JIT GC has
-      // changed these entrypoints to GenericJNI in preparation for a full GC, we may
-      // as well change them back as this stub shall not be collected anyway and this
-      // can avoid a few expensive GenericJNI calls.
-      for (ArtMethod* m : it->second.GetMethods()) {
-        zombie_jni_code_.erase(m);
-        processed_zombie_jni_code_.erase(m);
-      }
-      data->UpdateEntryPoints(entrypoint);
-    }
-    return new_compilation;
-  } else {
-    if (compilation_kind == CompilationKind::kBaseline) {
-      DCHECK(CanAllocateProfilingInfo());
-    }
+    data->UpdateEntryPoints(entrypoint);
   }
   return true;
 }

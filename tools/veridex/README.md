@@ -1,5 +1,5 @@
-appcompat.sh
-============
+appcompat
+=========
 
 Given an APK, finds API uses that fall into the
 blocklist/max-target-X/unsupported APIs.

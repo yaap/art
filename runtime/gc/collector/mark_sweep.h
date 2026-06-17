@@ -23,11 +23,11 @@
 #include "barrier.h"
 #include "base/macros.h"
 #include "base/mutex.h"
+#include "base/offsets.h"
 #include "garbage_collector.h"
 #include "gc/accounting/heap_bitmap.h"
 #include "gc_root.h"
 #include "immune_spaces.h"
-#include "offsets.h"
 
 namespace art HIDDEN {
 

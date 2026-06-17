@@ -41,6 +41,7 @@
 #include "intrinsics_list.h"
 #include "loop_information-inl.h"
 #include "mirror/class-inl.h"
+#include "mirror/var_handle.h"
 #include "scoped_thread_state_change-inl.h"
 #include "ssa_builder.h"
 
@@ -604,6 +605,45 @@ void HVariableInputSizeInstruction::RemoveAllInputs() {
   DCHECK_EQ(0u, InputCount());
 }
 
+inline void HPhi::ReplaceInputPhiWithItsInputsAt(ArenaAllocator* allocator, size_t index) {
+  DCHECK(inputs_[index].GetInstruction()->IsPhi());
+  HPhi* src = inputs_[index].GetInstruction()->AsPhi();
+  size_t num_src_inputs = src->inputs_.size();
+  DCHECK_GE(num_src_inputs, 2u);
+  // Replace the `src` input with its first input.
+  ReplaceInput(src->inputs_[0].GetInstruction(), index);
+  // Insert `src`'s other inputs.
+  inputs_.insert(inputs_.begin() + index + 1u, src->inputs_.begin() + 1u, src->inputs_.end());
+  // Update indexes in use nodes of inputs that have been pushed further back by the insert().
+  for (size_t i = index + num_src_inputs, e = inputs_.size(); i < e; ++i) {
+    DCHECK_EQ(inputs_[i].GetUseNode()->GetIndex(), i - (num_src_inputs - 1u));
+    inputs_[i].GetUseNode()->SetIndex(i);
+  }
+  // Add the uses after updating the indexes. If the copied inputs are already used by `this`,
+  // the fixup after use insertion can use those indexes.
+  for (size_t new_index = index + 1u; new_index != index + num_src_inputs; ++new_index) {
+    inputs_[new_index].GetInstruction()->AddUseAt(allocator, this, new_index);
+  }
+}
+
+inline void HPhi::DuplicateInputAt(ArenaAllocator* allocator, size_t index, size_t new_copies) {
+  DCHECK_NE(new_copies, 0u);
+  HInstruction* to_copy = inputs_[index].GetInstruction();
+  // Insert new copies of `to_copy`.
+  inputs_.insert(inputs_.begin() + index + 1u, new_copies, HUserRecord<HInstruction*>(to_copy));
+  size_t end_copies = index + 1u + new_copies;
+  // Update indexes in use nodes of inputs that have been pushed further back by the insert().
+  for (size_t i = end_copies, e = inputs_.size(); i < e; ++i) {
+    DCHECK_EQ(inputs_[i].GetUseNode()->GetIndex(), i - new_copies);
+    inputs_[i].GetUseNode()->SetIndex(i);
+  }
+  // Add the uses after updating the indexes. If the `to_copy` is already used by `this`,
+  // the fixup after use insertion can use those indexes.
+  for (size_t new_index = index + 1u; new_index != end_copies; ++new_index) {
+    to_copy->AddUseAt(allocator, this, new_index);
+  }
+}
+
 size_t HConstructorFence::RemoveConstructorFences(HInstruction* instruction) {
   DCHECK(instruction->GetBlock() != nullptr);
   // Removing constructor fences only makes sense for instructions with an object return type.
@@ -1044,8 +1084,11 @@ void HInstruction::MoveBefore(HInstruction* cursor, bool do_checks) {
     DCHECK(!IsPhi());
     DCHECK(!IsControlFlow());
     DCHECK(CanBeMoved() ||
-           // HShouldDeoptimizeFlag can only be moved by CHAGuardOptimization.
-           IsShouldDeoptimizeFlag());
+           // `HShouldDeoptimizeFlag` can only be moved by `CHAGuardOptimization`.
+           IsShouldDeoptimizeFlag() ||
+           // `HCurrentMethod` can only be moved by `HGraph::InlineInto()` to the
+           // outer graph where it shall represent the outer method.
+           IsCurrentMethod());
     DCHECK(!cursor->IsPhi());
   }
 
@@ -1315,7 +1358,7 @@ ArrayRef<HBasicBlock* const> HBasicBlock::GetNormalSuccessors() const {
 
 ArrayRef<HBasicBlock* const> HBasicBlock::GetExceptionalSuccessors() const {
   if (EndsWithTryBoundary()) {
-    return GetLastInstruction()->AsTryBoundary()->GetExceptionHandlers();
+    return ArrayRef<HBasicBlock* const>(GetSuccessors()).SubArray(1u);
   } else {
     // Blocks not ending with TryBoundary do not have exceptional successors.
     return ArrayRef<HBasicBlock* const>();
@@ -1595,6 +1638,69 @@ void HBasicBlock::MergeWithInlined(HBasicBlock* other) {
   other->graph_ = nullptr;
 }
 
+void HBasicBlock::TakeGotoBlockSuccessorsOtherPredecessorsAndMergePhis() {
+  DCHECK(GetFirstInstruction() != nullptr);
+  DCHECK(GetFirstInstruction()->IsGoto());
+
+  size_t num_old_this_predecessors = GetPredecessors().size();
+  DCHECK_GE(num_old_this_predecessors, 2u);
+
+  HBasicBlock* successor = GetSingleSuccessor();
+  ArenaVector<HBasicBlock*>& succ_preds = successor->predecessors_;
+  DCHECK_GE(succ_preds.size(), 2u);
+
+  // Redirect `successor`'s other predecessors to `this`.
+  // We want to have the final predecessor order as if we inserted data from `this`
+  // to the `successor`. However, this function prepares the data for `MergeWith()`,
+  // so we shall move the data in the opposite direction and insert the other
+  // `successor`'s predecessors around the existing predecessors of `this`.
+  size_t this_predecessor_index = successor->GetPredecessorIndexOf(this);
+  predecessors_.reserve(predecessors_.size() + succ_preds.size() - 1u);
+  predecessors_.insert(predecessors_.begin(),
+                       succ_preds.begin(),
+                       succ_preds.begin() + this_predecessor_index);
+  predecessors_.insert(predecessors_.begin() + this_predecessor_index + num_old_this_predecessors,
+                       succ_preds.begin() + this_predecessor_index + 1u,
+                       succ_preds.end());
+  // Move the `this` predecessor to the start where we shall keep it.
+  std::swap(succ_preds[0], succ_preds[this_predecessor_index]);
+  for (HBasicBlock* pred : ArrayRef<HBasicBlock*>(succ_preds).SubArray(1u)) {
+    // Do not use `ReplaceSuccessor(successor, this)` as that would update `predecessor_`
+    // data in `successor` and `this` and we're already doing that explicitly.
+    ReplaceElement(pred->successors_, successor, this);
+  }
+  // Keep the `this` predecessor of `successor` and erase the rest.
+  succ_preds.erase(succ_preds.begin() + 1u, succ_preds.end());
+
+  // Update `successor` `Phi`s' block and input from `this`.
+  ArenaAllocator* allocator = GetGraph()->GetAllocator();
+  for (HInstruction* phi = successor->GetFirstPhi(); phi != nullptr; phi = phi->GetNext()) {
+    DCHECK(phi->IsPhi());
+    phi->SetBlock(this);
+    HInstruction* input = phi->AsPhi()->InputAt(this_predecessor_index);
+    if (input->GetBlock() == this) {
+      // The input is defined in `this`, so it must be a `Phi`. (It cannot be the `Goto`.)
+      DCHECK(input->IsPhi());
+      // Replace the input `Phi` with its own inputs corresponding to the `this`'s predecessors.
+      phi->AsPhi()->ReplaceInputPhiWithItsInputsAt(allocator, this_predecessor_index);
+    } else {
+      // Duplicate the input for additional predecessors of `this`.
+      phi->AsPhi()->DuplicateInputAt(
+          allocator, this_predecessor_index, num_old_this_predecessors - 1u);
+    }
+  }
+
+  // All `Phi`s in `this` are now dead. Remove them.
+  while (GetFirstPhi() != nullptr) {
+    DCHECK(!GetFirstPhi()->HasUses());
+    RemovePhi(GetFirstPhi()->AsPhi());
+  }
+
+  // Move updated `Phi`s from `successor` to `this`.
+  phis_.Add(successor->GetPhis());
+  successor->phis_.Clear();
+}
+
 void HBasicBlock::ReplaceWith(HBasicBlock* other) {
   while (!GetPredecessors().empty()) {
     HBasicBlock* predecessor = GetPredecessors()[0];
@@ -1774,6 +1880,27 @@ bool HInvoke::CanBeNull() const {
       return false;
     default:
       return GetType() == DataType::Type::kReference;
+  }
+}
+
+bool HInvokePolymorphic::NeedsReturnTypeCheck() {
+  if (GetIntrinsic() == Intrinsics::kNone ||
+      GetIntrinsic() == Intrinsics::kMethodHandleInvoke ||
+      GetIntrinsic() == Intrinsics::kMethodHandleInvokeExact) {
+    return false;
+  }
+
+  mirror::VarHandle::AccessModeTemplate access_mode_template =
+      mirror::VarHandle::GetAccessModeTemplateByIntrinsic(GetIntrinsic());
+
+  switch (access_mode_template) {
+    case mirror::VarHandle::AccessModeTemplate::kGet:
+    case mirror::VarHandle::AccessModeTemplate::kGetAndUpdate:
+    case mirror::VarHandle::AccessModeTemplate::kCompareAndExchange:
+      return GetType() == DataType::Type::kReference;
+    case mirror::VarHandle::AccessModeTemplate::kSet:
+    case mirror::VarHandle::AccessModeTemplate::kCompareAndSet:
+      return false;
   }
 }
 

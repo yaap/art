@@ -91,6 +91,14 @@ inline const RegType& RegTypeCache::FromTypeIndex(dex::TypeIndex type_index) {
   return FromTypeIndexUncached(type_index);
 }
 
+inline uint16_t RegTypeCache::IdFromTypeIndex(dex::TypeIndex type_index) {
+  DCHECK_LT(type_index.index_, dex_file_->NumTypeIds());
+  if (ids_for_type_index_[type_index.index_] != kNoIdForTypeIndex) {
+    return ids_for_type_index_[type_index.index_];
+  }
+  return FromTypeIndexUncached(type_index).GetId();
+}
+
 inline const BooleanType& RegTypeCache::Boolean() const {
   return *down_cast<const BooleanType*>(entries_[kBooleanCacheId]);
 }

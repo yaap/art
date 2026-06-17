@@ -63,7 +63,8 @@ public class Main {
         }
     }
 
-    private static VirtualThreadContext $noinline$startVirtualThreadAndGetParkedContext() {
+    private static VirtualThreadContext $noinline$startVirtualThreadAndGetParkedContext()
+            throws InterruptedException {
         Thread carrier1 = Thread.startVirtual(Main::task);
         WEAK_REF = new WeakReference<>(carrier1);
 
@@ -71,6 +72,7 @@ public class Main {
         while (context == null || context.parkedStates == null) {
             context = carrier1.getVirtualThreadContext();
         }
+        carrier1.join(2000L);
         return context;
     }
 

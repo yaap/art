@@ -40,6 +40,7 @@
 #include "dex/dex_file-inl.h"
 #include "dex/dex_file_types.h"
 #include "driver/compiler_options.h"
+#include "driver/image_class_map-inl.h"
 #include "elf/elf_utils.h"
 #include "entrypoints/entrypoint_utils-inl.h"
 #include "gc/accounting/card_table-inl.h"
@@ -965,6 +966,30 @@ class ImageWriter::PruneObjectReferenceVisitor {
   bool* const result_;
 };
 
+static bool IsImageClass(const CompilerOptions& compiler_options, ObjPtr<mirror::Class> klass)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  size_t array_dim = 0u;
+  while (klass->IsArrayClass()) {
+    klass = klass->GetComponentType<kDefaultVerifyFlags, kWithoutReadBarrier>();
+    ++array_dim;
+  }
+  if (klass->IsPrimitive()) {
+    // All primitive classes must be in the primary boot image.
+    if (!compiler_options.IsBootImage()) {
+      return false;
+    }
+    if (array_dim == 0u) {
+      return true;
+    }
+    // Primitive classes and their arrays are attributed to the first dex file.
+    const DexFile* dex_file = compiler_options.GetDexFilesForOatFile().front();
+    std::string_view descriptor = klass->GetPrimitiveDescriptorView();
+    return compiler_options.GetImageClasses().Contains(dex_file, descriptor, array_dim);
+  } else {
+    TypeReference type_ref(&klass->GetDexFile(), klass->GetDexTypeIndex());
+    return compiler_options.IsImageClass(type_ref, array_dim);
+  }
+}
 
 bool ImageWriter::PruneImageClass(ObjPtr<mirror::Class> klass) {
   bool early_exit = false;
@@ -994,10 +1019,9 @@ bool ImageWriter::PruneImageClassInternal(
   }
   visited->insert(klass.Ptr());
   bool result = klass->IsBootStrapClassLoaded();
-  std::string temp;
   // Prune if not an image class, this handles any broken sets of image classes such as having a
   // class in the set but not it's superclass.
-  result = result || !compiler_options_.IsImageClass(klass->GetDescriptor(&temp));
+  result = result || !IsImageClass(compiler_options_, klass);
   bool my_early_exit = false;  // Only for ourselves, ignore caller.
   // Remove classes that failed to verify since we don't want to have java.lang.VerifyError in the
   // app image.
@@ -1081,8 +1105,7 @@ bool ImageWriter::KeepClass(ObjPtr<mirror::Class> klass) {
     DCHECK(!compiler_options_.IsBootImage());
     return true;
   }
-  std::string temp;
-  if (!compiler_options_.IsImageClass(klass->GetDescriptor(&temp))) {
+  if (!IsImageClass(compiler_options_, klass)) {
     return false;
   }
   if (compiler_options_.IsAppImage()) {
@@ -1232,7 +1255,7 @@ dchecked_vector<ObjPtr<mirror::DexCache>> ImageWriter::FindDexCaches(Thread* sel
   dchecked_vector<ObjPtr<mirror::DexCache>> dex_caches;
   ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
   ReaderMutexLock mu2(self, *Locks::dex_lock_);
-  dex_caches.reserve(class_linker->GetDexCachesData().size());
+  dex_caches.reserve(class_linker->GetDexCacheCount());
   for (const auto& entry : class_linker->GetDexCachesData()) {
     const ClassLinker::DexCacheData& data = entry.second;
     if (self->IsJWeakCleared(data.weak_root)) {
@@ -1272,9 +1295,10 @@ void ImageWriter::PromoteWeakInternsToStrong(Thread* self) {
 }
 
 void ImageWriter::DumpImageClasses() {
-  for (const std::string& image_class : compiler_options_.GetImageClasses()) {
-    LOG(INFO) << " " << image_class;
-  }
+  compiler_options_.GetImageClasses().ForEach([](TypeReference type_ref, size_t array_dim) {
+    LOG(INFO) << " " << type_ref.dex_file->GetTypeDescriptorView(type_ref.TypeIndex())
+        << (array_dim != 0u ? " dim=" + std::to_string(array_dim) : "");
+  });
 }
 
 bool ImageWriter::CreateImageRoots() {
@@ -1991,10 +2015,9 @@ void ImageWriter::LayoutHelper::ProcessDexFileObjects(Thread* self) {
       DCHECK(it != image_writer_->dex_file_oat_index_map_.end()) << dex_file->GetLocation();
       const size_t oat_index = it->second;
       // Assign bin slot to this file's dex cache and add it to the end of the work queue.
-      auto dcd_it = class_linker->GetDexCachesData().find(dex_file);
-      DCHECK(dcd_it != class_linker->GetDexCachesData().end()) << dex_file->GetLocation();
-      auto dex_cache =
-          DecodeWeakGlobalWithoutRB<mirror::DexCache>(vm, self, dcd_it->second.weak_root);
+      const ClassLinker::DexCacheData* data = class_linker->FindDexCacheDataLocked(*dex_file);
+      DCHECK(data != nullptr) << dex_file->GetLocation();
+      auto dex_cache = DecodeWeakGlobalWithoutRB<mirror::DexCache>(vm, self, data->weak_root);
       DCHECK(dex_cache != nullptr);
       bool assigned = TryAssignBinSlot(dex_cache, oat_index);
       DCHECK(assigned);
@@ -3400,8 +3423,9 @@ void ImageWriter::FixupClass(mirror::Class* orig, mirror::Class* copy) {
     SubtypeCheck<mirror::Class*>::ForceUninitialize(copy);
   }
 
-  // Remove the clinitThreadId. This is required for image determinism.
-  copy->SetClinitThreadId(static_cast<pid_t>(0));
+  // A tid in clinit_thread_id_or_hash_ would violate image determinism.
+  copy->FixThreadId(orig);
+
   // We never emit kRetryVerificationAtRuntime, instead we mark the class as
   // resolved and the class will therefore be re-verified at runtime.
   if (orig->ShouldVerifyAtRuntime()) {
@@ -3430,7 +3454,9 @@ void ImageWriter::FixupObject(Object* orig, Object* copy) {
       auto* dest = down_cast<mirror::Executable*>(copy);
       auto* src = down_cast<mirror::Executable*>(orig);
       ArtMethod* src_method = src->GetArtMethod();
-      CopyAndFixupPointer(dest, mirror::Executable::ArtMethodOffset(), src_method);
+      if (src_method != nullptr) {
+        CopyAndFixupPointer(dest, mirror::Executable::ArtMethodOffset(), src_method);
+      }
     } else if (klass == GetClassRoot<mirror::FieldVarHandle, kWithoutReadBarrier>(class_roots) ||
          klass == GetClassRoot<mirror::StaticFieldVarHandle, kWithoutReadBarrier>(class_roots)) {
       // Need to update the ArtField.

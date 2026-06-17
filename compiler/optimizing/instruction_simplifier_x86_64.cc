@@ -43,6 +43,7 @@ class InstructionSimplifierX86_64Visitor final
   }
 
  private:
+  void VisitAdd(HAdd* instruction);
   void VisitAnd(HAnd* instruction);
   void VisitSub(HSub* instruction);
   void VisitXor(HXor* instruction);
@@ -52,6 +53,13 @@ class InstructionSimplifierX86_64Visitor final
 
   template <typename T> friend class art::CRTPGraphVisitor;
 };
+
+void InstructionSimplifierX86_64Visitor::VisitAdd(HAdd* instruction) {
+  if (DataType::IsIntOrLongType(instruction->GetType()) &&
+      TryLoadEffectiveAddressSimplification(instruction)) {
+    RecordSimplification();
+  }
+}
 
 void InstructionSimplifierX86_64Visitor::VisitAnd(HAnd* instruction) {
   if (HasAVX2()) {
@@ -64,6 +72,11 @@ void InstructionSimplifierX86_64Visitor::VisitAnd(HAnd* instruction) {
 }
 
 void InstructionSimplifierX86_64Visitor::VisitSub(HSub* instruction) {
+  if (DataType::IsIntOrLongType(instruction->GetType()) &&
+      TryLoadEffectiveAddressSimplification(instruction)) {
+    RecordSimplification();
+    return;
+  }
   if (HasAVX2()) {
     if (TryMergeWithAnd(instruction)) {
       RecordSimplification();

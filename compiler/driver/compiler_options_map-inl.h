@@ -64,13 +64,6 @@ struct CmdlineType<AssumeValueOptions> : CmdlineTypeParser<AssumeValueOptions> {
       return Result::Failure(std::string("Invalid --assume-value value: '") + args + "'");
     }
 
-    if (!com::android::art::rw::flags::assume_value_sdk_int()) {
-      // Feature disabled, silently ignore setting the value. Note that if we ever add additional
-      // support beyond for more assumed values beyond SDK_INT, this will need to be adjusted.
-      static_assert(AssumeValueSignatures::kSignatures.size() == 1);
-      return Result::SuccessNoValue();
-    }
-
     auto known_signature = AssumeValueSignatures::Lookup(class_descriptor, member_name);
     if (known_signature == AssumeValueSignatures::kSdkInt) {
       assume_value_options.SetSdkInt(parsed_value.GetValue());
@@ -114,6 +107,13 @@ inline bool ReadCompilerOptions(Base& map, CompilerOptions* options, std::string
   map.AssignIfExists(Base::CompileArtTest, &options->compile_art_test_);
   map.AssignIfExists(Base::HugeMethodMaxThreshold, &options->huge_method_threshold_);
   map.AssignIfExists(Base::InlineMaxCodeUnitsThreshold, &options->inline_max_code_units_);
+  map.AssignIfExists(Base::InlineMaximumNumberOfTotalInstructions,
+                     &options->inline_max_total_instructions_);
+  map.AssignIfExists(Base::InlineMaxInstructionsForSmallMethod,
+                     &options->inline_max_instructions_for_small_method_);
+  map.AssignIfExists(Base::InlineMaxCumulatedDexRegisters,
+                     &options->inline_max_cumulated_dex_registers_);
+  map.AssignIfExists(Base::InlineMaxRecursiveCalls, &options->inline_max_recursive_calls_);
   map.AssignIfExists(Base::GenerateDebugInfo, &options->generate_debug_info_);
   map.AssignIfExists(Base::GenerateMiniDebugInfo, &options->generate_mini_debug_info_);
   map.AssignIfExists(Base::GenerateBuildID, &options->generate_build_id_);
@@ -122,6 +122,9 @@ inline bool ReadCompilerOptions(Base& map, CompilerOptions* options, std::string
   }
   if (map.Exists(Base::Baseline)) {
     options->baseline_ = true;
+  }
+  if (map.Exists(Base::Fast)) {
+    options->fast_ = true;
   }
   if (map.Exists(Base::ProfileBranches)) {
     options->profile_branches_ = true;
@@ -200,6 +203,24 @@ NO_INLINE void AddCompilerOptionsArgumentParserOptions(Builder& b) {
                     "A zero value will disable inlining. Honored only by Optimizing. Has priority\n"
                     "over the --compiler-filter option. Intended for development/experimental use.")
           .IntoKey(Map::InlineMaxCodeUnitsThreshold)
+      .Define("--inline-max-total-instructions=_")
+          .template WithType<unsigned int>()
+          .WithHelp("the maximum number of total instructions that a method can have to be\n"
+                    "considered for inlining.")
+          .IntoKey(Map::InlineMaximumNumberOfTotalInstructions)
+      .Define("--inline-max-instructions-for-small-method=_")
+          .template WithType<unsigned int>()
+          .WithHelp("the maximum number of instructions that a method can have to be considered\n"
+                    "a small method for inlining.")
+          .IntoKey(Map::InlineMaxInstructionsForSmallMethod)
+      .Define("--inline-max-cumulated-dex-registers=_")
+          .template WithType<unsigned int>()
+          .WithHelp("the maximum number of dex registers that a method can accumulate by inlining.")
+          .IntoKey(Map::InlineMaxCumulatedDexRegisters)
+      .Define("--inline-max-recursive-calls=_")
+          .template WithType<unsigned int>()
+          .WithHelp("the maximum number of recursive calls that can be inlined.")
+          .IntoKey(Map::InlineMaxRecursiveCalls)
 
       .Define({"--generate-debug-info", "-g", "--no-generate-debug-info"})
           .WithValues({true, true, false})
@@ -254,8 +275,12 @@ NO_INLINE void AddCompilerOptionsArgumentParserOptions(Builder& b) {
           .IntoKey(Map::Debuggable)
 
       .Define("--baseline")
-          .WithHelp("Produce code using the baseline compilation")
+          .WithHelp("Produce code using the baseline compiler")
           .IntoKey(Map::Baseline)
+
+      .Define("--fast")
+          .WithHelp("Produce code using the fast compiler. ONLY FOR TESTING.")
+          .IntoKey(Map::Fast)
 
       .Define("--profile-branches")
           .WithHelp("Profile branches in baseline generated code")

@@ -25,6 +25,8 @@ import androidx.annotation.RequiresApi;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.art.model.DexMetadata;
 import com.android.server.art.proto.DexMetadataConfig;
+import com.android.server.art.utils.AsLog;
+import com.android.server.art.utils.Utils;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;

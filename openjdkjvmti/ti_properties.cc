@@ -40,9 +40,10 @@
 
 #include "art_jvmti.h"
 #include "runtime.h"
+#include "scoped_thread_state_change-inl.h"
 #include "thread-current-inl.h"
 #include "ti_phase.h"
-#include "well_known_classes.h"
+#include "well_known_classes-inl.h"
 
 namespace openjdkjvmti {
 
@@ -173,10 +174,12 @@ static jvmtiError GetLibraryPath(jvmtiEnv* env, char** value_ptr) {
   }
   // We expect this call to be rare. So don't optimize.
   DCHECK(art::Thread::Current() != nullptr);
+  art::ScopedObjectAccess soa(art::Thread::Current());
   JNIEnv* jni_env = art::Thread::Current()->GetJniEnv();
-  jmethodID get_prop = jni_env->GetStaticMethodID(art::WellKnownClasses::java_lang_System,
-                                                  "getProperty",
-                                                  "(Ljava/lang/String;)Ljava/lang/String;");
+  ScopedLocalRef<jclass> j_l_System(
+      jni_env, soa.AddLocalReference<jclass>(art::WellKnownClasses::java_lang_System.Get()));
+  jmethodID get_prop = jni_env->GetStaticMethodID(
+      j_l_System.get(), "getProperty", "(Ljava/lang/String;)Ljava/lang/String;");
   CHECK(get_prop != nullptr);
 
   ScopedLocalRef<jobject> input_str(jni_env, jni_env->NewStringUTF(kPropertyLibraryPath));
@@ -186,9 +189,7 @@ static jvmtiError GetLibraryPath(jvmtiEnv* env, char** value_ptr) {
   }
 
   ScopedLocalRef<jobject> prop_res(
-      jni_env, jni_env->CallStaticObjectMethod(art::WellKnownClasses::java_lang_System,
-                                               get_prop,
-                                               input_str.get()));
+      jni_env, jni_env->CallStaticObjectMethod(j_l_System.get(), get_prop, input_str.get()));
   if (jni_env->ExceptionCheck() == JNI_TRUE) {
     jni_env->ExceptionClear();
     return ERR(INTERNAL);

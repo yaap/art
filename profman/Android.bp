@@ -33,6 +33,7 @@ cc_defaults {
         "profman.cc",
         "profile_assistant.cc",
         "inline_cache_format_util.cc",
+        "synthetic_class_format_util.cc",
     ],
     header_libs: ["profman_headers"],
 
@@ -117,6 +118,10 @@ art_cc_binary {
         "com.android.art.debug",
         "test_broken_com.android.art",
     ],
+    visibility: [
+        "//art:__subpackages__",
+        "//prebuilts/r8:__subpackages__",
+    ],
 }
 
 art_cc_binary {
@@ -193,7 +198,11 @@ art_cc_defaults {
     ],
     header_libs: ["profman_headers"],
     tidy_timeout_srcs: ["profile_assistant_test.cc"],
-    srcs: ["profile_assistant_test.cc"],
+    srcs: [
+        "profile_assistant_test.cc",
+        "synthetic_class_format_util.cc",
+        "synthetic_class_format_util_test.cc",
+    ],
 }
 
 // Version of ART gtest `art_profman_tests` bundled with the ART APEX on target.

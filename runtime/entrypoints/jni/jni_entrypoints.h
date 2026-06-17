@@ -20,7 +20,7 @@
 #include "jni.h"
 
 #include "base/macros.h"
-#include "offsets.h"
+#include "base/offsets.h"
 
 #define JNI_ENTRYPOINT_OFFSET(ptr_size, x) \
     Thread::JniEntryPointOffset<ptr_size>(OFFSETOF_MEMBER(JniEntryPoints, x))

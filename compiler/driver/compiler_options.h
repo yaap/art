@@ -29,15 +29,18 @@
 #include "base/macros.h"
 #include "base/stl_util.h"
 #include "base/utils.h"
+#include "handle.h"
+#include "image_class_map.h"
 #include "optimizing/register_allocator.h"
 
 namespace art HIDDEN {
 
 // Forward declare CompilerOptions so that the CreateCompilerOptions forward declare works.
 class CompilerOptions;
+enum class InstructionSet;
 
 namespace fuzzer {
-std::unique_ptr<CompilerOptions> CreateCompilerOptions(bool is_baseline);
+std::unique_ptr<CompilerOptions> CreateCompilerOptions(bool is_baseline, InstructionSet isa);
 }  // namespace fuzzer
 
 namespace jit {
@@ -53,9 +56,12 @@ class Arm64RelativePatcherTest;
 class Thumb2RelativePatcherTest;
 }  // namespace linker
 
+namespace mirror {
+class Class;
+}  // namespace mirror
+
 class ArtMethod;
 class DexFile;
-enum class InstructionSet;
 class InstructionSetFeatures;
 class ProfileCompilationInfo;
 
@@ -78,6 +84,18 @@ class CompilerOptions final {
   // We set a lower inlining threshold for baseline to reduce code size and compilation time. This
   // cannot be changed via flags.
   static constexpr size_t kBaselineInlineMaxCodeUnits = 14;
+  // Instruction limit to control memory.
+  static constexpr size_t kInlineMaximumNumberOfTotalInstructions = 1024;
+  // Maximum number of instructions for considering a method small,
+  // which we will always try to inline if the other non-instruction limits
+  // are not reached.
+  static constexpr size_t kInlineMaximumNumberOfInstructionsForSmallMethod = 3;
+  // Limit the number of dex registers that we accumulate while inlining
+  // to avoid creating large amount of nested environments.
+  static constexpr size_t kInlineMaximumNumberOfCumulatedDexRegisters = 32;
+  // Limit recursive call inlining, which do not benefit from too
+  // much inlining compared to code locality.
+  static constexpr size_t kInlineMaximumNumberOfRecursiveCalls = 4;
 
   enum class CompilerType : uint8_t {
     kAotCompiler,             // AOT compiler.
@@ -137,6 +155,9 @@ class CompilerOptions final {
   size_t GetHugeMethodThreshold() const {
     return huge_method_threshold_;
   }
+  void SetHugeMethodThreshold(size_t threshold) {
+    huge_method_threshold_ = threshold;
+  }
 
   bool IsHugeMethod(size_t num_dalvik_instructions) const {
     return num_dalvik_instructions > huge_method_threshold_;
@@ -147,6 +168,34 @@ class CompilerOptions final {
   }
   void SetInlineMaxCodeUnits(size_t units) {
     inline_max_code_units_ = units;
+  }
+
+  size_t GetInlineMaximumNumberOfTotalInstructions() const {
+    return inline_max_total_instructions_;
+  }
+  void SetInlineMaximumNumberOfTotalInstructions(size_t instructions) {
+    inline_max_total_instructions_ = instructions;
+  }
+
+  size_t GetInlineMaximumNumberOfInstructionsForSmallMethod() const {
+    return inline_max_instructions_for_small_method_;
+  }
+  void SetInlineMaximumNumberOfInstructionsForSmallMethod(size_t instructions) {
+    inline_max_instructions_for_small_method_ = instructions;
+  }
+
+  size_t GetInlineMaximumNumberOfCumulatedDexRegisters() const {
+    return inline_max_cumulated_dex_registers_;
+  }
+  void SetInlineMaximumNumberOfCumulatedDexRegisters(size_t registers) {
+    inline_max_cumulated_dex_registers_ = registers;
+  }
+
+  size_t GetInlineMaximumNumberOfRecursiveCalls() const {
+    return inline_max_recursive_calls_;
+  }
+  void SetInlineMaximumNumberOfRecursiveCalls(size_t calls) {
+    inline_max_recursive_calls_ = calls;
   }
 
   bool EmitReadBarrier() const {
@@ -229,6 +278,10 @@ class CompilerOptions final {
     return baseline_;
   }
 
+  bool IsFast() const {
+    return fast_;
+  }
+
   bool ProfileBranches() const {
     return profile_branches_;
   }
@@ -298,15 +351,17 @@ class CompilerOptions final {
     return dex_files_for_oat_file_;
   }
 
-  const HashSet<std::string>& GetImageClasses() const {
+  const ImageClassMap& GetImageClasses() const {
     return image_classes_;
   }
 
-  EXPORT bool IsImageClass(const char* descriptor) const;
+  static constexpr size_t kInferArrayDim = static_cast<size_t>(-1);
+  EXPORT bool IsImageClass(TypeReference type_ref, size_t array_dim = kInferArrayDim) const;
 
-  // Returns whether the given `pretty_descriptor` is in the list of preloaded
-  // classes. `pretty_descriptor` should be the result of calling `PrettyDescriptor`.
-  EXPORT bool IsPreloadedClass(std::string_view pretty_descriptor) const;
+  // Returns whether the given `klass` is a no-preload class (one that is not allowed to be
+  // initialized in zygote, either because it fails initialization, or because it is a logical
+  // error to initialize it once for all processes).
+  EXPORT bool IsNoPreloadClass(Handle<mirror::Class> klass) const;
 
   bool ParseCompilerOptions(const std::vector<std::string>& options,
                             bool ignore_unrecognized,
@@ -402,6 +457,10 @@ class CompilerOptions final {
   CompilerFilter::Filter compiler_filter_;
   size_t huge_method_threshold_;
   size_t inline_max_code_units_;
+  size_t inline_max_total_instructions_;
+  size_t inline_max_instructions_for_small_method_;
+  size_t inline_max_cumulated_dex_registers_;
+  size_t inline_max_recursive_calls_;
 
   InstructionSet instruction_set_;
   std::unique_ptr<const InstructionSetFeatures> instruction_set_features_;
@@ -416,17 +475,19 @@ class CompilerOptions final {
 
   // Image classes, specifies the classes that will be included in the image if creating an image.
   // Must not be empty for real boot image, only for tests pretending to compile boot image.
-  HashSet<std::string> image_classes_;
+  ImageClassMap image_classes_;
 
   // Classes listed in the preloaded-classes file, used for boot image and
   // boot image extension compilation.
   HashSet<std::string> preloaded_classes_;
+  bool ignore_preloaded_classes_ = false;
   CompilerType compiler_type_;
   ImageType image_type_;
   bool multi_image_;
   bool compile_art_test_;
   bool emit_read_barrier_;
   bool baseline_;
+  bool fast_;
   bool debuggable_;
   bool generate_debug_info_;
   bool generate_mini_debug_info_;
@@ -511,7 +572,8 @@ class CompilerOptions final {
   friend class linker::Arm64RelativePatcherTest;
   friend class linker::Thumb2RelativePatcherTest;
 
-  friend std::unique_ptr<CompilerOptions> fuzzer::CreateCompilerOptions(bool is_baseline);
+  friend std::unique_ptr<CompilerOptions> fuzzer::CreateCompilerOptions(bool is_baseline,
+                                                                        InstructionSet isa);
 
   template <class Base>
   friend bool ReadCompilerOptions(Base& map, CompilerOptions* options, std::string* error_msg);

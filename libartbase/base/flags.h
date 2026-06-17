@@ -321,6 +321,10 @@ extern Flags gFlags;
 
 EXPORT bool is_test_rw_flag_enabled();
 
+EXPORT bool is_read_only_dynamic_code_load_ww_log_enabled();
+
+EXPORT bool is_read_only_dynamic_code_load_throw_exception_enabled();
+
 }  // namespace art
 
 #pragma clang diagnostic pop  // -Wconversion

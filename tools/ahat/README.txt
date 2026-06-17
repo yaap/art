@@ -29,7 +29,6 @@ TODO:
  * Show version number with --version.
  * Show somewhere where to send bugs.
  * Include a link to /objects in the overview and menu?
- * Turn on LOCAL_JAVACFLAGS := -Xlint:unchecked -Werror
 
  * [low priority] by site allocations won't line up if the stack has been
    truncated. Is there any way to manually line them up in that case?
@@ -49,6 +48,24 @@ Known Issues:
  * Line number decoding for allocations in proguarded classes.
 
 Release History:
+ 1.11.1 February, 2026
+   Strings page: improved performance, added pagination.
+
+ 1.11 February, 2026
+   Add Activity leaks page
+   Strings page now correctly shows string object allocation sizes
+   Strings page now respects --retained
+
+ 1.10 January, 2026
+   Move Bitmaps functionality to main menu (top bar).
+   Add Strings page to main menu to help find duplicate strings.
+
+ 1.9 December, 2025
+   Show sample path and incoming references to unreachable instances.
+   Add option to sort allocations table by various columns.
+   Add support for reading large heap dumps (>2GB).
+   Add special handling for android.os.Message object instances.
+
  1.8 January 02, 2025
    Show string values of byte[] instances.
    Fix accounting for cleaned native registrations
@@ -152,4 +169,3 @@ Release History:
 
  0.1 July 30, 2015
    Initial Release
-

@@ -20,6 +20,11 @@ package com.android.ahat.progress;
  * Null progress tracker that ignores all updates.
  */
 public class NullProgress implements Progress {
+  /**
+   * Constructs a new NullProgress.
+   */
+  public NullProgress() {}
+
   @Override public void start(String description, long duration) { }
   @Override public void advance() { }
   @Override public void advance(long n) { }

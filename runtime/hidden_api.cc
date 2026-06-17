@@ -38,6 +38,11 @@
 #include "thread-inl.h"
 #include "well_known_classes.h"
 
+#ifdef ART_TARGET_ANDROID
+#include <android/api-level.h>
+#include <sys/system_properties.h>
+#endif
+
 namespace art HIDDEN {
 namespace hiddenapi {
 
@@ -105,6 +110,9 @@ static const std::vector<std::string> kCorePlatformApiExemptions = {
     "Ljava/io/FileDescriptor;-><init>(I)V",
     "Ljava/lang/Thread;->dispatchUncaughtException(Ljava/lang/Throwable;)V",
     "Ljava/util/zip/ZipEntry;-><init>(Ljava/lang/String;Ljava/lang/String;JJJII[BJ)V",
+    // Other de-facto core platform APIs
+    "Landroid/security/net/config/RootTrustManager;->isSameTrustConfiguration(Ljava/lang/"
+    "String;Ljava/lang/String;)Z",
 };
 
 static std::optional<std::string> FindDsoForNativeCaller(void* native_caller_addr) {
@@ -198,16 +206,16 @@ static const char* FormatHiddenApiRuntimeFlags(uint32_t runtime_flags) {
   }
 }
 
-static std::optional<Domain> DetermineDomainForApexLocation(const std::string& location) {
+static std::optional<Domain> DetermineDomainForApexLocation(const std::string& dex_location) {
   // If running with APEX, check `path` against known APEX locations.
   // These checks will be skipped on target buildbots where ANDROID_ART_ROOT
   // is set to "/system".
   if (ArtModuleRootDistinctFromAndroidRoot()) {
-    if (LocationIsOnArtModule(location) || LocationIsOnConscryptModule(location)) {
+    if (LocationIsOnArtModule(dex_location) || LocationIsOnConscryptModule(dex_location)) {
       return Domain::kCorePlatform;
     }
 
-    if (LocationIsOnApex(location)) {
+    if (LocationIsOnApex(dex_location)) {
       return Domain::kPlatform;
     }
   }
@@ -303,7 +311,25 @@ void InitializeCorePlatformApiPrivateFields() {
   }
 }
 
+bool EnableHiddenapiPlatformEnforcement() {
+  if (!com::android::art::flags::hiddenapi_platform_enforcement()) {
+    return false;
+  }
+#ifdef ART_TARGET_ANDROID
+  static bool res = []() {
+    int device_api_level = android_get_device_api_level();
+    char codename[PROP_VALUE_MAX];
+    __system_property_get("ro.build.version.codename", codename);
+    return device_api_level >= 37 || (device_api_level == 36 && strcmp(codename, "REL") != 0);
+  }();
+  return res;
+#else
+  return true;
+#endif
+}
+
 static bool EnableNativeCallerCheckForApp() {
+  CHECK(com::android::art::flags::hiddenapi_jni_api_callers());
   uint32_t target_sdk_version = Runtime::Current()->GetTargetSdkVersion();
   // Enable if the target SDK is higher than 36 (Android 16). Also enable if the
   // target SDK version is not set, e.g. in the zygote.
@@ -340,7 +366,7 @@ bool ShouldDenyJniAccessToMember(T* member,
     }
   } ctx{.self = self, .native_caller_addr = native_caller_addr};
 
-  if (com::android::art::flags::hiddenapi_platform_enforcement() &&
+  if (EnableHiddenapiPlatformEnforcement() &&
       (!com::android::art::flags::hiddenapi_jni_api_callers() ||
        !EnableNativeCallerCheckForApp())) {
     // Special case to avoid false alarms when accesses from platform to
@@ -352,6 +378,7 @@ bool ShouldDenyJniAccessToMember(T* member,
     // That's not a problem for apps with a recent enough target SDK level where
     // we always check the native caller in the standard code path below, but
     // otherwise we need to check for that specific situation.
+
     AccessMethod check_only_method =
         IsCheckOnlyMethod(access_kind) ? access_kind : AccessMethod::kCheckWithPolicy;
     if (ShouldDenyAccessToMember(
@@ -365,18 +392,17 @@ bool ShouldDenyJniAccessToMember(T* member,
             check_only_method) &&
         ctx.java_caller_context.value().GetDomain() == Domain::kPlatform) {
       // The java caller is in platform and has been denied, so check the native caller.
-      if (!ShouldDenyAccessToMember(
-              member,
-              [&ctx]() REQUIRES_SHARED(Locks::mutator_lock_) {
-                AccessContext& context = ctx.GetNativeCallerContext();
-                VLOG(hiddenapi) << "hiddenapi: Native JNI caller " << context << " from "
-                                << context.GetDomain() << " (special case)";
-                return context;
-              },
-              check_only_method) &&
-          ctx.native_caller_context.value().GetNativeCallerAddr() != nullptr) {
-        // The native caller has been positively identified
-        // (GetNativeCallerAddr() != nullptr) and is allowed, so the access is fine.
+
+      AccessContext& context = ctx.GetNativeCallerContext();
+      VLOG(hiddenapi) << "hiddenapi: Native JNI caller " << context << " from "
+                      << context.GetDomain() << " (special case)";
+      if (context.GetNativeCallerAddr() == nullptr || context.IsApplicationDomain()) {
+        // If the native caller either could not be identified or it's in an
+        // app, then either the app may have access to an API that platform
+        // doesn't, or it may be an app using a method to circumvent hidden API
+        // checks. In either case we need to be conservative and allow the
+        // access for the sake of app compat, because in this situation we must
+        // not regress on that.
         return false;
       }
     }
@@ -412,8 +438,7 @@ bool ShouldDenyJniAccessToMember(T* member,
               case Domain::kPlatform:
                 // If the native caller is platform then it should only be used if
                 // the SDK level is recent enough.
-                // TODO(b/377676642): Replace flag with SDK level check when ramped.
-                if (com::android::art::flags::hiddenapi_platform_enforcement()) {
+                if (EnableHiddenapiPlatformEnforcement()) {
                   VLOG(hiddenapi) << "hiddenapi: Native JNI caller " << context << " from "
                                   << context.GetDomain();
                   return context;
@@ -730,7 +755,7 @@ void MemberSignature::NotifyHiddenApiListener(AccessMethod access_method) {
     StackHandleScope<2u> hs(soa.Self());
 
     ArtField* consumer_field = WellKnownClasses::dalvik_system_VMRuntime_nonSdkApiUsageConsumer;
-    DCHECK(consumer_field->GetDeclaringClass()->IsInitialized());
+    DCHECK(WellKnownClasses::dalvik_system_VMRuntime->IsInitialized());
     Handle<mirror::Object> consumer_object =
         hs.NewHandle(consumer_field->GetObject(consumer_field->GetDeclaringClass()));
 

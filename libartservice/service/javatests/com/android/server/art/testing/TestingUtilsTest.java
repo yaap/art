@@ -94,11 +94,25 @@ public class TestingUtilsTest {
         assertThat(TestingUtils.deepEquals(a, b)).isFalse();
     }
 
-    @Test(expected = UnsupportedOperationException.class)
-    public void testDeepEqualsArrayNotSupported() throws Exception {
-        int[] a = new int[] {1};
-        int[] b = new int[] {2};
-        TestingUtils.deepEquals(a, b);
+    @Test
+    public void testArrayDeepEquals() throws Exception {
+        var a = new int[] {1, 2, 3, 4, 5};
+        var b = new int[] {1, 2, 3, 4, 5};
+        assertThat(TestingUtils.deepEquals(a, b)).isTrue();
+    }
+
+    @Test
+    public void testArrayDeepEqualsSizeMismatch() throws Exception {
+        var a = new int[] {1};
+        var b = new int[] {1, 2};
+        assertThat(TestingUtils.deepEquals(a, b)).isFalse();
+    }
+
+    @Test
+    public void testArrayDeepEqualsElementMismatch() throws Exception {
+        var a = new int[] {1};
+        var b = new int[] {2};
+        assertThat(TestingUtils.deepEquals(a, b)).isFalse();
     }
 
     @Test

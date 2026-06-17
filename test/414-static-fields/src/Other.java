@@ -15,5 +15,5 @@
  */
 
 public class Other {
-  static int staticField = 41;
+    static int staticField = 41;
 }

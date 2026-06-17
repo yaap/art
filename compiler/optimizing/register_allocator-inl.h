@@ -26,10 +26,14 @@
 namespace art HIDDEN {
 
 inline uint32_t RegisterAllocator::GetNormalRegisterMask(LiveInterval* interval,
-                                                         RegisterType register_type) {
+                                                         PhysicalRegisterType register_type) {
   DCHECK(interval->HasRegisters());
-  DCHECK_EQ(register_type == RegisterType::kFpRegister,
-            DataType::IsFloatingPointType(interval->GetType()));
+  DCHECK_IMPLIES(register_type == PhysicalRegisterType::kCoreRegister,
+                 !DataType::IsFloatingPointType(interval->GetType()));
+  DCHECK_IMPLIES(register_type == PhysicalRegisterType::kFpuRegister,
+                 DataType::IsFloatingPointType(interval->GetType()));
+  DCHECK_IMPLIES(register_type == PhysicalRegisterType::kVectorRegister,
+                 interval->GetType() == DataType::Type::kFloat64);
   return interval->GetRegisters();
 }
 

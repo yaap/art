@@ -23,15 +23,20 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <map>
 #include <sstream>
 #include <tuple>
 #include <vector>
 
+#include "android-base/macros.h"
 #include "android-base/properties.h"
 #include "android-base/stringprintf.h"
 #include "art_field-inl.h"
 #include "base/aborting.h"
+#include "base/allocator.h"
 #include "base/histogram-inl.h"
 #include "base/mutex-inl.h"
 #include "base/systrace.h"
@@ -71,7 +76,8 @@ static constexpr uint64_t kLongThreadSuspendThreshold = MsToNs(5);
 static constexpr bool kDumpUnattachedThreadNativeStackForSigQuit = true;
 
 ThreadList::ThreadList(uint64_t thread_suspend_timeout_ns)
-    : suspend_all_count_(0),
+    : virtual_and_carrier_map_(nullptr),
+      suspend_all_count_(0),
       unregistering_count_(0),
       suspend_all_histogram_("suspend all histogram", 16, 64),
       long_suspend_(false),
@@ -123,7 +129,7 @@ pid_t ThreadList::GetLockOwner() {
 void ThreadList::DumpNativeStacks(std::ostream& os) {
   MutexLock mu(Thread::Current(), *Locks::thread_list_lock_);
   unwindstack::AndroidLocalUnwinder unwinder;
-  unwinder.set_check_global_elf_cache(true);
+  unwinder.set_use_global_elf_cache(true);
   for (const auto& thread : list_) {
     os << "DUMPING THREAD " << thread->GetTid() << "\n";
     DumpNativeStack(os, unwinder, thread->GetTid(), "\t");
@@ -197,7 +203,7 @@ class DumpCheckpoint final : public Closure {
         barrier_(0, /*verify_count_on_shutdown=*/false),
         unwinder_(std::vector<std::string>{}, std::vector<std::string> {"oat", "odex"}),
         dump_native_stack_(dump_native_stack) {
-    unwinder_.set_check_global_elf_cache(true);
+    unwinder_.set_use_global_elf_cache(true);
   }
 
   void Run(Thread* thread) override {
@@ -225,15 +231,21 @@ class DumpCheckpoint final : public Closure {
     }
   }
 
-  void WaitForThreadsToRunThroughCheckpoint(size_t threads_running_checkpoint) {
+  bool WaitForThreadsToRunThroughCheckpoint(size_t threads_running_checkpoint) {
     Thread* self = Thread::Current();
     ScopedThreadStateChange tsc(self, ThreadState::kWaitingForCheckPointsToRun);
-    bool timed_out = barrier_.Increment(self, threads_running_checkpoint, kDumpWaitTimeout);
-    if (timed_out) {
-      // Avoid a recursive abort.
-      LOG((kIsDebugBuild && (gAborting == 0)) ? ::android::base::FATAL : ::android::base::ERROR)
-          << "Unexpected time out during dump checkpoint.";
+    bool timed_out = false;
+    if (!kIsDebugBuild && gAborting == 0) {
+      barrier_.Increment(self, threads_running_checkpoint);
+    } else {
+      // Timeout when aborting. We don't want to wait for a long time when aborting.
+      timed_out = barrier_.Increment(self, threads_running_checkpoint, kDumpWaitTimeout);
+      if (timed_out) {
+        LOG(gAborting == 0 ? ::android::base::FATAL : ::android::base::ERROR)
+            << "Unexpected time out during dump checkpoint.";
+      }
     }
+    return timed_out;
   }
 
  private:
@@ -258,18 +270,24 @@ void ThreadList::Dump(std::ostream& os, bool dump_native_stack) {
   if (self != nullptr) {
     // Dump() can be called in any mutator lock state.
     bool mutator_lock_held = Locks::mutator_lock_->IsSharedHeld(self);
-    DumpCheckpoint checkpoint(dump_native_stack);
+    // Use a regular pointer and clean up only if waiting for checkpoints was successful. On a
+    // timeout, it's better to leak the memory than causing memory corruption issues.
+    DumpCheckpoint* checkpoint = new DumpCheckpoint(dump_native_stack);
     // Acquire mutator lock separately for each thread, to avoid long runnable code sequence
     // without suspend checks.
     size_t threads_running_checkpoint =
-        RunCheckpoint(&checkpoint,
+        RunCheckpoint(checkpoint,
                       nullptr,
                       true,
                       /* acquire_mutator_lock= */ !mutator_lock_held);
+    bool time_out = false;
     if (threads_running_checkpoint != 0) {
-      checkpoint.WaitForThreadsToRunThroughCheckpoint(threads_running_checkpoint);
+      time_out = checkpoint->WaitForThreadsToRunThroughCheckpoint(threads_running_checkpoint);
     }
-    checkpoint.Dump(self, os);
+    checkpoint->Dump(self, os);
+    if (!time_out) {
+      delete checkpoint;
+    }
   } else {
     DumpUnattachedThreads(os, dump_native_stack);
   }
@@ -582,13 +600,6 @@ void ThreadList::RunEmptyCheckpoint() {
   }
 }
 
-// Separate function to disable just the right amount of thread-safety analysis.
-ALWAYS_INLINE void AcquireMutatorLockSharedUncontended(Thread* self)
-    ACQUIRE_SHARED(*Locks::mutator_lock_) NO_THREAD_SAFETY_ANALYSIS {
-  bool success = Locks::mutator_lock_->SharedTryLock(self, /*check=*/false);
-  CHECK(success);
-}
-
 // A checkpoint/suspend-all hybrid to switch thread roots from
 // from-space to to-space refs. Used to synchronize threads at a point
 // to mark the initiation of marking while maintaining the to-space
@@ -680,13 +691,19 @@ void ThreadList::FlipThreadRoots(Closure* thread_flip_visitor,
 
   // Try to run the closure on the other threads.
   TimingLogger::ScopedTiming split3("RunningThreadFlips", collector->GetTimings());
-  // Reacquire the mutator lock while holding suspend_count_lock. This cannot fail, since we
-  // do not acquire the mutator lock unless suspend_all_count was read as 0 while holding
-  // suspend_count_lock. We did not release suspend_count_lock since releasing the mutator
-  // lock.
-  AcquireMutatorLockSharedUncontended(self);
+  [self]()
+      ACQUIRE_SHARED(*Locks::mutator_lock_)
+      RELEASE(Locks::thread_suspend_count_lock_)
+      NO_THREAD_SAFETY_ANALYSIS {
+    // Reacquire the mutator lock while holding suspend_count_lock. This cannot fail, since we
+    // do not acquire the mutator lock unless suspend_all_count was read as 0 while holding
+    // suspend_count_lock. We did not release suspend_count_lock since releasing the mutator
+    // lock. This technically goes against lock ordering, so use `NO_THREAD_SAFETY_ANALYSIS`.
+    bool success = Locks::mutator_lock_->SharedTryLock(self, /*check=*/ false);
+    CHECK(success);
+    Locks::thread_suspend_count_lock_->Unlock(self);
+  }();
 
-  Locks::thread_suspend_count_lock_->Unlock(self);
   // Concurrent SuspendAll may now see zero suspend_all_count_, but block on mutator_lock_.
 
   collector->GetHeap()->ThreadFlipEnd(self);
@@ -748,13 +765,13 @@ static bool WaitOnceForSuspendBarrier(AtomicInteger* barrier,
 #else
 
 static bool WaitOnceForSuspendBarrier(AtomicInteger* barrier,
-                                      int32_t cur_val,
+                                      [[maybe_unused]] int32_t cur_val,
                                       uint64_t timeout_ns) {
   // In the normal case, aim for a couple of hundred milliseconds.
-  static constexpr unsigned kInnerIters =
+  static const unsigned innerIters =
       kShortSuspendTimeouts ? 1'000 : (timeout_ns / 1000) / kSuspendBarrierIters;
-  DCHECK_GE(kInnerIters, 1'000u);
-  for (int i = 0; i < kInnerIters; ++i) {
+  DCHECK_GE(innerIters, 1'000u);
+  for (unsigned i = 0; i < innerIters; ++i) {
     sched_yield();
     if (barrier->load(std::memory_order_acquire) == 0) {
       return false;
@@ -765,12 +782,11 @@ static bool WaitOnceForSuspendBarrier(AtomicInteger* barrier,
 
 #endif  // ART_USE_FUTEXES
 
-std::optional<std::string> ThreadList::WaitForSuspendBarrier(AtomicInteger* barrier,
+std::optional<std::string> ThreadList::WaitForSuspendBarrier(Thread* self,
+                                                             AtomicInteger* barrier,
                                                              pid_t t,
                                                              int attempt_of_4) {
-#if ART_USE_FUTEXES
   const uint64_t start_time = NanoTime();
-#endif
   uint64_t timeout_ns =
       attempt_of_4 == 0 ? thread_suspend_timeout_ns_ : thread_suspend_timeout_ns_ / 4;
   static bool is_user_build = (android::base::GetProperty("ro.build.type", "") == "user");
@@ -788,8 +804,9 @@ std::optional<std::string> ThreadList::WaitForSuspendBarrier(AtomicInteger* barr
   if (attempt_of_4 != 1) {
     // TODO: RequestSynchronousCheckpoint routinely passes attempt_of_4 = 0. Can
     // we avoid the getpriority() call?
-    if (getpriority(PRIO_PROCESS, 0 /* this thread */) >
-        Thread::PriorityToNiceness(kNormThreadPriority)) {
+    static const int normal_niceness = Thread::PriorityToNiceness(kNormThreadPriority);
+    if ((self != nullptr && self->GetNicenessBeforeBoost() > normal_niceness) ||
+        getpriority(PRIO_PROCESS, 0 /* this thread */) > normal_niceness) {
       // We're a low priority thread, and thus have a longer ANR timeout. Increase the suspend
       // timeout.
       avg_wait_multiplier = 3;
@@ -905,13 +922,22 @@ void ThreadList::SuspendAll(const char* cause, bool long_suspend) {
     SuspendAllInternal(self);
     // All threads are known to have suspended (but a thread may still own the mutator lock)
     // Make sure this thread grabs exclusive access to the mutator lock and its protected data.
+    constexpr int kNumWakeups = 3;
+    int num_tries = 0;
 #if HAVE_TIMED_RWLOCK
     while (true) {
-      if (Locks::mutator_lock_->ExclusiveLockWithTimeout(self,
-                                                         NsToMs(thread_suspend_timeout_ns_),
-                                                         0)) {
+      num_tries++;
+      // Rather than just sleeping for thread_suspend_timeout_ns_ we sleep repeatedly to avoid
+      // timeouts when the process is frozen. When the process is frozen, threads don't progress
+      // and when the process is unfrozen we immediately timeout. Sleeping for smaller intervals
+      // repeatedly prevents this from happening in most cases.
+      // TODO(mythria): Use the new interface to get the time we are frozen to determine if the
+      // timeout was because the process was frozen instead of sleeping repeatedly. See b/49059637
+      // and b/375236774 for more details
+      if (Locks::mutator_lock_->ExclusiveLockWithTimeout(
+              self, NsToMs(thread_suspend_timeout_ns_) / kNumWakeups, 0)) {
         break;
-      } else if (!long_suspend_) {
+      } else if (num_tries >= kNumWakeups && !long_suspend_) {
         // Reading long_suspend without the mutator lock is slightly racy, in some rare cases, this
         // could result in a thread suspend timeout.
         // Timeout if we wait more than thread_suspend_timeout_ns_ nanoseconds.
@@ -1036,7 +1062,7 @@ void ThreadList::SuspendAllInternal(Thread* self, SuspendReason reason) {
   pid_t tid = 0;
   std::ostringstream oss;
   for (int attempt_of_4 = 1; attempt_of_4 <= 4; ++attempt_of_4) {
-    auto result = WaitForSuspendBarrier(&pending_threads, tid, attempt_of_4);
+    auto result = WaitForSuspendBarrier(self, &pending_threads, tid, attempt_of_4);
     if (!result.has_value()) {
       // Wait succeeded.
       break;
@@ -1240,7 +1266,7 @@ bool ThreadList::SuspendThread(Thread* self,
   // Now wait for target to decrement suspend barrier.
   std::optional<std::string> failure_info;
   if (!is_suspended) {
-    failure_info = WaitForSuspendBarrier(&wrapped_barrier.barrier_, tid, attempt_of_4);
+    failure_info = WaitForSuspendBarrier(self, &wrapped_barrier.barrier_, tid, attempt_of_4);
     if (!failure_info.has_value()) {
       is_suspended = true;
     }
@@ -1305,6 +1331,90 @@ bool ThreadList::SuspendThread(Thread* self,
     thread->CheckBarrierInactive(&wrapped_barrier);
   }
   return true;
+}
+
+ThreadSuspensionResult ThreadList::SuspendPlatformOrVirtualThread(uint32_t thread_id,
+                                                                  SuspendReason reason,
+                                                                  Thread** carrier,
+                                                                  int attempt_of_4) {
+  CHECK_NE(thread_id, kInvalidThreadId);
+  Thread* const self = Thread::Current();
+  *carrier = nullptr;
+
+  ThreadState old_self_state = self->GetState();
+  VLOG(threads) << "SuspendPlatformOrVirtualThread starting";
+  self->TransitionFromSuspendedToRunnable();
+  Locks::thread_list_lock_->ExclusiveLock(self);
+  bool is_virtual = IsVirtualThreadSuspendCountAllocated(thread_id);
+  Thread* thread;
+  ThreadSuspensionResult result;
+  if (is_virtual) {
+    uint32_t platform_thread_id = GetCarrierThreadIdByVirtualThreadId(thread_id);
+    if (platform_thread_id == kInvalidThreadId) {  // unmounted virtual thread
+      VLOG(threads) << "SuspendPlatformOrVirtualThread found unmounted virtual thread: "
+          << thread_id;
+      IncrementVirtualThreadSuspendCount(thread_id);
+      Locks::thread_list_lock_->ExclusiveUnlock(self);
+      self->TransitionFromRunnableToSuspended(old_self_state);
+      return ThreadSuspensionResult::kResultSuccessVirtual;
+    } else {  // mounted virtual thread
+      thread = FindThreadByThreadId(platform_thread_id);
+      result = ThreadSuspensionResult::kResultSuccessVirtual;
+    }
+  } else {
+    thread = FindThreadByThreadId(thread_id);
+    result = ThreadSuspensionResult::kResultSuccessPlatform;
+  }
+
+  if (thread == nullptr) {
+    // There's a race in inflating a lock and the owner giving up ownership and then dying.
+    LOG(WARNING) << StringPrintf("No such thread id %d for suspend", thread_id);
+    Locks::thread_list_lock_->ExclusiveUnlock(self);
+    self->TransitionFromRunnableToSuspended(old_self_state);
+    return ThreadSuspensionResult::kResultFailure;
+  }
+  DCHECK(Contains(thread));
+  VLOG(threads) << "SuspendPlatformOrVirtualThread found thread: " << *thread;
+  if (is_virtual) {
+    IncrementVirtualThreadSuspendCount(thread_id);
+  }
+  // Releases thread_list_lock_ and mutator lock.
+  bool success = SuspendThread(self, thread, reason, old_self_state, __func__, attempt_of_4);
+  Locks::thread_list_lock_->AssertNotHeld(self);
+  if (success) {
+    *carrier = thread;
+    return result;
+  } else {
+    VLOG(threads) << "SuspendPlatformOrVirtualThread failed to suspend thread: " << *thread;
+    if (is_virtual) {
+      MutexLock mu(self, *Locks::thread_list_lock_);
+      DecrementVirtualThreadSuspendCount(thread_id);
+    }
+    return ThreadSuspensionResult::kResultFailure;
+  }
+}
+
+bool ThreadList::ResumePlatformOrVirtualThread(uint32_t thread_id,
+                                               Thread* carrier,
+                                               bool is_virtual,
+                                               SuspendReason reason) {
+  DCHECK(kIsVirtualThreadEnabled || !is_virtual)
+    << "Expect resuming virtual thread only when kIsVirtualThreadEnabled is enabled.";
+  if (!kIsVirtualThreadEnabled || !is_virtual) {
+    DCHECK_NE(carrier, nullptr);
+    return Resume(carrier, reason);
+  }
+
+  bool result;
+  if (carrier != nullptr) {  // Virtual thread is mounted.
+    result = Resume(carrier, reason);
+  } else {
+    result = true;
+  }
+  Thread* const self = Thread::Current();
+  MutexLock mu(self, *Locks::thread_list_lock_);
+  DecrementVirtualThreadSuspendCount(thread_id);
+  return result;
 }
 
 Thread* ThreadList::SuspendThreadByPeer(jobject peer, SuspendReason reason) {
@@ -1574,7 +1684,7 @@ void ThreadList::Unregister(Thread* self, bool should_run_callbacks) {
   // list.
   self->Destroy(should_run_callbacks);
 
-  uint32_t thin_lock_id = self->GetThreadId();
+  uint32_t thread_id = self->GetThreadId();
   while (true) {
     // Remove and delete the Thread* while holding the thread_list_lock_ and
     // thread_suspend_count_lock_ so that the unregistering thread cannot be suspended.
@@ -1623,7 +1733,7 @@ void ThreadList::Unregister(Thread* self, bool should_run_callbacks) {
   // Release the thread ID after the thread is finished and deleted to avoid cases where we can
   // temporarily have multiple threads with the same thread id. When this occurs, it causes
   // problems in FindThreadByThreadId / SuspendThreadByThreadId.
-  ReleaseThreadId(nullptr, thin_lock_id);
+  ReleaseThreadId(nullptr, thread_id);
 
   // Clear the TLS data, so that the underlying native thread is recognizably detached.
   // (It may wish to reattach later.)
@@ -1702,13 +1812,6 @@ void ThreadList::VisitReflectiveTargets(ReflectiveValueVisitor *visitor) const {
   }
 }
 
-void ThreadList::SweepInterpreterCaches(IsMarkedVisitor* visitor) const {
-  MutexLock mu(Thread::Current(), *Locks::thread_list_lock_);
-  for (const auto& thread : list_) {
-    thread->SweepInterpreterCache(visitor);
-  }
-}
-
 void ThreadList::ClearInterpreterCaches() const {
   Thread* self = Thread::Current();
   Locks::mutator_lock_->AssertExclusiveHeld(self);
@@ -1720,11 +1823,10 @@ void ThreadList::ClearInterpreterCaches() const {
 
 uint32_t ThreadList::AllocThreadId(Thread* self) {
   MutexLock mu(self, *Locks::allocated_thread_ids_lock_);
-  for (size_t i = 0; i < allocated_ids_.size(); ++i) {
-    if (!allocated_ids_[i]) {
-      allocated_ids_.set(i);
-      return i + 1;  // Zero is reserved to mean "invalid".
-    }
+  int32_t thread_id = allocated_ids_.GetLowestBitCleared();
+  if (LIKELY(thread_id != -1)) {
+    allocated_ids_.SetBit(thread_id);
+    return thread_id;
   }
   LOG(FATAL) << "Out of internal thread ids";
   UNREACHABLE();
@@ -1732,9 +1834,117 @@ uint32_t ThreadList::AllocThreadId(Thread* self) {
 
 void ThreadList::ReleaseThreadId(Thread* self, uint32_t id) {
   MutexLock mu(self, *Locks::allocated_thread_ids_lock_);
-  --id;  // Zero is reserved to mean "invalid".
-  DCHECK(allocated_ids_[id]) << id;
-  allocated_ids_.reset(id);
+  DCHECK(id != kInvalidThreadId && id <= kMaxThreadId) << id;
+  DCHECK(allocated_ids_.IsBitSet(id)) << id;
+  allocated_ids_.ClearBit(id);
+}
+
+void ThreadList::AllocVirtualThreadSuspendCount(uint32_t id) {
+  MutexLock mu(Thread::Current(), *Locks::thread_list_lock_);
+  int32_t space_needed = id + 1 - virtual_thread_suspend_count_.size();
+  if (space_needed > 0) {
+    virtual_thread_suspend_count_.insert(virtual_thread_suspend_count_.end(), space_needed, 0u);
+  }
+  DCHECK_LT(id, virtual_thread_suspend_count_.size());
+  DCHECK_EQ(virtual_thread_suspend_count_[id], 0u);
+  virtual_thread_suspend_count_[id] = 1u;
+}
+
+void ThreadList::ReleaseVirtualThreadSuspendCount(uint32_t id) {
+  MutexLock mu(Thread::Current(), *Locks::thread_list_lock_);
+  DCHECK_LT(id, virtual_thread_suspend_count_.size());
+  DCHECK_NE(virtual_thread_suspend_count_[id], 0u);
+  virtual_thread_suspend_count_[id] = 0u;
+  // TODO(http://b/477012795): Shrink the vector if possible.
+}
+
+uint32_t ThreadList::GetVirtualThreadSuspendCount(uint32_t id) {
+  DCHECK_LT(id, virtual_thread_suspend_count_.size());
+  DCHECK_NE(virtual_thread_suspend_count_[id], 0u);
+  return virtual_thread_suspend_count_[id] - 1u;
+}
+
+bool ThreadList::IsVirtualThreadSuspended(Thread* self, uint32_t id) {
+  MutexLock mu(self, *Locks::thread_list_lock_);
+  return GetVirtualThreadSuspendCount(id) > 0u;
+}
+
+void ThreadList::IncrementVirtualThreadSuspendCount(uint32_t id) {
+  DCHECK_LT(id, virtual_thread_suspend_count_.size());
+  DCHECK_NE(virtual_thread_suspend_count_[id], 0u);
+  virtual_thread_suspend_count_[id] += 1;
+}
+
+void ThreadList::DecrementVirtualThreadSuspendCount(uint32_t id) {
+  DCHECK_LT(id, virtual_thread_suspend_count_.size());
+  DCHECK_GT(virtual_thread_suspend_count_[id], 1u);
+  virtual_thread_suspend_count_[id] -= 1;
+}
+
+bool ThreadList::IsVirtualThreadSuspendCountAllocated(uint32_t id) {
+  return id < virtual_thread_suspend_count_.size() && virtual_thread_suspend_count_[id] > 0u;
+}
+
+void ThreadList::AddMountedVirtualThread(MountedVirtualThreadData* entry) {
+  DCHECK(entry != nullptr);
+  DCHECK(entry->next_ == nullptr);
+  MountedVirtualThreadData* cur = virtual_and_carrier_map_;
+  entry->next_ = cur;
+  virtual_and_carrier_map_ = entry;
+}
+
+void ThreadList::RemoveMountedVirtualThread(MountedVirtualThreadData* entry) {
+  DCHECK(entry != nullptr);
+  MountedVirtualThreadData** cur = &virtual_and_carrier_map_;
+  // Check no double entries with the same virtual thread id in the debug build.
+  if (kIsDebugBuild) {
+    while (*cur != nullptr) {
+      if (*cur != entry && (*cur)->virtual_thread_id_ == entry->virtual_thread_id_) {
+        // Release the thread_list_lock_ first before the crash to allow ART dump all threads.
+        Locks::thread_list_lock_->Unlock(Thread::Current());
+        LOG(FATAL) << ("A virtual thread has been mounted by a second carrier thread! ")
+          << "virtual thread id : " << entry->virtual_thread_id_
+          << ", this carrier thread id : " << entry->carrier_thread_id_
+          << ", another carrier thread id : " << (*cur)->carrier_thread_id_;
+        UNREACHABLE();
+      }
+      cur = &(*cur)->next_;
+    }
+    cur = &virtual_and_carrier_map_;
+  }
+
+  while (*cur != nullptr) {
+    if (*cur == entry) {
+      *cur = entry->next_;
+      entry->next_ = nullptr;
+      return;
+    }
+    cur = &(*cur)->next_;
+  }
+  // Release the thread_list_lock_ first before the crash to allow ART dump all threads.
+  Locks::thread_list_lock_->ExclusiveUnlock(Thread::Current());
+  LOG(FATAL) << "Mounted virtual thread data isn't found. virtual thread id: "
+    << entry->virtual_thread_id_ << ", carrier thread id: " << entry->carrier_thread_id_;
+  UNREACHABLE();
+}
+
+uint32_t ThreadList::GetCarrierThreadIdByVirtualThreadId(uint32_t virtual_thread_id) {
+  DCHECK_NE(virtual_thread_id, kInvalidThreadId);
+  MountedVirtualThreadData* cur = virtual_and_carrier_map_;
+  while (cur != nullptr) {
+    if (cur->virtual_thread_id_ == virtual_thread_id) {
+      return cur->carrier_thread_id_;
+    }
+    cur = cur->next_;
+  }
+  return kInvalidThreadId;
+}
+
+ThreadList::ThreadIdBitVector::ThreadIdBitVector()
+    : BitVector(/*expandable=*/false, Allocator::GetNoopAllocator(), kSizeInWords, word_storage_) {
+  memset(word_storage_, 0, kSizeInBytes);
+  // Zero is reserved to mean "invalid"
+  SetBit(kInvalidThreadId);
 }
 
 ScopedSuspendAll::ScopedSuspendAll(const char* cause, bool long_suspend) {

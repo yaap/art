@@ -21,8 +21,8 @@
 
 #include "base/locks.h"
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "deoptimization_kind.h"
-#include "offsets.h"
 
 #define QUICK_ENTRYPOINT_OFFSET(ptr_size, x) \
     Thread::QuickEntryPointOffset<ptr_size>(OFFSETOF_MEMBER(QuickEntryPoints, x))

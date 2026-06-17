@@ -107,7 +107,7 @@ class IntrinsicVisitor : public ValueObject {
   }
 
   static void ComputeValueOfLocations(HInvoke* invoke,
-                                      CodeGenerator* codegen,
+                                      const CodeGenerator* codegen,
                                       int32_t low,
                                       int32_t length,
                                       Location return_location,
@@ -152,8 +152,8 @@ class IntrinsicVisitor : public ValueObject {
 
   static MemberOffset GetReferenceDisableIntrinsicOffset();
   static MemberOffset GetReferenceSlowPathEnabledOffset();
-  static void CreateReferenceGetReferentLocations(HInvoke* invoke, CodeGenerator* codegen);
-  static void CreateReferenceRefersToLocations(HInvoke* invoke, CodeGenerator* codegen);
+  static void CreateReferenceGetReferentLocations(HInvoke* invoke, const CodeGenerator* codegen);
+  static void CreateReferenceRefersToLocations(HInvoke* invoke, const CodeGenerator* codegen);
 
  protected:
   IntrinsicVisitor() {}
@@ -316,21 +316,19 @@ UNREACHABLE_INTRINSIC(Arch, FloatFloatToIntBits)                \
 UNREACHABLE_INTRINSIC(Arch, DoubleDoubleToLongBits)
 
 template <typename IntrinsicLocationsBuilder, typename Codegenerator>
-bool IsCallFreeIntrinsic(HInvoke* invoke, Codegenerator* codegen) {
-  if (invoke->GetIntrinsic() != Intrinsics::kNone) {
-    // This invoke may have intrinsic code generation defined. However, we must
-    // now also determine if this code generation is truly there and call-free
-    // (not unimplemented, no bail on instruction features, or call on slow path).
-    // This is done by actually calling the locations builder on the instruction
-    // and clearing out the locations once result is known. We assume this
-    // call only has creating locations as side effects!
-    // TODO: Avoid wasting Arena memory.
-    IntrinsicLocationsBuilder builder(codegen);
-    bool success = builder.TryDispatch(invoke) && !invoke->GetLocations()->CanCall();
-    invoke->SetLocations(nullptr);
-    return success;
-  }
-  return false;
+bool IsIntrinsicCallFree(HInvoke* invoke, Codegenerator* codegen) {
+  DCHECK(invoke->IsIntrinsic());
+  // This invoke may have intrinsic code generation defined. However, we must
+  // now also determine if this code generation is truly there and call-free
+  // (not unimplemented, no bail on instruction features, or call on slow path).
+  // This is done by actually calling the locations builder on the instruction
+  // and clearing out the locations once result is known. We assume this
+  // call only has creating locations as side effects!
+  // TODO: Avoid wasting Arena memory.
+  IntrinsicLocationsBuilder builder(codegen);
+  bool success = builder.TryDispatch(invoke) && !invoke->GetLocations()->CanCall();
+  invoke->SetLocations(nullptr);
+  return success;
 }
 
 // Insert a `Float.floatToRawIntBits()` or `Double.doubleToRawLongBits()` intrinsic for a

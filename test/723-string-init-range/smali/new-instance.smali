@@ -24,6 +24,18 @@
     return-object v0
 .end method
 
+.method public static initRange16(Ljava/lang/String;)Ljava/lang/String;
+    .registers 18
+    move-object/from16 v0, p0
+    # Create an empty string. We've previously had a bug in nterp where we would update the
+    # wrong reference to the new string, treating the first arg number from invoke-direct/range
+    # as the CDEF args from a non-range version. This would use only the lowest four bits for
+    # getting the receiver to update, thus replacing vreg 0 instead of vreg 16.
+    new-instance v16, Ljava/lang/String;
+    invoke-direct/range {v16}, Ljava/lang/String;-><init>()V
+    return-object v0
+.end method
+
 .method public static initRange([BIII)Ljava/lang/String;
     .registers 9
     new-instance v0, Ljava/lang/String;

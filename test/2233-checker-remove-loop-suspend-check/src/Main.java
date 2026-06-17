@@ -17,16 +17,19 @@
 public class Main {
 
   static final int ITERATIONS = 16;
+  static final int SMALL_ITERATIONS = 8;
 
   // Test 1: This test checks whether the SuspendCheck is removed from the
   // header.
 
-  /// CHECK-START-ARM64: void Main.$noinline$testRemoveSuspendCheck(int[]) disassembly (after)
-  /// CHECK:        SuspendCheck         loop:<<LoopId:B\d+>>
-  /// CHECK-NEXT:   dex_pc:{{.*}}
-  /// CHECK:        Goto                 loop:<<LoopId>>
-  /// CHECK-NEXT:   b
+  // Only one SuspendCheck since the function entry one was removed
+  /// CHECK-START: void Main.$noinline$testRemoveSuspendCheck(int[]) disassembly (after)
+  /// CHECK:        SuspendCheck
+  /// CHECK-NOT:    SuspendCheck
 
+  // The loop suspend check is marked as no op
+  /// CHECK-START: void Main.$noinline$testRemoveSuspendCheck(int[]) disassembly (after)
+  /// CHECK:        SuspendCheck is_no_op:true loop:<<Loop:B\d+>>
   public static void $noinline$testRemoveSuspendCheck(int[] a) {
     for (int i = 0; i < ITERATIONS; i++) {
       a[i++] = i;
@@ -36,12 +39,16 @@ public class Main {
   // Test 2: This test checks that the SuspendCheck is not removed from the
   // header because it contains a call to another function.
 
-  /// CHECK-START-ARM64: void Main.testRemoveSuspendCheckWithCall(int[]) disassembly (after)
-  /// CHECK:        SuspendCheck         loop:<<LoopId:B\d+>>
-  /// CHECK:        Goto                 loop:<<LoopId>>
-  /// CHECK-NEXT:   ldr
+  // Note that the function entry suspend check is kept as we have a function call
+  /// CHECK-START: void Main.$noinline$testRemoveSuspendCheckWithCall(int[]) disassembly (after)
+  /// CHECK:        SuspendCheck
+  /// CHECK:        SuspendCheck
+  /// CHECK-NOT:    SuspendCheck
 
-  public static void testRemoveSuspendCheckWithCall(int[] a) {
+  // The loop suspend check is not marked as no op
+  /// CHECK-START: void Main.$noinline$testRemoveSuspendCheckWithCall(int[]) disassembly (after)
+  /// CHECK:        SuspendCheck is_no_op:false loop:<<Loop:B\d+>>
+  public static void $noinline$testRemoveSuspendCheckWithCall(int[] a) {
     for (int i = 0; i < ITERATIONS; i++) {
       a[i++] = i;
       $noinline$testRemoveSuspendCheck(a);
@@ -51,12 +58,15 @@ public class Main {
   // Test 3:  This test checks that the SuspendCheck is not removed from the
   // header because INSTR_COUNT * TRIP_COUNT exceeds the defined heuristic.
 
-  /// CHECK-START-ARM64: void Main.testRemoveSuspendCheckAboveHeuristic(int[]) disassembly (after)
-  /// CHECK:        SuspendCheck         loop:<<LoopId:B\d+>>
-  /// CHECK:        Goto                 loop:<<LoopId>>
-  /// CHECK-NEXT:   ldr
+  // Only one SuspendCheck since the function entry one was removed
+  /// CHECK-START: void Main.$noinline$testRemoveSuspendCheckAboveHeuristic(int[]) disassembly (after)
+  /// CHECK:        SuspendCheck
+  /// CHECK-NOT:    SuspendCheck
 
-  public static void testRemoveSuspendCheckAboveHeuristic(int[] a) {
+  // The loop suspend check is not marked as no op
+  /// CHECK-START: void Main.$noinline$testRemoveSuspendCheckAboveHeuristic(int[]) disassembly (after)
+  /// CHECK:        SuspendCheck is_no_op:false loop:<<Loop:B\d+>>
+  public static void $noinline$testRemoveSuspendCheckAboveHeuristic(int[] a) {
     for (int i = 0; i < ITERATIONS * 6; i++) {
       a[i++] = i;
     }
@@ -65,22 +75,46 @@ public class Main {
   // Test 4:  This test checks that the SuspendCheck is not removed from the
   // header because the trip count is not known at compile time.
 
-  /// CHECK-START-ARM64: void Main.testRemoveSuspendCheckUnknownCount(int[], int) disassembly (after)
-  /// CHECK:        SuspendCheck         loop:<<LoopId:B\d+>>
-  /// CHECK:        Goto                 loop:<<LoopId>>
-  /// CHECK-NEXT:   ldr
+  // Only one SuspendCheck since the function entry one was removed
+  /// CHECK-START: void Main.$noinline$testRemoveSuspendCheckUnknownCount(int[], int) disassembly (after)
+  /// CHECK:        SuspendCheck
+  /// CHECK-NOT:    SuspendCheck
 
-  public static void testRemoveSuspendCheckUnknownCount(int[] a, int n) {
+  // The loop suspend check is not marked as no op
+  /// CHECK-START: void Main.$noinline$testRemoveSuspendCheckUnknownCount(int[], int) disassembly (after)
+  /// CHECK:        SuspendCheck is_no_op:false loop:<<Loop:B\d+>>
+  public static void $noinline$testRemoveSuspendCheckUnknownCount(int[] a, int n) {
     for (int i = 0; i < n; i++) {
       a[i++] = i;
+    }
+  }
+
+  // Test 5: This test checks that the SuspendCheck is removed from the
+  // header because it contains an intrinsic.
+
+  // Only one SuspendCheck since the function entry one was removed
+  /// CHECK-START: void Main.$noinline$testRemoveSuspendCheckWithIntrinsic(int[]) disassembly (after)
+  /// CHECK:        SuspendCheck
+  /// CHECK-NOT:    SuspendCheck
+
+  // The loop suspend check is marked as no op
+  /// CHECK-START: void Main.$noinline$testRemoveSuspendCheckWithIntrinsic(int[]) disassembly (after)
+  /// CHECK:        SuspendCheck is_no_op:true loop:<<Loop:B\d+>>
+  public static void $noinline$testRemoveSuspendCheckWithIntrinsic(int[] a) {
+    // For no-image we have an extra LoadClass + ClinitCheck that pushes this loop past the
+    // threshold of trip_count * number_of_instructions_per_trip. Use SMALL_ITERATIONS to not go
+    // over that limit.
+    for (int i = 0; i < SMALL_ITERATIONS; i++) {
+      a[i] = Integer.numberOfLeadingZeros(i);
     }
   }
 
   public static void main(String[] args) {
     int[] a = new int[100];
     $noinline$testRemoveSuspendCheck(a);
-    testRemoveSuspendCheckWithCall(a);
-    testRemoveSuspendCheckAboveHeuristic(a);
-    testRemoveSuspendCheckUnknownCount(a, 4);
+    $noinline$testRemoveSuspendCheckWithCall(a);
+    $noinline$testRemoveSuspendCheckAboveHeuristic(a);
+    $noinline$testRemoveSuspendCheckUnknownCount(a, 4);
+    $noinline$testRemoveSuspendCheckWithIntrinsic(a);
   }
 }

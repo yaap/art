@@ -22,6 +22,7 @@
 #include "data_type-inl.h"
 #include "driver/compiler_options.h"
 #include "escape.h"
+#include "handle_cache-inl.h"
 #include "intrinsic_objects.h"
 #include "intrinsics.h"
 #include "intrinsics_utils.h"
@@ -52,6 +53,9 @@ class InstructionSimplifierVisitor final : public CRTPGraphVisitor<InstructionSi
 
   bool Run();
 
+  bool CanUseKnownImageVarHandle(HInvoke* invoke);
+  static bool CanEnsureNotNullAt(HInstruction* input, HInstruction* at);
+
  private:
   void RecordSimplification() {
     simplification_occurred_ = true;
@@ -61,9 +65,8 @@ class InstructionSimplifierVisitor final : public CRTPGraphVisitor<InstructionSi
 
   bool ReplaceRotateWithRor(HBinaryOperation* op, HUShr* ushr, HShl* shl);
   bool TryReplaceWithRotate(HBinaryOperation* instruction);
-  bool TryReplaceWithRotateConstantPattern(HBinaryOperation* op, HUShr* ushr, HShl* shl);
-  bool TryReplaceWithRotateRegisterNegPattern(HBinaryOperation* op, HUShr* ushr, HShl* shl);
-  bool TryReplaceWithRotateRegisterSubPattern(HBinaryOperation* op, HUShr* ushr, HShl* shl);
+  bool CanReplaceConstantPatternWithRotate(HBinaryOperation* op, HUShr* ushr, HShl* shl);
+  bool CanReplacePatternWithRotate(HBinaryOperation* op, HUShr* ushr, HShl* shl);
 
   bool TryMoveNegOnInputsAfterBinop(HBinaryOperation* binop);
   // `op` should be either HOr or HAnd.
@@ -169,9 +172,7 @@ class InstructionSimplifierVisitor final : public CRTPGraphVisitor<InstructionSi
   void SimplifyAllocationIntrinsic(HInvoke* invoke);
   void SimplifyVarHandleIntrinsic(HInvoke* invoke);
   void SimplifyArrayBaseOffset(HInvoke* invoke);
-
-  bool CanUseKnownImageVarHandle(HInvoke* invoke);
-  static bool CanEnsureNotNullAt(HInstruction* input, HInstruction* at);
+  void SimplifyClassIsAssignableFrom(HInvoke* invoke);
 
   // Returns an instruction with the opposite Boolean value from 'cond'.
   // The instruction is inserted into the graph, either in the entry block
@@ -510,6 +511,30 @@ void InstructionSimplifierVisitor::HandleShift(HBinaryOperation* instruction) {
   }
 }
 
+// Shift semantics defines that shift distances should always be masked against the register size
+// minus one, such that the shift distance is always smaller than the size of the register. For
+// example: 0 to 31 inclusive for integers and 0 to 63 inclusive for longs.
+static bool IsShiftDistanceMasked(size_t distance, size_t reg_bits) { return distance < reg_bits; }
+
+// Return true if the shift distance is guaranteed to be safe to use when replacing with a rotate.
+// If the distance is 0, the shifts and rotate are no-ops and the operation is never executed. This
+// is fine for HOr since the result is the same, but the result is different for HAdd and HXor.
+static bool CanShiftDistanceBeRotated(HBinaryOperation* op, HInstruction* shift_distance) {
+  if (op->IsOr()) {
+    return true;
+  }
+
+  return shift_distance->IsConstant() && !shift_distance->AsConstant()->IsArithmeticZero();
+}
+
+static bool CanShiftDistanceBeRotated(HBinaryOperation* op, size_t shift_distance) {
+  if (op->IsOr()) {
+    return true;
+  }
+
+  return shift_distance != 0;
+}
+
 static bool IsSubRegBitsMinusOther(HSub* sub, size_t reg_bits, HInstruction* other) {
   return (sub->GetRight() == other &&
           sub->GetLeft()->IsConstant() &&
@@ -544,26 +569,37 @@ bool InstructionSimplifierVisitor::TryReplaceWithRotate(HBinaryOperation* op) {
   DCHECK(op->IsAdd() || op->IsXor() || op->IsOr());
   HInstruction* left = op->GetLeft();
   HInstruction* right = op->GetRight();
-  // If we have an UShr and a Shl (in either order).
-  if ((left->IsUShr() && right->IsShl()) || (left->IsShl() && right->IsUShr())) {
-    HUShr* ushr = left->IsUShr() ? left->AsUShr() : right->AsUShr();
-    HShl* shl = left->IsShl() ? left->AsShl() : right->AsShl();
-    DCHECK(DataType::IsIntOrLongType(ushr->GetType()));
-    if (ushr->GetType() == shl->GetType() &&
-        ushr->GetLeft() == shl->GetLeft()) {
-      if (ushr->GetRight()->IsConstant() && shl->GetRight()->IsConstant()) {
-        // Shift distances are both constant, try replacing with Ror if they
-        // add up to the register size.
-        return TryReplaceWithRotateConstantPattern(op, ushr, shl);
-      } else if (ushr->GetRight()->IsSub() || shl->GetRight()->IsSub()) {
-        // Shift distances are potentially of the form x and (reg_size - x).
-        return TryReplaceWithRotateRegisterSubPattern(op, ushr, shl);
-      } else if (ushr->GetRight()->IsNeg() || shl->GetRight()->IsNeg()) {
-        // Shift distances are potentially of the form d and -d.
-        return TryReplaceWithRotateRegisterNegPattern(op, ushr, shl);
-      }
-    }
+  // If we don't have an UShr and a Shl (in either order).
+  if (!(left->IsUShr() && right->IsShl()) && !(left->IsShl() && right->IsUShr())) {
+    return false;
   }
+
+  // Check that both shift operations are on the same value and of the same type.
+  HUShr* ushr = left->IsUShr() ? left->AsUShr() : right->AsUShr();
+  HShl* shl = left->IsShl() ? left->AsShl() : right->AsShl();
+  DCHECK(DataType::IsIntOrLongType(ushr->GetType()));
+  if (ushr->GetType() != shl->GetType() || ushr->GetLeft() != shl->GetLeft()) {
+    return false;
+  }
+
+  // Ensure that the distances have been masked correctly. This should have been done earlier by
+  // HandleShift.
+  size_t reg_bits = DataType::Size(ushr->GetType()) * kBitsPerByte;
+  HInstruction* ushr_dist = ushr->GetRight();
+  HInstruction* shl_dist = shl->GetRight();
+  if ((ushr_dist->IsConstant() &&
+       !IsShiftDistanceMasked(Int64FromConstant(ushr_dist->AsConstant()), reg_bits)) ||
+      (shl_dist->IsConstant() &&
+       !IsShiftDistanceMasked(Int64FromConstant(shl_dist->AsConstant()), reg_bits))) {
+    return false;
+  }
+
+  // Check if one of the patterns match and replace with a rotate if so.
+  if (CanReplaceConstantPatternWithRotate(op, ushr, shl) ||
+      CanReplacePatternWithRotate(op, ushr, shl)) {
+    return ReplaceRotateWithRor(op, ushr, shl);
+  }
+
   return false;
 }
 
@@ -577,90 +613,96 @@ bool InstructionSimplifierVisitor::TryReplaceWithRotate(HBinaryOperation* op) {
 //    OP   dst, dst, tmp
 // with
 //    Ror  dst, x,   #rdist
-bool InstructionSimplifierVisitor::TryReplaceWithRotateConstantPattern(HBinaryOperation* op,
+bool InstructionSimplifierVisitor::CanReplaceConstantPatternWithRotate(HBinaryOperation* op,
                                                                        HUShr* ushr,
                                                                        HShl* shl) {
-  DCHECK(op->IsAdd() || op->IsXor() || op->IsOr());
-  size_t reg_bits = DataType::Size(ushr->GetType()) * kBitsPerByte;
-  size_t rdist = Int64FromConstant(ushr->GetRight()->AsConstant());
-  size_t ldist = Int64FromConstant(shl->GetRight()->AsConstant());
-  if (((ldist + rdist) & (reg_bits - 1)) == 0) {
-    return ReplaceRotateWithRor(op, ushr, shl);
-  }
-  return false;
-}
-
-// Replace code looking like (x >>> -d OP x << d):
-//    Neg  neg, d
-//    UShr dst, x,   neg
-//    Shl  tmp, x,   d
-//    OP   dst, dst, tmp
-// with
-//    Neg  neg, d
-//    Ror  dst, x,   neg
-// *** OR ***
-// Replace code looking like (x >>> d OP x << -d):
-//    UShr dst, x,   d
-//    Neg  neg, d
-//    Shl  tmp, x,   neg
-//    OP   dst, dst, tmp
-// with
-//    Ror  dst, x,   d
-//
-// Requires `d` to be non-zero for the HAdd and HXor case. If `d` is 0 the shifts and rotate are
-// no-ops and the `OP` is never executed. This is fine for HOr since the result is the same, but the
-// result is different for HAdd and HXor.
-bool InstructionSimplifierVisitor::TryReplaceWithRotateRegisterNegPattern(HBinaryOperation* op,
-                                                                          HUShr* ushr,
-                                                                          HShl* shl) {
-  DCHECK(op->IsAdd() || op->IsXor() || op->IsOr());
-  DCHECK(ushr->GetRight()->IsNeg() || shl->GetRight()->IsNeg());
-  bool neg_is_left = shl->GetRight()->IsNeg();
-  HNeg* neg = neg_is_left ? shl->GetRight()->AsNeg() : ushr->GetRight()->AsNeg();
-  HInstruction* value = neg->InputAt(0);
-
-  // The shift distance being negated is the distance being shifted the other way.
-  if (value != (neg_is_left ? ushr->GetRight() : shl->GetRight())) {
+  if (!ushr->GetRight()->IsConstant() || !shl->GetRight()->IsConstant()) {
     return false;
   }
 
-  const bool needs_non_zero_value = !op->IsOr();
-  if (needs_non_zero_value) {
-    if (!value->IsConstant() || value->AsConstant()->IsArithmeticZero()) {
-      return false;
-    }
+  size_t reg_bits = DataType::Size(ushr->GetType()) * kBitsPerByte;
+  size_t rdist = Int64FromConstant(ushr->GetRight()->AsConstant());
+  size_t ldist = Int64FromConstant(shl->GetRight()->AsConstant());
+
+  // Ensure that the shift distances can be rotated. This should be the case here as HandleShift
+  // should have already removed any no-op shifts.
+  if (!CanShiftDistanceBeRotated(op, rdist) || !CanShiftDistanceBeRotated(op, ldist)) {
+    return false;
   }
-  return ReplaceRotateWithRor(op, ushr, shl);
+
+  // Check that the shift distances add up to the register size.
+  DCHECK(IsPowerOfTwo(reg_bits));
+  return (ldist + rdist) % reg_bits == 0;
 }
 
-// Try replacing code looking like (x >>> d OP x << (#bits - d)):
-//    UShr dst, x,     d
-//    Sub  ld,  #bits, d
-//    Shl  tmp, x,     ld
-//    OP   dst, dst,   tmp
-// with
-//    Ror  dst, x,     d
-// *** OR ***
-// Replace code looking like (x >>> (#bits - d) OP x << d):
-//    Sub  rd,  #bits, d
-//    UShr dst, x,     rd
-//    Shl  tmp, x,     d
-//    OP   dst, dst,   tmp
-// with
-//    Neg  neg, d
-//    Ror  dst, x,     neg
-bool InstructionSimplifierVisitor::TryReplaceWithRotateRegisterSubPattern(HBinaryOperation* op,
-                                                                          HUShr* ushr,
-                                                                          HShl* shl) {
-  DCHECK(op->IsAdd() || op->IsXor() || op->IsOr());
-  DCHECK(ushr->GetRight()->IsSub() || shl->GetRight()->IsSub());
-  size_t reg_bits = DataType::Size(ushr->GetType()) * kBitsPerByte;
+bool InstructionSimplifierVisitor::CanReplacePatternWithRotate(HBinaryOperation* op,
+                                                               HUShr* ushr,
+                                                               HShl* shl) {
   HInstruction* shl_shift = shl->GetRight();
   HInstruction* ushr_shift = ushr->GetRight();
-  if ((shl_shift->IsSub() && IsSubRegBitsMinusOther(shl_shift->AsSub(), reg_bits, ushr_shift)) ||
-      (ushr_shift->IsSub() && IsSubRegBitsMinusOther(ushr_shift->AsSub(), reg_bits, shl_shift))) {
-    return ReplaceRotateWithRor(op, ushr, shl);
+
+  // Try neg pattern first.
+  if (ushr_shift->IsNeg() || shl_shift->IsNeg()) {
+    // Check if it's possible to replace code looking like (x >>> -d OP x << d):
+    //    Neg  neg, d
+    //    UShr dst, x,   neg
+    //    Shl  tmp, x,   d
+    //    OP   dst, dst, tmp
+    // with
+    //    Neg  neg, d
+    //    Ror  dst, x,   neg
+    // *** OR ***
+    // Check if it's possible to replace code looking like (x >>> d OP x << -d):
+    //    UShr dst, x,   d
+    //    Neg  neg, d
+    //    Shl  tmp, x,   neg
+    //    OP   dst, dst, tmp
+    // with
+    //    Ror  dst, x,   d
+    bool shift_is_neg = shl_shift->IsNeg();
+    HNeg* neg = shift_is_neg ? shl_shift->AsNeg() : ushr_shift->AsNeg();
+    HInstruction* shift_distance = neg->InputAt(0);
+
+    // The shift distance being negated is the distance being shifted the other way.
+    if (shift_distance == (shift_is_neg ? ushr_shift : shl_shift) &&
+        CanShiftDistanceBeRotated(op, shift_distance)) {
+      return true;
+    }
   }
+
+  // Try sub pattern next.
+  if (ushr_shift->IsSub() || shl_shift->IsSub()) {
+    // Check if it's possible to replace code looking like (x >>> d OP x << (#bits - d)):
+    //    UShr dst, x,     d
+    //    Sub  ld,  #bits, d
+    //    Shl  tmp, x,     ld
+    //    OP   dst, dst,   tmp
+    // with
+    //    Ror  dst, x,     d
+    // *** OR ***
+    // Check if it's possible to replace code looking like (x >>> (#bits - d) OP x << d):
+    //    Sub  rd,  #bits, d
+    //    UShr dst, x,     rd
+    //    Shl  tmp, x,     d
+    //    OP   dst, dst,   tmp
+    // with
+    //    Neg  neg, d
+    //    Ror  dst, x,     neg
+    size_t reg_bits = DataType::Size(ushr->GetType()) * kBitsPerByte;
+
+    // Check that one of the shift distances is of the form (#bits - d).
+    bool shl_has_sub =
+        shl_shift->IsSub() && IsSubRegBitsMinusOther(shl_shift->AsSub(), reg_bits, ushr_shift);
+    bool ushr_has_sub =
+        ushr_shift->IsSub() && IsSubRegBitsMinusOther(ushr_shift->AsSub(), reg_bits, shl_shift);
+    if (shl_has_sub || ushr_has_sub) {
+      HInstruction* shift_distance = shl_has_sub ? ushr_shift : shl_shift;
+      if (CanShiftDistanceBeRotated(op, shift_distance)) {
+        return true;
+      }
+    }
+  }
+
   return false;
 }
 
@@ -763,7 +805,8 @@ void InstructionSimplifierVisitor::VisitCheckCast(HCheckCast* check_cast) {
       check_cast->GetBlock()->RemoveInstruction(check_cast);
       MaybeRecordStat(stats_, MethodCompilationStat::kRemovedCheckedCast);
       if (check_cast->GetTypeCheckKind() != TypeCheckKind::kBitstringCheck) {
-        HLoadClass* load_class = check_cast->GetTargetClass();
+        DCHECK(check_cast->GetTargetClass()->IsLoadClass());
+        HLoadClass* load_class = check_cast->GetTargetClass()->AsLoadClass();
         if (!load_class->HasUses() && !load_class->NeedsAccessCheck()) {
           // We cannot rely on DCE to remove the class because the `HLoadClass` thinks it can throw.
           // However, here we know that it cannot because the checkcast was successful, hence
@@ -819,13 +862,19 @@ void InstructionSimplifierVisitor::VisitInstanceOf(HInstanceOf* instruction) {
     RecordSimplification();
     instruction->GetBlock()->RemoveInstruction(instruction);
     if (outcome && instruction->GetTypeCheckKind() != TypeCheckKind::kBitstringCheck) {
-      HLoadClass* load_class = instruction->GetTargetClass();
-      if (!load_class->HasUses() && !load_class->NeedsAccessCheck()) {
+      HInstruction* target_class = instruction->GetTargetClass();
+      DCHECK_IMPLIES(!target_class->IsLoadClass(), target_class->IsFieldAccess());
+      bool needs_access_check = target_class->IsLoadClass()
+          ? target_class->AsLoadClass()->NeedsAccessCheck()
+          // If target_class is FieldAccess then `java.lang.Class` instance was already obtained
+          // and access checks are not needed.
+          : false;
+      if (!target_class->HasUses() && !needs_access_check) {
         // We cannot rely on DCE to remove the class because the `HLoadClass`
         // thinks it can throw. However, here we know that it cannot because the
         // instanceof check was successful and we don't need to check the
         // access, hence the class was already loaded.
-        load_class->GetBlock()->RemoveInstruction(load_class);
+        target_class->GetBlock()->RemoveInstruction(target_class);
       }
     }
   }
@@ -1181,9 +1230,14 @@ void InstructionSimplifierVisitor::VisitArrayLength(HArrayLength* instruction) {
   HInstruction* input = instruction->InputAt(0);
   // If the array is a NewArray with constant size, replace the array length
   // with the constant instruction. This helps the bounds check elimination phase.
+  // If the compiler is not in be_loop_friendly mode, the array length can be
+  // replaced with the input that was given to NewArray even if the input is
+  // not an IntConstant. This avoids any conflicts with the bounds check
+  // elimination phase, which assumes the array length input of a BoundsCheck
+  // instruction is an ArrayLength or IntConstant.
   if (input->IsNewArray()) {
     input = input->AsNewArray()->GetLength();
-    if (input->IsIntConstant()) {
+    if (input->IsIntConstant() || !be_loop_friendly_) {
       instruction->ReplaceWith(input);
     }
   }
@@ -1996,6 +2050,10 @@ void InstructionSimplifierVisitor::VisitCompare(HCompare* compare) {
     compare_left->GetBlock()->RemoveInstruction(compare_left);
   }
 
+  if (compare_left == compare_right) {
+    return;
+  }
+
   if (compare_right->GetUses().empty()) {
     compare_right->RemoveEnvironmentUsers();
     compare_right->GetBlock()->RemoveInstruction(compare_right);
@@ -2680,7 +2738,8 @@ void InstructionSimplifierVisitor::SimplifySystemArrayCopy(HInvoke* instruction)
     optimizations.SetCountIsDestinationLength();
   }
 
-  {
+  // Specialization is only needed for the generic intrinsic version.
+  if (instruction->GetIntrinsic() == Intrinsics::kSystemArrayCopy) {
     ScopedObjectAccess soa(Thread::Current());
     DataType::Type source_component_type = DataType::Type::kVoid;
     DataType::Type destination_component_type = DataType::Type::kVoid;
@@ -2914,6 +2973,54 @@ static bool NoEscapeForStringBufferReference(HInstruction* reference, HInstructi
   return false;
 }
 
+static bool MatchStringBuilderConstructor(HInvokeStaticOrDirect* invoke,
+                                          HInstruction* sb,
+                                          uint32_t* format,
+                                          uint32_t* num_args,
+                                          HInstruction** args) {
+  ScopedObjectAccess soa(Thread::Current());
+  if (invoke->GetResolvedMethod()->GetDeclaringClass() !=
+      sb->GetReferenceTypeInfo().GetTypeHandle().Get()) {
+    return false;
+  }
+
+  if (invoke->GetNumberOfArguments() == 1u) {
+    return true;
+  } else if (invoke->GetNumberOfArguments() == 2u) {
+    HInstruction* arg = invoke->InputAt(1);
+    if (arg->GetType() == DataType::Type::kInt32) {
+      return true;
+    }
+    if (arg->GetType() != DataType::Type::kReference ||
+        !InstructionSimplifierVisitor::CanEnsureNotNullAt(arg, invoke)) {
+      return false;
+    }
+
+    // Check if the argument is a string.
+    bool is_string = arg->IsLoadString();
+    if (!is_string) {
+      ReferenceTypeInfo rti = arg->GetReferenceTypeInfo();
+      // Ensure NullChecks are accepted if they return a String type
+      is_string = rti.IsValid() && rti.IsStringClass();
+    }
+
+    if (is_string) {
+      // If we are already at the maximum number of arguments, adding the
+      // constructor argument would overflow.
+      if (*num_args == StringBuilderAppend::kMaxArgs) {
+        return false;
+      }
+
+      *format = (*format << StringBuilderAppend::kBitsPerArg) |
+               static_cast<uint32_t>(StringBuilderAppend::Argument::kString);
+      args[*num_args] = arg;
+      ++(*num_args);
+      return true;
+    }
+  }
+  return false;
+}
+
 static bool TryReplaceStringBuilderAppend(CodeGenerator* codegen, HInvoke* invoke) {
   DCHECK_EQ(invoke->GetIntrinsic(), Intrinsics::kStringBuilderToString);
   if (invoke->CanThrowIntoCatchBlock()) {
@@ -2971,13 +3078,17 @@ static bool TryReplaceStringBuilderAppend(CodeGenerator* codegen, HInvoke* invok
     // Pattern match seeing arguments, then constructor, then constructor fence.
     if (user->IsInvokeStaticOrDirect() &&
         user->AsInvokeStaticOrDirect()->GetResolvedMethod() != nullptr &&
-        user->AsInvokeStaticOrDirect()->GetResolvedMethod()->IsConstructor() &&
-        user->AsInvokeStaticOrDirect()->GetNumberOfArguments() == 1u) {
+        user->AsInvokeStaticOrDirect()->GetResolvedMethod()->IsConstructor()) {
       // After arguments, we should see the constructor.
-      // We accept only the constructor with no extra arguments.
+      // We accept the constructor with no extra arguments or with a single String argument.
       DCHECK(!seen_constructor);
       DCHECK(!seen_constructor_fence);
-      seen_constructor = true;
+      if (MatchStringBuilderConstructor(
+              user->AsInvokeStaticOrDirect(), sb, &format, &num_args, args)) {
+        seen_constructor = true;
+      } else {
+        return false;
+      }
     } else if (user->IsInvoke()) {
       // The arguments.
       HInvoke* as_invoke = user->AsInvoke();
@@ -3105,6 +3216,7 @@ static bool TryReplaceStringBuilderAppend(CodeGenerator* codegen, HInvoke* invok
   DCHECK(!invoke->CanBeNull());
   DCHECK(!append->CanBeNull());
   invoke->ReplaceWith(append);
+
   // Copy environment, except for the StringBuilder uses.
   for (HEnvironment* env = invoke->GetEnvironment(); env != nullptr; env = env->GetParent()) {
     for (size_t i = 0, size = env->Size(); i != size; ++i) {
@@ -3114,6 +3226,7 @@ static bool TryReplaceStringBuilderAppend(CodeGenerator* codegen, HInvoke* invok
       }
     }
   }
+
   append->CopyEnvironmentFrom(invoke->GetEnvironment());
   // Remove the old instruction.
   block->RemoveInstruction(invoke);
@@ -3216,9 +3329,8 @@ bool InstructionSimplifierVisitor::CanUseKnownImageVarHandle(HInvoke* invoke) {
     if (Runtime::Current()->GetHeap()->ObjectIsInBootImageSpace(declaring_class)) {
       is_in_image = true;
     } else if (compiler_options.IsGeneratingImage()) {
-      std::string storage;
-      const char* descriptor = declaring_class->GetDescriptor(&storage);
-      is_in_image = compiler_options.IsImageClass(descriptor);
+      TypeReference type_ref(&declaring_class->GetDexFile(), declaring_class->GetDexTypeIndex());
+      is_in_image = compiler_options.IsImageClass(type_ref, /*array_dim=*/ 0u);
     }
     CHECK_EQ(is_in_image, load_class->IsLoadClass() && load_class->AsLoadClass()->IsInImage());
   }
@@ -3305,6 +3417,9 @@ void InstructionSimplifierVisitor::VisitInvoke(HInvoke* instruction) {
       SimplifyStringEquals(instruction);
       break;
     case Intrinsics::kSystemArrayCopy:
+    case Intrinsics::kSystemArrayCopyChar:
+    case Intrinsics::kSystemArrayCopyByte:
+    case Intrinsics::kSystemArrayCopyInt:
       SimplifySystemArrayCopy(instruction);
       break;
     case Intrinsics::kFloatFloatToIntBits:
@@ -3383,6 +3498,9 @@ void InstructionSimplifierVisitor::VisitInvoke(HInvoke* instruction) {
     case Intrinsics::kJdkUnsafeArrayBaseOffset:
       SimplifyArrayBaseOffset(instruction);
       break;
+    case Intrinsics::kClassIsAssignableFrom:
+      SimplifyClassIsAssignableFrom(instruction);
+      break;
     default:
       break;
   }
@@ -3407,6 +3525,90 @@ void InstructionSimplifierVisitor::SimplifyArrayBaseOffset(HInvoke* invoke) {
   invoke->ReplaceWith(GetGraph()->GetIntConstant(base_offset));
   RecordSimplification();
   return;
+}
+
+// Returns true if klass is admissible to the propagation: non-null and resolved.
+// For an array type, we also check if the component type is admissible.
+static bool IsAdmissible(ObjPtr<mirror::Class> klass) REQUIRES_SHARED(Locks::mutator_lock_) {
+  if (klass == nullptr) {
+    return false;
+  }
+  while (klass->IsArrayClass()) {
+    DCHECK(klass->IsResolved());
+    klass = klass->GetComponentType();
+  }
+  return klass->IsResolved();
+}
+
+// If `clazz.isAssignableFrom(j.l.Class)` was called as `clazz.isAssignableFrom(obj.getClass())`
+// then it can be replaced with `obj instanceof clazz`.
+void InstructionSimplifierVisitor::SimplifyClassIsAssignableFrom(HInvoke* invoke) {
+  DCHECK(codegen_ != nullptr);
+
+  HInstruction* receiver = invoke->InputAt(0u);
+  HInstruction* field_get = invoke->InputAt(1u);
+
+  if (!field_get->IsInstanceFieldGet()) {
+    return;
+  }
+
+  if (field_get->AsInstanceFieldGet()->GetFieldInfo().GetField() !=
+          WellKnownClasses::java_lang_Object_shadowKlass) {
+    return;
+  }
+
+  HInstruction* object = field_get->InputAt(0u);
+
+  ArenaAllocator* allocator = GetGraph()->GetAllocator();
+  HInstruction* target_class = nullptr;
+  Handle<mirror::Class> klass;
+
+  ScopedObjectAccess soa(Thread::Current());
+
+  // At this point an instance of j.l.Class was already obtained.
+  constexpr bool needs_access_check = false;
+
+  if (receiver->IsFieldAccess() && receiver->AsFieldAccess()->HasConstantValue()) {
+    DCHECK(receiver->AsFieldAccess()->GetConstantValue()->IsClass());
+
+    target_class = receiver;
+    ObjPtr<mirror::Class> field_value = ObjPtr<mirror::Class>::DownCast(
+        receiver->AsFieldAccess()->GetConstantValue().Get());
+    klass = GetGraph()->GetHandleCache()->NewHandle(field_value);
+  } else if (receiver->IsLoadClass()) {
+    target_class = receiver;
+    klass = receiver->AsLoadClass()->GetClass();
+  }
+
+  if (target_class != nullptr) {
+    TypeCheckKind check_kind = HSharpening::ComputeTypeCheckKind(klass.Get(),
+                                                                 codegen_,
+                                                                 needs_access_check);
+    DCHECK_NE(check_kind, TypeCheckKind::kBitstringCheck);
+
+    HInstanceOf* instance_of = new (allocator) HInstanceOf(object,
+                                                           target_class,
+                                                           check_kind,
+                                                           klass,
+                                                           invoke->GetDexPc(),
+                                                           allocator,
+                                                           /*bitstring_path_to_root=*/ nullptr,
+                                                           /*bitstring_mask)=*/ nullptr);
+    // For regular `instanceof` this is done in RTP run.
+    // However InstructionSimplifierVisitor::VisitInstanceOf relies on class RTI and because that's
+    // done as part of instruction_simplifier pass too setting it here explicitly.
+    if (IsAdmissible(klass.Get())) {
+      instance_of->SetValidTargetClassRTI();
+    }
+
+    invoke->GetBlock()->InsertInstructionBefore(instance_of, invoke);
+    if (instance_of->NeedsEnvironment()) {
+      instance_of->CopyEnvironmentFrom(invoke->GetEnvironment());
+    }
+    invoke->ReplaceWith(instance_of);
+    invoke->GetBlock()->RemoveInstruction(invoke);
+    RecordSimplification();
+  }
 }
 
 void InstructionSimplifierVisitor::VisitDeoptimize(HDeoptimize* deoptimize) {

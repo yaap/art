@@ -17,7 +17,14 @@
 #ifndef ART_LIBDEXFILE_DEX_UTF_INL_H_
 #define ART_LIBDEXFILE_DEX_UTF_INL_H_
 
+#ifndef ART_LIBDEXFILE_DEX_UTF_INL_STANDALONE
+// To support libnativehelper as it's `stl: "none"`, we cannot include utf.h.
 #include "utf.h"
+#endif
+
+#ifndef ALWAYS_INLINE
+#define ALWAYS_INLINE __attribute__((always_inline))
+#endif
 
 namespace art {
 

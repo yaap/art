@@ -109,6 +109,8 @@ class HLoopOptimization : public HOptimization {
     kNoWideSAD       = 1 << 12,  // no sum of absolute differences (SAD) with operand widening
     kNoDotProd       = 1 << 13,  // no dot product
     kNoIfCond        = 1 << 14,  // no if condition conversion
+    kNoAdd           = 1 << 15,  // no addition
+    kNoSub           = 1 << 16,  // no subtraction
   };
 
   /*
@@ -128,15 +130,18 @@ class HLoopOptimization : public HOptimization {
     ArrayReference(HInstruction* b, HInstruction* o, DataType::Type t, bool l, bool c = false)
         : base(b), offset(o), type(t), lhs(l), is_string_char_at(c) { }
     bool operator<(const ArrayReference& other) const {
-      return
-          (base < other.base) ||
-          (base == other.base &&
-           (offset < other.offset || (offset == other.offset &&
-                                      (type < other.type ||
-                                       (type == other.type &&
-                                        (lhs < other.lhs ||
-                                         (lhs == other.lhs &&
-                                          is_string_char_at < other.is_string_char_at)))))));
+      DCHECK_NE(base->GetId(), -1);
+      DCHECK_NE(other.base->GetId(), -1);
+      DCHECK_NE(offset->GetId(), -1);
+      DCHECK_NE(other.offset->GetId(), -1);
+      return base->GetId() < other.base->GetId() ||
+             (base->GetId() == other.base->GetId() &&
+              (offset->GetId() < other.offset->GetId() ||
+               (offset->GetId() == other.offset->GetId() &&
+                (type < other.type ||
+                 (type == other.type &&
+                  (lhs < other.lhs ||
+                   (lhs == other.lhs && is_string_char_at < other.is_string_char_at)))))));
     }
     HInstruction* base;      // base address
     HInstruction* offset;    // offset + i
@@ -519,7 +524,16 @@ class HLoopOptimization : public HOptimization {
   // (2) phi definitions are mapped to their initial value (updated during
   //     code generation to feed the proper values into the new chain).
   // Contents reside in phase-local heap memory.
-  ScopedArenaSafeMap<HInstruction*, HInstruction*>* reductions_;
+  struct HInstructionIdComparator {
+    bool operator()(const HInstruction* a, const HInstruction* b) const {
+      DCHECK(a != nullptr);
+      DCHECK(b != nullptr);
+      DCHECK_NE(a->GetId(), -1);
+      DCHECK_NE(b->GetId(), -1);
+      return a->GetId() < b->GetId();
+    }
+  };
+  ScopedArenaSafeMap<HInstruction*, HInstruction*, HInstructionIdComparator>* reductions_;
 
   // Flag that tracks if any simplifications have occurred.
   bool simplified_;
@@ -577,6 +591,8 @@ class HLoopOptimization : public HOptimization {
 
   // Helper for target-specific behaviour for loop optimizations.
   ArchNoOptsLoopHelper* arch_loop_helper_;
+
+  const CodeGenerator& codegen_;
 
   friend class LoopOptimizationTest;
   friend class PredicatedSimdLoopOptimizationTest;

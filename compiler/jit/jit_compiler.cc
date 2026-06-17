@@ -24,7 +24,6 @@
 #include "base/systrace.h"
 #include "base/time_utils.h"
 #include "base/timing_logger.h"
-#include "com_android_art_rw_flags.h"
 #include "compiler.h"
 #include "debug/elf_debug_writer.h"
 #include "driver/compiler_options.h"
@@ -34,8 +33,6 @@
 #include "jit/jit_code_cache.h"
 #include "jit/jit_logger.h"
 #include "trace_common.h"
-
-namespace art_rw_flags = com::android::art::rw::flags;
 
 namespace art HIDDEN {
 namespace jit {
@@ -115,6 +112,65 @@ void JitCompiler::ParseCompilerOptions() {
       if (instruction_set_features == nullptr) {
         LOG(WARNING) << "Error parsing " << option << " message=" << error_msg;
       }
+    } else if (option.starts_with("--huge-method-max=")) {
+      const char* str = option.c_str() + strlen("--huge-method-max=");
+      VLOG(compiler) << "JIT huge method threshold " << str;
+      int huge_method_threshold = static_cast<int>(strtol(str, NULL, 0));
+      if (huge_method_threshold <= 0) {
+        LOG(WARNING) << "Invalid huge method threshold: " << huge_method_threshold;
+      } else {
+        compiler_options_->SetHugeMethodThreshold(huge_method_threshold);
+      }
+    } else if (option.starts_with("--inline-max-code-units=")) {
+      const char* str = option.c_str() + strlen("--inline-max-code-units=");
+      VLOG(compiler) << "JIT inline max number of code units " << str;
+      int inline_max_code_units = static_cast<int>(strtol(str, NULL, 0));
+      if (inline_max_code_units <= 0) {
+        LOG(WARNING) << "Invalid inline max code units: " << inline_max_code_units;
+      } else {
+        compiler_options_->SetInlineMaxCodeUnits(inline_max_code_units);
+      }
+    } else if (option.starts_with("--inline-max-total-instructions=")) {
+      const char* str = option.c_str() + strlen("--inline-max-total-instructions=");
+      VLOG(compiler) << "JIT inline max number of total instructions " << str;
+      int inline_max_total_instructions = static_cast<int>(strtol(str, NULL, 0));
+      if (inline_max_total_instructions <= 0) {
+        LOG(WARNING) << "Invalid inline max total instructions: "
+            << inline_max_total_instructions;
+      } else {
+        compiler_options_->SetInlineMaximumNumberOfTotalInstructions(inline_max_total_instructions);
+      }
+    } else if (option.starts_with("--inline-max-instructions-for-small-method=")) {
+      const char* str = option.c_str() + strlen("--inline-max-instructions-for-small-method=");
+      VLOG(compiler) << "JIT inline max number of instructions for small method " << str;
+      int inline_max_instructions_for_small_method = static_cast<int>(strtol(str, NULL, 0));
+      if (inline_max_instructions_for_small_method <= 0) {
+        LOG(WARNING) << "Invalid inline max instructions for small method: "
+            << inline_max_instructions_for_small_method;
+      } else {
+        compiler_options_->SetInlineMaximumNumberOfInstructionsForSmallMethod(
+            inline_max_instructions_for_small_method);
+      }
+    } else if (option.starts_with("--inline-max-cumulated-dex-registers=")) {
+      const char* str = option.c_str() + strlen("--inline-max-cumulated-dex-registers=");
+      VLOG(compiler) << "JIT inline max number of cumulated dex registers " << str;
+      int inline_max_cumulated_dex_registers = static_cast<int>(strtol(str, NULL, 0));
+      if (inline_max_cumulated_dex_registers <= 0) {
+        LOG(WARNING) << "Invalid inline max cumulated dex registers: "
+            << inline_max_cumulated_dex_registers;
+      } else {
+        compiler_options_->SetInlineMaximumNumberOfCumulatedDexRegisters(
+            inline_max_cumulated_dex_registers);
+      }
+    } else if (option.starts_with("--inline-max-recursive-calls=")) {
+      const char* str = option.c_str() + strlen("--inline-max-recursive-calls=");
+      VLOG(compiler) << "JIT inline max number of recursive calls " << str;
+      int inline_max_recursive_calls = static_cast<int>(strtol(str, NULL, 0));
+      if (inline_max_recursive_calls <= 0) {
+        LOG(WARNING) << "Invalid inline max recursive calls: " << inline_max_recursive_calls;
+      } else {
+        compiler_options_->SetInlineMaximumNumberOfRecursiveCalls(inline_max_recursive_calls);
+      }
     }
   }
 
@@ -130,9 +186,7 @@ void JitCompiler::ParseCompilerOptions() {
     jit_logger_->OpenLog();
   }
 
-  if (art_rw_flags::assume_value_sdk_int()) {
-    compiler_options_->GetAssumeValueOptions().SetSdkInt(runtime->GetSdkVersion());
-  }
+  compiler_options_->GetAssumeValueOptions().SetSdkInt(runtime->GetSdkVersion());
 
   if (ShouldEnableProfileCode()) {
     compiler_options_->enable_profile_code_ = true;
@@ -198,8 +252,11 @@ static const char* GetTimingLoggerMessage(CompilationKind compilation_kind) {
   }
 }
 
-bool JitCompiler::CompileMethod(
-    Thread* self, JitMemoryRegion* region, ArtMethod* method, CompilationKind compilation_kind) {
+bool JitCompiler::CompileMethod(Thread* self,
+                                JitMemoryRegion* region,
+                                ArtMethod* method,
+                                CompilationKind compilation_kind,
+                                bool dynamic_instrumentation) {
   SCOPED_TRACE << "JIT compiling "
                << method->PrettyMethod()
                << " (kind=" << compilation_kind << ")"
@@ -220,8 +277,13 @@ bool JitCompiler::CompileMethod(
     TimingLogger::ScopedTiming t2(GetTimingLoggerMessage(compilation_kind), &logger);
     JitCodeCache* const code_cache = jit->GetCodeCache();
     metrics::AutoTimer timer{runtime->GetMetrics()->JitMethodCompileTotalTime()};
-    success = compiler_->JitCompile(
-        self, code_cache, region, method, compilation_kind, jit_logger_.get());
+    success = compiler_->JitCompile(self,
+                                    code_cache,
+                                    region,
+                                    method,
+                                    compilation_kind,
+                                    jit_logger_.get(),
+                                    dynamic_instrumentation);
     uint64_t duration_us = timer.Stop();
     VLOG(jit) << "Compilation of " << method->PrettyMethod() << " took "
               << PrettyDuration(UsToNs(duration_us));

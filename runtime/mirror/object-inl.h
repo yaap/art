@@ -75,9 +75,7 @@ inline void Object::SetLockWord(LockWord new_val, bool as_volatile) {
   }
 }
 
-inline uint32_t Object::GetLockOwnerThreadId() {
-  return Monitor::GetLockOwnerThreadId(this);
-}
+inline bool Object::IsLockOwnedByMe(const Thread* self) { return Monitor::IsOwnedByMe(self, this); }
 
 inline ObjPtr<mirror::Object> Object::MonitorEnter(Thread* self) {
   return Monitor::MonitorEnter(self, this, /*trylock=*/false);

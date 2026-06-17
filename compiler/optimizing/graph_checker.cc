@@ -903,8 +903,10 @@ void GraphChecker::HandleTypeCheckInstruction(HTypeCheckInstruction* check) {
         check, /* input_pos= */ 2, check_values, expected_path_to_root, "path_to_root");
     CheckTypeCheckBitstringInput(check, /* input_pos= */ 3, check_values, expected_mask, "mask");
   } else {
-    if (!input->IsLoadClass()) {
-      AddError(StringPrintf("%s:%d (classic) expects a HLoadClass as second input, not %s:%d.",
+    if (!input->IsLoadClass() &&
+        !(input->IsFieldAccess() && input->AsFieldAccess()->HasConstantValue())) {
+      AddError(StringPrintf("%s:%d (classic) expects a HLoadClass or a constant value FieldAccess"
+                                " as second input, not %s:%d.",
                             check->DebugName(),
                             check->GetId(),
                             input->DebugName(),
@@ -1031,40 +1033,69 @@ void GraphChecker::HandleLoop(HBasicBlock* loop_header) {
                             id));
     }
   }
-}
 
-static bool IsSameSizeConstant(const HInstruction* insn1, const HInstruction* insn2) {
-  return insn1->IsConstant()
-      && insn2->IsConstant()
-      && DataType::Is64BitType(insn1->GetType()) == DataType::Is64BitType(insn2->GetType());
-}
-
-static bool IsConstantEquivalent(const HInstruction* insn1,
-                                 const HInstruction* insn2,
-                                 BitVector* visited) {
-  if (insn1->IsPhi() && insn1->AsPhi()->IsVRegEquivalentOf(insn2)) {
-    HConstInputsRef insn1_inputs = insn1->GetInputs();
-    HConstInputsRef insn2_inputs = insn2->GetInputs();
-    if (insn1_inputs.size() != insn2_inputs.size()) {
-      return false;
+  // We treat loops in OSR-compiled methods as irreducible because they can be entered from the
+  // interpreter at the SuspendCheck. This doesn't apply to inlined loops, as OSR entry only happens
+  // in the outer method.
+  bool is_osr_irreducible = false;
+  if (GetGraph()->IsCompilingOsr()) {
+    HSuspendCheck* suspend_check = loop_information->GetSuspendCheck();
+    DCHECK_IMPLIES(suspend_check != nullptr, suspend_check->HasEnvironment());
+    if (suspend_check == nullptr || !suspend_check->GetEnvironment()->IsFromInlinedInvoke()) {
+      is_osr_irreducible = true;
     }
+  }
 
-    // Testing only one of the two inputs for recursion is sufficient.
-    if (visited->IsBitSet(insn1->GetId())) {
-      return true;
-    }
-    visited->SetBit(insn1->GetId());
+  // A loop is irreducible iff it's structurally irreducible (has a back-edge not dominated by the
+  // header) or if it's an OSR entry loop.
+  const bool expected_irreducible =
+      loop_information->HasBackEdgeNotDominatedByHeader() ||
+      is_osr_irreducible;
 
-    for (size_t i = 0; i < insn1_inputs.size(); ++i) {
-      if (!IsConstantEquivalent(insn1_inputs[i], insn2_inputs[i], visited)) {
-        return false;
+  if (loop_information->IsIrreducible() != expected_irreducible) {
+    AddError(StringPrintf(
+        "Loop defined by header %d has inconsistent IsIrreducible(): %s. "
+        "Expected: %s (HasBackEdgeNotDominatedByHeader(): %s, is_osr_irreducible: %s).",
+        id,
+        StrBool(loop_information->IsIrreducible()),
+        StrBool(expected_irreducible),
+        StrBool(loop_information->HasBackEdgeNotDominatedByHeader()),
+        StrBool(is_osr_irreducible)));
+  }
+
+  // IsIrreducible implies ContainsIrreducibleLoop.
+  if (loop_information->IsIrreducible() && !loop_information->ContainsIrreducibleLoop()) {
+    AddError(StringPrintf("Loop defined by header %d is irreducible but "
+                          "ContainsIrreducibleLoop() is false.",
+                          id));
+  }
+
+  // The ContainsIrreducibleLoop flag should be true if and only if the loop
+  // itself is irreducible or it contains an inner irreducible loop.
+  bool has_inner_irreducible_loop = false;
+  for (uint32_t i : loop_blocks.Indexes()) {
+    HBasicBlock* block = GetGraph()->GetBlocks()[i];
+    if (block != nullptr && block->IsLoopHeader()) {
+      HLoopInformation* inner_loop = block->GetLoopInformation();
+      if (inner_loop != loop_information && inner_loop->ContainsIrreducibleLoop()) {
+        has_inner_irreducible_loop = true;
+        break;
       }
     }
-    return true;
-  } else if (IsSameSizeConstant(insn1, insn2)) {
-    return insn1->AsConstant()->GetValueAsUint64() == insn2->AsConstant()->GetValueAsUint64();
-  } else {
-    return false;
+  }
+
+  const bool expected_contains_irreducible_loop =
+      expected_irreducible ||
+      has_inner_irreducible_loop;
+  if (loop_information->ContainsIrreducibleLoop() != expected_contains_irreducible_loop) {
+    AddError(StringPrintf(
+        "Loop defined by header %d has inconsistent ContainsIrreducibleLoop(): %s. "
+        "Expected: %s (expected_irreducible: %s, has_inner_irreducible_loop: %s).",
+        id,
+        StrBool(loop_information->ContainsIrreducibleLoop()),
+        StrBool(expected_contains_irreducible_loop),
+        StrBool(expected_irreducible),
+        StrBool(has_inner_irreducible_loop)));
   }
 }
 
@@ -1073,7 +1104,7 @@ void GraphChecker::VisitPhi(HPhi* phi) {
 
   // Ensure the first input of a phi is not itself.
   ArrayRef<HUserRecord<HInstruction*>> input_records = phi->GetInputRecords();
-  if (input_records[0].GetInstruction() == phi) {
+  if (!input_records.empty() && input_records[0].GetInstruction() == phi) {
     AddError(StringPrintf("Loop phi %d in block %d is its own first input.",
                           phi->GetId(),
                           phi->GetBlock()->GetBlockId()));
@@ -1189,22 +1220,6 @@ void GraphChecker::VisitPhi(HPhi* phi) {
               phi->GetId(),
               phi->GetRegNumber(),
               type_str.str().c_str()));
-        } else {
-          // Use local allocator for allocating memory.
-          ScopedArenaAllocator allocator(GetGraph()->GetArenaStack());
-          // If we get here, make sure we allocate all the necessary storage at once
-          // because the BitVector reallocation strategy has very bad worst-case behavior.
-          ArenaBitVector visited(&allocator,
-                                 GetGraph()->GetCurrentInstructionId(),
-                                 /* expandable= */ false,
-                                 kArenaAllocGraphChecker);
-          if (!IsConstantEquivalent(phi, other_phi, &visited)) {
-            AddError(StringPrintf("Two phis (%d and %d) found for VReg %d but they "
-                                  "are not equivalents of constants.",
-                                  phi->GetId(),
-                                  other_phi->GetId(),
-                                  phi->GetRegNumber()));
-          }
         }
       }
     }

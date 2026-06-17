@@ -1,4 +1,4 @@
-%def op_aget(load="ldr", shift="2", data_offset="MIRROR_INT_ARRAY_DATA_OFFSET", wide="0", is_object="0"):
+%def op_aget(load="ldr", shift=2, data_offset="MIRROR_INT_ARRAY_DATA_OFFSET", wide=False, is_object=False):
 /*
  * Array get.  vAA <- vBB[vCC].
  *
@@ -6,61 +6,67 @@
  *
  */
     FETCH_B r2, 1, 0                    @ r2<- BB
-    mov     r4, rINST, lsr #8           @ r4<- AA
+%   if wide:
+      lsrs    r4, rINST, #8             @ r4<- AA; set flags to use 16-bit encoding
+%   else:
+      lsr     r4, rINST, #8             @ r4<- AA
     FETCH_B r3, 1, 1                    @ r3<- CC
     GET_VREG r0, r2                     @ r0<- vBB (array object)
     GET_VREG r1, r3                     @ r1<- vCC (requested index)
-    cmp     r0, #0                      @ null array object?
-    beq     common_errNullObject        @ yes, bail
+    // Note: if r0 is null, this will be handled by our SIGSEGV handler.
     ldr     r3, [r0, #MIRROR_ARRAY_LENGTH_OFFSET]    @ r3<- arrayObj->length
     add     r0, r0, r1, lsl #$shift     @ r0<- arrayObj + index*width
     cmp     r1, r3                      @ compare unsigned index, length
     bcs     common_errArrayIndex        @ index >= length, bail
     FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
-    .if $wide
-    CLEAR_SHADOW_PAIR r4, lr, ip        @ Zero out the shadow regs
-    ldrd    r2, [r0, #$data_offset]     @ r2/r3<- vBB[vCC]
-    VREG_INDEX_TO_ADDR r4, r4           @ r4<- &fp[AA]
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    SET_VREG_WIDE_BY_ADDR r2, r3, r4    @ vAA/vAA+1<- r2/r3
-    GOTO_OPCODE ip                      @ jump to next instruction
-    .elseif $is_object
-    $load   r2, [r0, #$data_offset]     @ w2<- vBB[vCC]
-    UNPOISON_HEAP_REF r2
-    TEST_IF_MARKING 2f
+%   if wide:
+      CLEAR_SHADOW_PAIR r4, lr, ip      @ Zero out the shadow regs
+      ldrd    r2, [r0, #$data_offset]   @ r2/r3<- vBB[vCC]
+      VREG_INDEX_TO_ADDR r4, r4         @ r4<- &fp[AA]
+      PREPARE_OPCODE_DISPATCH           @ insert opcode to rIBASE
+      SET_VREG_WIDE_BY_ADDR r2, r3, r4  @ vAA/vAA+1<- r2/r3
+      GOTO_OPCODE                       @ jump to next instruction
+%   elif is_object:
+      $load   r2, [r0, #$data_offset]   @ w2<- vBB[vCC]
+      UNPOISON_HEAP_REF r2, s="s"
+      TEST_IF_MARKING 2f
 1:
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    SET_VREG_OBJECT r2, r4              @ vAA<- w2
-    GOTO_OPCODE ip                      @ jump to next instruction
+      PREPARE_OPCODE_DISPATCH           @ insert opcode to rIBASE
+#ifdef USE_HEAP_POISONING
+      PRESCALE_VREG r4, r4, s="s"       @ set flags to use 16-bit encoding
+      SET_VREG_OBJECT_PRESCALED r2, r4  @ vAA<- w2
+#else  // USE_HEAP_POISONING
+      SET_VREG_OBJECT r2, r4            @ vAA<- w2
+#endif  // USE_HEAP_POISONING
+      GOTO_OPCODE                       @ jump to next instruction
 2:
-    bl art_quick_read_barrier_mark_reg02
-    b 1b
-    .else
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    $load   r2, [r0, #$data_offset]     @ r2<- vBB[vCC]
-    SET_VREG r2, r4                     @ vAA<- r2
-    GOTO_OPCODE ip                      @ jump to next instruction
-    .endif
+      bl art_quick_read_barrier_mark_reg02
+      b 1b
+%   else:
+      PREPARE_OPCODE_DISPATCH           @ insert opcode to rIBASE
+      $load   r2, [r0, #$data_offset]   @ r2<- vBB[vCC]
+      SET_VREG r2, r4                   @ vAA<- r2
+      GOTO_OPCODE                       @ jump to next instruction
 
 %def op_aget_boolean():
-%  op_aget(load="ldrb", shift="0", data_offset="MIRROR_BOOLEAN_ARRAY_DATA_OFFSET", wide="0", is_object="0")
+%  op_aget(load="ldrb", shift=0, data_offset="MIRROR_BOOLEAN_ARRAY_DATA_OFFSET")
 
 %def op_aget_byte():
-%  op_aget(load="ldrsb", shift="0", data_offset="MIRROR_BYTE_ARRAY_DATA_OFFSET", wide="0", is_object="0")
+%  op_aget(load="ldrsb", shift=0, data_offset="MIRROR_BYTE_ARRAY_DATA_OFFSET")
 
 %def op_aget_char():
-%  op_aget(load="ldrh", shift="1", data_offset="MIRROR_CHAR_ARRAY_DATA_OFFSET", wide="0", is_object="0")
+%  op_aget(load="ldrh", shift=1, data_offset="MIRROR_CHAR_ARRAY_DATA_OFFSET")
 
 %def op_aget_object():
-%  op_aget(load="ldr", shift="2", data_offset="MIRROR_OBJECT_ARRAY_DATA_OFFSET", wide="0", is_object="1")
+%  op_aget(load="ldr", shift=2, data_offset="MIRROR_OBJECT_ARRAY_DATA_OFFSET", is_object=True)
 
 %def op_aget_short():
-%  op_aget(load="ldrsh", shift="1", data_offset="MIRROR_SHORT_ARRAY_DATA_OFFSET", wide="0", is_object="0")
+%  op_aget(load="ldrsh", shift=1, data_offset="MIRROR_SHORT_ARRAY_DATA_OFFSET")
 
 %def op_aget_wide():
-%  op_aget(load="ldrd", shift="3", data_offset="MIRROR_WIDE_ARRAY_DATA_OFFSET", wide="1", is_object="0")
+%  op_aget(load="ldrd", shift=3, data_offset="MIRROR_WIDE_ARRAY_DATA_OFFSET", wide=True)
 
-%def op_aput(store="str", shift="2", data_offset="MIRROR_INT_ARRAY_DATA_OFFSET", wide="0", is_object="0"):
+%def op_aput(store="str", shift=2, data_offset="MIRROR_INT_ARRAY_DATA_OFFSET", wide=False, is_object=False):
 /*
  * Array put.  vBB[vCC] <- vAA.
  *
@@ -72,50 +78,48 @@
     FETCH_B r3, 1, 1                    @ r3<- CC
     GET_VREG r0, r2                     @ r0<- vBB (array object)
     GET_VREG r1, r3                     @ r1<- vCC (requested index)
-    cmp     r0, #0                      @ null array object?
-    beq     common_errNullObject        @ yes, bail
+    // Note: if r0 is null, this will be handled by our SIGSEGV handler.
     ldr     r3, [r0, #MIRROR_ARRAY_LENGTH_OFFSET]     @ r3<- arrayObj->length
     cmp     r1, r3                      @ compare unsigned index, length
     bcs     common_errArrayIndex        @ index >= length, bail
-    .if $is_object
-    EXPORT_PC                           // Export PC before overwriting it.
-    FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
-    GET_VREG r2, r4                     @ r2<- vAA
-    bl art_quick_aput_obj
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    .elseif $wide
-    add     r0, r0, r1, lsl #$shift     @ r0<- arrayObj + index*width
-    VREG_INDEX_TO_ADDR r4, r4           @ r4<- &fp[AA]
-    FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
-    GET_VREG_WIDE_BY_ADDR r2, r3, r4    @ r2/r3<- vAA/vAA+1
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    strd    r2, [r0, #$data_offset]     @ r2/r3<- vBB[vCC]
-    .else
-    add     r0, r0, r1, lsl #$shift     @ r0<- arrayObj + index*width
-    FETCH_ADVANCE_INST 2                @ advance rPC, load rINST
-    GET_VREG r2, r4                     @ r2<- vAA
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    $store  r2, [r0, #$data_offset]     @ vBB[vCC]<- r2
-    .endif
-    GOTO_OPCODE ip                      @ jump to next instruction
+%   if is_object:
+      EXPORT_PC                         // Export PC before overwriting it.
+      FETCH_ADVANCE_INST 2              @ advance rPC, load rINST
+      GET_VREG r2, r4                   @ r2<- vAA
+      bl art_quick_aput_obj
+      PREPARE_OPCODE_DISPATCH           @ insert opcode to rIBASE
+%   elif wide:
+      add     r0, r0, r1, lsl #$shift   @ r0<- arrayObj + index*width
+      VREG_INDEX_TO_ADDR r4, r4         @ r4<- &fp[AA]
+      FETCH_ADVANCE_INST 2              @ advance rPC, load rINST
+      GET_VREG_WIDE_BY_ADDR r2, r3, r4  @ r2/r3<- vAA/vAA+1
+      PREPARE_OPCODE_DISPATCH           @ insert opcode to rIBASE
+      strd    r2, [r0, #$data_offset]   @ r2/r3<- vBB[vCC]
+%   else:
+      add     r0, r0, r1, lsl #$shift   @ r0<- arrayObj + index*width
+      FETCH_ADVANCE_INST 2              @ advance rPC, load rINST
+      GET_VREG r2, r4                   @ r2<- vAA
+      PREPARE_OPCODE_DISPATCH           @ insert opcode to rIBASE
+      $store  r2, [r0, #$data_offset]   @ vBB[vCC]<- r2
+    GOTO_OPCODE                         @ jump to next instruction
 
 %def op_aput_boolean():
-%  op_aput(store="strb", shift="0", data_offset="MIRROR_BOOLEAN_ARRAY_DATA_OFFSET", wide="0", is_object="0")
+%  op_aput(store="strb", shift=0, data_offset="MIRROR_BOOLEAN_ARRAY_DATA_OFFSET")
 
 %def op_aput_byte():
-%  op_aput(store="strb", shift="0", data_offset="MIRROR_BYTE_ARRAY_DATA_OFFSET", wide="0", is_object="0")
+%  op_aput(store="strb", shift=0, data_offset="MIRROR_BYTE_ARRAY_DATA_OFFSET")
 
 %def op_aput_char():
-%  op_aput(store="strh", shift="1", data_offset="MIRROR_CHAR_ARRAY_DATA_OFFSET", wide="0", is_object="0")
+%  op_aput(store="strh", shift=1, data_offset="MIRROR_CHAR_ARRAY_DATA_OFFSET")
 
 %def op_aput_short():
-%  op_aput(store="strh", shift="1", data_offset="MIRROR_SHORT_ARRAY_DATA_OFFSET", wide="0", is_object="0")
+%  op_aput(store="strh", shift=1, data_offset="MIRROR_SHORT_ARRAY_DATA_OFFSET")
 
 %def op_aput_wide():
-%  op_aput(store="str", shift="3", data_offset="MIRROR_WIDE_ARRAY_DATA_OFFSET", wide="1", is_object="0")
+%  op_aput(store="str", shift=3, data_offset="MIRROR_WIDE_ARRAY_DATA_OFFSET", wide=True)
 
 %def op_aput_object():
-%  op_aput(store="str", shift="2", data_offset="MIRROR_OBJECT_ARRAY_DATA_OFFSET", wide="0", is_object="1")
+%  op_aput(store="str", shift=2, data_offset="MIRROR_OBJECT_ARRAY_DATA_OFFSET", is_object=True)
 
 %def op_array_length():
     /*
@@ -128,9 +132,9 @@
     beq     common_errNullObject        @ yup, fail
     FETCH_ADVANCE_INST 1                @ advance rPC, load rINST
     ldr     r3, [r0, #MIRROR_ARRAY_LENGTH_OFFSET]    @ r3<- array length
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
     SET_VREG r3, r2                     @ vB<- length
-    GOTO_OPCODE ip                      @ jump to next instruction
+    GOTO_OPCODE                         @ jump to next instruction
 
 %def op_fill_array_data():
     /* fill-array-data vAA, +BBBBBBBB */
@@ -143,8 +147,8 @@
     add     r0, rPC, r0, lsl #1         @ r1<- PC + BBBBbbbb*2 (array data off.)
     bl      art_quick_handle_fill_data  @ (payload, object)
     FETCH_ADVANCE_INST 3                @ advance rPC, load rINST
-    GET_INST_OPCODE ip                  @ extract opcode from rINST
-    GOTO_OPCODE ip                      @ jump to next instruction
+    PREPARE_OPCODE_DISPATCH             @ insert opcode to rIBASE
+    GOTO_OPCODE                         @ jump to next instruction
 
 %def op_filled_new_array(helper="nterp_filled_new_array"):
 /*
@@ -161,8 +165,8 @@
     mov     r3, rPC
     bl      $helper
     FETCH_ADVANCE_INST 3                // advance rPC, load rINST
-    GET_INST_OPCODE ip                  // extract opcode from rINST
-    GOTO_OPCODE ip                      // jump to next instruction
+    PREPARE_OPCODE_DISPATCH             // insert opcode to rIBASE
+    GOTO_OPCODE                         // jump to next instruction
 
 %def op_filled_new_array_range():
 %  op_filled_new_array(helper="nterp_filled_new_array_range")
@@ -170,26 +174,27 @@
 %def op_new_array():
    /* new-array vA, vB, class@CCCC */
    EXPORT_PC
+%  slow_path = add_slow_path(op_new_array_slow_path)
    // Fast-path which gets the class from thread-local cache.
-%  fetch_from_thread_cache("r0", miss_label="2f")
-   TEST_IF_MARKING 3f
-1:
+%  fetch_from_thread_cache("r0", miss_label=slow_path)
+   TEST_IF_MARKING 1f
+.L${opcode}_resume:
    lsr     r1, rINST, #12              // r1<- B
    GET_VREG r1, r1                     // r1<- vB (array length)
    ldr lr, [rSELF, #THREAD_ALLOC_ARRAY_ENTRYPOINT_OFFSET]
    blx lr
    dmb ishst                           // need fence for making array's class visible
-   ubfx    r1, rINST, #8, #4           // r1<- A
-   SET_VREG_OBJECT r0, r1
-   FETCH_ADVANCE_INST 2
-   GET_INST_OPCODE ip
-   GOTO_OPCODE ip
-2:
+   ubfx    r1, rINST, #(8-2), #(4+2)   // r1<- A << 2; opcode 23 has highest two bits clear
+   // Shorten the handler by using the dispatch from the `op_new_instance` handler.
+%  new_instance_opcode = re.sub(r"new_array", r"new_instance", opcode);
+   b .L${new_instance_opcode}_store_r0_to_prescaled_r1_fetch_advance_2_dispatch
+1:
+   bl art_quick_read_barrier_mark_reg00
+   b .L${opcode}_resume
+
+%def op_new_array_slow_path():
    mov r0, rSELF
    ldr r1, [sp]
    mov r2, rPC
    bl nterp_get_class
-   b 1b
-3:
-   bl art_quick_read_barrier_mark_reg00
-   b 1b
+   b .L${opcode}_resume

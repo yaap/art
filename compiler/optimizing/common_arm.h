@@ -40,8 +40,8 @@ namespace helpers {
 static_assert(vixl::aarch32::kSpCode == SP, "vixl::aarch32::kSpCode must equal ART's SP");
 
 inline vixl::aarch32::Register HighRegisterFrom(Location location) {
-  DCHECK(location.IsRegisterPair()) << location;
-  return vixl::aarch32::Register(location.AsRegisterPairHigh<vixl::aarch32::Register>());
+  DCHECK(location.IsCoreRegisterPair()) << location;
+  return vixl::aarch32::Register(location.AsCoreRegisterPairHigh<vixl::aarch32::Register>());
 }
 
 inline vixl::aarch32::DRegister HighDRegisterFrom(Location location) {
@@ -50,8 +50,8 @@ inline vixl::aarch32::DRegister HighDRegisterFrom(Location location) {
 }
 
 inline vixl::aarch32::Register LowRegisterFrom(Location location) {
-  DCHECK(location.IsRegisterPair()) << location;
-  return vixl::aarch32::Register(location.AsRegisterPairLow<vixl::aarch32::Register>());
+  DCHECK(location.IsCoreRegisterPair()) << location;
+  return vixl::aarch32::Register(location.AsCoreRegisterPairLow<vixl::aarch32::Register>());
 }
 
 inline vixl::aarch32::SRegister LowSRegisterFrom(Location location) {
@@ -65,7 +65,7 @@ inline vixl::aarch32::SRegister HighSRegisterFrom(Location location) {
 }
 
 inline vixl::aarch32::Register RegisterFrom(Location location) {
-  DCHECK(location.IsRegister()) << location;
+  DCHECK(location.IsCoreRegister()) << location;
   return vixl::aarch32::Register(location.reg());
 }
 
@@ -190,7 +190,7 @@ inline uint64_t Uint64ConstantFrom(HInstruction* instr) {
 }
 
 inline vixl::aarch32::Operand OperandFrom(Location location, DataType::Type type) {
-  if (location.IsRegister()) {
+  if (location.IsCoreRegister()) {
     return vixl::aarch32::Operand(RegisterFrom(location, type));
   } else {
     return vixl::aarch32::Operand(Int32ConstantFrom(location));
@@ -203,21 +203,21 @@ inline vixl::aarch32::Operand InputOperandAt(HInstruction* instr, int input_inde
 }
 
 inline Location LocationFrom(const vixl::aarch32::Register& reg) {
-  return Location::RegisterLocation(reg.GetCode());
+  return Location::CoreRegister(reg.GetCode());
 }
 
 inline Location LocationFrom(const vixl::aarch32::SRegister& reg) {
-  return Location::FpuRegisterLocation(reg.GetCode());
+  return Location::FpuRegister(reg.GetCode());
 }
 
 inline Location LocationFrom(const vixl::aarch32::Register& low,
                              const vixl::aarch32::Register& high) {
-  return Location::RegisterPairLocation(low.GetCode(), high.GetCode());
+  return Location::CoreRegisterPair(low.GetCode(), high.GetCode());
 }
 
 inline Location LocationFrom(const vixl::aarch32::SRegister& low,
                              const vixl::aarch32::SRegister& high) {
-  return Location::FpuRegisterPairLocation(low.GetCode(), high.GetCode());
+  return Location::FpuRegisterPair(low.GetCode(), high.GetCode());
 }
 
 }  // namespace helpers

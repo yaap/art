@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-class StringLiterals {
+public class StringLiterals {
     static class StartupClass {
         static {
             System.out.println("Startup init");

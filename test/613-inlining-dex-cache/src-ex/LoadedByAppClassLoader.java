@@ -15,8 +15,8 @@
  */
 
 public class LoadedByAppClassLoader {
-  public static void letMeInlineYou() {
-    // We used to pass the wrong class loader when trying to inline 'Main.foo'.
-    Main.foo(null);
-  }
+    public static void letMeInlineYou() {
+        // We used to pass the wrong class loader when trying to inline 'Main.foo'.
+        Main.foo(null);
+    }
 }

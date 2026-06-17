@@ -160,4 +160,9 @@ void UpdateLowOverheadTraceEntrypoints([[maybe_unused]] QuickEntryPoints* qpoint
   // This is a nop on this architecture. Low overhead tracing is only implemented for ARM64.
 }
 
+uintptr_t GetNopUprobeMethodEntryHookAddress() {
+  // This is invalid on this architecture. Uprobe support is only implemented for ARM64.
+  return reinterpret_cast<uintptr_t>(nullptr);
+}
+
 }  // namespace art

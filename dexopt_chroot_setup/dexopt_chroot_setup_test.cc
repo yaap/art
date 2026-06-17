@@ -74,7 +74,7 @@ class DexoptChrootSetupTest : public CommonArtTest {
     scratch_path_.resize(scratch_path_.length() - 1);
 
     partitions_sysprop_value_ = GetProperty(kAdditionalPartitionsSysprop, /*default_value=*/"");
-    ASSERT_TRUE(SetProperty(kAdditionalPartitionsSysprop, "odm:/odm,system_dlkm:/system_dlkm"));
+    ASSERT_TRUE(SetProperty(kAdditionalPartitionsSysprop, "system_dlkm:/system_dlkm"));
     partitions_sysprop_set_ = true;
   }
 

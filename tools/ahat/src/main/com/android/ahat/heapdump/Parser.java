@@ -19,7 +19,6 @@ package com.android.ahat.heapdump;
 import com.android.ahat.progress.NullProgress;
 import com.android.ahat.progress.Progress;
 import com.android.ahat.proguard.ProguardMap;
-
 import java.io.File;
 import java.io.IOException;
 import java.nio.BufferUnderflowException;
@@ -29,6 +28,7 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -60,6 +60,7 @@ public class Parser {
   private ProguardMap map = new ProguardMap();
   private Progress progress = new NullProgress();
   private Reachability retained = Reachability.SOFT;
+  private long uptimeMillis = 0;
 
   /**
    * Creates an hprof Parser that parses a heap dump from a byte buffer.
@@ -118,7 +119,6 @@ public class Parser {
     this.retained = retained;
     return this;
   }
-
   /**
    * Parse the heap dump.
    *
@@ -144,7 +144,7 @@ public class Parser {
    * @throws HprofFormatException if the heap dump is not properly formatted
    */
   public static AhatSnapshot parseHeapDump(File hprof, ProguardMap map)
-    throws IOException, HprofFormatException {
+      throws IOException, HprofFormatException {
     return new Parser(hprof).map(map).parse();
   }
 
@@ -158,7 +158,7 @@ public class Parser {
    * @throws HprofFormatException if the heap dump is not properly formatted
    */
   public static AhatSnapshot parseHeapDump(ByteBuffer hprof, ProguardMap map)
-    throws IOException, HprofFormatException {
+      throws IOException, HprofFormatException {
     return new Parser(hprof).map(map).parse();
   }
 
@@ -169,7 +169,7 @@ public class Parser {
       StringBuilder format = new StringBuilder();
       int b;
       while ((b = hprof.getU1()) != 0) {
-        format.append((char)b);
+        format.append((char) b);
       }
 
       idSize = hprof.getU4();
@@ -178,8 +178,8 @@ public class Parser {
       } else if (idSize != 4) {
         throw new HprofFormatException("Id size " + idSize + " not supported.");
       }
-      int hightime = hprof.getU4();
-      int lowtime = hprof.getU4();
+      int unusedHightime = hprof.getU4();
+      int unusedLowtime = hprof.getU4();
     }
 
     // First pass: Read through all the heap dump records. Construct the
@@ -200,7 +200,7 @@ public class Parser {
       DenseMap<Site> sites = new DenseMap<Site>("Stack Trace");
       DenseMap<String> classNamesBySerial = new DenseMap<String>("Class Serial Number");
       AhatClassObj javaLangClass = null;
-      AhatClassObj[] primArrayClasses = new AhatClassObj[Type.values().length];
+      EnumMap<Type, AhatClassObj> primArrayClasses = new EnumMap<>(Type.class);
       ArrayList<AhatClassObj> classes = new ArrayList<AhatClassObj>();
       Instances<AhatClassObj> classById = null;
 
@@ -208,8 +208,9 @@ public class Parser {
       while (hprof.hasRemaining()) {
         progress.update(hprof.tell());
         int tag = hprof.getU1();
-        int time = hprof.getU4();
+        int unusedTime = hprof.getU4();
         int recordLength = hprof.getU4();
+        // LINT.IfChange(hprof-tags)
         switch (tag) {
           case 0x01: { // STRING
             long id = hprof.getId();
@@ -223,7 +224,7 @@ public class Parser {
           case 0x02: { // LOAD CLASS
             int classSerialNumber = hprof.getU4();
             long objectId = hprof.getId();
-            int stackSerialNumber = hprof.getU4();
+            int unusedStackSerialNumber = hprof.getU4();
             long classNameStringId = hprof.getId();
             String rawClassName = strings.get(classNameStringId);
             String obfClassName = normalizeClassName(rawClassName);
@@ -238,9 +239,9 @@ public class Parser {
               javaLangClass = classObj;
             }
 
-            for (Type type : Type.values()) {
-              if (clrClassName.equals(type.name + "[]")) {
-                primArrayClasses[type.ordinal()] = classObj;
+            for (Type t : Type.values()) {
+              if (clrClassName.equals(t.name + "[]")) {
+                primArrayClasses.put(t, classObj);
               }
             }
             break;
@@ -254,19 +255,16 @@ public class Parser {
             int classSerialNumber = hprof.getU4();
             int lineNumber = hprof.getU4();
 
-            ProguardMap.Frame frame = map.getFrame(
-                classNamesBySerial.get(classSerialNumber),
-                strings.get(methodNameStringId),
-                strings.get(methodSignatureStringId),
-                strings.get(methodFileNameStringId),
-                lineNumber);
+            ProguardMap.Frame frame = map.getFrame(classNamesBySerial.get(classSerialNumber),
+                strings.get(methodNameStringId), strings.get(methodSignatureStringId),
+                strings.get(methodFileNameStringId), lineNumber);
             frames.put(frameId, frame);
             break;
           }
 
           case 0x05: { // STACK TRACE
             int stackSerialNumber = hprof.getU4();
-            int threadSerialNumber = hprof.getU4();
+            int unusedThreadSerialNumber = hprof.getU4();
             int numFrames = hprof.getU4();
             ProguardMap.Frame[] trace = new ProguardMap.Frame[numFrames];
             for (int i = 0; i < numFrames; i++) {
@@ -277,7 +275,13 @@ public class Parser {
             break;
           }
 
-          case 0x0C:   // HEAP DUMP
+          case 0xA0: { // ART CLOCK_MONOTONIC
+            final long uptimeNanos = hprof.getLong();
+            uptimeMillis = uptimeNanos / 1_000_000;
+            break;
+          }
+
+          case 0x0C: // HEAP DUMP
           case 0x1C: { // HEAP DUMP SEGMENT
             long endOfRecord = hprof.tell() + recordLength;
             if (classById == null) {
@@ -289,30 +293,30 @@ public class Parser {
               switch (subtag) {
                 case 0x01: { // ROOT JNI GLOBAL
                   long objectId = hprof.getId();
-                  long refId = hprof.getId();
+                  long unusedRefId = hprof.getId();
                   roots.add(new RootData(objectId, RootType.JNI_GLOBAL));
                   break;
                 }
 
                 case 0x02: { // ROOT JNI LOCAL
                   long objectId = hprof.getId();
-                  int threadSerialNumber = hprof.getU4();
-                  int frameNumber = hprof.getU4();
+                  int unusedThreadSerialNumber = hprof.getU4();
+                  int unusedFrameNumber = hprof.getU4();
                   roots.add(new RootData(objectId, RootType.JNI_LOCAL));
                   break;
                 }
 
                 case 0x03: { // ROOT JAVA FRAME
                   long objectId = hprof.getId();
-                  int threadSerialNumber = hprof.getU4();
-                  int frameNumber = hprof.getU4();
+                  int unusedThreadSerialNumber = hprof.getU4();
+                  int unusedFrameNumber = hprof.getU4();
                   roots.add(new RootData(objectId, RootType.JAVA_FRAME));
                   break;
                 }
 
                 case 0x04: { // ROOT NATIVE STACK
                   long objectId = hprof.getId();
-                  int threadSerialNumber = hprof.getU4();
+                  int unusedThreadSerialNumber = hprof.getU4();
                   roots.add(new RootData(objectId, RootType.NATIVE_STACK));
                   break;
                 }
@@ -325,7 +329,7 @@ public class Parser {
 
                 case 0x06: { // ROOT THREAD BLOCK
                   long objectId = hprof.getId();
-                  int threadSerialNumber = hprof.getU4();
+                  int unusedThreadSerialNumber = hprof.getU4();
                   roots.add(new RootData(objectId, RootType.THREAD_BLOCK));
                   break;
                 }
@@ -338,8 +342,8 @@ public class Parser {
 
                 case 0x08: { // ROOT THREAD OBJECT
                   long objectId = hprof.getId();
-                  int threadSerialNumber = hprof.getU4();
-                  int stackSerialNumber = hprof.getU4();
+                  int unusedThreadSerialNumber = hprof.getU4();
+                  int unusedStackSerialNumber = hprof.getU4();
                   roots.add(new RootData(objectId, RootType.THREAD));
                   break;
                 }
@@ -350,14 +354,14 @@ public class Parser {
                   int stackSerialNumber = hprof.getU4();
                   long superClassId = hprof.getId();
                   data.classLoaderId = hprof.getId();
-                  long signersId = hprof.getId();
-                  long protectionId = hprof.getId();
-                  long reserved1 = hprof.getId();
-                  long reserved2 = hprof.getId();
+                  long unusedSignersId = hprof.getId();
+                  long unusedProtectionId = hprof.getId();
+                  long unusedReserved1 = hprof.getId();
+                  long unusedReserved2 = hprof.getId();
                   int instanceSize = hprof.getU4();
                   int constantPoolSize = hprof.getU2();
                   for (int i = 0; i < constantPoolSize; ++i) {
-                    int index = hprof.getU2();
+                    int unusedIndex = hprof.getU2();
                     Type type = hprof.getType();
                     hprof.skip(type.size(idSize));
                   }
@@ -415,7 +419,7 @@ public class Parser {
                   int length = hprof.getU4();
                   long classId = hprof.getId();
                   ObjArrayData data = new ObjArrayData(length, hprof.tell());
-                  hprof.skip(length * idSize);
+                  hprof.skip((long) length * idSize);
 
                   Site site = sites.get(stackSerialNumber);
                   AhatClassObj classObj = classById.get(classId);
@@ -433,7 +437,7 @@ public class Parser {
                   Type type = hprof.getPrimitiveType();
                   Site site = sites.get(stackSerialNumber);
 
-                  AhatClassObj classObj = primArrayClasses[type.ordinal()];
+                  AhatClassObj classObj = primArrayClasses.get(type);
                   if (classObj == null) {
                     throw new HprofFormatException(
                         "No class definition found for " + type.name + "[]");
@@ -512,7 +516,8 @@ public class Parser {
                       obj.initialize(data);
                       break;
                     }
-                    default: throw new AssertionError("unsupported enum member");
+                    default:
+                      throw new AssertionError("unsupported enum member");
                   }
                   break;
                 }
@@ -543,14 +548,14 @@ public class Parser {
 
                 case 0x8e: { // ROOT JNI MONITOR (ANDROID)
                   long objectId = hprof.getId();
-                  int threadSerialNumber = hprof.getU4();
-                  int frameNumber = hprof.getU4();
+                  int unusedThreadSerialNumber = hprof.getU4();
+                  int unusedFrameNumber = hprof.getU4();
                   roots.add(new RootData(objectId, RootType.JNI_MONITOR));
                   break;
                 }
 
                 case 0xfe: { // HEAP DUMP INFO (ANDROID)
-                  int type = hprof.getU4();
+                  int unusedType = hprof.getU4();
                   long stringId = hprof.getId();
                   heaps.setCurrentHeap(strings.get(stringId));
                   break;
@@ -576,6 +581,7 @@ public class Parser {
             hprof.skip(recordLength);
             break;
         }
+        // LINT.ThenChange(//depot/google3/art/runtime/hprof/hprof.cc:hprof-tags)
       }
       progress.done();
 
@@ -628,7 +634,7 @@ public class Parser {
         // Fixup the instance based on its type using the temporary data we
         // saved during the first pass over the heap dump.
         if (inst instanceof AhatClassInstance) {
-          ClassInstData data = (ClassInstData)inst.getTemporaryUserData();
+          ClassInstData data = (ClassInstData) inst.getTemporaryUserData();
           inst.setTemporaryUserData(null);
 
           // Compute the size of the fields array in advance to avoid
@@ -647,31 +653,32 @@ public class Parser {
               fields[i++] = hprof.getValue(field.type, mInstances);
             }
           }
-          ((AhatClassInstance)inst).initialize(fields);
+          ((AhatClassInstance) inst).initialize(fields);
         } else if (inst instanceof AhatClassObj) {
-          ClassObjData data = (ClassObjData)inst.getTemporaryUserData();
+          ClassObjData data = (ClassObjData) inst.getTemporaryUserData();
           inst.setTemporaryUserData(null);
           AhatInstance loader = mInstances.get(data.classLoaderId);
           for (int i = 0; i < data.staticFields.length; ++i) {
             FieldValue field = data.staticFields[i];
             if (field.value instanceof DeferredInstanceValue) {
-              DeferredInstanceValue deferred = (DeferredInstanceValue)field.value;
+              DeferredInstanceValue deferred = (DeferredInstanceValue) field.value;
               data.staticFields[i] = new FieldValue(
                   field.name, field.type, Value.pack(mInstances.get(deferred.getId())));
             }
           }
-          ((AhatClassObj)inst).initialize(loader, data.staticFields);
+          ((AhatClassObj) inst).initialize(loader, data.staticFields);
+
         } else if (inst instanceof AhatArrayInstance && inst.getTemporaryUserData() != null) {
           // TODO: Have specialized object array instance and check for that
           // rather than checking for the presence of user data?
-          ObjArrayData data = (ObjArrayData)inst.getTemporaryUserData();
+          ObjArrayData data = (ObjArrayData) inst.getTemporaryUserData();
           inst.setTemporaryUserData(null);
           AhatInstance[] array = new AhatInstance[data.length];
           hprof.seek(data.position);
           for (int i = 0; i < data.length; i++) {
             array[i] = mInstances.get(hprof.getId());
           }
-          ((AhatArrayInstance)inst).initialize(array);
+          ((AhatArrayInstance) inst).initialize(array);
         }
       }
       progress.done();
@@ -679,14 +686,15 @@ public class Parser {
 
     hprof = null;
     roots = null;
-    return new AhatSnapshot(superRoot, mInstances, heaps.heaps, rootSite, progress, retained);
+    return new AhatSnapshot(
+        superRoot, mInstances, heaps.heaps, rootSite, progress, retained, uptimeMillis);
   }
 
   private static class RootData {
-    public long id;
-    public RootType type;
+    long id;
+    RootType type;
 
-    public RootData(long id, RootType type) {
+    RootData(long id, RootType type) {
       this.id = id;
       this.type = type;
     }
@@ -694,26 +702,26 @@ public class Parser {
 
   private static class ClassInstData {
     // The byte position in the hprof file where instance field data starts.
-    public long position;
+    long position;
 
-    public ClassInstData(long position) {
+    ClassInstData(long position) {
       this.position = position;
     }
   }
 
   private static class ObjArrayData {
-    public int length;          // Number of array elements.
-    public long position; // Position in hprof file containing element data.
+    int length; // Number of array elements.
+    long position; // Position in hprof file containing element data.
 
-    public ObjArrayData(int length, long position) {
+    ObjArrayData(int length, long position) {
       this.length = length;
       this.position = position;
     }
   }
 
   private static class ClassObjData {
-    public long classLoaderId;
-    public FieldValue[] staticFields; // Contains DeferredInstanceValues.
+    long classLoaderId;
+    FieldValue[] staticFields; // Contains DeferredInstanceValues.
   }
 
   /**
@@ -727,11 +735,11 @@ public class Parser {
   private static class DeferredInstanceValue extends Value {
     private long mId;
 
-    public DeferredInstanceValue(long id) {
+    DeferredInstanceValue(long id) {
       mId = id;
     }
 
-    public long getId() {
+    long getId() {
       return mId;
     }
 
@@ -745,13 +753,15 @@ public class Parser {
       return String.format("0x%08x", mId);
     }
 
-    @Override public int hashCode() {
+    @Override
+    public int hashCode() {
       return Objects.hash(mId);
     }
 
-    @Override public boolean equals(Object other) {
+    @Override
+    public boolean equals(Object other) {
       if (other instanceof DeferredInstanceValue) {
-        DeferredInstanceValue value = (DeferredInstanceValue)other;
+        DeferredInstanceValue value = (DeferredInstanceValue) other;
         return mId == value.mId;
       }
       return false;
@@ -763,17 +773,17 @@ public class Parser {
    * the heap dump.
    */
   private static class HeapList {
-    public List<AhatHeap> heaps = new ArrayList<AhatHeap>();
+    List<AhatHeap> heaps = new ArrayList<AhatHeap>();
     private AhatHeap current;
 
-    public AhatHeap getCurrentHeap() {
+    AhatHeap getCurrentHeap() {
       if (current == null) {
         setCurrentHeap("default");
       }
       return current;
     }
 
-    public void setCurrentHeap(String name) {
+    void setCurrentHeap(String name) {
       for (AhatHeap heap : heaps) {
         if (name.equals(heap.getName())) {
           current = heap;
@@ -813,11 +823,11 @@ public class Parser {
      *                    elements for error message if the required
      *                    conditions are found not to hold.
      */
-    public DenseMap(String elementType) {
+    DenseMap(String elementType) {
       mElementType = elementType;
     }
 
-    public void put(long key, T value) {
+    void put(long key, T value) {
       if (mValues == null) {
         mValues = new Object[8];
         mValues[0] = value;
@@ -829,9 +839,9 @@ public class Parser {
 
       long max = Math.max(mMaxKey, key);
       long min = Math.min(mMinKey, key);
-      int count = (int)(max + 1 - min);
+      int count = (int) (max + 1 - min);
       if (count > mValues.length) {
-        Object[] values = new Object[2 * count];
+        Object[] values = new Object[(int) Math.min((long) Integer.MAX_VALUE - 8, 2L * count)];
 
         // Copy over the values into the newly allocated larger buffer. It is
         // convenient to move the value with mMinKey to index 0 when we make
@@ -852,21 +862,22 @@ public class Parser {
      * @throws HprofFormatException if there is no value with the key in the
      *         given map.
      */
-    public T get(long key) throws HprofFormatException {
+    @SuppressWarnings("unchecked") // Safe cast: we only store elements of type T in mValues
+    T get(long key) throws HprofFormatException {
       T value = null;
       if (mValues != null && key >= mMinKey && key <= mMaxKey) {
-        value = (T)mValues[indexOf(key)];
+        value = (T) mValues[indexOf(key)];
       }
 
       if (value == null) {
-        throw new HprofFormatException(String.format(
-              "%s with id 0x%x referenced before definition", mElementType, key));
+        throw new HprofFormatException(
+            String.format("%s with id 0x%x referenced before definition", mElementType, key));
       }
       return value;
     }
 
     private int indexOf(long key) {
-      return ((int)(key - mKeyAt0) + mValues.length) % mValues.length;
+      return ((int) (key - mKeyAt0) + mValues.length) % mValues.length;
     }
   }
 
@@ -884,11 +895,11 @@ public class Parser {
      *                    elements for error message if the required
      *                    conditions are found not to hold.
      */
-    public UnDenseMap(String elementType) {
+    UnDenseMap(String elementType) {
       mElementType = elementType;
     }
 
-    public void put(long key, T value) {
+    void put(long key, T value) {
       mValues.put(key, value);
     }
 
@@ -897,11 +908,11 @@ public class Parser {
      * @throws HprofFormatException if there is no value with the key in the
      *         given map.
      */
-    public T get(long key) throws HprofFormatException {
+    T get(long key) throws HprofFormatException {
       T value = mValues.get(key);
       if (value == null) {
-        throw new HprofFormatException(String.format(
-              "%s with id 0x%x referenced before definition", mElementType, key));
+        throw new HprofFormatException(
+            String.format("%s with id 0x%x referenced before definition", mElementType, key));
       }
       return value;
     }
@@ -913,7 +924,7 @@ public class Parser {
   private static class ByteBufferChannel implements SeekableByteChannel {
     private final ByteBuffer mBuffer;
 
-    public ByteBufferChannel(ByteBuffer buffer) {
+    ByteBufferChannel(ByteBuffer buffer) {
       mBuffer = buffer;
     }
 
@@ -974,52 +985,58 @@ public class Parser {
     private final ByteBuffer mBuffer = ByteBuffer.allocate(1024);
     private long mBufferStartPosition = 0;
 
-    public HprofBuffer(File path) throws IOException {
+    HprofBuffer(File path) throws IOException {
       mChannel = FileChannel.open(path.toPath(), StandardOpenOption.READ);
       mBuffer.flip();
     }
 
-    public HprofBuffer(ByteBuffer buffer) {
+    HprofBuffer(ByteBuffer buffer) {
       mChannel = new ByteBufferChannel(buffer);
       mBuffer.flip();
+    }
+
+    private void readChannel(ByteBuffer dst) throws IOException {
+      if (mChannel.read(dst) <= 0) {
+        throw new BufferUnderflowException();
+      }
     }
 
     private ByteBuffer read(int num_bytes) throws IOException {
       while (num_bytes > mBuffer.remaining()) {
         mBufferStartPosition = mChannel.position() - mBuffer.remaining();
         mBuffer.compact();
-        mChannel.read(mBuffer);
+        readChannel(mBuffer);
         mBuffer.flip();
       }
       return mBuffer;
     }
 
-    public void setIdSize8() {
+    void setIdSize8() {
       mIdSize8 = true;
     }
 
-    public boolean hasRemaining() throws IOException {
+    boolean hasRemaining() throws IOException {
       return mBuffer.hasRemaining() || mChannel.position() < mChannel.size();
     }
 
     /**
      * Returns the size of the file in bytes.
      */
-    public long size() throws IOException {
+    long size() throws IOException {
       return mChannel.size();
     }
 
     /**
      * Return the current absolution position in the file.
      */
-    public long tell() throws IOException {
+    long tell() throws IOException {
       return mBufferStartPosition + mBuffer.position();
     }
 
     /**
      * Seek to the given absolution position in the file.
      */
-    public void seek(long position) throws IOException {
+    void seek(long position) throws IOException {
       mChannel.position(position);
       mBuffer.clear();
       mBuffer.flip();
@@ -1030,23 +1047,23 @@ public class Parser {
      * Skip ahead in the file by the given delta bytes. Delta may be negative
      * to skip backwards in the file.
      */
-    public void skip(long delta) throws IOException {
+    void skip(long delta) throws IOException {
       seek(tell() + delta);
     }
 
-    public int getU1() throws IOException {
+    int getU1() throws IOException {
       return read(1).get() & 0xFF;
     }
 
-    public int getU2() throws IOException {
+    int getU2() throws IOException {
       return read(2).getShort() & 0xFFFF;
     }
 
-    public int getU4() throws IOException {
+    int getU4() throws IOException {
       return read(4).getInt();
     }
 
-    public long getId() throws IOException {
+    long getId() throws IOException {
       if (mIdSize8) {
         return read(8).getLong();
       } else {
@@ -1054,27 +1071,27 @@ public class Parser {
       }
     }
 
-    public boolean getBool() throws IOException {
+    boolean getBool() throws IOException {
       return read(1).get() != 0;
     }
 
-    public char getChar() throws IOException {
+    char getChar() throws IOException {
       return read(2).getChar();
     }
 
-    public float getFloat() throws IOException {
+    float getFloat() throws IOException {
       return read(4).getFloat();
     }
 
-    public double getDouble() throws IOException {
+    double getDouble() throws IOException {
       return read(8).getDouble();
     }
 
-    public byte getByte() throws IOException {
+    byte getByte() throws IOException {
       return read(1).get();
     }
 
-    public void getBytes(byte[] bytes) throws IOException {
+    void getBytes(byte[] bytes) throws IOException {
       if (mBuffer.remaining() >= bytes.length) {
         mBuffer.get(bytes);
         return;
@@ -1083,32 +1100,29 @@ public class Parser {
       ByteBuffer buf = ByteBuffer.wrap(bytes);
       buf.put(mBuffer);
       while (buf.hasRemaining()) {
-        mChannel.read(buf);
+        readChannel(buf);
       }
       mBuffer.clear();
       mBuffer.flip();
       mBufferStartPosition = mChannel.position();
     }
 
-    public short getShort() throws IOException {
+    short getShort() throws IOException {
       return read(2).getShort();
     }
 
-    public int getInt() throws IOException {
+    int getInt() throws IOException {
       return read(4).getInt();
     }
 
-    public long getLong() throws IOException {
+    long getLong() throws IOException {
       return read(8).getLong();
     }
 
-    private static Type[] TYPES = new Type[] {
-      null, null, Type.OBJECT, null,
-        Type.BOOLEAN, Type.CHAR, Type.FLOAT, Type.DOUBLE,
-        Type.BYTE, Type.SHORT, Type.INT, Type.LONG
-    };
+    private static Type[] TYPES = new Type[] {null, null, Type.OBJECT, null, Type.BOOLEAN,
+        Type.CHAR, Type.FLOAT, Type.DOUBLE, Type.BYTE, Type.SHORT, Type.INT, Type.LONG};
 
-    public Type getType() throws HprofFormatException, IOException {
+    Type getType() throws HprofFormatException, IOException {
       int id = getU1();
       Type type = id < TYPES.length ? TYPES[id] : null;
       if (type == null) {
@@ -1117,7 +1131,7 @@ public class Parser {
       return type;
     }
 
-    public Type getPrimitiveType() throws HprofFormatException, IOException {
+    Type getPrimitiveType() throws HprofFormatException, IOException {
       Type type = getType();
       if (type == Type.OBJECT) {
         throw new HprofFormatException("Expected primitive type, but found type 'Object'");
@@ -1129,18 +1143,28 @@ public class Parser {
      * Get a value from the hprof file, using the given instances map to
      * convert instance ids to their corresponding AhatInstance objects.
      */
-    public Value getValue(Type type, Instances instances) throws IOException {
+    Value getValue(Type type, Instances instances) throws IOException {
       switch (type) {
-        case OBJECT:  return Value.pack(instances.get(getId()));
-        case BOOLEAN: return Value.pack(getBool());
-        case CHAR: return Value.pack(getChar());
-        case FLOAT: return Value.pack(getFloat());
-        case DOUBLE: return Value.pack(getDouble());
-        case BYTE: return Value.pack(getByte());
-        case SHORT: return Value.pack(getShort());
-        case INT: return Value.pack(getInt());
-        case LONG: return Value.pack(getLong());
-        default: throw new AssertionError("unsupported enum member");
+        case OBJECT:
+          return Value.pack(instances.get(getId()));
+        case BOOLEAN:
+          return Value.pack(getBool());
+        case CHAR:
+          return Value.pack(getChar());
+        case FLOAT:
+          return Value.pack(getFloat());
+        case DOUBLE:
+          return Value.pack(getDouble());
+        case BYTE:
+          return Value.pack(getByte());
+        case SHORT:
+          return Value.pack(getShort());
+        case INT:
+          return Value.pack(getInt());
+        case LONG:
+          return Value.pack(getLong());
+        default:
+          throw new AssertionError("unsupported enum member");
       }
     }
 
@@ -1149,18 +1173,28 @@ public class Parser {
      * DefferredInstanceValues rather than their corresponding AhatInstance
      * objects.
      */
-    public Value getDeferredValue(Type type) throws IOException {
+    Value getDeferredValue(Type type) throws IOException {
       switch (type) {
-        case OBJECT: return new DeferredInstanceValue(getId());
-        case BOOLEAN: return Value.pack(getBool());
-        case CHAR: return Value.pack(getChar());
-        case FLOAT: return Value.pack(getFloat());
-        case DOUBLE: return Value.pack(getDouble());
-        case BYTE: return Value.pack(getByte());
-        case SHORT: return Value.pack(getShort());
-        case INT: return Value.pack(getInt());
-        case LONG: return Value.pack(getLong());
-        default: throw new AssertionError("unsupported enum member");
+        case OBJECT:
+          return new DeferredInstanceValue(getId());
+        case BOOLEAN:
+          return Value.pack(getBool());
+        case CHAR:
+          return Value.pack(getChar());
+        case FLOAT:
+          return Value.pack(getFloat());
+        case DOUBLE:
+          return Value.pack(getDouble());
+        case BYTE:
+          return Value.pack(getByte());
+        case SHORT:
+          return Value.pack(getShort());
+        case INT:
+          return Value.pack(getInt());
+        case LONG:
+          return Value.pack(getLong());
+        default:
+          throw new AssertionError("unsupported enum member");
       }
     }
   }
@@ -1183,16 +1217,35 @@ public class Parser {
       // If there was an array type signature to start, then interpret the
       // class name as a type signature.
       switch (name.charAt(0)) {
-        case 'Z': name = "boolean"; break;
-        case 'B': name = "byte"; break;
-        case 'C': name = "char"; break;
-        case 'S': name = "short"; break;
-        case 'I': name = "int"; break;
-        case 'J': name = "long"; break;
-        case 'F': name = "float"; break;
-        case 'D': name = "double"; break;
-        case 'L': name = name.substring(1, name.length() - 1); break;
-        default: throw new HprofFormatException("Invalid type signature in class name: " + name);
+        case 'Z':
+          name = "boolean";
+          break;
+        case 'B':
+          name = "byte";
+          break;
+        case 'C':
+          name = "char";
+          break;
+        case 'S':
+          name = "short";
+          break;
+        case 'I':
+          name = "int";
+          break;
+        case 'J':
+          name = "long";
+          break;
+        case 'F':
+          name = "float";
+          break;
+        case 'D':
+          name = "double";
+          break;
+        case 'L':
+          name = name.substring(1, name.length() - 1);
+          break;
+        default:
+          throw new HprofFormatException("Invalid type signature in class name: " + name);
       }
     }
 

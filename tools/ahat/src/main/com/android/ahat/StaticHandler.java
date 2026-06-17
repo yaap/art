@@ -16,15 +16,14 @@
 
 package com.android.ahat;
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.PrintStream;
 
-// Handler that returns a static file included in ahat.jar.
-class StaticHandler implements HttpHandler {
+/**
+ * Handler that returns a static file included in ahat.jar.
+ */
+class StaticHandler implements AhatDataHandler {
   private String mResourceName;
   private String mContentType;
 
@@ -34,27 +33,21 @@ class StaticHandler implements HttpHandler {
   }
 
   @Override
-  public void handle(HttpExchange exchange) throws IOException {
+  public void handle(Response response, Query query) throws IOException {
     ClassLoader loader = StaticHandler.class.getClassLoader();
     InputStream is = loader.getResourceAsStream(mResourceName);
     if (is == null) {
-      exchange.getResponseHeaders().add("Content-Type", "text/html");
-      exchange.sendResponseHeaders(404, 0);
-      PrintStream ps = new PrintStream(exchange.getResponseBody());
-      HtmlDoc doc = new HtmlDoc(ps, DocString.text("ahat"), DocString.uri("style.css"));
-      doc.big(DocString.text("Resource not found."));
-      doc.close();
-    } else {
-      exchange.getResponseHeaders().add("Content-Type", mContentType);
-      exchange.sendResponseHeaders(200, 0);
-      OutputStream os = exchange.getResponseBody();
-      int read;
-      byte[] buf = new byte[4096];
-      while ((read = is.read(buf)) >= 0) {
-        os.write(buf, 0, read);
-      }
-      is.close();
-      os.close();
+      response.error("Resource not found.");
+      return;
     }
+
+    OutputStream os = response.content(mContentType);
+    int read;
+    byte[] buf = new byte[4096];
+    while ((read = is.read(buf)) >= 0) {
+      os.write(buf, 0, read);
+    }
+    is.close();
+    os.close();
   }
 }

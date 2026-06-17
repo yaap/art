@@ -119,6 +119,7 @@ import com.android.ahat.progress.Progress;
    *                 graph, for progress tracking purposes only.
    * @see Node
    */
+
   public static void computeDominators(Node root, Progress progress, long numNodes) {
     Dominators.Graph<Node> graph = new Dominators.Graph<Node>() {
       @Override
@@ -142,6 +143,6 @@ import com.android.ahat.progress.Progress;
       }
     };
 
-    new Dominators(graph).progress(progress, numNodes).computeDominators(root);
+    new Dominators<Node>(graph).progress(progress, numNodes).computeDominators(root);
   }
 }

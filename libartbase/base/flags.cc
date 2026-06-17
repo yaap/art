@@ -182,6 +182,10 @@ template class Flag<std::string>;
 // TODO(b/350967139): Remove #ifndef when aconfig supports windows.
 #ifndef _WIN32
 bool is_test_rw_flag_enabled() { return com_android_art_rw_flags_test_rw_flag(); }
+
+bool is_read_only_dynamic_code_load_ww_log_enabled() { return com_android_art_rw_flags_read_only_dynamic_code_load_ww_log(); }
+
+bool is_read_only_dynamic_code_load_throw_exception_enabled() { return com_android_art_rw_flags_read_only_dynamic_code_load_throw_exception(); }
 #endif
 }  // namespace art
 

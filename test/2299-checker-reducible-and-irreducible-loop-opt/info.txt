@@ -1,0 +1,2 @@
+Check that loop optimization can optimize graphs with irreducible loops,
+as long as the optimized loops are non-irreducible.

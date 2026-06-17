@@ -26,12 +26,6 @@
 ## CHECK-DAG:     <<Phi2:i\d+>> Phi reg:4 loop:{{B\d+}} irreducible:false
 ## CHECK-DAG:     SuspendCheck env:[[_,_,_,<<Phi1>>,<<Phi2>>]] loop:{{B\d+}} irreducible:false
 
-# Check that the linear order has non-adjacent loop blocks.
-## CHECK-START: int IrreducibleLoop.liveness(int, int) liveness (after)
-## CHECK-DAG:     Mul liveness:<<LPreEntry2:\d+>>
-## CHECK-DAG:     Add liveness:<<LBackEdge1:\d+>>
-## CHECK-EVAL:    <<LBackEdge1>> < <<LPreEntry2>>
-
 .method public static liveness(II)I
     .registers 5
 

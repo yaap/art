@@ -27,12 +27,15 @@
 #include <atomic>
 #include <bitset>
 #include <cerrno>
+#include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <list>
 #include <optional>
 #include <sstream>
 
 #include "android-base/file.h"
+#include "android-base/logging.h"
 #include "android-base/macros.h"
 #include "android-base/stringprintf.h"
 #include "android-base/strings.h"
@@ -44,6 +47,9 @@
 #include "base/bit_utils.h"
 #include "base/casts.h"
 #include "base/file_utils.h"
+#include "base/globals.h"
+#include "base/locks.h"
+#include "base/macros.h"
 #include "base/memory_tool.h"
 #include "base/mutex.h"
 #include "base/stl_util.h"
@@ -69,6 +75,7 @@
 #include "gc/heap.h"
 #include "gc/space/space-inl.h"
 #include "gc_root.h"
+#include "handle.h"
 #include "handle_scope-inl.h"
 #include "handle_scope.h"
 #include "instrumentation.h"
@@ -86,6 +93,8 @@
 #include "mirror/object_array-inl.h"
 #include "mirror/stack_frame_info.h"
 #include "mirror/stack_trace_element.h"
+#include "mirror/virtual_thread_context-inl.h"
+#include "mirror/virtual_thread_context.h"
 #include "monitor.h"
 #include "monitor_objects_stack_visitor.h"
 #include "native_stack_dump.h"
@@ -128,8 +137,16 @@
 #include <sys/syscall.h>
 #endif  // ART_USE_FUTEXES
 
+#ifdef ART_USE_SIMULATOR
+#include "code_simulator.h"
+#include "code_simulator_container.h"
+#endif
+
 #pragma clang diagnostic push
 #pragma clang diagnostic error "-Wconversion"
+
+// Make sure ScopedArtUtfChars is an alias of ScopedJniUtfChars.
+static_assert(std::is_same_v<ScopedArtUtfChars, ScopedJniUtfChars>);
 
 extern "C" __attribute__((weak)) void* __hwasan_tag_pointer(const volatile void* p,
                                                             unsigned char tag);
@@ -180,6 +197,18 @@ void Thread::SetIsGcMarkingAndUpdateEntrypoints(bool is_marking) {
   tls32_.is_gc_marking = is_marking;
   UpdateReadBarrierEntrypoints(&tlsPtr_.quick_entrypoints, /* is_active= */ is_marking);
 }
+
+#ifdef ART_USE_SIMULATOR
+void Thread::CreateSimExecutor(size_t stack_size) {
+  tlsPtr_.sim_data.sim_executor =
+      Runtime::Current()->GetCodeSimulatorContainer()->CreateExecutor(stack_size);
+}
+
+CodeSimulator* Thread::GetSimExecutor() const {
+  DCHECK(tlsPtr_.sim_data.sim_executor != nullptr);
+  return tlsPtr_.sim_data.sim_executor;
+}
+#endif  // ART_USE_SIMULATOR
 
 void Thread::InitTlsEntryPoints() {
   ScopedTrace trace("InitTlsEntryPoints");
@@ -687,19 +716,21 @@ void* Thread::CreateCallback(void* arg) {
     // When the runnable is a VirtualThreadContext, don't run thread.run() and treat it as a virtual
     // thread.
     if (kIsVirtualThreadEnabled &&
-        UNLIKELY(
-            !runnable.IsNull() &&
-            runnable->InstanceOf(WellKnownClasses::dalvik_system_VirtualThreadContext.Get()))) {
-      self->SetVirtualThreadFlags(VirtualThreadFlag::kIsVirtual, true);
-      ObjPtr<mirror::Object> parked_states =
-          WellKnownClasses::dalvik_system_VirtualThreadContext_parkedStates->GetObject(runnable);
-      if (parked_states != nullptr) {
-        self->SetVirtualThreadFlags(VirtualThreadFlag::kUnparking, true);
-      }
+        UNLIKELY(!runnable.IsNull() &&
+                 runnable->InstanceOf(GetClassRoot<mirror::VirtualThreadContext>()))) {
+      StackHandleScope<1> hs(self);
+      Handle<mirror::VirtualThreadContext> v_context = hs.NewHandle(
+          ObjPtr<mirror::VirtualThreadContext>::DownCast(runnable));
+      uint8_t flags = v_context->GetParkedStates() != nullptr ? VirtualThreadFlag::kUnparking : 0;
+      uint32_t thin_lock_id = v_context->GetMonitorThreadId();
+      DCHECK_GT(thin_lock_id, 0u);
+      MountedVirtualThreadData mounted_data((uint32_t)thin_lock_id, self->GetThreadId(), flags);
+      bool mounted = self->TrySetMountedVirtualThreadData(&mounted_data);
+      DCHECK(mounted) << mounted_data;
 
       // Invoke the Runnable.run() method to avoid holding a reference of opeer in the managed
       // stack.
-      WellKnownClasses::java_lang_Runnable_run->InvokeInterface<'V'>(self, runnable);
+      WellKnownClasses::java_lang_Runnable_run->InvokeInterface<'V'>(self, v_context.Get());
 
       // When a virtual thread is parked, we expect and clear the VirtualThreadParkingError used to
       // unwind the native stack.
@@ -708,6 +739,8 @@ void* Thread::CreateCallback(void* arg) {
             "Ldalvik/system/VirtualThreadParkingError;"));
         self->ClearException();
       }
+      bool unmounted = self->TryClearMountedVirtualThreadData();
+      DCHECK(unmounted) << mounted_data;
     } else {
       // Invoke the 'run' method of our java.lang.Thread.
       WellKnownClasses::java_lang_Thread_run->InvokeVirtual<'V'>(self, receiver);
@@ -784,6 +817,13 @@ NO_INLINE uint8_t* Thread::FindStackTop<StackType::kHardware>() {
   return reinterpret_cast<uint8_t*>(
       AlignDown(__builtin_frame_address(0), gPageSize));
 }
+#ifdef ART_USE_SIMULATOR
+template <>
+NO_INLINE uint8_t* Thread::FindStackTop<StackType::kSimulated>() {
+  return reinterpret_cast<uint8_t*>(
+      AlignDown(reinterpret_cast<uint8_t*>(GetSimExecutor()->GetStackPointer()), gPageSize));
+}
+#endif
 
 // Install a protected region in the stack.  This is used to trigger a SIGSEGV if a stack
 // overflow is detected.  It is located right below the stack_begin_.
@@ -794,11 +834,20 @@ void Thread::InstallImplicitProtection() {
   // Page containing current top of stack.
   uint8_t* stack_top = FindStackTop<stack_type>();
 
+  // It is possible that the native stack is not mapped into memory when initially trying to
+  // protect it so don't treat the failure as fatal.
+  bool fatal_on_error = false;
+  if constexpr (stack_type == StackType::kSimulated) {
+    // The simulated stack is mapped into memory upon creation therefore it is an error if we fail
+    // to protect it.
+    fatal_on_error = true;
+  }
+
   // Try to directly protect the stack.
   VLOG(threads) << "installing stack protected region at " << std::hex <<
         static_cast<void*>(pregion) << " to " <<
         static_cast<void*>(pregion + GetStackOverflowProtectedSize() - 1);
-  if (ProtectStack<stack_type>(/* fatal_on_error= */ false)) {
+  if (ProtectStack<stack_type>(fatal_on_error)) {
     // Tell the kernel that we won't be needing these pages any more.
     // NB. madvise will probably write zeroes into the memory (on linux it does).
     size_t unwanted_size =
@@ -850,14 +899,20 @@ void Thread::InstallImplicitProtection() {
 #else
           1u;
 #endif
+      // Ensure that the array size is known at compile time: this is necessary to prevent Clang
+      // from generating a stack-probing loop with `-fstack-clash-protection`. Clang generates code
+      // that assumes that there's at least one more page available below the start of the array,
+      // which is not always true on the last recursive call in this function, and may result in
+      // stackoverflow (observed on riscv64, see b/480856545 for details).
+      constexpr size_t space_size = kMinPageSize - (kAsanMultiplier * 256);
       // Keep space uninitialized as it can overflow the stack otherwise (should Clang actually
       // auto-initialize this local variable).
-      volatile char space[gPageSize - (kAsanMultiplier * 256)] __attribute__((uninitialized));
+      volatile char space[space_size] __attribute__((uninitialized));
       [[maybe_unused]] char sink = space[zero];
       // Remove tag from the pointer. Nop in non-hwasan builds.
       uintptr_t addr = reinterpret_cast<uintptr_t>(
           __hwasan_tag_pointer != nullptr ? __hwasan_tag_pointer(space, 0) : space);
-      if (addr >= target + gPageSize) {
+      if (addr >= target + kMinPageSize) {
         Touch(target);
       }
       zero *= 2;  // Try to avoid tail recursion.
@@ -1080,6 +1135,20 @@ bool Thread::Init(ThreadList* thread_list, JavaVMExt* java_vm, JNIEnvExt* jni_en
     return false;
   }
   InitCpu();
+
+#ifdef ART_USE_SIMULATOR
+  if (Runtime::IsSimulatorMode()) {
+    // Use the same stack size for the simulator stack as the native stack.
+    CreateSimExecutor(read_stack_size);
+    uint8_t* stack_begin = GetSimExecutor()->GetStackBaseInternal() - read_stack_size;
+    if (!InitStack<StackType::kSimulated>(stack_begin,
+                                          read_stack_size,
+                                          read_guard_size)) {
+      return false;
+    }
+  }
+#endif
+
   InitTlsEntryPoints();
   RemoveSuspendTrigger();
   InitCardTable();
@@ -1170,7 +1239,7 @@ Thread* Thread::Attach(const char* thread_name,
     self->Dump(LOG_STREAM(INFO));
   }
 
-  TraceProfiler::AllocateBuffer(self);
+  Trace::AllocateThreadBuffer(self);
   if (should_run_callbacks) {
     ScopedObjectAccess soa(self);
     runtime->GetRuntimeCallbacks()->ThreadStart(self);
@@ -1489,6 +1558,87 @@ bool Thread::InitStack(uint8_t* read_stack_base, size_t read_stack_size, size_t 
   CHECK_GT(FindStackTop<stack_type>(), reinterpret_cast<void*>(GetStackEnd<stack_type>()));
 
   return true;
+}
+static constexpr useconds_t kVirtualThreadSuspendSleepUs = 100;
+
+bool Thread::TrySetMountedVirtualThreadData(MountedVirtualThreadData* e, bool spin) {
+  CHECK(kIsVirtualThreadEnabled);
+  DCHECK(this == Thread::Current());
+  DCHECK_EQ(GetMountedVirtualThreadData(), nullptr);
+  DCHECK_NE(e, nullptr);
+  DCHECK_EQ(e->carrier_thread_id_, GetThreadId()) << "The carrier thread must be self";
+  while (true) {
+    {
+      MutexLock mu(this, *Locks::thread_list_lock_);
+      // The virtual thread is suspended by lock inflation if the count isn't 0.
+      ThreadList* thread_list = Runtime::Current()->GetThreadList();
+      uint32_t suspension_count = thread_list->GetVirtualThreadSuspendCount(e->virtual_thread_id_);
+      if (suspension_count == 0) {
+        if (kIsDebugBuild) {
+          uint32_t another_carrier_id = thread_list->GetCarrierThreadIdByVirtualThreadId(
+              e->virtual_thread_id_);
+          if (another_carrier_id != ThreadList::kInvalidThreadId) {
+            // Release the thread_list_lock_ first before the crash to allow ART dump all threads.
+            Locks::thread_list_lock_->Unlock(this);
+            LOG(FATAL) << ("A virtual thread is being mounted by a second carrier thread! ")
+              << "virtual thread id : " << e->virtual_thread_id_
+              << ", this carrier thread id : " << e->carrier_thread_id_
+              << ", another carrier thread id : " << another_carrier_id;
+            UNREACHABLE();
+          }
+        }
+        thread_list->AddMountedVirtualThread(e);
+        SetMountedVirtualThreadData(e);
+        return true;
+      }
+    }
+
+    if (!spin) {
+      return false;
+    }
+
+    // Lock inflation for locks held by this unmounted virtual thread doesn't suspend the carrier
+    // thread. However, we may just do a suspend check on the carrier thread for the other purposes,
+    // e.g. GC, while spinning.
+    {
+      ScopedThreadSuspension(this, ThreadState::kWaitingForLockInflation);  // NOLINT
+      usleep(kVirtualThreadSuspendSleepUs);
+    }
+  }
+}
+
+bool Thread::TryClearMountedVirtualThreadData(bool spin) {
+  CHECK(kIsVirtualThreadEnabled);
+  DCHECK(this == Thread::Current());
+  MountedVirtualThreadData* e = GetMountedVirtualThreadData();
+  if (e == nullptr) {
+    DCHECK_NE(e, nullptr);
+    return false;
+  }
+  DCHECK_EQ(e->carrier_thread_id_, GetThreadId());
+  while (true) {
+    {
+      MutexLock mu(this, *Locks::thread_list_lock_);
+      // The virtual thread is suspended by lock inflation if the count isn't 0.
+      ThreadList* thread_list = Runtime::Current()->GetThreadList();
+      e = GetMountedVirtualThreadData();
+      uint32_t suspension_count = thread_list->GetVirtualThreadSuspendCount(e->virtual_thread_id_);
+      if (suspension_count == 0) {
+        thread_list->RemoveMountedVirtualThread(e);
+        SetMountedVirtualThreadData(nullptr);
+        return true;
+      }
+    }
+
+    if (!spin) {
+      return false;
+    }
+
+    {
+      ScopedThreadSuspension(this, ThreadState::kWaitingForLockInflation);  // NOLINT
+      usleep(kVirtualThreadSuspendSleepUs);
+    }
+  }
 }
 
 void Thread::ShortDump(std::ostream& os) const {
@@ -1838,11 +1988,11 @@ bool Thread::RequestSynchronousCheckpoint(Closure* function, ThreadState wait_st
       // This waits while holding the mutator lock. Effectively `self` becomes
       // impossible to suspend until `this` responds to the suspend request.
       // Arguably that's not making anything qualitatively worse.
-      bool success = !Runtime::Current()
-                          ->GetThreadList()
-                          ->WaitForSuspendBarrier(&wrapped_barrier.barrier_)
-                          .has_value();
-      CHECK(success);
+      auto opt_fail_string = Runtime::Current()->GetThreadList()->WaitForSuspendBarrier(
+          self, &wrapped_barrier.barrier_);
+      if (opt_fail_string.has_value()) {
+        AbortInThis("Synchronous checkpoint failed to suspend: " + opt_fail_string.value());
+      }
     }
 
     // Ensure that the flip function for this thread, if pending, is finished *before*
@@ -2498,7 +2648,7 @@ Thread::DumpOrder Thread::DumpStack(std::ostream& os,
                                     bool dump_native_stack,
                                     bool force_dump_stack) const {
   unwindstack::AndroidLocalUnwinder unwinder;
-  unwinder.set_check_global_elf_cache(true);
+  unwinder.set_use_global_elf_cache(true);
   return DumpStack(os, unwinder, dump_native_stack, force_dump_stack);
 }
 
@@ -2521,11 +2671,7 @@ Thread::DumpOrder Thread::DumpStack(std::ostream& os,
     uint64_t nanotime = NanoTime();
     // If we're currently in native code, dump that stack before dumping the managed stack.
     if (dump_native_stack && (dump_for_abort || force_dump_stack || ShouldShowNativeStack(this))) {
-      ArtMethod* method =
-          GetCurrentMethod(nullptr,
-                           /*check_suspended=*/ !force_dump_stack,
-                           /*abort_on_error=*/ !(dump_for_abort || force_dump_stack));
-      DumpNativeStack(os, unwinder, GetTid(), "  native: ", method);
+      DumpNativeStack(os, unwinder, GetTid(), "  native: ");
     }
     dump_order = DumpJavaStack(os,
                                /*check_suspended=*/ !force_dump_stack,
@@ -2842,6 +2988,16 @@ Thread::~Thread() {
   if (initialized) {
     CleanupCpu();
   }
+
+#ifdef ART_USE_SIMULATOR
+  if (Runtime::Current()->GetImplicitStackOverflowChecks()) {
+    UnprotectStack<StackType::kSimulated>();
+  }
+
+  if (tlsPtr_.sim_data.sim_executor != nullptr) {
+    delete tlsPtr_.sim_data.sim_executor;
+  }
+#endif
 
   SetCachedThreadName(nullptr);  // Deallocate name.
   delete tlsPtr_.deps_or_stack_trace_sample.stack_trace_sample;
@@ -3299,20 +3455,22 @@ static ObjPtr<mirror::StackTraceElement> CreateStackTraceElement(
       soa.Self()->AssertPendingOOMException();
       return nullptr;
     }
+    char source_file_buffer[64];
     const char* source_file = method->GetDeclaringClassSourceFile();
+    if (source_file == nullptr) {
+      // Create artificial filename based on SHA1 of the dex file.
+      DexFile::Sha1 hash = method->GetDeclaringClass()->GetDexFile().GetSha1();
+      snprintf(source_file_buffer, sizeof(source_file_buffer), "dex-id-%s", hash.ToHex().data());
+      source_file = source_file_buffer;
+    }
+    source_name_object.Assign(mirror::String::AllocFromModifiedUtf8(soa.Self(), source_file));
+    if (source_name_object == nullptr) {
+      soa.Self()->AssertPendingOOMException();
+      return nullptr;
+    }
     if (line_number == -1) {
       // Make the line_number field of StackTraceElement hold the dex pc.
-      // source_name_object is intentionally left null if we failed to map the dex pc to
-      // a line number (most probably because there is no debug info). See b/30183883.
       line_number = static_cast<int32_t>(dex_pc);
-    } else {
-      if (source_file != nullptr) {
-        source_name_object.Assign(mirror::String::AllocFromModifiedUtf8(soa.Self(), source_file));
-        if (source_name_object == nullptr) {
-          soa.Self()->AssertPendingOOMException();
-          return nullptr;
-        }
-      }
     }
   }
   const char* method_name = method->GetInterfaceMethodIfProxy(kRuntimePointerSize)->GetName();
@@ -3911,172 +4069,14 @@ void Thread::DumpThreadOffset(std::ostream& os, uint32_t offset) {
   JNI_ENTRY_POINT_INFO(pDlsymLookupCritical)
 #undef JNI_ENTRY_POINT_INFO
 
-#define QUICK_ENTRY_POINT_INFO(x) \
-    if (QUICK_ENTRYPOINT_OFFSET(ptr_size, x).Uint32Value() == offset) { \
-      os << #x; \
+#define QUICK_ENTRY_POINT_INFO(x, ...) \
+    if (QUICK_ENTRYPOINT_OFFSET(ptr_size, p ## x).Uint32Value() == offset) { \
+      os << "p" # x; \
       return; \
     }
-  QUICK_ENTRY_POINT_INFO(pAllocArrayResolved)
-  QUICK_ENTRY_POINT_INFO(pAllocArrayResolved8)
-  QUICK_ENTRY_POINT_INFO(pAllocArrayResolved16)
-  QUICK_ENTRY_POINT_INFO(pAllocArrayResolved32)
-  QUICK_ENTRY_POINT_INFO(pAllocArrayResolved64)
-  QUICK_ENTRY_POINT_INFO(pAllocObjectResolved)
-  QUICK_ENTRY_POINT_INFO(pAllocObjectInitialized)
-  QUICK_ENTRY_POINT_INFO(pAllocObjectWithChecks)
-  QUICK_ENTRY_POINT_INFO(pAllocStringObject)
-  QUICK_ENTRY_POINT_INFO(pAllocStringFromBytes)
-  QUICK_ENTRY_POINT_INFO(pAllocStringFromChars)
-  QUICK_ENTRY_POINT_INFO(pAllocStringFromString)
-  QUICK_ENTRY_POINT_INFO(pInstanceofNonTrivial)
-  QUICK_ENTRY_POINT_INFO(pCheckInstanceOf)
-  QUICK_ENTRY_POINT_INFO(pInitializeStaticStorage)
-  QUICK_ENTRY_POINT_INFO(pResolveTypeAndVerifyAccess)
-  QUICK_ENTRY_POINT_INFO(pResolveType)
-  QUICK_ENTRY_POINT_INFO(pResolveString)
-  QUICK_ENTRY_POINT_INFO(pSet8Instance)
-  QUICK_ENTRY_POINT_INFO(pSet8Static)
-  QUICK_ENTRY_POINT_INFO(pSet16Instance)
-  QUICK_ENTRY_POINT_INFO(pSet16Static)
-  QUICK_ENTRY_POINT_INFO(pSet32Instance)
-  QUICK_ENTRY_POINT_INFO(pSet32Static)
-  QUICK_ENTRY_POINT_INFO(pSet64Instance)
-  QUICK_ENTRY_POINT_INFO(pSet64Static)
-  QUICK_ENTRY_POINT_INFO(pSetObjInstance)
-  QUICK_ENTRY_POINT_INFO(pSetObjStatic)
-  QUICK_ENTRY_POINT_INFO(pGetByteInstance)
-  QUICK_ENTRY_POINT_INFO(pGetBooleanInstance)
-  QUICK_ENTRY_POINT_INFO(pGetByteStatic)
-  QUICK_ENTRY_POINT_INFO(pGetBooleanStatic)
-  QUICK_ENTRY_POINT_INFO(pGetShortInstance)
-  QUICK_ENTRY_POINT_INFO(pGetCharInstance)
-  QUICK_ENTRY_POINT_INFO(pGetShortStatic)
-  QUICK_ENTRY_POINT_INFO(pGetCharStatic)
-  QUICK_ENTRY_POINT_INFO(pGet32Instance)
-  QUICK_ENTRY_POINT_INFO(pGet32Static)
-  QUICK_ENTRY_POINT_INFO(pGet64Instance)
-  QUICK_ENTRY_POINT_INFO(pGet64Static)
-  QUICK_ENTRY_POINT_INFO(pGetObjInstance)
-  QUICK_ENTRY_POINT_INFO(pGetObjStatic)
-  QUICK_ENTRY_POINT_INFO(pAputObject)
-  QUICK_ENTRY_POINT_INFO(pJniMethodStart)
-  QUICK_ENTRY_POINT_INFO(pJniMethodEnd)
-  QUICK_ENTRY_POINT_INFO(pJniMethodEntryHook)
-  QUICK_ENTRY_POINT_INFO(pJniDecodeReferenceResult)
-  QUICK_ENTRY_POINT_INFO(pJniLockObject)
-  QUICK_ENTRY_POINT_INFO(pJniUnlockObject)
-  QUICK_ENTRY_POINT_INFO(pQuickGenericJniTrampoline)
-  QUICK_ENTRY_POINT_INFO(pLockObject)
-  QUICK_ENTRY_POINT_INFO(pUnlockObject)
-  QUICK_ENTRY_POINT_INFO(pCmpgDouble)
-  QUICK_ENTRY_POINT_INFO(pCmpgFloat)
-  QUICK_ENTRY_POINT_INFO(pCmplDouble)
-  QUICK_ENTRY_POINT_INFO(pCmplFloat)
-  QUICK_ENTRY_POINT_INFO(pCos)
-  QUICK_ENTRY_POINT_INFO(pSin)
-  QUICK_ENTRY_POINT_INFO(pAcos)
-  QUICK_ENTRY_POINT_INFO(pAsin)
-  QUICK_ENTRY_POINT_INFO(pAtan)
-  QUICK_ENTRY_POINT_INFO(pAtan2)
-  QUICK_ENTRY_POINT_INFO(pCbrt)
-  QUICK_ENTRY_POINT_INFO(pCosh)
-  QUICK_ENTRY_POINT_INFO(pExp)
-  QUICK_ENTRY_POINT_INFO(pExpm1)
-  QUICK_ENTRY_POINT_INFO(pHypot)
-  QUICK_ENTRY_POINT_INFO(pLog)
-  QUICK_ENTRY_POINT_INFO(pLog10)
-  QUICK_ENTRY_POINT_INFO(pNextAfter)
-  QUICK_ENTRY_POINT_INFO(pSinh)
-  QUICK_ENTRY_POINT_INFO(pTan)
-  QUICK_ENTRY_POINT_INFO(pTanh)
-  QUICK_ENTRY_POINT_INFO(pFmod)
-  QUICK_ENTRY_POINT_INFO(pL2d)
-  QUICK_ENTRY_POINT_INFO(pFmodf)
-  QUICK_ENTRY_POINT_INFO(pL2f)
-  QUICK_ENTRY_POINT_INFO(pD2iz)
-  QUICK_ENTRY_POINT_INFO(pF2iz)
-  QUICK_ENTRY_POINT_INFO(pIdivmod)
-  QUICK_ENTRY_POINT_INFO(pD2l)
-  QUICK_ENTRY_POINT_INFO(pF2l)
-  QUICK_ENTRY_POINT_INFO(pLdiv)
-  QUICK_ENTRY_POINT_INFO(pLmod)
-  QUICK_ENTRY_POINT_INFO(pLmul)
-  QUICK_ENTRY_POINT_INFO(pShlLong)
-  QUICK_ENTRY_POINT_INFO(pShrLong)
-  QUICK_ENTRY_POINT_INFO(pUshrLong)
-  QUICK_ENTRY_POINT_INFO(pIndexOf)
-  QUICK_ENTRY_POINT_INFO(pStringCompareTo)
-  QUICK_ENTRY_POINT_INFO(pMemcpy)
-  QUICK_ENTRY_POINT_INFO(pQuickImtConflictTrampoline)
-  QUICK_ENTRY_POINT_INFO(pQuickResolutionTrampoline)
-  QUICK_ENTRY_POINT_INFO(pQuickToInterpreterBridge)
-  QUICK_ENTRY_POINT_INFO(pInvokeDirectTrampolineWithAccessCheck)
-  QUICK_ENTRY_POINT_INFO(pInvokeInterfaceTrampolineWithAccessCheck)
-  QUICK_ENTRY_POINT_INFO(pInvokeStaticTrampolineWithAccessCheck)
-  QUICK_ENTRY_POINT_INFO(pInvokeSuperTrampolineWithAccessCheck)
-  QUICK_ENTRY_POINT_INFO(pInvokeVirtualTrampolineWithAccessCheck)
-  QUICK_ENTRY_POINT_INFO(pInvokePolymorphic)
-  QUICK_ENTRY_POINT_INFO(pInvokePolymorphicWithHiddenReceiver)
-  QUICK_ENTRY_POINT_INFO(pTestSuspend)
-  QUICK_ENTRY_POINT_INFO(pDeliverException)
-  QUICK_ENTRY_POINT_INFO(pThrowArrayBounds)
-  QUICK_ENTRY_POINT_INFO(pThrowDivZero)
-  QUICK_ENTRY_POINT_INFO(pThrowNullPointer)
-  QUICK_ENTRY_POINT_INFO(pThrowStackOverflow)
-  QUICK_ENTRY_POINT_INFO(pDeoptimize)
-  QUICK_ENTRY_POINT_INFO(pA64Load)
-  QUICK_ENTRY_POINT_INFO(pA64Store)
-  QUICK_ENTRY_POINT_INFO(pNewEmptyString)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromBytes_B)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromBytes_BB)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromBytes_BI)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromBytes_BII)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromBytes_BIII)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromBytes_BIIString)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromBytes_BString)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromBytes_BIICharset)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromBytes_BCharset)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromChars_C)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromChars_CII)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromChars_IIC)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromCodePoints)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromString)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromStringBuffer)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromStringBuilder)
-  QUICK_ENTRY_POINT_INFO(pNewStringFromUtf16Bytes_BII)
-  QUICK_ENTRY_POINT_INFO(pJniReadBarrier)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg00)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg01)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg02)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg03)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg04)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg05)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg06)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg07)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg08)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg09)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg10)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg11)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg12)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg13)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg14)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg15)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg16)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg17)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg18)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg19)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg20)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg21)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg22)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg23)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg24)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg25)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg26)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg27)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg28)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierMarkReg29)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierSlow)
-  QUICK_ENTRY_POINT_INFO(pReadBarrierForRootSlow)
+#include "entrypoints/quick/quick_entrypoints_list.h"
+  QUICK_ENTRYPOINT_LIST(QUICK_ENTRY_POINT_INFO)
+#undef QUICK_ENTRYPOINT_LIST
 #undef QUICK_ENTRY_POINT_INFO
 
   os << offset;
@@ -4231,7 +4231,7 @@ ArtMethod* Thread::GetCurrentMethod(uint32_t* dex_pc_out,
 }
 
 bool Thread::HoldsLock(ObjPtr<mirror::Object> object) const {
-  return object != nullptr && object->GetLockOwnerThreadId() == GetThreadId();
+  return object != nullptr && object->IsLockOwnedByMe(this);
 }
 
 extern std::vector<StackReference<mirror::Object>*> GetProxyReferenceArguments(ArtMethod** sp)
@@ -4530,7 +4530,8 @@ class ReferenceMapVisitor : public StackVisitor {
             code_info(_code_info),
             dex_register_map(code_info.GetDexRegisterMapOf(map)),
             visitor(_visitor) {
-        DCHECK_EQ(dex_register_map.size(), number_of_dex_registers);
+        DCHECK_IMPLIES(code_info.IsDebuggable(), dex_register_map.size() == number_of_dex_registers)
+            << method->PrettyMethod();
       }
 
       // TODO: If necessary, we should consider caching a reverse map instead of the linear
@@ -4540,6 +4541,14 @@ class ReferenceMapVisitor : public StackVisitor {
                         mirror::Object** ref,
                         const StackVisitor* stack_visitor)
           REQUIRES_SHARED(Locks::mutator_lock_) {
+        if (dex_register_map.empty() && number_of_dex_registers != 0) {
+          // It is possible to see optimized code that isn't compiled with
+          // debuggable even in debuggable runtimes. For ex: zygote frames.
+          DCHECK(!code_info.IsDebuggable());
+          visitor(ref, JavaFrameRootInfo::kImpreciseVreg, stack_visitor);
+          return;
+        }
+
         bool found = false;
         for (size_t dex_reg = 0; dex_reg != number_of_dex_registers; ++dex_reg) {
           DexRegisterLocation location = dex_register_map[dex_reg];
@@ -4671,84 +4680,11 @@ void Thread::VisitRoots(RootVisitor* visitor) {
 }
 #pragma GCC diagnostic pop
 
-static void SweepCacheEntry(IsMarkedVisitor* visitor, const Instruction* inst, size_t* value)
-    REQUIRES_SHARED(Locks::mutator_lock_) {
-  if (inst == nullptr) {
-    return;
-  }
-  using Opcode = Instruction::Code;
-  Opcode opcode = inst->Opcode();
-  switch (opcode) {
-    case Opcode::NEW_INSTANCE:
-    case Opcode::CHECK_CAST:
-    case Opcode::INSTANCE_OF:
-    case Opcode::NEW_ARRAY:
-    case Opcode::CONST_CLASS: {
-      mirror::Class* klass = reinterpret_cast<mirror::Class*>(*value);
-      if (klass == nullptr || klass == Runtime::GetWeakClassSentinel()) {
-        return;
-      }
-      mirror::Class* new_klass = down_cast<mirror::Class*>(visitor->IsMarked(klass));
-      if (new_klass == nullptr) {
-        *value = reinterpret_cast<size_t>(Runtime::GetWeakClassSentinel());
-      } else if (new_klass != klass) {
-        *value = reinterpret_cast<size_t>(new_klass);
-      }
-      return;
-    }
-    case Opcode::CONST_STRING:
-    case Opcode::CONST_STRING_JUMBO: {
-      mirror::Object* object = reinterpret_cast<mirror::Object*>(*value);
-      if (object == nullptr) {
-        return;
-      }
-      mirror::Object* new_object = visitor->IsMarked(object);
-      // We know the string is marked because it's a strongly-interned string that
-      // is always alive (see b/117621117 for trying to make those strings weak).
-      if (kIsDebugBuild && new_object == nullptr) {
-        // (b/275005060) Currently the problem is reported only on CC GC.
-        // Therefore we log it with more information. But since the failure rate
-        // is quite high, sampling it.
-        if (gUseReadBarrier) {
-          Runtime* runtime = Runtime::Current();
-          gc::collector::ConcurrentCopying* cc = runtime->GetHeap()->ConcurrentCopyingCollector();
-          CHECK_NE(cc, nullptr);
-          LOG(FATAL) << cc->DumpReferenceInfo(object, "string")
-                     << " string interned: " << std::boolalpha
-                     << runtime->GetInternTable()->LookupStrong(Thread::Current(),
-                                                                down_cast<mirror::String*>(object))
-                     << std::noboolalpha;
-        } else {
-          // Other GCs
-          LOG(FATAL) << __FUNCTION__
-                     << ": IsMarked returned null for a strongly interned string: " << object;
-        }
-      } else if (new_object != object) {
-        *value = reinterpret_cast<size_t>(new_object);
-      }
-      return;
-    }
-    default:
-      // The following opcode ranges store non-reference values.
-      if ((Opcode::IGET <= opcode && opcode <= Opcode::SPUT_SHORT) ||
-          (Opcode::INVOKE_VIRTUAL <= opcode && opcode <= Opcode::INVOKE_INTERFACE_RANGE)) {
-        return;  // Nothing to do for the GC.
-      }
-      // New opcode is using the cache. We need to explicitly handle it in this method.
-      DCHECK(false) << "Unhandled opcode " << inst->Opcode();
-  }
-}
-
-void Thread::SweepInterpreterCache(IsMarkedVisitor* visitor) {
-  for (InterpreterCache::Entry& entry : GetInterpreterCache()->GetArray()) {
-    SweepCacheEntry(visitor, reinterpret_cast<const Instruction*>(entry.first), &entry.second);
-  }
-}
-
 // FIXME: clang-r433403 reports the below function exceeds frame size limit.
 // http://b/197647048
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wframe-larger-than="
+NO_INLINE
 void Thread::VisitRoots(RootVisitor* visitor, VisitRootFlags flags) {
   if ((flags & VisitRootFlags::kVisitRootFlagPrecise) != 0) {
     VisitRoots</* kPrecise= */ true>(visitor);
@@ -4811,6 +4747,15 @@ void Thread::AdjustTlab(size_t slide_bytes) {
 
 std::ostream& operator<<(std::ostream& os, const Thread& thread) {
   thread.ShortDump(os);
+  return os;
+}
+
+std::ostream& operator<<(std::ostream& os, const MountedVirtualThreadData& data) {
+  os << "MountedVirtualThreadData["
+    << "carrier=" << data.carrier_thread_id_
+    << ",virtual=" << data.virtual_thread_id_
+    << ",flag=" << std::hex << data.flags_ << std::dec
+    << "]";
   return os;
 }
 
@@ -5169,7 +5114,17 @@ int Thread::SetNativeNiceness(int niceness) {
 int Thread::GetNativeNiceness() const {
   errno = 0;
   int niceness = getpriority(PRIO_PROCESS, static_cast<id_t>(GetTid()));
-  CHECK(niceness != -1 || errno == 0) << " " << strerror(errno);
+  if (niceness == -1 && errno != 0) {
+    LOG(gAborting == 0 ? FATAL_WITHOUT_ABORT : ERROR)
+        << "getpriority() in GetNativeNiceness() failed: " << strerror(errno);
+    // This may mean the world is badly broken. Tread carefully, producing as much information as
+    // possible before crashing, one way or another.
+    LOG(gAborting == 0 ? FATAL_WITHOUT_ABORT : ERROR) << "\ttid: " << GetTid();
+    std::string name;
+    GetThreadName(name);
+    LOG(gAborting == 0 ? FATAL : ERROR) << "\tthread name: " << name;
+    niceness = 19;  // A valid result that will hopefully stand out.
+  }
   return niceness;
 }
 

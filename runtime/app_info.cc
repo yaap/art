@@ -74,10 +74,10 @@ void AppInfo::RegisterAppInfo(const std::string& package_name,
   }
 }
 
-void AppInfo::RegisterOdexStatus(const std::string& code_path,
-                                 const std::string& compiler_filter,
-                                 const std::string& compilation_reason,
-                                 const std::string& odex_status) {
+AppInfo::CodeType AppInfo::RegisterOdexStatus(const std::string& code_path,
+                                              const std::string& compiler_filter,
+                                              const std::string& compilation_reason,
+                                              const std::string& odex_status) {
   MutexLock mu(Thread::Current(), update_mutex_);
 
   CodeLocationInfo& cli = registered_code_locations_.GetOrCreate(
@@ -91,6 +91,7 @@ void AppInfo::RegisterOdexStatus(const std::string& code_path,
         << "\ncompiler_filter=" << compiler_filter
         << "\ncompilation_reason=" << compilation_reason
         << "\nodex_status=" << odex_status;
+  return cli.code_type;
 }
 
 bool AppInfo::HasRegisteredAppInfo() {
@@ -121,6 +122,14 @@ AppInfo::CodeType AppInfo::GetRegisteredCodeType(const std::string& code_path) {
 
   const auto it = registered_code_locations_.find(code_path);
   return it != registered_code_locations_.end() ? it->second.code_type : CodeType::kUnknown;
+}
+
+std::string AppInfo::GetCompilerFilter(const std::string& code_path) {
+  MutexLock mu(Thread::Current(), update_mutex_);
+  const auto it = registered_code_locations_.find(code_path);
+  return it != registered_code_locations_.end()
+      ? it->second.compiler_filter.value_or(kUnknownValue)
+      : kUnknownValue;
 }
 
 std::ostream& operator<<(std::ostream& os, AppInfo& rhs) {

@@ -158,7 +158,12 @@ class OdRefreshTest : public CommonArtTest {
     android_root_env_ = std::make_unique<ScopedUnsetEnvironmentVariable>("ANDROID_ROOT");
     setenv("ANDROID_ROOT", android_root_path.c_str(), kReplace);
 
-    std::string android_art_root_path = temp_dir_path + "/apex/com.android.art";
+    android_apex_root_path_ = temp_dir_path + "/apex/";
+    ASSERT_TRUE(EnsureDirectoryExists(android_apex_root_path_));
+    android_apex_root_env_ = std::make_unique<ScopedUnsetEnvironmentVariable>("ANDROID_APEX_ROOT");
+    setenv("ANDROID_APEX_ROOT", android_apex_root_path_.c_str(), kReplace);
+
+    std::string android_art_root_path = android_apex_root_path_ + "com.android.art";
     ASSERT_TRUE(EnsureDirectoryExists(android_art_root_path));
     android_art_root_env_ = std::make_unique<ScopedUnsetEnvironmentVariable>("ANDROID_ART_ROOT");
     setenv("ANDROID_ART_ROOT", android_art_root_path.c_str(), kReplace);
@@ -193,9 +198,9 @@ class OdRefreshTest : public CommonArtTest {
     services_jar_profile_ = framework_dir_ + "/services.jar.prof";
     std::string art_javalib_dir = android_art_root_path + "/javalib";
     core_oj_jar_ = art_javalib_dir + "/core-oj.jar";
-    std::string conscrypt_javalib_dir = temp_dir_path + "/apex/com.android.conscrypt/javalib";
+    std::string conscrypt_javalib_dir = android_apex_root_path_ + "com.android.conscrypt/javalib";
     conscrypt_jar_ = conscrypt_javalib_dir + "/conscrypt.jar";
-    std::string wifi_javalib_dir = temp_dir_path + "/apex/com.android.wifi/javalib";
+    std::string wifi_javalib_dir = android_apex_root_path_ + "com.android.wifi/javalib";
     framework_wifi_jar_ = wifi_javalib_dir + "/framework-wifi.jar";
 
     // Create placeholder files.
@@ -248,6 +253,7 @@ class OdRefreshTest : public CommonArtTest {
     metrics_.reset();
     temp_dir_.reset();
     android_root_env_.reset();
+    android_apex_root_env_.reset();
     android_art_root_env_.reset();
     art_apex_data_env_.reset();
 
@@ -256,6 +262,7 @@ class OdRefreshTest : public CommonArtTest {
 
   std::unique_ptr<ScratchDir> temp_dir_;
   std::unique_ptr<ScopedUnsetEnvironmentVariable> android_root_env_;
+  std::unique_ptr<ScopedUnsetEnvironmentVariable> android_apex_root_env_;
   std::unique_ptr<ScopedUnsetEnvironmentVariable> android_art_root_env_;
   std::unique_ptr<ScopedUnsetEnvironmentVariable> art_apex_data_env_;
   OdrConfig config_;
@@ -275,6 +282,7 @@ class OdRefreshTest : public CommonArtTest {
   std::string framework_dir_;
   std::string framework_profile_;
   std::string art_profile_;
+  std::string android_apex_root_path_;
   std::string services_jar_profile_;
   std::string dirty_image_objects_file_;
   std::string preloaded_classes_file_;
@@ -349,6 +357,47 @@ TEST_F(OdRefreshTest, BootImageMainlineExtension) {
                 CompilationOptions{
                     .boot_images_to_generate_for_isas{
                         {InstructionSet::kX86_64, {.boot_image_mainline_extension = true}}},
+                }),
+            ExitCode::kCompilationSuccess);
+}
+
+TEST_F(OdRefreshTest, BootImageMainlineExtensionWithProfile) {
+  // Create a profile for the mainline module (conscrypt).
+  std::string conscrypt_etc_dir_ = android_apex_root_path_ + "com.android.conscrypt/etc";
+  ASSERT_TRUE(EnsureDirectoryExists(conscrypt_etc_dir_));
+  std::string conscrypt_profile = conscrypt_etc_dir_ + "/boot-image.prof";
+  CreateEmptyFile(conscrypt_profile);
+
+  EXPECT_CALL(*mock_exec_utils_,
+              DoExecAndReturnCode(AllOf(Contains(Flag("--dex-file=", conscrypt_jar_)),
+                                        Contains(Flag("--profile-file-fd=", FdOf(conscrypt_profile))),
+                                        Contains("--compiler-filter=speed-profile"))))
+      .WillOnce(Return(0));
+
+  EXPECT_EQ(odrefresh_->Compile(
+                *metrics_,
+                CompilationOptions{
+                    .boot_images_to_generate_for_isas{
+                        {InstructionSet::kX86_64,
+                          {.primary_boot_image = false, .boot_image_mainline_extension = true}}},
+                }),
+            ExitCode::kCompilationSuccess);
+}
+
+TEST_F(OdRefreshTest, BootImageMainlineExtensionWithoutProfile) {
+  // No profile exists for the mainline module (conscrypt).
+  EXPECT_CALL(*mock_exec_utils_,
+              DoExecAndReturnCode(AllOf(Contains(Flag("--dex-file=", conscrypt_jar_)),
+                                        Not(Contains(Flag("--profile-file-fd=", _))),
+                                        Contains("--compiler-filter=verify"))))
+      .WillOnce(Return(0));
+
+  EXPECT_EQ(odrefresh_->Compile(
+                *metrics_,
+                CompilationOptions{
+                    .boot_images_to_generate_for_isas{
+                        {InstructionSet::kX86_64,
+                          {.primary_boot_image = false, .boot_image_mainline_extension = true}}},
                 }),
             ExitCode::kCompilationSuccess);
 }

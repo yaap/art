@@ -33,6 +33,7 @@
 
 #include "art_jvmti.h"
 #include "mirror/object-inl.h"
+#include "monitor-inl.h"
 #include "scoped_thread_state_change-inl.h"
 #include "thread-current-inl.h"
 #include "thread_list.h"
@@ -96,8 +97,15 @@ jvmtiError ObjectUtil::GetObjectMonitorUsage(
     art::ObjPtr<art::mirror::Object> target(self->DecodeJObject(obj));
     // This gets the list of threads trying to lock or wait on the monitor.
     art::MonitorInfo info(target.Ptr());
-    usage->owner = info.owner_ != nullptr ?
-        jni->AddLocalReference<jthread>(info.owner_->GetPeerFromOtherThread()) : nullptr;
+    if (info.owner_ == nullptr) {
+      usage->owner = nullptr;
+    } else if (info.owner_.IsVirtualThread()) {
+      // TODO(b/460438903): Return the virtual thread peer object.
+      usage->owner = nullptr;
+    } else {
+      usage->owner =
+          jni->AddLocalReference<jthread>(info.owner_.GetThreadPtr()->GetPeerFromOtherThread());
+    }
     usage->entry_count = info.entry_count_;
     for (art::Thread* thd : info.waiters_) {
       // RI seems to consider waiting for notify to be included in those waiting to acquire the

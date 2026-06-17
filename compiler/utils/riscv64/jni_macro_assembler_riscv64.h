@@ -26,8 +26,8 @@
 #include "assembler_riscv64.h"
 #include "base/arena_containers.h"
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "base/pointer_size.h"
-#include "offsets.h"
 #include "utils/assembler.h"
 #include "utils/jni_macro_assembler.h"
 

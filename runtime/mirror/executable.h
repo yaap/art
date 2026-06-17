@@ -37,6 +37,8 @@ class MANAGED Executable : public AccessibleObject {
 
   template<VerifyObjectFlags kVerifyFlags = kDefaultVerifyFlags>
   ArtMethod* GetArtMethod() REQUIRES_SHARED(Locks::mutator_lock_) {
+    // This method can return nullptr for Constructor objects constructed via
+    // Constructor::serializationCopy.
     return reinterpret_cast64<ArtMethod*>(GetField64<kVerifyFlags>(ArtMethodOffset()));
   }
 

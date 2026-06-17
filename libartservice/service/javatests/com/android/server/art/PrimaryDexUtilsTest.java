@@ -16,8 +16,6 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.PrimaryDexUtils.DetailedPrimaryDexInfo;
-import static com.android.server.art.PrimaryDexUtils.PrimaryDexInfo;
 import static com.android.server.art.testing.TestDataHelper.newLibrary;
 import static com.android.server.art.testing.TestDataHelper.newPackageState;
 import static com.android.server.art.testing.TestDataHelper.newSplit;
@@ -31,6 +29,8 @@ import android.util.Pair;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.server.art.PrimaryDexUtils.DetailedPrimaryDexInfo;
+import com.android.server.art.PrimaryDexUtils.PrimaryDexInfo;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.AndroidPackageSplit;
 import com.android.server.pm.pkg.PackageState;

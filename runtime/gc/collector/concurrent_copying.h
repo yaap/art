@@ -18,10 +18,10 @@
 #define ART_RUNTIME_GC_COLLECTOR_CONCURRENT_COPYING_H_
 
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "garbage_collector.h"
 #include "gc/accounting/space_bitmap.h"
 #include "immune_spaces.h"
-#include "offsets.h"
 
 #include <map>
 #include <memory>
@@ -332,6 +332,8 @@ class ConcurrentCopying : public GarbageCollector {
   void AddThreadMarkStackMapping(Thread* thread, accounting::ObjectStack* tl_mark_stack)
       REQUIRES(mark_stack_lock_);
   void AssertEmptyThreadMarkStackMap() REQUIRES(mark_stack_lock_);
+  void VerifyLargeObject(mirror::Object* ref, mirror::Object* holder, MemberOffset offset)
+      REQUIRES_SHARED(Locks::mutator_lock_);
 
   space::RegionSpace* region_space_;      // The underlying region space.
   std::unique_ptr<Barrier> gc_barrier_;

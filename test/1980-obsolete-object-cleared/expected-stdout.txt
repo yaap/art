@@ -250,6 +250,8 @@ Calling public boolean java.lang.Class.isFinalizable() with params: []
 public boolean java.lang.Class.isFinalizable() with [] throws java.lang.reflect.InvocationTargetException: java.lang.RuntimeException: Obsolete Object!
 Calling public boolean java.lang.Class.isHidden() with params: []
 public boolean java.lang.Class.isHidden() on (obsolete)class Main$Transform with [] = false
+Calling public boolean java.lang.Class.isIdentity() with params: []
+public boolean java.lang.Class.isIdentity() on (obsolete)class Main$Transform with [] = true
 Calling public boolean java.lang.Class.isInstance(java.lang.Object) with params: [[null, foo, NOT_USED_STRING, class Main$Transform]]
 public boolean java.lang.Class.isInstance(java.lang.Object) on (obsolete)class Main$Transform with [null] = false
 public boolean java.lang.Class.isInstance(java.lang.Object) on (obsolete)class Main$Transform with [foo] = false
@@ -278,6 +280,8 @@ Calling public boolean java.lang.Class.isSealed() with params: []
 public boolean java.lang.Class.isSealed() with [] throws java.lang.reflect.InvocationTargetException: java.lang.RuntimeException: Obsolete Object!
 Calling public boolean java.lang.Class.isSynthetic() with params: []
 public boolean java.lang.Class.isSynthetic() with [] throws java.lang.reflect.InvocationTargetException: java.lang.RuntimeException: Obsolete Object!
+Calling public native boolean java.lang.Class.isValue() with params: []
+public native boolean java.lang.Class.isValue() on (obsolete)class Main$Transform with [] = false
 Calling public native java.lang.Object java.lang.Class.newInstance() throws java.lang.InstantiationException,java.lang.IllegalAccessException with params: []
 public native java.lang.Object java.lang.Class.newInstance() throws java.lang.InstantiationException,java.lang.IllegalAccessException with [] throws java.lang.reflect.InvocationTargetException: java.lang.RuntimeException: Obsolete Object!
 Calling public java.lang.String java.lang.Class.toGenericString() with params: []
@@ -522,6 +526,8 @@ Calling public boolean java.lang.Class.isFinalizable() with params: []
 public boolean java.lang.Class.isFinalizable() on class Main$Transform with [] = false
 Calling public boolean java.lang.Class.isHidden() with params: []
 public boolean java.lang.Class.isHidden() on class Main$Transform with [] = false
+Calling public boolean java.lang.Class.isIdentity() with params: []
+public boolean java.lang.Class.isIdentity() on class Main$Transform with [] = true
 Calling public boolean java.lang.Class.isInstance(java.lang.Object) with params: [[null, foo, NOT_USED_STRING, class Main$Transform]]
 public boolean java.lang.Class.isInstance(java.lang.Object) on class Main$Transform with [null] = false
 public boolean java.lang.Class.isInstance(java.lang.Object) on class Main$Transform with [foo] = false
@@ -550,6 +556,8 @@ Calling public boolean java.lang.Class.isSealed() with params: []
 public boolean java.lang.Class.isSealed() on class Main$Transform with [] = false
 Calling public boolean java.lang.Class.isSynthetic() with params: []
 public boolean java.lang.Class.isSynthetic() on class Main$Transform with [] = false
+Calling public native boolean java.lang.Class.isValue() with params: []
+public native boolean java.lang.Class.isValue() on class Main$Transform with [] = false
 Calling public native java.lang.Object java.lang.Class.newInstance() throws java.lang.InstantiationException,java.lang.IllegalAccessException with params: []
 public native java.lang.Object java.lang.Class.newInstance() throws java.lang.InstantiationException,java.lang.IllegalAccessException on class Main$Transform with [] = Transform Instance
 Calling public java.lang.String java.lang.Class.toGenericString() with params: []

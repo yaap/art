@@ -52,7 +52,7 @@ class ElfWriterTest : public CommonCompilerDriverTest {
                 size_t bss_size,
                 size_t bss_methods_offset,
                 size_t bss_roots_offset,
-                size_t dex_section_size) {
+                size_t bss_strings_offset) {
     std::unique_ptr<ElfWriter> elf_writer = CreateElfWriterQuick(
       compiler_driver_->GetCompilerOptions(),
       oat_file);
@@ -67,7 +67,7 @@ class ElfWriterTest : public CommonCompilerDriverTest {
                                       bss_size,
                                       bss_methods_offset,
                                       bss_roots_offset,
-                                      dex_section_size);
+                                      bss_strings_offset);
 
     ASSERT_TRUE(rodata_section->WriteFully(rodata.data(), rodata.size()));
     elf_writer->EndRoData(rodata_section);
@@ -218,15 +218,14 @@ TEST_F(ElfWriterTest, CheckDynamicSection) {
                        size_t bss_size,
                        size_t bss_methods_offset,
                        size_t bss_roots_offset,
-                       size_t dex_section_size,
+                       size_t bss_strings_offset,
                        /*out*/ size_t* number_of_dynamic_symbols) {
     SCOPED_TRACE(::testing::Message()
                  << "rodata_size: " << rodata_size << ", text_size: " << text_size
                  << ", data_img_rel_ro_size: " << data_img_rel_ro_size
                  << ", data_img_rel_ro_app_image_offset: " << data_img_rel_ro_app_image_offset
                  << ", bss_size: " << bss_size << ", bss_methods_offset: " << bss_methods_offset
-                 << ", bss_roots_offset: " << bss_roots_offset
-                 << ", dex_section_size: " << dex_section_size);
+                 << ", bss_roots_offset: " << bss_roots_offset);
 
     *number_of_dynamic_symbols = 1;  // "oatdata".
     std::vector<uint8_t> rodata(rodata_size, 0xAA);
@@ -244,7 +243,7 @@ TEST_F(ElfWriterTest, CheckDynamicSection) {
              bss_size,
              bss_methods_offset,
              bss_roots_offset,
-             dex_section_size);
+             bss_strings_offset);
 
     std::string error_msg;
     std::unique_ptr<ElfFile> ef(ElfFile::Open(tmp_oat.GetFile(),
@@ -322,20 +321,17 @@ TEST_F(ElfWriterTest, CheckDynamicSection) {
           EXPECT_EQ(static_cast<size_t>(oatbssroots_ptr - bss_ptr), bss_roots_offset);
         }
 
+        if (bss_strings_offset != bss_size) {
+          *number_of_dynamic_symbols += 1;
+          const uint8_t* oatbssstrings_ptr = ef->FindDynamicSymbolAddress("oatbssstrings");
+          ASSERT_NE(oatbssstrings_ptr, nullptr);
+          EXPECT_EQ(static_cast<size_t>(oatbssstrings_ptr - bss_ptr), bss_strings_offset);
+        }
+
         const uint8_t* oatbsslastword_ptr = ef->FindDynamicSymbolAddress("oatbsslastword");
         ASSERT_NE(oatbsslastword_ptr, nullptr);
         EXPECT_EQ(static_cast<size_t>(oatbsslastword_ptr - bss_ptr), bss_size - elf_word_size);
       }
-    }
-
-    if (dex_section_size != 0u) {
-      *number_of_dynamic_symbols += 1;
-      const uint8_t* dex_ptr = ef->FindDynamicSymbolAddress("oatdex");
-      ASSERT_NE(dex_ptr, nullptr);
-      ASSERT_TRUE(IsAlignedParam(dex_ptr, page_size));
-      const uint8_t* oatdexlastword_ptr = ef->FindDynamicSymbolAddress("oatdexlastword");
-      EXPECT_EQ(static_cast<size_t>(oatdexlastword_ptr - dex_ptr),
-          dex_section_size - elf_word_size);
     }
   };
 
@@ -349,8 +345,8 @@ TEST_F(ElfWriterTest, CheckDynamicSection) {
     kBss,
     kBssMethods,
     kBssRoots,
-    kDex,
-    kLast = kDex
+    kBssStrings,
+    kLast = kBssStrings
   };
 
   constexpr size_t kNumberOfSymbols = static_cast<size_t>(Symbol::kLast) + 1;
@@ -363,8 +359,9 @@ TEST_F(ElfWriterTest, CheckDynamicSection) {
   constexpr size_t kDataImgRelRoAppImageOffset = kSectionSize / 2;
   // Offsets in .bss from its beginning. We can use any value in the range [0, kSectionSize),
   // kBssMethodsOffset should be less than or equal to kBssRootsOffset.
-  constexpr size_t kBssMethodsOffset = kSectionSize / 3;
+  constexpr size_t kBssMethodsOffset = kSectionSize / 4;
   constexpr size_t kBssRootsOffset = 2 * kBssMethodsOffset;
+  constexpr size_t kBssStringsOffset = 3 * kBssMethodsOffset;
 
   auto exists = [](Symbol symbol, const std::bitset<kNumberOfSymbols> &symbols) {
     return symbols.test(static_cast<size_t>(symbol));
@@ -381,8 +378,8 @@ TEST_F(ElfWriterTest, CheckDynamicSection) {
   // We start with the case where all symbols exist (corresponding to the bitset 11111111)
   // and continue to the case where only "oatdata" exists:
   //  11111111 - all symbols exist.
-  //  01111111 - "oatdex" doesn't exist (least significant bit corresponds to "oatdata").
-  //  00111111 - "oatdex" and "oatbss" don't exist.
+  //  01111111 - "oatbssstrings" doesn't exist (least significant bit corresponds to "oatdata").
+  //  00111111 - "oatbssstrings" and "oatbssroots" don't exist.
   //  ...
   //  00000001 - only "oatdata" exists.
   while (symbols.any()) {
@@ -391,6 +388,7 @@ TEST_F(ElfWriterTest, CheckDynamicSection) {
     DCHECK_IMPLIES(exists(Symbol::kBssMethods, symbols), exists(Symbol::kBss, symbols));
     DCHECK_IMPLIES(exists(Symbol::kBssRoots, symbols), exists(Symbol::kBss, symbols));
     DCHECK_IMPLIES(exists(Symbol::kBssRoots, symbols), exists(Symbol::kBssMethods, symbols));
+    DCHECK_IMPLIES(exists(Symbol::kBssStrings, symbols), exists(Symbol::kBssRoots, symbols));
 
     size_t data_img_rel_ro_size = get_size(Symbol::kDataImgRelRo, symbols);
     size_t bss_size = get_size(Symbol::kBss, symbols);
@@ -404,11 +402,11 @@ TEST_F(ElfWriterTest, CheckDynamicSection) {
            bss_size,
            exists(Symbol::kBssMethods, symbols) ? kBssMethodsOffset : bss_size,
            exists(Symbol::kBssRoots, symbols) ? kBssRootsOffset : bss_size,
-           get_size(Symbol::kDex, symbols),
+           exists(Symbol::kBssStrings, symbols) ? kBssStringsOffset : bss_size,
            &number_of_dynamic_symbols);
     EXPECT_EQ(number_of_dynamic_symbols, symbols.count())
-      << "number_of_dynamic_symbols: " << number_of_dynamic_symbols
-      << ", symbols: " << symbols;
+        << "number_of_dynamic_symbols: " << number_of_dynamic_symbols
+        << ", symbols: " << symbols;
     symbols >>= 1;
   }
 }

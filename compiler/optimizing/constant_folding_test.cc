@@ -900,4 +900,43 @@ TEST_F(ConstantFoldingTest, AssumeValueStaticFieldGetKnownValue) {
   TestCodeOnReadyGraph(expected_before, expected_after_cf, expected_after_dce, check_after_cf);
 }
 
+TEST_F(ConstantFoldingTest, LoadConstantTableEntryWithConstantIndex) {
+  HBasicBlock* block = InitEntryMainExitGraphWithReturnVoid();
+  HInstruction* const1 = graph_->GetIntConstant(1);
+  HInstruction* const2 = graph_->GetIntConstant(2);
+  HInstruction* const3 = graph_->GetIntConstant(3);
+  HInstruction* const4 = graph_->GetIntConstant(4);
+  HLoadConstantTableEntry* lcte_double = MakeLoadConstantTableEntry(
+      block, DataType::Type::kFloat64, const1, { 0.0, 1.0, 2.0, 3.0, 4.0, 5.0 });
+  HLoadConstantTableEntry* lcte_float = MakeLoadConstantTableEntry(
+      block, DataType::Type::kFloat32, const2, { 0.0f, -1.0f, -2.0f, -3.0f, -4.0f, -5.0f });
+  HLoadConstantTableEntry* lcte_long = MakeLoadConstantTableEntry(
+      block,
+      DataType::Type::kInt64,
+      const3,
+      { INT64_C(0), INT64_C(1), INT64_C(2), INT64_C(3), INT64_C(4), INT64_C(5) });
+  HLoadConstantTableEntry* lcte_int = MakeLoadConstantTableEntry(
+      block, DataType::Type::kInt32, const4, { 0, 1, 2, 3, 4, 5 });
+  HInvokeStaticOrDirect* invoke = MakeInvokeStatic(
+      block, DataType::Type::kVoid, {lcte_double, lcte_float, lcte_long, lcte_int});
+
+  graph_->BuildDominatorTree();
+  HConstantFolding(graph_, *compiler_options_, /* stats= */ nullptr, "constant_folding").Run();
+
+  ASSERT_INS_REMOVED(lcte_double);
+  ASSERT_TRUE(invoke->InputAt(0)->IsDoubleConstant());
+  ASSERT_EQ((bit_cast<uint64_t, double>(1.0)),
+            invoke->InputAt(0)->AsDoubleConstant()->GetValueAsUint64());
+  ASSERT_INS_REMOVED(lcte_float);
+  ASSERT_TRUE(invoke->InputAt(1)->IsFloatConstant());
+  ASSERT_EQ((bit_cast<uint32_t, float>(-2.0f)),
+            invoke->InputAt(1)->AsFloatConstant()->GetValueAsUint64());
+  ASSERT_INS_REMOVED(lcte_long);
+  ASSERT_TRUE(invoke->InputAt(2)->IsLongConstant());
+  ASSERT_EQ(INT64_C(3), invoke->InputAt(2)->AsLongConstant()->GetValue());
+  ASSERT_INS_REMOVED(lcte_int);
+  ASSERT_TRUE(invoke->InputAt(3)->IsIntConstant());
+  ASSERT_EQ(4, invoke->InputAt(3)->AsIntConstant()->GetValue());
+}
+
 }  // namespace art

@@ -18,6 +18,7 @@
 #define ART_RUNTIME_BASE_MUTEX_INL_H_
 
 #include <inttypes.h>
+#include <sched.h>
 
 #include "mutex.h"
 
@@ -235,7 +236,7 @@ inline void ReaderWriterMutex::SharedUnlock(Thread* self) {
 
 inline bool Mutex::IsExclusiveHeld(const Thread* self) const {
   DCHECK(self == nullptr || self == Thread::Current());
-  bool result = (GetExclusiveOwnerTid() == SafeGetTid(self));
+  bool result = (GetExclusiveOwnerTid() == GetSelfId((self)));
   if (kDebugLocking) {
     // Debug check that if we think it is locked we have it in our held mutexes.
     if (result && self != nullptr && level_ != kMonitorLock && !gAborting) {
@@ -251,6 +252,19 @@ inline bool Mutex::IsExclusiveHeld(const Thread* self) const {
 
 inline pid_t Mutex::GetExclusiveOwnerTid() const {
   return exclusive_owner_.load(std::memory_order_relaxed);
+}
+
+inline void Mutex::ExclusiveLockUncontendedForSelfId(pid_t selfId) {
+  DCHECK_EQ(level_, kMonitorLock);
+  DCHECK(!recursive_);
+  state_and_contenders_.store(kHeldMask, std::memory_order_relaxed);
+  recursion_count_ = 1;
+  exclusive_owner_.store(selfId, std::memory_order_relaxed);
+  // Don't call RegisterAsLocked(). It wouldn't register anything anyway.  And
+  // this happens as we're inflating a monitor, which doesn't logically affect
+  // held "locks"; it effectively just converts a thin lock to a mutex.  By doing
+  // this while the lock is already held, we're delaying the acquisition of a
+  // logically held mutex, which can introduce bogus lock order violations.
 }
 
 inline void Mutex::AssertExclusiveHeld(const Thread* self) const {

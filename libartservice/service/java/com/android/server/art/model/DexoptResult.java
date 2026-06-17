@@ -109,15 +109,17 @@ public abstract class DexoptResult {
 
     /** @hide */
     public static @NonNull DexoptResult create(@NonNull String requestedCompilerFilter,
-            @NonNull String reason, @NonNull List<PackageDexoptResult> packageDexoptResult) {
-        return new AutoValue_DexoptResult(requestedCompilerFilter, reason, packageDexoptResult);
+            @NonNull String reason, @NonNull List<PackageDexoptResult> packageDexoptResult,
+            @Nullable @DexoptResultStatus Integer overallStatus) {
+        return new AutoValue_DexoptResult(
+                requestedCompilerFilter, reason, packageDexoptResult, overallStatus);
     }
 
     /** @hide */
     @VisibleForTesting
     public static @NonNull DexoptResult create() {
-        return new AutoValue_DexoptResult(
-                "compiler-filter", "reason", List.of() /* packageDexoptResult */);
+        return new AutoValue_DexoptResult("compiler-filter", "reason",
+                List.of() /* packageDexoptResult */, null /* overallStatus */);
     }
 
     /**
@@ -140,25 +142,29 @@ public abstract class DexoptResult {
      * element is the result of the requested package.
      *
      * If the request is to dexopt a single package with {@link
-     * ArtFlags.FLAG_SHOULD_INCLUDE_DEPENDENCIES} set, the first element is the result of the
+     * ArtFlags#FLAG_SHOULD_INCLUDE_DEPENDENCIES} set, the first element is the result of the
      * requested package, and the rest are the results of the dependency packages.
      *
      * If the request is to dexopt multiple packages, the list contains the results of all the
      * requested packages. The results of their dependency packages are also included if {@link
-     * ArtFlags.FLAG_SHOULD_INCLUDE_DEPENDENCIES} is set.
+     * ArtFlags#FLAG_SHOULD_INCLUDE_DEPENDENCIES} is set.
      *
      * If the request is a batch dexopt operation that got cancelled, the list still has an entry
      * for every package that was requested to be optimized.
      */
     public abstract @NonNull List<PackageDexoptResult> getPackageDexoptResults();
 
+    /** @hide */
+    @Nullable @DexoptResultStatus public abstract Integer getOverallStatus();
+
     /** The final status. */
     public @DexoptResultStatus int getFinalStatus() {
-        return getPackageDexoptResults()
-                .stream()
-                .mapToInt(result -> result.getStatus())
-                .max()
-                .orElse(DEXOPT_SKIPPED);
+        return getOverallStatus() != null ? getOverallStatus()
+                                          : getPackageDexoptResults()
+                                                    .stream()
+                                                    .mapToInt(result -> result.getStatus())
+                                                    .max()
+                                                    .orElse(DEXOPT_SKIPPED);
     }
 
     /** @hide */

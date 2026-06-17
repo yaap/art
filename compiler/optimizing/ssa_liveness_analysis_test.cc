@@ -69,7 +69,7 @@ TEST_F(SsaLivenessAnalysisTest, TestReturnArg) {
   std::ostringstream arg_dump;
   arg->GetLiveInterval()->Dump(arg_dump);
   EXPECT_STREQ(
-      "ranges: { [4,12) }, uses: { 12 }, { } is_fixed: 0, is_split: 0 is_pair: 0",
+      "ranges: { [4,12) }, uses: { 12 }, { } fixed:0 temp:0 split:0 pair:0",
       arg_dump.str().c_str());
 }
 
@@ -96,13 +96,13 @@ TEST_F(SsaLivenessAnalysisTest, TestAput) {
   EXPECT_FALSE(graph_->IsDebuggable());
   EXPECT_EQ(36u, bounds_check->GetLifetimePosition());
   static const char* const expected[] = {
-      "ranges: { [4,41) }, uses: { 29 33 41 }, { 29 37 } is_fixed: 0, is_split: 0 is_pair: 0",
-      "ranges: { [8,41) }, uses: { 37 41 }, { } is_fixed: 0, is_split: 0 is_pair: 0",
-      "ranges: { [12,41) }, uses: { 41 }, { } is_fixed: 0, is_split: 0 is_pair: 0",
+      "ranges: { [4,41) }, uses: { 29 33 41 }, { 29 37 } fixed:0 temp:0 split:0 pair:0",
+      "ranges: { [8,41) }, uses: { 37 41 }, { } fixed:0 temp:0 split:0 pair:0",
+      "ranges: { [12,41) }, uses: { 41 }, { } fixed:0 temp:0 split:0 pair:0",
       // Environment uses do not keep the non-reference argument alive.
-      "ranges: { [16,20) }, uses: { }, { } is_fixed: 0, is_split: 0 is_pair: 0",
+      "ranges: { [16,20) }, uses: { }, { } fixed:0 temp:0 split:0 pair:0",
       // Environment uses keep the reference argument alive.
-      "ranges: { [20,37) }, uses: { }, { 29 37 } is_fixed: 0, is_split: 0 is_pair: 0",
+      "ranges: { [20,37) }, uses: { }, { 29 37 } fixed:0 temp:0 split:0 pair:0",
   };
   CHECK_EQ(arraysize(expected), args.size());
   size_t arg_index = 0u;
@@ -142,13 +142,13 @@ TEST_F(SsaLivenessAnalysisTest, TestDeoptimize) {
   EXPECT_FALSE(graph_->IsDebuggable());
   EXPECT_EQ(40u, deoptimize->GetLifetimePosition());
   static const char* const expected[] = {
-      "ranges: { [4,45) }, uses: { 29 33 45 }, { 29 41 } is_fixed: 0, is_split: 0 is_pair: 0",
-      "ranges: { [8,45) }, uses: { 37 45 }, { 41 } is_fixed: 0, is_split: 0 is_pair: 0",
-      "ranges: { [12,45) }, uses: { 45 }, { 41 } is_fixed: 0, is_split: 0 is_pair: 0",
+      "ranges: { [4,45) }, uses: { 29 33 45 }, { 29 41 } fixed:0 temp:0 split:0 pair:0",
+      "ranges: { [8,45) }, uses: { 37 45 }, { 41 } fixed:0 temp:0 split:0 pair:0",
+      "ranges: { [12,45) }, uses: { 45 }, { 41 } fixed:0 temp:0 split:0 pair:0",
       // Environment use in HDeoptimize keeps even the non-reference argument alive.
-      "ranges: { [16,41) }, uses: { }, { 41 } is_fixed: 0, is_split: 0 is_pair: 0",
+      "ranges: { [16,41) }, uses: { }, { 41 } fixed:0 temp:0 split:0 pair:0",
       // Environment uses keep the reference argument alive.
-      "ranges: { [20,41) }, uses: { }, { 29 41 } is_fixed: 0, is_split: 0 is_pair: 0",
+      "ranges: { [20,41) }, uses: { }, { 29 41 } fixed:0 temp:0 split:0 pair:0",
   };
   CHECK_EQ(arraysize(expected), args.size());
   size_t arg_index = 0u;
@@ -164,8 +164,8 @@ TEST_F(SsaLivenessAnalysisTest, TestDeoptimize) {
 // end adjusted. Otherwise we risk invalidating cached search start positions that the register
 // allocator may keep. See also `RegisterAllocatorTest.SplitSpillSlotLiveRangeHint`. Bug: 426785078
 TEST_F(SsaLivenessAnalysisTest, SplitRange) {
-  LiveInterval* interval =
-      LiveInterval::MakeInterval(GetScopedAllocator(), DataType::Type::kInt32, /*is_pair=*/ false);
+  LiveInterval* interval = LiveInterval::MakeInterval(
+      GetScopedAllocator(), DataType::Type::kInt32, /*is_pair=*/ false, /*instruction=*/ nullptr);
   interval->AddRange(0u, 10u * kLivenessPositionsPerInstruction);
   LiveRange* first_range = interval->GetFirstRange();
   ASSERT_TRUE(first_range != nullptr);

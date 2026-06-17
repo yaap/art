@@ -107,8 +107,11 @@ class FdFile : public RandomAccessFile {
   const std::string& GetPath() const {
     return file_path_;
   }
+
+  // Attempt to read exactly byte_count bytes from the file, returning true on success.
   bool ReadFully(void* buffer, size_t byte_count) WARN_UNUSED;
   bool PreadFully(void* buffer, size_t byte_count, size_t offset) WARN_UNUSED;
+
   bool WriteFully(const void* buffer, size_t byte_count) WARN_UNUSED;
   bool PwriteFully(const void* buffer, size_t byte_count, size_t offset) WARN_UNUSED;
 

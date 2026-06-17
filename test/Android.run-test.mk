@@ -68,6 +68,7 @@ ART_TEST_HOST_RUN_TEST_DEPENDENCIES := \
   $(HOST_I18N_DATA) \
   art_boot_images
 
+ifneq ($(ART_USE_SIMULATOR),true)
 ifneq ($(HOST_PREFER_32_BIT),true)
 ART_TEST_HOST_RUN_TEST_DEPENDENCIES += \
   $(ART_TEST_LIST_host_$(2ND_ART_HOST_ARCH)_libtiagent) \
@@ -89,6 +90,7 @@ ART_TEST_HOST_RUN_TEST_DEPENDENCIES += \
   $(2ND_ART_HOST_OUT_SHARED_LIBRARIES)/libopenjdkjvmti$(ART_HOST_SHLIB_EXTENSION) \
   $(2ND_ART_HOST_OUT_SHARED_LIBRARIES)/libopenjdkjvmtid$(ART_HOST_SHLIB_EXTENSION) \
 
+endif
 endif
 
 test-art-host-run-test-dependencies : \

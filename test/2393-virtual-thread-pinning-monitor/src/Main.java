@@ -18,17 +18,16 @@ import android.system.Os;
 
 import dalvik.system.VirtualThreadContext;
 
-import java.lang.ref.WeakReference;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
- * Verify that a virtual thread is pinned on a carrier thread when parking in
+ * Verify that a virtual thread isn't pinned on a carrier thread when parking in
  * synchronized block.
  */
 public class Main {
 
     private static final Object MONITOR = new Object();
-    private static WeakReference<Thread> WEAK_REF = null;
-    private static volatile WeakReference<Thread> WEAK_REF2 = null;
 
     public static void main(String[] args) throws InterruptedException {
         if (!com.android.art.flags.Flags.virtualThreadImplV1()) {
@@ -41,49 +40,101 @@ public class Main {
             System.exit(1);
         });
 
-        VirtualThreadContext context = startVirtualThreadAndVerifyPinning();
-        while (context.parkedStates == null) {}
-
-        long startTime = System.currentTimeMillis();
-        while (!WEAK_REF.refersTo(null)) {
-            if (System.currentTimeMillis() - startTime > 10 * 1000) {
-                throw new AssertionError("10s time out. The carrier thread should be GC-ed");
-            }
-            System.gc();
-        }
-
+        VirtualThreadContext context = startVirtualThreadAndVerifyNoPinning();
         Thread carrier2 = Thread.unparkVirtual(context);
         carrier2.join();
+
+        runContendedMonitor();
+        runContendedMonitor2();
     }
 
-    private static VirtualThreadContext startVirtualThreadAndVerifyPinning() {
-        VirtualThreadContext context = startVirtualThreadAndGetParkedContext();
-        Thread carrier = context.pinnedCarrierThread;
-        if (carrier == null) {
-            throw new AssertionError("carrier shouldn't be null");
-        }
-        System.gc();
-        if (!WEAK_REF.refersTo(carrier)) {
-            throw new AssertionError("The carrier thread should be the same");
-        }
-        if (!WEAK_REF2.refersTo(carrier)) {
-            throw new AssertionError("The carrier thread should be the same");
-        }
+    private static void runContendedMonitor() throws InterruptedException {
+        CountDownLatch contendedThreadStartLatch = new CountDownLatch(1);
+        CountDownLatch releaseLatch = new CountDownLatch(1);
+        Thread thread1 = Thread.ofVirtual().unstarted(() -> {
+            synchronized (MONITOR) {
+                contendedThreadStartLatch.countDown();;
+                try {
+                    if (!releaseLatch.await(1, TimeUnit.SECONDS)) {
+                        throw new RuntimeException("Time out!");
+                    }
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        });
 
-        Thread carrier2 = Thread.unparkVirtual(context);
-        if (carrier != carrier2) {
-            throw new AssertionError("The carrier thread should be the same");
+        Thread thread2 = new Thread(() -> {
+            try {
+                releaseLatch.countDown();
+                synchronized (MONITOR) {
+                    Thread.sleep(10);
+                }
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        thread1.start();
+        contendedThreadStartLatch.await(1, TimeUnit.SECONDS);
+        thread2.start();
+        thread1.join();
+        thread2.join();
+    }
+
+
+    private static void runContendedMonitor2() throws InterruptedException {
+        CountDownLatch contendedThreadStartLatch = new CountDownLatch(1);
+        CountDownLatch releaseLatch = new CountDownLatch(1);
+        Thread thread1 = new Thread(() -> {
+            synchronized (MONITOR) {
+                try {
+                    contendedThreadStartLatch.countDown();;
+                    if (!releaseLatch.await(1, TimeUnit.SECONDS)) {
+                        throw new RuntimeException("Time out!");
+                    }
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+        });
+
+        Thread thread2 = Thread.ofVirtual().unstarted(() -> {
+            try {
+                releaseLatch.countDown();
+                synchronized (MONITOR) {
+                    Thread.sleep(10);
+                }
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        thread1.start();
+        contendedThreadStartLatch.await(1, TimeUnit.SECONDS);
+        thread2.start();
+        thread1.join();
+        thread2.join();
+    }
+
+    private static VirtualThreadContext startVirtualThreadAndVerifyNoPinning()
+            throws InterruptedException {
+        VirtualThreadContext context = startVirtualThreadAndGetParkedContext();
+        if (context.parkedStates == null) {
+            throw new AssertionError("virtual thread should be unmounted");
         }
         return context;
     }
 
-    private static VirtualThreadContext startVirtualThreadAndGetParkedContext() {
-        Thread carrier1 = Thread.startVirtual(Main::task);
-        WEAK_REF = new WeakReference<>(carrier1);
-
-        VirtualThreadContext context = null;
-        while (context == null || context.pinnedCarrierThread == null || WEAK_REF2 == null) {
-            context = carrier1.getVirtualThreadContext();
+    private static VirtualThreadContext startVirtualThreadAndGetParkedContext()
+            throws InterruptedException {
+        Thread carrier = Thread.startVirtual(Main::task);
+        VirtualThreadContext context = carrier.getVirtualThreadContext();
+        carrier.join();
+        if (!context.isParked()) {
+            throw new IllegalStateException("Expect a parked virtual thread context.");
         }
         return context;
     }
@@ -91,28 +142,19 @@ public class Main {
     private static void task() {
         int tid1 = Os.gettid();
         long threadId1 = getCarrierThreadId();
-        WEAK_REF2 = new WeakReference<>(Thread.currentThread());
         synchronized (MONITOR) {
+            if (!Thread.holdsLock(MONITOR)) {
+                throw new AssertionError("Lock should be held");
+            }
             Thread.parkVirtual();
+            if (!Thread.holdsLock(MONITOR)) {
+                throw new AssertionError("Lock should be held");
+            }
         }
 
         int tid2 = Os.gettid();
         long threadId2 = getCarrierThreadId();
         // Verify that the 2 carrier threads are identical.
-        if (tid1 != tid2) {
-            throw new AssertionError("tid should be the same: "
-                    + tid1 + " != " + tid2);
-        }
-        if (threadId1 != threadId2) {
-            throw new AssertionError("tid should be the same: "
-                    + threadId1 + " != " + threadId2);
-        }
-
-        Thread.parkVirtual();
-
-        // Verify that the 2 carrier threads are not identical.
-        tid2 = Os.gettid();
-        threadId2 = getCarrierThreadId();
         if (tid1 == tid2) {
             throw new AssertionError("tid shouldn't be the same: "
                     + tid1 + " != " + tid2);
@@ -129,5 +171,4 @@ public class Main {
     private static long getCarrierThreadId() {
         return Thread.currentThread().threadId();
     }
-
 }

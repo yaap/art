@@ -39,6 +39,10 @@
 #include "thread-current-inl.h"
 #include "verify_object-inl.h"
 
+#ifdef ART_USE_SIMULATOR
+#include "code_simulator.h"
+#endif
+
 namespace art HIDDEN {
 // Static fault manger object accessed by signal handler.
 FaultManager fault_manager;
@@ -535,7 +539,8 @@ void FaultManager::RemoveGeneratedCodeRange(const void* start, size_t size) {
 // This function is called within the signal handler. It checks that the thread
 // is `Runnable`, the `mutator_lock_` is held (shared) and the fault PC is in one
 // of the registered generated code ranges. No annotalysis is done.
-bool FaultManager::IsInGeneratedCode(siginfo_t* siginfo, void* context) {
+bool FaultManager::IsInGeneratedCode([[maybe_unused]] siginfo_t* siginfo,
+                                     [[maybe_unused]] void* context) {
   // We can only be running Java code in the current thread if it
   // is in Runnable state.
   VLOG(signals) << "Checking for generated code";
@@ -558,7 +563,13 @@ bool FaultManager::IsInGeneratedCode(siginfo_t* siginfo, void* context) {
     return false;
   }
 
+#ifdef ART_USE_SIMULATOR
+  // Get the PC from the simulator. As the fault handler runs natively, the simulated PC won't have
+  // changed from the faulting instruction.
+  uintptr_t fault_pc = Thread::Current()->GetSimExecutor()->GetPc();
+#else
   uintptr_t fault_pc = GetFaultPc(siginfo, context);
+#endif
   if (fault_pc == 0u) {
     VLOG(signals) << "no fault PC";
     return false;
@@ -669,5 +680,11 @@ bool JavaStackTraceHandler::Action([[maybe_unused]] int sig, siginfo_t* siginfo,
 
   return false;  // Return false since we want to propagate the fault to the main signal handler.
 }
+
+#ifdef ART_USE_SIMULATOR
+bool NullPointerHandlerSimulator::Action(int sig, siginfo_t* info, void* context) {
+  return Thread::Current()->GetSimExecutor()->HandleNullPointer(sig, info, context);
+}
+#endif  // ART_USE_SIMULATOR
 
 }   // namespace art

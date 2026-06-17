@@ -22,9 +22,19 @@
 set -e
 
 # Prerequisite Check:
-# In an Android checkout, build/envsetup.sh sets ANDROID_BUILD_TOP.
-if [[ -z "$ANDROID_BUILD_TOP" ]]; then
-    echo "ERROR: ANDROID_BUILD_TOP is not set. Please run 'source build/envsetup.sh' and 'lunch'."
+# In an Android checkout, build/envsetup.sh and lunch set these variables.
+if [[ -z "$ANDROID_BUILD_TOP" || -z "$ANDROID_HOST_OUT" || -z "$ANDROID_PRODUCT_OUT" ]]; then
+    echo "ERROR: Build environment is not set up correctly." >&2
+    echo "Please run 'source build/envsetup.sh' and 'lunch' in your Android source tree." >&2
+    exit 1
+fi
+
+# Prerequisite check for Node.js
+if ! command -v node &> /dev/null; then
+    echo "ERROR: Node.js not found. Compiler Explorer requires Node.js." >&2
+    echo "Please install it, for example using Node Version Manager (nvm)," >&2
+    echo "or ensure that the 'node' executable is in your PATH." >&2
+    echo "Refer to art/tools/compiler-explorer/compiler-explorer.md for more details." >&2
     exit 1
 fi
 
@@ -75,6 +85,41 @@ ACTION_RESTART=false
 SKIP_COMPILER_BUILD=false
 
 # Helper Functions
+
+function verify_compiler_paths() {
+  echo "### Verifying compiler paths ###"
+  local config_dir="$1"
+  local has_error=false
+
+  # Get all lines with path assignments from the config files. We use mapfile
+  # to read the lines into an array to avoid subshell scoping issues with the
+  # 'has_error' variable. We add '|| true' to the grep command to prevent the
+  # script from exiting if grep finds no matches.
+  local lines_to_check
+  mapfile -t lines_to_check < <(grep -r -E "=${COMPILER_EXPLORER_DIR}" "$config_dir" || true)
+
+  for line in "${lines_to_check[@]}"; do
+    local file="${line%%:*}"
+    local assignment="${line#*:}"
+    local path="${assignment#*=}"
+
+    # Strip potential quotes.
+    path=${path//\"/}
+    if [[ ! -e "$path" ]]; then
+      echo "ERROR: Missing compiler artifact in '$file'." >&2
+      echo "  Path specified in config: $path" >&2
+      echo "  This file or directory does not exist." >&2
+      echo "  This could be due to a build failure, a copy error, or an incorrect path in the .properties files." >&2
+      has_error=true
+    fi
+  done
+
+  if $has_error; then
+    echo "ERROR: Path verification failed. Please check the errors above and try again." >&2
+    exit 1
+  fi
+  echo "### All compiler paths verified successfully. ###"
+}
 
 function show_help() {
   echo "Usage: $0 [options]"
@@ -153,17 +198,7 @@ if $ACTION_FULL_SETUP; then
   fi
 fi
 
-# Configure Compiler Explorer.
-# This is part of the one-time full setup.
-if $ACTION_FULL_SETUP; then
-  echo "### Configuring Compiler Explorer ###"
-  CE_CONFIG_DIR="$COMPILER_EXPLORER_DIR/compiler-explorer/etc/config"
-  cp art/tools/compiler-explorer/config/* "$CE_CONFIG_DIR"
-  # Replace {{compilersDir}} in the config files with the actual path.
-  echo "Setting compilers directory in config files..."
-  find "$CE_CONFIG_DIR" -type f -name '*local*' | \
-    xargs sed -i 's?{{compilersDir}}?'"$COMPILER_EXPLORER_DIR/compilers"'?'
-fi
+
 
 # Build Compiler Explorer.
 # This is part of the one-time full setup.
@@ -218,12 +253,28 @@ if $ACTION_FULL_SETUP; then
 fi
 
 if $ACTION_FULL_SETUP || $ACTION_REBUILD_DEX2OAT; then
-  echo "### Copying dex2oat ###"
+  echo "### Preparing ART host tools ###"
   DEX2OAT_DIR="$COMPILER_EXPLORER_DIR/compilers/dex2oat-local"
   echo "Cleaning up old dex2oat directory: $DEX2OAT_DIR"
   rm -rf "$DEX2OAT_DIR"
-  echo "Unzipping art_release.zip..."
+  echo "Unzipping art_release.zip to get ART artifacts..."
   unzip -q -d "$DEX2OAT_DIR" "out/dist/art_release.zip"
+
+  # Find the host-specific bin directory containing dex2oat64.
+  HOST_BIN_DIR=$(find "$DEX2OAT_DIR" -type f -name "dex2oat64" -exec dirname {} \; | head -n 1)
+  if [[ -z "$HOST_BIN_DIR" ]]; then
+    echo "ERROR: Could not find dex2oat host binaries in art_release.zip." >&2
+    exit 1
+  fi
+  echo "Found host binaries in: $HOST_BIN_DIR"
+
+  # Move binaries to a consistent, top-level bin/ directory for simplicity.
+  echo "Moving host binaries to a top-level bin/ directory..."
+  mkdir -p "$DEX2OAT_DIR/bin"
+  mv "$HOST_BIN_DIR"/* "$DEX2OAT_DIR/bin/"
+
+  # Clean up the now-empty platform-specific directories.
+  find "$DEX2OAT_DIR" -mindepth 1 -maxdepth 1 -type d ! -name "bin" ! -name "bootjars" -exec rm -rf {} +
 fi
 
 # Generate boot images.
@@ -247,7 +298,7 @@ if $ACTION_FULL_SETUP || $ACTION_REBUILD_DEX2OAT; then
         --output-dir="$APP_DIR/system/framework" \
         --compiler-filter=speed \
         --use-profile=false \
-        --dex2oat-bin="$DEX2OAT_DIR/x86_64/bin/dex2oat64" \
+        --dex2oat-bin="$DEX2OAT_DIR/bin/dex2oat64" \
         --android-root="$APP_DIR" \
         --core-only=true \
         --instruction-set="$instruction_set" \
@@ -257,11 +308,25 @@ if $ACTION_FULL_SETUP || $ACTION_REBUILD_DEX2OAT; then
   done
 fi
 
-# Start Compiler Explorer server.
+# Configure and start Compiler Explorer server.
 # This runs on full setup or when restarting.
 if $ACTION_FULL_SETUP || $ACTION_RESTART; then
+  echo "### Configuring Compiler Explorer ###"
+  CE_CONFIG_DIR="$COMPILER_EXPLORER_DIR/compiler-explorer/etc/config"
+  mkdir -p "$CE_CONFIG_DIR"
+  cp art/tools/compiler-explorer/config/* "$CE_CONFIG_DIR"
+  # Replace placeholders in the config files with the actual paths.
+  echo "Setting paths in config files..."
+  find "$CE_CONFIG_DIR" -type f -name '*.local.properties' -print0 | xargs -0 sed -i \
+    -e "s?{{compilersDir}}?$COMPILER_EXPLORER_DIR/compilers?g"
+
+  # After setting paths, verify that they all point to existing files/directories.
+  verify_compiler_paths "$CE_CONFIG_DIR"
+
   echo "### Starting Compiler Explorer server ###"
   echo "To stop the server, press Ctrl+C in the terminal where it's running."
+  # Attempt to stop any running server before starting.
+  (cd "$COMPILER_EXPLORER_DIR/compiler-explorer" && make stop &> /dev/null || true)
   (cd "$COMPILER_EXPLORER_DIR/compiler-explorer" && make run)
 fi
 

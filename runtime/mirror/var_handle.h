@@ -17,6 +17,8 @@
 #ifndef ART_RUNTIME_MIRROR_VAR_HANDLE_H_
 #define ART_RUNTIME_MIRROR_VAR_HANDLE_H_
 
+#include <cstdint>
+
 #include "handle.h"
 #include "interpreter/shadow_frame.h"
 #include "jvalue.h"
@@ -36,6 +38,7 @@ struct StaticFieldVarHandleOffsets;
 struct ArrayElementVarHandleOffsets;
 struct ByteArrayViewVarHandleOffsets;
 struct ByteBufferViewVarHandleOffsets;
+struct MemorySegmentVarHandleOffsets;
 
 class ReflectiveValueVisitor;
 class ShadowFrameGetter;
@@ -367,6 +370,34 @@ class MANAGED ByteBufferViewVarHandle : public VarHandle {
   friend class VarHandleTest;  // for var_handle_test.
   friend struct art::ByteBufferViewVarHandleOffsets;  // for verifying offset information
   DISALLOW_IMPLICIT_CONSTRUCTORS(ByteBufferViewVarHandle);
+};
+
+class MANAGED MemorySegmentVarHandle : public VarHandle {
+ public:
+  MIRROR_CLASS("Ljava/lang/invoke/MemorySegmentVarHandle;");
+
+  bool Access(AccessMode access_mode,
+              ShadowFrame* shadow_frame,
+              const InstructionOperands* const operands,
+              JValue* result) REQUIRES_SHARED(Locks::mutator_lock_);
+
+  bool GetNativeByteOrder() REQUIRES_SHARED(Locks::mutator_lock_);
+  int64_t GetByteAlignment() REQUIRES_SHARED(Locks::mutator_lock_);
+
+ private:
+  static MemberOffset ByteAlignmentOffset() {
+    return MemberOffset(OFFSETOF_MEMBER(MemorySegmentVarHandle, byte_alignment_));
+  }
+  static MemberOffset NativeByteOrderOffset() {
+    return MemberOffset(OFFSETOF_MEMBER(MemorySegmentVarHandle, native_byte_order_));
+  }
+
+  int64_t byte_alignment_;
+  // Flag indicating that accessors should use native byte-ordering.
+  uint8_t native_byte_order_;
+
+  friend struct art::MemorySegmentVarHandleOffsets;  // for verifying offset information
+  DISALLOW_IMPLICIT_CONSTRUCTORS(MemorySegmentVarHandle);
 };
 
 }  // namespace mirror

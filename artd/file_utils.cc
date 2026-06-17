@@ -34,6 +34,7 @@
 #include "android-base/logging.h"
 #include "android-base/result.h"
 #include "android-base/scopeguard.h"
+#include "android-base/unique_fd.h"
 #include "base/macros.h"
 #include "base/os.h"
 #include "base/unix_file/fd_file.h"
@@ -46,6 +47,7 @@ namespace {
 using ::aidl::com::android::server::art::FsPermission;
 using ::android::base::make_scope_guard;
 using ::android::base::Result;
+using ::android::base::unique_fd;
 
 void UnlinkIfExists(std::string_view path) {
   std::error_code ec;
@@ -257,6 +259,14 @@ Result<std::unique_ptr<File>> OpenFileForReading(const std::string& path) {
     return ErrnoErrorf("Failed to open file '{}'", path);
   }
   return file;
+}
+
+Result<unique_fd> OpenDirectory(const std::string& path) {
+  unique_fd dirfd(open(path.c_str(), O_RDONLY | O_DIRECTORY));
+  if (dirfd < 0) {
+    return ErrnoErrorf("Failed to open dir '{}'", path);
+  }
+  return dirfd;
 }
 
 mode_t FileFsPermissionToMode(const FsPermission& fs_permission) {

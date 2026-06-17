@@ -16,6 +16,9 @@
 
 #include "licm.h"
 
+#include "base/bit_vector-inl.h"
+#include "base/scoped_arena_containers.h"
+#include "common_dominator.h"
 #include "loop_information-inl.h"
 #include "side_effects_analysis.h"
 
@@ -93,13 +96,13 @@ bool LICM::Run() {
 
   DCHECK(side_effects.HasRun());
 
+  ScopedArenaAllocator allocator(graph_->GetArenaStack());
+
   // Only used during debug.
-  ArenaBitVector* visited = nullptr;
+  BitVectorView<size_t> visited;
   if (kIsDebugBuild) {
-    visited = new (graph_->GetAllocator()) ArenaBitVector(graph_->GetAllocator(),
-                                                          graph_->GetBlocks().size(),
-                                                          false,
-                                                          kArenaAllocLICM);
+    visited =
+        ArenaBitVector::CreateFixedSize(&allocator, graph_->GetBlocks().size(), kArenaAllocLICM);
   }
 
   // Post order visit to visit inner loops before outer loops.
@@ -110,26 +113,41 @@ bool LICM::Run() {
     }
 
     HLoopInformation* loop_info = block->GetLoopInformation();
+    if (loop_info->ContainsIrreducibleLoop()) {
+      // We cannot licm in an irreducible loop, or in a natural loop containing an
+      // irreducible loop.
+      continue;
+    }
+
     SideEffects loop_effects = side_effects.GetLoopEffects(block);
     HBasicBlock* pre_header = loop_info->GetPreHeader();
+    DCHECK(loop_info->GetHeader()->GetDominator() == pre_header);
 
-    for (HBasicBlock* inner : loop_info->GetBlocks()) {
+    // Perform LICM only on blocks that are unconditionally executed on each full loop iteration.
+    // This is the dominator chain from the common dominator of all back edges to the header.
+    // (LICM on conditional blocks increases register pressure and often results in excessive
+    // parallel moves without even knowing whether the conditional blocks shall be executed.)
+    ArrayRef<HBasicBlock* const> back_edges(loop_info->GetBackEdges());
+    HBasicBlock* back_edge_dominator = back_edges[0];
+    if (back_edges.size() > 1u) {
+      CommonDominator common_dominator(back_edges[0]);
+      for (HBasicBlock* back_edge : back_edges.SubArray(/*pos=*/ 1u)) {
+        common_dominator.Update(back_edge);
+      }
+      back_edge_dominator = common_dominator.Get();
+    }
+    ScopedArenaVector<HBasicBlock*> unconditional_blocks(allocator.Adapter(kArenaAllocLICM));
+    for (HBasicBlock* dom = back_edge_dominator; dom != pre_header; dom = dom->GetDominator()) {
+      unconditional_blocks.push_back(dom);
+    }
+
+    for (HBasicBlock* inner : ReverseRange(unconditional_blocks)) {
       DCHECK(inner->IsInLoop());
       if (inner->GetLoopInformation() != loop_info) {
         // Thanks to post order visit, inner loops were already visited.
-        DCHECK(visited->IsBitSet(inner->GetBlockId()));
+        DCHECK(visited.IsBitSet(inner->GetLoopInformation()->GetHeader()->GetBlockId()));
         continue;
       }
-      if (kIsDebugBuild) {
-        visited->SetBit(inner->GetBlockId());
-      }
-
-      if (loop_info->ContainsIrreducibleLoop()) {
-        // We cannot licm in an irreducible loop, or in a natural loop containing an
-        // irreducible loop.
-        continue;
-      }
-      DCHECK(!loop_info->IsIrreducible());
 
       // We can move an instruction that can throw only as long as it is the first visible
       // instruction (throw or write) in the loop. Note that the first potentially visible
@@ -177,6 +195,9 @@ bool LICM::Run() {
           found_first_non_hoisted_visible_instruction_in_loop = true;
         }
       }
+    }
+    if (kIsDebugBuild) {
+      visited.SetBit(block->GetBlockId());
     }
   }
   return didLICM;

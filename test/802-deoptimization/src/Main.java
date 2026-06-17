@@ -17,27 +17,27 @@
 import java.lang.reflect.Method;
 
 public class Main {
-  private static final int EXPECTED_RESULT = 100;
-  private static final int PARAMETER_VALUE = 0;
+    private static final int EXPECTED_RESULT = 100;
+    private static final int PARAMETER_VALUE = 0;
 
-  public static void main(String[] args) throws Throwable {
-    testCatchHandlerOnEntryWithoutMoveException();
-  }
-
-  /**
-   * Tests we correctly execute a method starting with a catch handler without
-   * move-exception instruction when throwing an exception during deoptimization.
-   */
-  private static void testCatchHandlerOnEntryWithoutMoveException() throws Throwable {
-    Class<?> c = Class.forName("CatchHandlerOnEntry");
-    Method m = c.getMethod("catchHandlerOnEntry", int.class);
-    Object result = m.invoke(null, new Object[]{PARAMETER_VALUE});
-    int intResult = ((Integer) result).intValue();
-    if (intResult == EXPECTED_RESULT) {
-      System.out.println("CatchHandlerOnEntryWithoutMoveException OK");
-    } else {
-      System.out.println("CatchHandlerOnEntryWithoutMoveException KO: result==" + intResult);
+    public static void main(String[] args) throws Throwable {
+        testCatchHandlerOnEntryWithoutMoveException();
     }
-  }
+
+    /**
+     * Tests we correctly execute a method starting with a catch handler without
+     * move-exception instruction when throwing an exception during deoptimization.
+     */
+    private static void testCatchHandlerOnEntryWithoutMoveException() throws Throwable {
+        Class<?> c = Class.forName("CatchHandlerOnEntry");
+        Method m = c.getMethod("catchHandlerOnEntry", int.class);
+        Object result = m.invoke(null, new Object[]{PARAMETER_VALUE});
+        int intResult = ((Integer) result).intValue();
+        if (intResult == EXPECTED_RESULT) {
+            System.out.println("CatchHandlerOnEntryWithoutMoveException OK");
+        } else {
+            System.out.println("CatchHandlerOnEntryWithoutMoveException KO: result==" + intResult);
+        }
+    }
 }
 

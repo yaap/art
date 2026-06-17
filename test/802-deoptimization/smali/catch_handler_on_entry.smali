@@ -7,11 +7,11 @@
 # initialized to 0.
 #
 # We execute the catch handler (Label1) for the first time with p0 == 0.
-# We save its value in v0, increment p0 to 1 and execute the div-int
-# instruction (Label2) which throws an ArithmeticException (division by zero).
+# We save its value in v0, increment p0 to 1 and invoke the helper function
+# (Label2) which throws an exception when called with argument value of 0.
 # That exception is caught by the catch handler so we execute it a second time.
-# Now p0 == 1. When we we execute the div-int instruction, it succeeds and we
-# return its result: this is the initial value of v1 because "v1 = v1 / 1".
+# Now p0 == 1. When we execute the invoke instruction, it succeeds and we
+# return the value of v1.
 .method public static catchHandlerOnEntry(I)I
 .registers 4
 :Label1

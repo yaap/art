@@ -232,7 +232,6 @@
 %  get_vreg("t1", "t1", is_wide=is_wide)  # t1 := fp[BB]
 %  if divz_throw:
      beqz t2, 1f         // Must throw before FETCH_ADVANCE_INST.
-%#:
    FETCH_ADVANCE_INST 2  // advance xPC, load xINST
    $instr                // read t1 and t2, write result to t1.
                          // do not clobber t3!
@@ -243,7 +242,6 @@
 1:
 %  if divz_throw:
      tail common_errDivideByZero
-%#:
 
 // binop wide shift boilerplate
 // instr: operands held in t1 (64-bit) and t2 (32-bit), result written to t1.
@@ -412,7 +410,6 @@
                          // t1 := fp[A]
 %  if divz_throw:
      beqz t2, 1f         // Must throw before FETCH_ADVANCE_INST.
-%#:
    FETCH_ADVANCE_INST 1  // advance xPC, load xINST
    $instr                // read t1 and t2, write result to t1.
                          // do not clobber t3!
@@ -423,7 +420,6 @@
 1:
 %  if divz_throw:
      tail common_errDivideByZero
-%#:
 
 // binop wide shift 2addr boilerplate
 // instr: operands held in t1 (64-bit) and t2 (32-bit), result written to t1.
@@ -514,7 +510,6 @@
    srliw t3, xINST, 8           // t3 := B|A
 %  if divz_throw:
      beqz t2, 1f                // Must throw before FETCH_ADVANCE_INST.
-%#:
 %  get_vreg("t1", "t1")         #  t1 := fp[B]
    and t3, t3, 0xF              // t3 := A
    FETCH_ADVANCE_INST 2         // advance xPC, load xINST
@@ -526,7 +521,6 @@
 1:
 %  if divz_throw:
      tail common_errDivideByZero
-%#:
 
 //
 // binop/lit8 vAA, vBB, #+CC
@@ -611,7 +605,6 @@
    andi t1, t1, 0xFF            // t1 := BB
 %  if divz_throw:
      beqz t2, 1f                // Must throw before FETCH_ADVANCE_INST.
-%#:
 %  get_vreg("t1", "t1")         #  t1 := fp[BB]
    FETCH_ADVANCE_INST 2         // advance xPC, load xINST
    $instr                       // read t1 and t2, write result to t1.
@@ -622,4 +615,3 @@
 1:
 %  if divz_throw:
      tail common_errDivideByZero
-%#:

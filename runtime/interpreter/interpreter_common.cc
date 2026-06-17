@@ -52,6 +52,10 @@
 #include "mirror/object_array-inl.h"
 #include "mirror/object_array.h"
 #include "mirror/var_handle.h"
+#include "mirror/virtual_thread_context-inl.h"
+#include "mirror/virtual_thread_context.h"
+#include "mirror/virtual_thread_frame-inl.h"
+#include "mirror/virtual_thread_frame.h"
 #include "obj_ptr.h"
 #include "reflection-inl.h"
 #include "reflection.h"
@@ -60,6 +64,7 @@
 #include "thread-inl.h"
 #include "thread.h"
 #include "thread_state.h"
+#include "trace.h"
 #include "var_handles.h"
 #include "well_known_classes-inl.h"
 #include "well_known_classes.h"
@@ -116,6 +121,11 @@ bool SendMethodExitEvents(Thread* self,
                           ShadowFrame& frame,
                           ArtMethod* method,
                           T& result) {
+  if (!frame.GetSkipLowOverheadTraceEvent()) {
+    // If the shadow frame was created due to a deopt and corresponds to an inlined frame, we skip
+    // the exit events. We don't record entry events for inlined methods.
+    TraceLowOverhead::RecordTraceEventIfNeeded(self, method, /*is_entry=*/false);
+  }
   bool had_event = false;
   // We can get additional ForcePopFrame requests during handling of these events. We should
   // respect these and send additional instrumentation events.
@@ -123,7 +133,13 @@ bool SendMethodExitEvents(Thread* self,
     frame.SetForcePopFrame(false);
     if (UNLIKELY(instrumentation->HasMethodExitListeners() && !frame.GetSkipMethodExitEvents())) {
       had_event = true;
-      instrumentation->MethodExitEvent(self, method, instrumentation::OptionalFrame{frame}, result);
+      instrumentation->MethodExitEvent(self,
+                                       method,
+                                       instrumentation::OptionalFrame{frame},
+                                       result,
+                                       frame.GetSkipTraceMethodExitEvent());
+      // We notified method has exited so don't call trace listeners anymore.
+      frame.SetSkipTraceMethodExitEvent(true);
     }
     // We don't send method-exit if it's a pop-frame. We still send frame_popped though.
     if (UNLIKELY(frame.NeedsNotifyPop() && instrumentation->HasWatchedFramePopListeners())) {
@@ -198,6 +214,13 @@ bool MoveToExceptionHandler(Thread* self,
       instrumentation->MethodUnwindEvent(self,
                                          shadow_frame.GetMethod(),
                                          shadow_frame.GetDexPC());
+      if (!shadow_frame.GetSkipLowOverheadTraceEvent()) {
+        // If the shadow frame was created due to a deopt and corresponds to an inlined frame, we
+        // skip the exit events. We don't record entry events for inlined methods.
+        TraceLowOverhead::RecordTraceEventIfNeeded(
+            self, shadow_frame.GetMethod(), /*is_entry=*/false);
+      }
+      shadow_frame.SetSkipTraceMethodExitEvent(true);
     }
     return shadow_frame.GetForcePopFrame();
   } else {
@@ -246,7 +269,6 @@ ALWAYS_INLINE void CopyRegisters(ShadowFrame& caller_frame,
 
 NO_STACK_PROTECTOR
 void ArtInterpreterToCompiledCodeBridge(Thread* self,
-                                        ArtMethod* caller,
                                         ShadowFrame* shadow_frame,
                                         uint16_t arg_offset,
                                         JValue* result)
@@ -262,10 +284,6 @@ void ArtInterpreterToCompiledCodeBridge(Thread* self,
     } else {
       DCHECK_LE(arg_offset, shadow_frame->NumberOfVRegs());
     }
-  }
-  jit::Jit* jit = Runtime::Current()->GetJit();
-  if (jit != nullptr && caller != nullptr) {
-    jit->NotifyInterpreterToCompiledCodeTransition(self, caller);
   }
   method->Invoke(self, shadow_frame->GetVRegArgs(arg_offset),
                  (shadow_frame->NumberOfVRegs() - arg_offset) * sizeof(uint32_t),
@@ -1356,7 +1374,6 @@ static inline bool DoCallCommon(ArtMethod* called_method,
 
   PerformCall(self,
               accessor,
-              shadow_frame.GetMethod(),
               first_dest_reg,
               new_shadow_frame,
               result,
@@ -1372,32 +1389,28 @@ static inline bool DoCallCommon(ArtMethod* called_method,
 void FillVirtualThreadFrame(Thread* self, ShadowFrame* frame) {
   ScopedAssertNoThreadSuspension ns("No thread suspension when filling virtual thread frame)");
   ObjPtr<mirror::Object> jpeer = self->GetPeer();
-  ObjPtr<mirror::Object> v_context;
+  ObjPtr<mirror::VirtualThreadContext> v_context;
   if (self->AreVirtualThreadFlagsEnabled(kContinuation)) {
     ObjPtr<mirror::Object> cont = WellKnownClasses::java_lang_Thread_cont->GetObject(jpeer);
     DCHECK(!cont.IsNull());
-    v_context =
-        WellKnownClasses::jdk_internal_vm_Continuation_virtualThreadContext->GetObject(cont);
+    v_context = ObjPtr<mirror::VirtualThreadContext>::DownCast(
+        WellKnownClasses::jdk_internal_vm_Continuation_virtualThreadContext->GetObject(cont));
   } else {
-    v_context = WellKnownClasses::java_lang_Thread_target->GetObject(jpeer);
+    v_context = ObjPtr<mirror::VirtualThreadContext>::DownCast(
+        WellKnownClasses::java_lang_Thread_target->GetObject(jpeer));
   }
-  DCHECK(v_context->GetClass()->DescriptorEquals("Ldalvik/system/VirtualThreadContext;"))
+  DCHECK(v_context->InstanceOf(GetClassRoot<mirror::VirtualThreadContext>()))
       << frame->GetMethod()->PrettyMethod();
-  ObjPtr<mirror::Object> parked_states =
-      WellKnownClasses::dalvik_system_VirtualThreadContext_parkedStates->GetObject(v_context);
-  DCHECK(!parked_states.IsNull()) << frame->GetMethod()->PrettyMethod();
-  ObjPtr<mirror::ObjectArray<mirror::Object>> frames =
-      WellKnownClasses::dalvik_system_VirtualThreadParkedStates_frames->GetObject(parked_states)
-          ->AsObjectArray<mirror::Object>();
+  ObjPtr<mirror::ObjectArray<mirror::VirtualThreadFrame>> frames = v_context->GetFramesArray();
   DCHECK(!frames.IsNull()) << frame->GetMethod()->PrettyMethod();
 
   // TODO(b/346542404): Cache the tail index in the VirtualThreadContext.
   int32_t frames_size = frames->GetLength();
   int32_t frame_index = -1;
   bool is_last_frame_or_empty = true;
-  ObjPtr<mirror::Object> src_frame;
+  ObjPtr<mirror::VirtualThreadFrame> src_frame;
   for (int32_t i = frames_size - 1; i >= 0; i--) {
-    ObjPtr<mirror::Object> obj = frames->Get(i);
+    ObjPtr<mirror::VirtualThreadFrame> obj = frames->Get(i);
     if (!obj.IsNull()) {
       if (frame_index != -1) {
         is_last_frame_or_empty = false;
@@ -1409,11 +1422,9 @@ void FillVirtualThreadFrame(Thread* self, ShadowFrame* frame) {
   }
 
   DCHECK(!src_frame.IsNull()) << frame->GetMethod()->PrettyMethod();
-  ObjPtr<mirror::ByteArray> frame_jbytes =
-      WellKnownClasses::dalvik_system_VirtualThreadFrame_frame->GetObject(src_frame)->AsByteArray();
+  ObjPtr<mirror::ByteArray> frame_jbytes = src_frame->GetFrame();
   DCHECK(!frame_jbytes.IsNull()) << frame->GetMethod()->PrettyMethod();
-  ObjPtr<mirror::Object> refs =
-      WellKnownClasses::dalvik_system_VirtualThreadFrame_refs->GetObject(src_frame);
+  ObjPtr<mirror::ObjectArray<mirror::Object>> refs = src_frame->GetRefs();
 
   size_t non_vref_size = frame_jbytes->GetLength();
   DCHECK_EQ(non_vref_size, ShadowFrame::ComputeSizeWithoutReferences(frame->NumberOfVRegs()))
@@ -1446,11 +1457,10 @@ void FillVirtualThreadFrame(Thread* self, ShadowFrame* frame) {
 
   if (!refs.IsNull()) {
     // Copy reference vregs.
-    ObjPtr<mirror::ObjectArray<mirror::Object>> objs = refs->AsObjectArray<mirror::Object>();
-    DCHECK_EQ(static_cast<uint32_t>(objs->GetLength()), frame->NumberOfVRegs())
+    DCHECK_EQ(static_cast<uint32_t>(refs->GetLength()), frame->NumberOfVRegs())
         << frame->GetMethod()->PrettyMethod();
     for (uint32_t i = 0; i < frame->NumberOfVRegs(); i++) {
-      ObjPtr<mirror::Object> obj = objs->Get(i);
+      ObjPtr<mirror::Object> obj = refs->Get(i);
       DCHECK(!obj.IsNull() || frame->GetVRegReference(i) == nullptr)
           << frame->GetMethod()->PrettyMethod() << " vreg " << i
           << " nullness mismatch: " << (obj.IsNull());
@@ -1467,8 +1477,7 @@ void FillVirtualThreadFrame(Thread* self, ShadowFrame* frame) {
   // calls from libcore to park the virtual thread. Let's move to the next instruction to unpark.
   if (is_last_frame_or_empty) {
     DCHECK(!Runtime::Current()->IsActiveTransaction()) << frame->GetMethod()->PrettyMethod();
-    WellKnownClasses::dalvik_system_VirtualThreadContext_parkedStates->SetObject<false>(v_context,
-                                                                                        nullptr);
+    v_context->SetParkedStates(nullptr);
     self->SetVirtualThreadFlags(VirtualThreadFlag::kUnparking, false);
     frame->AdvanceDexPc();
   }

@@ -120,8 +120,8 @@ TEST_F(ArtDexFileLoaderTest, GetMultiDexChecksum) {
   ASSERT_TRUE(checksum.has_value());
 
   uint32_t expected_checksum = DexFileLoader::GetMultiDexChecksum(dexes);
-  EXPECT_EQ(dexes[0]->GetLocation(), DexFileLoader::GetMultiDexLocation(0, multidex_file.c_str()));
-  EXPECT_EQ(dexes[1]->GetLocation(), DexFileLoader::GetMultiDexLocation(1, multidex_file.c_str()));
+  EXPECT_EQ(dexes[0]->GetLocation(), DexFileLoader::GetMultiDexLocation(multidex_file.c_str(), 0));
+  EXPECT_EQ(dexes[1]->GetLocation(), DexFileLoader::GetMultiDexLocation(multidex_file.c_str(), 1));
   EXPECT_EQ(expected_checksum, checksum.value());
 }
 
@@ -345,7 +345,7 @@ TEST_F(ArtDexFileLoaderTest, GetDexCanonicalLocation) {
   std::string dex_location(dex_location_real.get());
 
   ASSERT_EQ(dex_location, DexFileLoader::GetDexCanonicalLocation(dex_location.c_str()));
-  std::string multidex_location = DexFileLoader::GetMultiDexLocation(1, dex_location.c_str());
+  std::string multidex_location = DexFileLoader::GetMultiDexLocation(dex_location.c_str(), 1);
   ASSERT_EQ(multidex_location, DexFileLoader::GetDexCanonicalLocation(multidex_location.c_str()));
 
   std::string dex_location_sym = dex_location + "symlink";
@@ -353,8 +353,8 @@ TEST_F(ArtDexFileLoaderTest, GetDexCanonicalLocation) {
 
   ASSERT_EQ(dex_location, DexFileLoader::GetDexCanonicalLocation(dex_location_sym.c_str()));
 
-  std::string multidex_location_sym = DexFileLoader::GetMultiDexLocation(
-      1, dex_location_sym.c_str());
+  std::string multidex_location_sym =
+      DexFileLoader::GetMultiDexLocation(dex_location_sym.c_str(), 1);
   ASSERT_EQ(multidex_location,
             DexFileLoader::GetDexCanonicalLocation(multidex_location_sym.c_str()));
 

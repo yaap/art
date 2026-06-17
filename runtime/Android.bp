@@ -137,6 +137,7 @@ cc_defaults {
         // `libart-runtime` doesn't depend on all `libart-compiler` headers, it only requires
         // `jit_create` to initialize the JIT compiler.
         "libart-compiler_jit_headers",
+        "libart_simulator_headers",
     ],
     export_header_lib_headers: [
         "libart_headers",
@@ -166,7 +167,10 @@ cc_defaults {
         "libartbase",
         "libdexfile#impl",
         "libprofile",
-    ],
+    ] + select(soong_config_variable("art_module", "art_use_simulator"), {
+        true: ["libart-simulator-container"],
+        default: [],
+    }),
     export_shared_lib_headers: [
         "libdexfile#impl",
     ],
@@ -182,7 +186,11 @@ cc_defaults {
         "libartbased",
         "libdexfiled#impl",
         "libprofiled",
-    ],
+    ] + select(soong_config_variable("art_module", "art_use_simulator"), {
+        true: ["libartd-simulator-container"],
+        default: [],
+    }),
+
     export_shared_lib_headers: [
         "libdexfiled#impl",
     ],
@@ -249,7 +257,7 @@ cc_defaults {
         "base/locks.cc",
         "base/mem_map_arena_pool.cc",
         "base/mutex.cc",
-        "base/quasi_atomic.cc",
+        "base/offsets.cc",
         "base/timing_logger.cc",
         "cha.cc",
         "class_linker.cc",
@@ -375,7 +383,6 @@ cc_defaults {
         "native/java_lang_reflect_Method.cc",
         "native/java_lang_reflect_Parameter.cc",
         "native/java_lang_reflect_Proxy.cc",
-        "native/java_util_concurrent_atomic_AtomicLong.cc",
         "native/jdk_internal_misc_Unsafe.cc",
         "native/jdk_internal_vm_Continuation.cc",
         "native/libcore_io_Memory.cc",
@@ -391,6 +398,7 @@ cc_defaults {
         "oat/image.cc",
         "oat/index_bss_mapping.cc",
         "oat/jni_stub_hash_map.cc",
+        "oat/madvise_utils.cc",
         "oat/oat.cc",
         "oat/oat_file.cc",
         "oat/oat_file_assistant.cc",
@@ -400,7 +408,6 @@ cc_defaults {
         "oat/sdc_file.cc",
         "oat/stack_map.cc",
         "object_lock.cc",
-        "offsets.cc",
         "parsed_options.cc",
         "plugin.cc",
         "quick_exception_handler.cc",
@@ -561,8 +568,8 @@ cc_defaults {
                 true: [
                     "arch/arm64/context_arm64.cc",
                     "arch/arm64/entrypoints_init_arm64.cc",
-                    "arch/arm64/jni_entrypoints_arm64.S",
-                    "arch/arm64/quick_entrypoints_arm64.S",
+                    ":jni_entrypoints_arm64_to_x86_64",
+                    ":quick_entrypoints_arm64_to_x86_64",
                 ],
                 default: [
                     "arch/x86_64/context_x86_64.cc",
@@ -657,6 +664,97 @@ cc_defaults {
     ],
 }
 
+//
+// Compile the following entrypoint files as normal but don't link them yet. These are always
+// compiled as Arm64 even during host builds as they will later be transformed into x86_64 format
+// ELF files. See *_arm64_to_x86_64 rules for reference.
+//
+
+cc_defaults {
+    name: "cc_object_simulator_defaults",
+    host_supported: false,
+    defaults: [
+        "art_debug_defaults",
+        "libart_common_defaults",
+        "libartd-runtime_deps",
+    ],
+    // Disable this module if not building for the simulator. This module requires the use of the
+    // cc_device_for_host module which is only allowed to be used when building for the simulator.
+    enabled: select(soong_config_variable("art_module", "art_use_simulator"), {
+        true: true,
+        default: false,
+    }),
+}
+
+cc_object {
+    name: "cc_object_jni_entrypoints_arm64.S",
+    defaults: ["cc_object_simulator_defaults"],
+    srcs: ["arch/arm64/jni_entrypoints_arm64.S"],
+}
+
+cc_object {
+    name: "cc_object_quick_entrypoints_arm64.S",
+    defaults: ["cc_object_simulator_defaults"],
+    srcs: ["arch/arm64/quick_entrypoints_arm64.S"],
+}
+
+// Expose the device only entrypoints to the host build so they can be transformed into x86_64.
+cc_device_for_host {
+    name: "device_jni_entrypoints_arm64.S",
+    srcs: ["cc_object_jni_entrypoints_arm64.S"],
+    // Disable this module if not building for the simulator. This module is only allowed to be
+    // used when building for the simulator.
+    enabled: select(soong_config_variable("art_module", "art_use_simulator"), {
+        true: true,
+        default: false,
+    }),
+}
+
+cc_device_for_host {
+    name: "device_quick_entrypoints_arm64.S",
+    srcs: ["cc_object_quick_entrypoints_arm64.S"],
+    // Disable this module if not building for the simulator. This module is only allowed to be
+    // used when building for the simulator.
+    enabled: select(soong_config_variable("art_module", "art_use_simulator"), {
+        true: true,
+        default: false,
+    }),
+}
+
+//
+// If ART_USE_SIMULATOR is defined then the compiled Arm64 entrypoint file is transformed into an
+// x86_64 format ELF file that still contains Arm64 code. This allows it to be linked to the x86_64
+// libart and its Arm64 code later simulated using the ART simulator.
+//
+
+genrule_defaults {
+    name: "arm64_to_x86_64_defaults",
+    host_supported: true,
+    device_supported: false,
+    defaults: ["cc_object_simulator_defaults"],
+    tools: [
+        "transform_arm64_to_x86_64",
+        "llvm-objcopy",
+    ],
+    cmd: "$(location transform_arm64_to_x86_64) " +
+        "--objcopy $(location llvm-objcopy) " +
+        "$(in) $(out)",
+}
+
+cc_genrule {
+    name: "jni_entrypoints_arm64_to_x86_64",
+    defaults: ["arm64_to_x86_64_defaults"],
+    srcs: [":device_jni_entrypoints_arm64.S"],
+    out: ["jni_entrypoints_x86_64.o"],
+}
+
+cc_genrule {
+    name: "quick_entrypoints_arm64_to_x86_64",
+    defaults: ["arm64_to_x86_64_defaults"],
+    srcs: [":device_quick_entrypoints_arm64.S"],
+    out: ["quick_entrypoints_x86_64.o"],
+}
+
 // A defaults to link libunwindstack statically with necessary dependencies,
 // where all non-NDK dependencies are static as well.
 cc_defaults {
@@ -685,7 +783,10 @@ cc_defaults {
         "libnativebridge",
         "libnativeloader",
         "libodrstatslog",
-    ],
+    ] + select(soong_config_variable("art_module", "art_use_simulator"), {
+        true: ["libart-simulator-container"],
+        default: [],
+    }),
     target: {
         host: {
             cflags: [
@@ -892,7 +993,10 @@ art_cc_library_static {
 // Release version of the ART runtime library, bundled with `libart-compiler` for JIT support.
 art_cc_library {
     name: "libart",
-    defaults: ["libart_defaults"],
+    defaults: [
+        "libart_defaults",
+    ],
+
     whole_static_libs: [
         "libart-compiler",
         "libart-runtime",
@@ -1064,6 +1168,7 @@ art_cc_defaults {
         ":art-gtest-jars-ClassVerificationFuzzerFolder",
         ":art-gtest-jars-OptimizedCompilerFuzzerFolder",
         ":art-gtest-jars-BaselineCompilerFuzzerFolder",
+        ":art-gtest-jars-FastCompilerFuzzerFolder",
         ":art-gtest-jars-ErroneousA",
         ":art-gtest-jars-ErroneousB",
         ":art-gtest-jars-ErroneousInit",
@@ -1184,6 +1289,7 @@ art_cc_defaults {
         "monitor_pool_test.cc",
         "monitor_test.cc",
         "native_stack_dump_test.cc",
+        "oat/madvise_utils_test.cc",
         "oat/oat_file_assistant_test.cc",
         "oat/oat_file_test.cc",
         "oat/sdc_file_test.cc",

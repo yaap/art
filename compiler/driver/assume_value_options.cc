@@ -18,10 +18,7 @@
 
 #include "assume_value_signatures.h"
 #include "base/logging.h"
-#include "com_android_art_rw_flags.h"
 #include "runtime.h"
-
-namespace art_rw_flags = com::android::art::rw::flags;
 
 namespace art HIDDEN {
 
@@ -36,7 +33,7 @@ bool AssumeValueOptions::MaybeGetAssumedValue(ArtField* field, int32_t* value) c
 
   const auto signature = Runtime::Current()->LookupAssumeValueSignature(field);
   if (signature == AssumeValueSignatures::kSdkInt) {
-    if (art_rw_flags::assume_value_sdk_int() && HasValidSdkInt()) {
+    if (HasValidSdkInt()) {
       *value = sdk_int_;
       return true;
     }
@@ -46,7 +43,6 @@ bool AssumeValueOptions::MaybeGetAssumedValue(ArtField* field, int32_t* value) c
 }
 
 void AssumeValueOptions::SetSdkInt(uint32_t sdk_int) {
-  DCHECK(art_rw_flags::assume_value_sdk_int());
   VLOG(compiler) << "Setting assumed value for SDK_INT: " << sdk_int;
   sdk_int_ = sdk_int;
 }

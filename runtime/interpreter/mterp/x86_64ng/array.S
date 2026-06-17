@@ -1,4 +1,4 @@
-%def op_aget(load="movl", shift="4", data_offset="MIRROR_INT_ARRAY_DATA_OFFSET", wide="0", is_object="0"):
+%def op_aget(load="movl", shift=4, data_offset="MIRROR_INT_ARRAY_DATA_OFFSET", wide=False, is_object=False):
 /*
  * Array get.  vAA <- vBB[vCC].
  *
@@ -14,48 +14,47 @@
     je      common_errNullObject            # bail if so
     cmpl    MIRROR_ARRAY_LENGTH_OFFSET(%edi), %esi
     jae     common_errArrayIndex            # index >= length, bail.
-    .if $wide
-    movq    $data_offset(%rdi,%rsi,8), %rax
-    SET_WIDE_VREG %rax, rINSTq
-    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
-    .elseif $is_object
-    testb $$READ_BARRIER_TEST_VALUE, GRAY_BYTE_OFFSET(%edi)
-    $load   $data_offset(%rdi,%rsi,$shift), %eax
-    jnz 2f
-    UNPOISON_HEAP_REF eax  // Affects flags, so we cannot unpoison before the jnz.
+%   if wide:
+      movq    $data_offset(%rdi,%rsi,8), %rax
+      SET_WIDE_VREG %rax, rINSTq
+      ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+%   elif is_object:
+      testb $$READ_BARRIER_TEST_VALUE, GRAY_BYTE_OFFSET(%edi)
+      $load   $data_offset(%rdi,%rsi,$shift), %eax
+      jnz 2f
+      UNPOISON_HEAP_REF eax  // Affects flags, so we cannot unpoison before the jnz.
 1:
-    SET_VREG_OBJECT %eax, rINSTq
-    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+      SET_VREG_OBJECT %eax, rINSTq
+      ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 2:
-    UNPOISON_HEAP_REF eax
+      UNPOISON_HEAP_REF eax
     // reg00 is eax
-    call art_quick_read_barrier_mark_reg00
-    jmp 1b
-    .else
-    $load   $data_offset(%rdi,%rsi,$shift), %eax
-    SET_VREG %eax, rINSTq
-    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
-    .endif
+      call art_quick_read_barrier_mark_reg00
+      jmp 1b
+%   else:
+      $load   $data_offset(%rdi,%rsi,$shift), %eax
+      SET_VREG %eax, rINSTq
+      ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 
 %def op_aget_boolean():
-%  op_aget(load="movzbl", shift="1", data_offset="MIRROR_BOOLEAN_ARRAY_DATA_OFFSET", is_object="0")
+%  op_aget(load="movzbl", shift=1, data_offset="MIRROR_BOOLEAN_ARRAY_DATA_OFFSET")
 
 %def op_aget_byte():
-%  op_aget(load="movsbl", shift="1", data_offset="MIRROR_BYTE_ARRAY_DATA_OFFSET", is_object="0")
+%  op_aget(load="movsbl", shift=1, data_offset="MIRROR_BYTE_ARRAY_DATA_OFFSET")
 
 %def op_aget_char():
-%  op_aget(load="movzwl", shift="2", data_offset="MIRROR_CHAR_ARRAY_DATA_OFFSET", is_object="0")
+%  op_aget(load="movzwl", shift=2, data_offset="MIRROR_CHAR_ARRAY_DATA_OFFSET")
 
 %def op_aget_object():
-%  op_aget(load="movl", shift="4", data_offset="MIRROR_OBJECT_ARRAY_DATA_OFFSET", is_object="1")
+%  op_aget(load="movl", shift=4, data_offset="MIRROR_OBJECT_ARRAY_DATA_OFFSET", is_object=True)
 
 %def op_aget_short():
-%  op_aget(load="movswl", shift="2", data_offset="MIRROR_SHORT_ARRAY_DATA_OFFSET", is_object="0")
+%  op_aget(load="movswl", shift=2, data_offset="MIRROR_SHORT_ARRAY_DATA_OFFSET")
 
 %def op_aget_wide():
-%  op_aget(load="movq", shift="8", data_offset="MIRROR_WIDE_ARRAY_DATA_OFFSET", wide="1", is_object="0")
+%  op_aget(load="movq", shift=8, data_offset="MIRROR_WIDE_ARRAY_DATA_OFFSET", wide=True)
 
-%def op_aput(rINST_reg="rINST", store="movl", shift="4", data_offset="MIRROR_INT_ARRAY_DATA_OFFSET", wide="0"):
+%def op_aput(rINST_reg="rINST", store="movl", shift=4, data_offset="MIRROR_INT_ARRAY_DATA_OFFSET", wide=False):
 /*
  * Array put.  vBB[vCC] <- vAA.
  *
@@ -71,28 +70,27 @@
     je      common_errNullObject            # bail if so
     cmpl    MIRROR_ARRAY_LENGTH_OFFSET(%edi), %esi
     jae     common_errArrayIndex            # index >= length, bail.
-    .if $wide
-    GET_WIDE_VREG rINSTq, rINSTq
-    .else
-    GET_VREG rINST, rINSTq
-    .endif
+%   if wide:
+      GET_WIDE_VREG rINSTq, rINSTq
+%   else:
+      GET_VREG rINST, rINSTq
     $store    $rINST_reg, $data_offset(%rdi,%rsi,$shift)
     ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 
 %def op_aput_boolean():
-%  op_aput(rINST_reg="rINSTbl", store="movb", shift="1", data_offset="MIRROR_BOOLEAN_ARRAY_DATA_OFFSET", wide="0")
+%  op_aput(rINST_reg="rINSTbl", store="movb", shift=1, data_offset="MIRROR_BOOLEAN_ARRAY_DATA_OFFSET")
 
 %def op_aput_byte():
-%  op_aput(rINST_reg="rINSTbl", store="movb", shift="1", data_offset="MIRROR_BYTE_ARRAY_DATA_OFFSET", wide="0")
+%  op_aput(rINST_reg="rINSTbl", store="movb", shift=1, data_offset="MIRROR_BYTE_ARRAY_DATA_OFFSET")
 
 %def op_aput_char():
-%  op_aput(rINST_reg="rINSTw", store="movw", shift="2", data_offset="MIRROR_CHAR_ARRAY_DATA_OFFSET", wide="0")
+%  op_aput(rINST_reg="rINSTw", store="movw", shift=2, data_offset="MIRROR_CHAR_ARRAY_DATA_OFFSET")
 
 %def op_aput_short():
-%  op_aput(rINST_reg="rINSTw", store="movw", shift="2", data_offset="MIRROR_SHORT_ARRAY_DATA_OFFSET", wide="0")
+%  op_aput(rINST_reg="rINSTw", store="movw", shift=2, data_offset="MIRROR_SHORT_ARRAY_DATA_OFFSET")
 
 %def op_aput_wide():
-%  op_aput(rINST_reg="rINSTq", store="movq", shift="8", data_offset="MIRROR_WIDE_ARRAY_DATA_OFFSET", wide="1")
+%  op_aput(rINST_reg="rINSTq", store="movq", shift=8, data_offset="MIRROR_WIDE_ARRAY_DATA_OFFSET", wide=True)
 
 %def op_aput_object():
     EXPORT_PC                               # for the art_quick_aput_obj call

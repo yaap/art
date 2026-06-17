@@ -25,6 +25,7 @@
 
 #include "android-base/stringprintf.h"
 #include "ziparchive/zip_archive.h"
+#include "ziparchive/zip_error.h"
 
 #include "base/mman.h"
 #include "bit_utils.h"
@@ -307,13 +308,10 @@ ZipEntry* ZipArchive::FindImpl(const char* name,
                                std::string* error_msg) const {
   DCHECK(name != nullptr);
 
-  // Resist the urge to delete the space. <: is a bigraph sequence.
-  std::unique_ptr< ::ZipEntry> zip_entry(new ::ZipEntry);
+  auto zip_entry = std::make_unique<::ZipEntry>();
   const int32_t error = FindEntry(handle_, name, zip_entry.get());
   if (error != 0) {
-    // From system/libziparchive/zip_error.cpp.
-    constexpr std::string_view kEntryNotFound = "Entry not found";
-    if (!allow_entry_not_found || ErrorCodeString(error) != kEntryNotFound) {
+    if (!allow_entry_not_found || error != ZipError::kEntryNotFound) {
       *error_msg = StringPrintf("Failed to find entry '%s': %s", name, ErrorCodeString(error));
     }
     return nullptr;

@@ -37,6 +37,7 @@
 
 #include <android-base/logging.h>
 #include <android-base/stringprintf.h>
+#include <utils/SystemClock.h>
 
 #include "art_field-inl.h"
 #include "art_method-inl.h"
@@ -83,6 +84,8 @@ static constexpr size_t kMaxBytesPerSegment = 4096;
 // The static field-name for the synthetic object generated to account for class static overhead.
 static constexpr const char* kClassOverheadName = "$classOverhead";
 
+
+// LINT.IfChange(hprof-tags)
 enum HprofTag {
   HPROF_TAG_STRING = 0x01,
   HPROF_TAG_LOAD_CLASS = 0x02,
@@ -98,7 +101,12 @@ enum HprofTag {
   HPROF_TAG_HEAP_DUMP_END = 0x2C,
   HPROF_TAG_CPU_SAMPLES = 0x0D,
   HPROF_TAG_CONTROL_SETTINGS = 0x0E,
+
+  // Android-specific tags.
+  // Current time, based on CLOCK_MONOTONIC.
+  HPROF_TAG_ART_CLOCK_MONOTONIC = 0xA0,
 };
+// LINT.ThenChange(//depot/google3/art/tools/ahat/src/main/com/android/ahat/heapdump/Parser.java:hprof-tags)
 
 // Values for the first byte of HEAP_DUMP and HEAP_DUMP_SEGMENT records:
 enum HprofHeapTag {
@@ -674,6 +682,9 @@ class Hprof : public SingleRootVisitor {
     __ AddU4(static_cast<uint32_t>(nowMs >> 32));
     // U4: low word of the 64-bit time.
     __ AddU4(static_cast<uint32_t>(nowMs & 0xFFFFFFFF));
+
+    output_->StartNewRecord(HPROF_TAG_ART_CLOCK_MONOTONIC, kHprofTime);
+    __ AddU8(NanoTime());
   }
 
   void WriteStackTraces() REQUIRES_SHARED(Locks::mutator_lock_) {
@@ -1122,12 +1133,9 @@ void Hprof::DumpHeapObject(mirror::Object* obj) {
       heap_type = HPROF_HEAP_IMAGE;
       VisitRoot(obj, RootInfo(kRootVMInternal));
     }
-  } else {
-    const auto* los = heap->GetLargeObjectsSpace();
-    if (los->Contains(obj) && los->IsZygoteLargeObject(Thread::Current(), obj)) {
-      heap_type = HPROF_HEAP_ZYGOTE;
-      VisitRoot(obj, RootInfo(kRootVMInternal));
-    }
+  } else if (heap->IsZygoteLargeObject(obj)) {
+    heap_type = HPROF_HEAP_ZYGOTE;
+    VisitRoot(obj, RootInfo(kRootVMInternal));
   }
   CheckHeapSegmentConstraints();
 

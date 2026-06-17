@@ -17,8 +17,8 @@
 #ifndef ART_LIBELFFILE_ELF_ELF_BUILDER_H_
 #define ART_LIBELFFILE_ELF_ELF_BUILDER_H_
 
-#include <vector>
 #include <deque>
+#include <vector>
 
 #include "arch/instruction_set.h"
 #include "base/array_ref.h"
@@ -203,9 +203,30 @@ class ElfBuilder final {
     Elf_Word AddSection() {
       if (section_index_ == 0) {
         std::vector<Section*>& sections = owner_->sections_;
-        Elf_Word last = sections.empty() ? PF_R : sections.back()->phdr_flags_;
-        if (phdr_flags_ != last) {
-          header_.sh_addralign = kElfSegmentAlignment;  // Page-align if R/W/X flags changed.
+        // Add alignment if the section needs to be mapped at runtime and its R/W/X flags differ
+        // from the previous section.
+        if ((header_.sh_flags & SHF_ALLOC) != 0) {
+          Section* prev = !sections.empty() ? sections.back() : nullptr;
+          bool align = false;
+
+          if (prev != nullptr && (prev->header_.sh_flags & SHF_ALLOC) == 0) {
+            // ALLOC flag changed.
+            align = true;
+          } else if (header_.sh_type == SHT_NOBITS) {
+            // Always align NOBITS sections. It costs no disk space and ensures the virtual address
+            // starts on a clean page boundary.
+            align = true;
+          } else if (prev != nullptr && prev->header_.sh_type == SHT_NOBITS) {
+            // NOBITS mode changed.
+            align = true;
+          } else if ((prev != nullptr ? prev->phdr_flags_ : PF_R) != phdr_flags_) {
+            // R/W/X flags changed.
+            align = true;
+          }
+
+          if (align) {
+            header_.sh_addralign = kElfSegmentAlignment;
+          }
         }
         sections.push_back(this);
         section_index_ = sections.size();  // First ELF section has index 1.
@@ -464,17 +485,28 @@ class ElfBuilder final {
       : isa_(isa),
         stream_(output),
         rodata_(this, ".rodata", SHT_PROGBITS, SHF_ALLOC, nullptr, 0, 4u, 0),
-        text_(this, ".text", SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR, nullptr, 0,
-            kElfSegmentAlignment, 0),
-        data_img_rel_ro_(this, ".data.img.rel.ro", SHT_PROGBITS, SHF_ALLOC, nullptr, 0,
-            kElfSegmentAlignment, 0),
+        text_(this,
+              ".text",
+              SHT_PROGBITS,
+              SHF_ALLOC | SHF_EXECINSTR,
+              nullptr,
+              0,
+              kElfSegmentAlignment,
+              0),
+        data_img_rel_ro_(
+            this, ".data.img.rel.ro", SHT_PROGBITS, SHF_ALLOC, nullptr, 0, kElfSegmentAlignment, 0),
         bss_(this, ".bss", SHT_NOBITS, SHF_ALLOC, nullptr, 0, kElfSegmentAlignment, 0),
-        dex_(this, ".dex", SHT_NOBITS, SHF_ALLOC, nullptr, 0, kElfSegmentAlignment, 0),
         dynstr_(this, ".dynstr", SHF_ALLOC, 1),
         dynsym_(this, ".dynsym", SHT_DYNSYM, SHF_ALLOC, &dynstr_),
         hash_(this, ".hash", SHT_HASH, SHF_ALLOC, &dynsym_, 0, sizeof(Elf_Word), sizeof(Elf_Word)),
-        dynamic_(this, ".dynamic", SHT_DYNAMIC, SHF_ALLOC, &dynstr_, 0, sizeof(Elf_Addr),
-            sizeof(Elf_Dyn)),
+        dynamic_(this,
+                 ".dynamic",
+                 SHT_DYNAMIC,
+                 SHF_ALLOC,
+                 &dynstr_,
+                 0,
+                 sizeof(Elf_Addr),
+                 sizeof(Elf_Dyn)),
         strtab_(this, ".strtab", 0, 1),
         symtab_(this, ".symtab", SHT_SYMTAB, 0, &strtab_),
         debug_frame_(this, ".debug_frame", SHT_PROGBITS, 0, nullptr, 0, sizeof(Elf_Addr), 0),
@@ -495,7 +527,6 @@ class ElfBuilder final {
     text_.phdr_flags_ = PF_R | PF_X;
     data_img_rel_ro_.phdr_flags_ = PF_R | PF_W;  // Shall be made read-only at run time.
     bss_.phdr_flags_ = PF_R | PF_W;
-    dex_.phdr_flags_ = PF_R;
     dynamic_.phdr_flags_ = PF_R;
     dynamic_.phdr_type_ = PT_DYNAMIC;
     build_id_.phdr_type_ = PT_NOTE;
@@ -508,7 +539,6 @@ class ElfBuilder final {
   Section* GetText() { return &text_; }
   Section* GetDataImgRelRo() { return &data_img_rel_ro_; }
   Section* GetBss() { return &bss_; }
-  Section* GetDex() { return &dex_; }
   StringSection* GetStrTab() { return &strtab_; }
   SymbolSection* GetSymTab() { return &symtab_; }
   Section* GetDebugFrame() { return &debug_frame_; }
@@ -692,7 +722,7 @@ class ElfBuilder final {
                              Elf_Word bss_size,
                              Elf_Word bss_methods_offset,
                              Elf_Word bss_roots_offset,
-                             Elf_Word dex_size) {
+                             Elf_Word bss_strings_offset) {
     CHECK_NE(dynamic_sections_reserved_size_, 0u);
 
     // Skip over the reserved memory for dynamic sections - we prepare them later
@@ -707,9 +737,6 @@ class ElfBuilder final {
     }
     if (bss_size != 0) {
       bss_.AllocateVirtualMemory(bss_size);
-    }
-    if (dex_size != 0) {
-      dex_.AllocateVirtualMemory(dex_size);
     }
 
     // Cache .dynstr, .dynsym and .hash data.
@@ -758,12 +785,12 @@ class ElfBuilder final {
                     STT_OBJECT);
       }
     }
-    DCHECK_LE(bss_roots_offset, bss_size);
+    DCHECK_LE(bss_methods_offset, bss_roots_offset);
+    DCHECK_LE(bss_roots_offset, bss_strings_offset);
+    DCHECK_LE(bss_strings_offset, bss_size);
     if (bss_size != 0u) {
       Elf_Word oatbss = dynstr_.Add(GetDynamicSymbolName(DynamicSymbol::kOatBss));
       dynsym_.Add(oatbss, &bss_, bss_.GetAddress(), bss_roots_offset, STB_GLOBAL, STT_OBJECT);
-      DCHECK_LE(bss_methods_offset, bss_roots_offset);
-      DCHECK_LE(bss_roots_offset, bss_size);
       // Add a symbol marking the start of the methods part of the .bss, if not empty.
       if (bss_methods_offset != bss_roots_offset) {
         Elf_Word bss_methods_address = bss_.GetAddress() + bss_methods_offset;
@@ -780,16 +807,17 @@ class ElfBuilder final {
         dynsym_.Add(
             oatbssroots, &bss_, bss_roots_address, bss_roots_size, STB_GLOBAL, STT_OBJECT);
       }
+      // Add a symbol marking the start of the strings part of the .bss, if not empty.
+      if (bss_strings_offset != bss_size) {
+        Elf_Word bss_strings_address = bss_.GetAddress() + bss_strings_offset;
+        Elf_Word bss_strings_size = bss_size - bss_strings_offset;
+        Elf_Word oatbssstrings = dynstr_.Add(GetDynamicSymbolName(DynamicSymbol::kOatBssStrings));
+        dynsym_.Add(
+            oatbssstrings, &bss_, bss_strings_address, bss_strings_size, STB_GLOBAL, STT_OBJECT);
+      }
       Elf_Word oatbsslastword = dynstr_.Add(GetDynamicSymbolName(DynamicSymbol::kOatBssLastWord));
       Elf_Word bsslastword_address = bss_.GetAddress() + bss_size - 4;
       dynsym_.Add(oatbsslastword, &bss_, bsslastword_address, 4, STB_GLOBAL, STT_OBJECT);
-    }
-    if (dex_size != 0u) {
-      Elf_Word oatdex = dynstr_.Add(GetDynamicSymbolName(DynamicSymbol::kOatDex));
-      dynsym_.Add(oatdex, &dex_, dex_.GetAddress(), /* size= */ 0, STB_GLOBAL, STT_OBJECT);
-      Elf_Word oatdexlastword = dynstr_.Add(GetDynamicSymbolName(DynamicSymbol::kOatDexLastWord));
-      Elf_Word oatdexlastword_address = dex_.GetAddress() + dex_size - 4;
-      dynsym_.Add(oatdexlastword, &dex_, oatdexlastword_address, 4, STB_GLOBAL, STT_OBJECT);
     }
 
     Elf_Word soname_offset = dynstr_.Add(GetSoname(elf_file_path));
@@ -1046,10 +1074,9 @@ class ElfBuilder final {
     kOatBss,
     kOatBssMethods,
     kOatBssRoots,
+    kOatBssStrings,
     kOatBssLastWord,
-    kOatDex,
-    kOatDexLastWord,
-    kLast = kOatDexLastWord
+    kLast = kOatBssLastWord
   };
 
   static constexpr size_t kDynamicSymbolCount = static_cast<size_t>(DynamicSymbol::kLast) + 1;
@@ -1077,12 +1104,10 @@ class ElfBuilder final {
         return "oatbssmethods";
       case DynamicSymbol::kOatBssRoots:
         return "oatbssroots";
+      case DynamicSymbol::kOatBssStrings:
+        return "oatbssstrings";
       case DynamicSymbol::kOatBssLastWord:
         return "oatbsslastword";
-      case DynamicSymbol::kOatDex:
-        return "oatdex";
-      case DynamicSymbol::kOatDexLastWord:
-        return "oatdexlastword";
     }
   }
 
@@ -1128,7 +1153,6 @@ class ElfBuilder final {
   Section text_;
   Section data_img_rel_ro_;
   Section bss_;
-  Section dex_;
   CachedStringSection dynstr_;
   SymbolSection dynsym_;
   CachedSection hash_;

@@ -63,14 +63,7 @@ class PrepareForRegisterAllocationVisitor final
 
 bool PrepareForRegisterAllocation::Run() {
   PrepareForRegisterAllocationVisitor visitor(graph_, compiler_options_, stats_);
-  // Order does not matter.
-  for (HBasicBlock* block : graph_->GetReversePostOrder()) {
-    // No need to visit the phis.
-    for (HInstructionIterator inst_it(block->GetInstructions()); !inst_it.Done();
-         inst_it.Advance()) {
-      visitor.Dispatch(inst_it.Current());
-    }
-  }
+  visitor.VisitReversePostOrder();  // Order does not matter.
   return true;
 }
 
@@ -88,21 +81,22 @@ void PrepareForRegisterAllocationVisitor::VisitInstanceOf(HInstanceOf* instance_
   }
 }
 
-void PrepareForRegisterAllocationVisitor::VisitNullCheck(HNullCheck* check) {
-  check->ReplaceWith(check->InputAt(0));
-  if (compiler_options_.GetImplicitNullChecks()) {
+static void TryMarkingNullCheckAsImplicit(HNullCheck* check,
+                                          const CompilerOptions& compiler_options) {
+  if (compiler_options.GetImplicitNullChecks()) {
     HInstruction* next = check->GetNext();
-
-    // The `PrepareForRegisterAllocation` pass removes `HBoundType` from the graph,
-    // so do it ourselves now to not prevent optimizations.
-    while (next->IsBoundType()) {
-      next = next->GetNext();
-      VisitBoundType(next->GetPrevious()->AsBoundType());
-    }
     if (next->CanDoImplicitNullCheckOn(check->InputAt(0))) {
       check->MarkEmittedAtUseSite();
     }
   }
+}
+
+void PrepareForRegisterAllocationVisitor::VisitNullCheck(HNullCheck* check) {
+  check->ReplaceWith(check->InputAt(0));
+  // Note: If there is a `HBoundType` between the null check and an instruction that
+  // can perform an implicit null check, `VisitBoundType()` shall mark the null check
+  // as emitted at use site after removing the `HBoundType`.
+  TryMarkingNullCheckAsImplicit(check, compiler_options_);
 }
 
 void PrepareForRegisterAllocationVisitor::VisitDivZeroCheck(HDivZeroCheck* check) {
@@ -137,8 +131,12 @@ void PrepareForRegisterAllocationVisitor::VisitBoundsCheck(HBoundsCheck* check) 
 }
 
 void PrepareForRegisterAllocationVisitor::VisitBoundType(HBoundType* bound_type) {
+  HInstruction* prev = bound_type->GetPrevious();
   bound_type->ReplaceWith(bound_type->InputAt(0));
   bound_type->GetBlock()->RemoveInstruction(bound_type);
+  if (prev != nullptr && prev->IsNullCheck()) {
+    TryMarkingNullCheckAsImplicit(prev->AsNullCheck(), compiler_options_);
+  }
 }
 
 void PrepareForRegisterAllocationVisitor::VisitArraySet(HArraySet* instruction) {
@@ -346,8 +344,7 @@ void PrepareForRegisterAllocationVisitor::VisitConstructorFence(
       // TODO: GetAssociatedAllocation should not care about multiple inputs
       // if we are in prepare_for_register_allocation pass only.
       constructor_fence->GetBlock()->RemoveInstruction(constructor_fence);
-      MaybeRecordStat(stats_,
-                      MethodCompilationStat::kConstructorFenceRemovedPFRA);
+      MaybeRecordStat(stats_, MethodCompilationStat::kConstructorFenceRemovedPFRA);
       return;
     }
 

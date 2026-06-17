@@ -132,7 +132,7 @@ GarbageCollector::GarbageCollector(Heap* heap, const std::string& name)
       gc_duration_(nullptr),
       gc_duration_delta_(nullptr),
       cumulative_timings_(name),
-      pause_histogram_lock_("pause histogram lock", kDefaultMutexLevel, true),
+      histogram_lock_("histogram lock", kDefaultMutexLevel, true),
       is_transaction_active_(false),
       are_metrics_initialized_(false) {
   ResetMeasurements();
@@ -189,6 +189,7 @@ uint64_t GarbageCollector::ExtractRssFromMincore(
     }
   }
   rss *= gPageSize;
+  MutexLock mu(Thread::Current(), histogram_lock_);
   rss_histogram_.AddValue(rss / KB);
 #endif
   return rss;
@@ -217,8 +218,11 @@ void GarbageCollector::Run(GcCause gc_cause, bool clear_soft_references) {
   int64_t freed_bytes = current_iteration->GetFreedBytes() +
       current_iteration->GetFreedLargeObjectBytes();
   total_freed_bytes_ += freed_bytes;
-  // Rounding negative freed bytes to 0 as we are not interested in such corner cases.
-  freed_bytes_histogram_.AddValue(std::max<int64_t>(freed_bytes / KB, 0));
+  {
+    MutexLock mu(self, histogram_lock_);
+    // Rounding negative freed bytes to 0 as we are not interested in such corner cases.
+    freed_bytes_histogram_.AddValue(std::max<int64_t>(freed_bytes / KB, 0));
+  }
   uint64_t end_time = NanoTime();
   uint64_t thread_cpu_end_time = ThreadCpuNanoTime();
   uint64_t thread_cpu_time = thread_cpu_end_time - thread_cpu_start_time;
@@ -236,7 +240,7 @@ void GarbageCollector::Run(GcCause gc_cause, bool clear_soft_references) {
   total_time_ns_ += duration_ns;
   uint64_t total_pause_time_ns = 0;
   for (uint64_t pause_time : current_iteration->GetPauseTimes()) {
-    MutexLock mu(self, pause_histogram_lock_);
+    MutexLock mu(self, histogram_lock_);
     pause_histogram_.AdjustAndAddValue(pause_time);
     total_pause_time_ns += pause_time;
   }
@@ -411,12 +415,12 @@ uint64_t GarbageCollector::GetEstimatedMeanThroughput() const {
 
 void GarbageCollector::ResetMeasurements() {
   {
-    MutexLock mu(Thread::Current(), pause_histogram_lock_);
+    MutexLock mu(Thread::Current(), histogram_lock_);
     pause_histogram_.Reset();
+    rss_histogram_.Reset();
+    freed_bytes_histogram_.Reset();
   }
   cumulative_timings_.Reset();
-  rss_histogram_.Reset();
-  freed_bytes_histogram_.Reset();
   total_thread_cpu_time_ns_ = 0u;
   total_time_ns_ = 0u;
   total_freed_objects_ = 0u;
@@ -490,7 +494,7 @@ void GarbageCollector::RecordFreeLOS(const ObjectBytePair& freed) {
 }
 
 uint64_t GarbageCollector::GetTotalPausedTimeNs() {
-  MutexLock mu(Thread::Current(), pause_histogram_lock_);
+  MutexLock mu(Thread::Current(), histogram_lock_);
   return pause_histogram_.AdjustedSum();
 }
 
@@ -506,32 +510,32 @@ void GarbageCollector::DumpPerformanceInfo(std::ostream& os) {
   const uint64_t freed_bytes = GetTotalFreedBytes();
   const uint64_t scanned_bytes = GetTotalScannedBytes();
   {
-    MutexLock mu(Thread::Current(), pause_histogram_lock_);
+    MutexLock mu(Thread::Current(), histogram_lock_);
     if (pause_histogram_.SampleSize() > 0) {
       Histogram<uint64_t>::CumulativeData cumulative_data;
       pause_histogram_.CreateHistogram(&cumulative_data);
       pause_histogram_.PrintConfidenceIntervals(os, 0.99, cumulative_data);
     }
-  }
 #if defined(__linux__)
-  if (rss_histogram_.SampleSize() > 0) {
-    os << rss_histogram_.Name()
-       << ": Avg: " << PrettySize(rss_histogram_.Mean() * KB)
-       << " Max: " << PrettySize(rss_histogram_.Max() * KB)
-       << " Min: " << PrettySize(rss_histogram_.Min() * KB) << "\n";
-    os << "Peak-rss Histogram: ";
-    rss_histogram_.DumpBins(os);
-    os << "\n";
-  }
+    if (rss_histogram_.SampleSize() > 0) {
+      os << rss_histogram_.Name()
+         << ": Avg: " << PrettySize(rss_histogram_.Mean() * KB)
+         << " Max: " << PrettySize(rss_histogram_.Max() * KB)
+         << " Min: " << PrettySize(rss_histogram_.Min() * KB) << "\n";
+      os << "Peak-rss Histogram: ";
+      rss_histogram_.DumpBins(os);
+      os << "\n";
+    }
 #endif
-  if (freed_bytes_histogram_.SampleSize() > 0) {
-    os << freed_bytes_histogram_.Name()
-       << ": Avg: " << PrettySize(freed_bytes_histogram_.Mean() * KB)
-       << " Max: " << PrettySize(freed_bytes_histogram_.Max() * KB)
-       << " Min: " << PrettySize(freed_bytes_histogram_.Min() * KB) << "\n";
-    os << "Freed-bytes histogram: ";
-    freed_bytes_histogram_.DumpBins(os);
-    os << "\n";
+    if (freed_bytes_histogram_.SampleSize() > 0) {
+      os << freed_bytes_histogram_.Name()
+         << ": Avg: " << PrettySize(freed_bytes_histogram_.Mean() * KB)
+         << " Max: " << PrettySize(freed_bytes_histogram_.Max() * KB)
+         << " Min: " << PrettySize(freed_bytes_histogram_.Min() * KB) << "\n";
+      os << "Freed-bytes histogram: ";
+      freed_bytes_histogram_.DumpBins(os);
+      os << "\n";
+    }
   }
   const double cpu_seconds = NsToMs(GetTotalCpuTime()) / 1000.0;
   os << GetName() << " total time: " << PrettyDuration(total_ns)

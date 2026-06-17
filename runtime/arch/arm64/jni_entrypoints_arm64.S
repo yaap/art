@@ -328,8 +328,22 @@ JNI_SAVE_RETURN_VALUE_TRAMPOLINE art_jni_monitored_method_end, artJniMonitoredMe
      *     All argument registers need to be preserved.
      */
 ENTRY art_jni_lock_object
-    LOCK_OBJECT_FAST_PATH x15, art_jni_lock_object_no_inline, /*can_be_null*/ 0
+    LOCK_OBJECT_FAST_PATH x15, art_jni_lock_object_no_inline, /*can_be_null*/ 0, /*use_lse*/ 0
 END art_jni_lock_object
+
+    /*
+     * Entry from JNI stub that tries to lock the object in a fast path and
+     * calls `artLockObjectFromCode()` (the same as for managed code) for the
+     * difficult cases, may block for GC.
+     * Used only if runtime LSE support is detected.
+     * Custom calling convention:
+     *     x15 holds the non-null object to lock.
+     *     Callee-save registers have been saved and can be used as temporaries.
+     *     All argument registers need to be preserved.
+     */
+ENTRY art_jni_lock_object_lse
+    LOCK_OBJECT_FAST_PATH x15, art_jni_lock_object_no_inline, /*can_be_null*/ 0, /*use_lse*/ 1
+END art_jni_lock_object_lse
 
     /*
      * Entry from JNI stub that calls `artLockObjectFromCode()`
@@ -380,8 +394,22 @@ END art_jni_lock_object_no_inline
      *     Return registers r0 and d0 need to be preserved.
      */
 ENTRY art_jni_unlock_object
-    UNLOCK_OBJECT_FAST_PATH x15, art_jni_unlock_object_no_inline, /*can_be_null*/ 0
+    UNLOCK_OBJECT_FAST_PATH x15, art_jni_unlock_object_no_inline, /*can_be_null*/ 0, /*use_lse*/ 0
 END art_jni_unlock_object
+
+    /*
+     * Entry from JNI stub that tries to unlock the object in a fast path and calls
+     * `artJniUnlockObject()` for the difficult cases. Note that failure to unlock
+     * is fatal, so we do not need to check for exceptions in the slow path.
+     * Used only if runtime LSE support is detected.
+     * Custom calling convention:
+     *     x15 holds the non-null object to unlock.
+     *     Callee-save registers have been saved and can be used as temporaries.
+     *     Return registers r0 and d0 need to be preserved.
+     */
+ENTRY art_jni_unlock_object_lse
+    UNLOCK_OBJECT_FAST_PATH x15, art_jni_unlock_object_no_inline, /*can_be_null*/ 0, /*use_lse*/ 1
+END art_jni_unlock_object_lse
 
     /*
      * Entry from JNI stub that calls `artJniUnlockObject()`. Note that failure to

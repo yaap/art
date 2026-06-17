@@ -45,6 +45,7 @@
 #include "dex/class_accessor-inl.h"
 #include "dex/dex_file-inl.h"
 #include "dex/dex_file_loader.h"
+#include "dex/dex_file_profile.h"
 #include "dex/dex_file_types.h"
 #include "dex/dex_file_verifier.h"
 #include "dex/method_reference.h"
@@ -82,9 +83,6 @@ namespace art {
 namespace linker {
 
 namespace {  // anonymous namespace
-
-// If we write dex layout info in the oat file.
-static constexpr bool kWriteDexLayoutInfo = true;
 
 // Force the OAT method layout to be sorted-by-name instead of
 // the default (class_def_idx, method_idx).
@@ -404,16 +402,17 @@ class OatWriter::OatDexFile {
   uint32_t string_bss_mapping_offset_;
   uint32_t method_type_bss_mapping_offset_;
 
-  // Offset of dex sections that will have different runtime madvise states.
-  // Set in WriteDexLayoutSections.
-  uint32_t dex_sections_layout_offset_;
+  // Offset of dex profile metadata used for informing runtime madvise.
+  // Set in WriteDexProfileMetadata.
+  uint32_t dex_profile_metadata_offset_;
 
   // Data to write to a separate section. We set the length
   // of the vector in OpenDexFiles.
   dchecked_vector<uint32_t> class_offsets_;
 
-  // Dex section layout info to serialize.
-  DexLayoutSections dex_sections_layout_;
+  // Dex profile metadata info to serialize.
+  // Set in InitializeDexProfileMetadata.
+  DexProfileMetadata dex_profile_metadata_;
 
   ///// End of data to write to vdex/oat file.
  private:
@@ -455,23 +454,26 @@ OatWriter::OatWriter(const CompilerOptions& compiler_options,
       bss_size_(0u),
       bss_methods_offset_(0u),
       bss_roots_offset_(0u),
+      bss_strings_offset_(0u),
       boot_image_rel_ro_entries_(),
       bss_method_entry_references_(),
       bss_type_entry_references_(),
       bss_public_type_entry_references_(),
       bss_package_type_entry_references_(),
-      bss_string_entry_references_(),
       bss_method_type_entry_references_(),
+      bss_string_entry_references_(),
       app_image_rel_ro_method_entries_(),
       app_image_rel_ro_method_entries_sorted_(),
-      bss_method_entries_(),
       app_image_rel_ro_type_entries_(),
       app_image_rel_ro_type_entries_sorted_(),
+      app_image_rel_ro_string_entries_(),
+      app_image_rel_ro_string_entries_sorted_(),
+      bss_method_entries_(),
       bss_type_entries_(),
       bss_public_type_entries_(),
       bss_package_type_entries_(),
-      bss_string_entries_(),
       bss_method_type_entries_(),
+      bss_string_entries_(),
       oat_data_offset_(0u),
       oat_header_(nullptr),
       relative_patcher_(nullptr),
@@ -546,7 +548,7 @@ bool OatWriter::AddVdexDexFilesSource(const VdexFile& vdex_file, const char* loc
       return false;
     }
     // We used `zipped_dex_file_locations_` to keep the strings in memory.
-    std::string multidex_location = DexFileLoader::GetMultiDexLocation(i, location);
+    std::string multidex_location = DexFileLoader::GetMultiDexLocation(location, i);
     if (!AddRawDexFileSource(container,
                              current_dex_data,
                              multidex_location.c_str(),
@@ -631,6 +633,10 @@ bool OatWriter::WriteAndOpenDexFiles(
   *opened_dex_files = std::move(dex_files);
   // Create type lookup tables to speed up lookups during compilation.
   InitializeTypeLookupTables(*opened_dex_files);
+
+  // Flush profile compilation info into the oat dex file metadata.
+  InitializeDexProfileMetadata(*opened_dex_files);
+
   write_state_ = WriteState::kStartRoData;
   return true;
 }
@@ -654,8 +660,8 @@ bool OatWriter::StartRoData(const std::vector<const DexFile*>& dex_files,
 
   ChecksumUpdatingOutputStream checksum_updating_rodata(oat_rodata, this);
 
-  // Write dex layout sections into the oat file.
-  if (!WriteDexLayoutSections(&checksum_updating_rodata, dex_files)) {
+  // Write dex profile metadata into the oat file.
+  if (!WriteDexProfileMetadata(&checksum_updating_rodata, dex_files)) {
     return false;
   }
 
@@ -872,6 +878,9 @@ void OatWriter::InitBssAndRelRoData() {
           bss_type_entries = &bss_package_type_entries_;
           bss_references = &bss_package_type_entry_references_;
           add_type_entry = true;
+        } else if (patch.GetType() == LinkerPatch::Type::kStringAppImageRelRo) {
+          app_image_rel_ro_string_entries_.insert(
+              std::make_pair(patch.TargetString(), /* placeholder */ 0u));
         } else if (patch.GetType() == LinkerPatch::Type::kStringBssEntry) {
           StringReference target_string = patch.TargetString();
           bss_string_entries_.insert(std::make_pair(target_string, /* placeholder */ 0u));
@@ -1471,10 +1480,8 @@ class OatWriter::InitImageMethodVisitor final : public OatDexMethodVisitor {
       REQUIRES_SHARED(Locks::mutator_lock_) {
     OatDexMethodVisitor::StartClass(dex_file, class_def_index);
     // Skip classes that are not in the image.
-    const dex::TypeId& type_id =
-        dex_file_->GetTypeId(dex_file->GetClassDef(class_def_index).class_idx_);
-    const char* class_descriptor = dex_file->GetTypeDescriptor(type_id);
-    if (!writer_->GetCompilerOptions().IsImageClass(class_descriptor)) {
+    TypeReference type_ref(dex_file, dex_file->GetClassDef(class_def_index).class_idx_);
+    if (!writer_->GetCompilerOptions().IsImageClass(type_ref, /*array_dim=*/ 0u)) {
       klass_ = nullptr;
       return true;
     }
@@ -1731,6 +1738,16 @@ class OatWriter::WriteCodeMethodVisitor : public OrderedMethodVisitor {
             }
             case LinkerPatch::Type::kStringRelative: {
               uint32_t target_offset = GetTargetObjectOffset(GetTargetString(patch));
+              writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
+                                                                   patch,
+                                                                   offset_ + literal_offset,
+                                                                   target_offset);
+              break;
+            }
+            case LinkerPatch::Type::kStringAppImageRelRo: {
+              uint32_t target_offset =
+                  writer_->data_img_rel_ro_start_ +
+                  writer_->app_image_rel_ro_string_entries_.find(patch.TargetString())->second;
               writer_->relative_patcher_->PatchPcRelativeReference(&patched_code_,
                                                                    patch,
                                                                    offset_ + literal_offset,
@@ -2144,10 +2161,11 @@ size_t OatWriter::InitIndexBssMappings(size_t offset) {
       bss_type_entry_references_.empty() &&
       bss_public_type_entry_references_.empty() &&
       bss_package_type_entry_references_.empty() &&
-      bss_string_entry_references_.empty() &&
-      bss_method_type_entry_references_.empty()) {
+      bss_method_type_entry_references_.empty() &&
+      bss_string_entry_references_.empty()) {
     return offset;
   }
+
   // If there are any classes, the class offsets allocation aligns the offset
   // and we cannot have any index bss mappings without class offsets.
   static_assert(alignof(IndexBssMapping) == 4u, "IndexBssMapping alignment check.");
@@ -2223,8 +2241,8 @@ size_t OatWriter::InitIndexBssMappings(size_t offset) {
   CHECK_EQ(number_of_type_dex_files, bss_type_entry_references_.size());
   CHECK_EQ(number_of_public_type_dex_files, bss_public_type_entry_references_.size());
   CHECK_EQ(number_of_package_type_dex_files, bss_package_type_entry_references_.size());
-  CHECK_EQ(number_of_string_dex_files, bss_string_entry_references_.size());
   CHECK_EQ(number_of_method_type_dex_files, bss_method_type_entry_references_.size());
+  CHECK_EQ(number_of_string_dex_files, bss_string_entry_references_.size());
 
   return offset;
 }
@@ -2282,21 +2300,6 @@ size_t OatWriter::InitIndexBssMappingsHelper(size_t offset,
     offset += CalculateIndexBssMappingSize(dex_file, type_indexes, bss_package_type_entries_);
   }
 
-  auto string_it = bss_string_entry_references_.find(dex_file);
-  if (string_it != bss_string_entry_references_.end()) {
-    const BitVector& string_indexes = string_it->second;
-    ++number_of_string_dex_files;
-    string_bss_mapping_offset = offset;
-    offset += CalculateIndexBssMappingSize(
-        dex_file->NumStringIds(),
-        sizeof(GcRoot<mirror::String>),
-        string_indexes,
-        [this, dex_file](uint32_t index) {
-          return bss_string_entries_.find(StringReference(dex_file, dex::StringIndex(index)))
-              ->second;
-        });
-  }
-
   auto method_type_it = bss_method_type_entry_references_.find(dex_file);
   if (method_type_it != bss_method_type_entry_references_.end()) {
     const BitVector& proto_indexes = method_type_it->second;
@@ -2308,6 +2311,21 @@ size_t OatWriter::InitIndexBssMappingsHelper(size_t offset,
         proto_indexes,
         [this, dex_file](uint32_t index) {
           return bss_method_type_entries_.find(ProtoReference(dex_file, dex::ProtoIndex(index)))
+              ->second;
+        });
+  }
+
+  auto string_it = bss_string_entry_references_.find(dex_file);
+  if (string_it != bss_string_entry_references_.end()) {
+    const BitVector& string_indexes = string_it->second;
+    ++number_of_string_dex_files;
+    string_bss_mapping_offset = offset;
+    offset += CalculateIndexBssMappingSize(
+        dex_file->NumStringIds(),
+        sizeof(GcRoot<mirror::String>),
+        string_indexes,
+        [this, dex_file](uint32_t index) {
+          return bss_string_entries_.find(StringReference(dex_file, dex::StringIndex(index)))
               ->second;
         });
   }
@@ -2503,7 +2521,8 @@ size_t OatWriter::InitDataImgRelRoLayout(size_t offset) {
   DCHECK_EQ(data_img_rel_ro_size_, 0u);
   if (boot_image_rel_ro_entries_.empty() &&
       app_image_rel_ro_method_entries_.empty() &&
-      app_image_rel_ro_type_entries_.empty()) {
+      app_image_rel_ro_type_entries_.empty() &&
+      app_image_rel_ro_string_entries_.empty()) {
     // Nothing to put to the .data.img.rel.ro section.
     return offset;
   }
@@ -2526,6 +2545,10 @@ size_t OatWriter::InitDataImgRelRoLayout(size_t offset) {
   app_image_rel_ro_type_entries_sorted_ = InitDataImgRelRoLayoutOffset(
       app_image_rel_ro_type_entries_, sizeof(uint32_t), TypeReferenceValueComparator());
 
+  DCHECK(app_image_rel_ro_string_entries_sorted_.empty());
+  app_image_rel_ro_string_entries_sorted_ = InitDataImgRelRoLayoutOffset(
+      app_image_rel_ro_string_entries_, sizeof(uint32_t), StringReferenceValueComparator());
+
   offset = data_img_rel_ro_start_ + data_img_rel_ro_size_;
   return offset;
 }
@@ -2536,8 +2559,8 @@ void OatWriter::InitBssLayout(InstructionSet instruction_set) {
       bss_type_entries_.empty() &&
       bss_public_type_entries_.empty() &&
       bss_package_type_entries_.empty() &&
-      bss_string_entries_.empty() &&
-      bss_method_type_entries_.empty()) {
+      bss_method_type_entries_.empty() &&
+      bss_string_entries_.empty()) {
     // Nothing to put to the .bss section.
     return;
   }
@@ -2557,11 +2580,14 @@ void OatWriter::InitBssLayout(InstructionSet instruction_set) {
       bss_public_type_entries_, sizeof(GcRoot<mirror::Class>), TypeReferenceValueComparator());
   InitBssLayoutOffset(
       bss_package_type_entries_, sizeof(GcRoot<mirror::Class>), TypeReferenceValueComparator());
-  InitBssLayoutOffset(
-      bss_string_entries_, sizeof(GcRoot<mirror::String>), StringReferenceValueComparator());
   InitBssLayoutOffset(bss_method_type_entries_,
                       sizeof(GcRoot<mirror::MethodType>),
                       ProtoReferenceValueComparator());
+
+  bss_strings_offset_ = bss_size_;
+
+  InitBssLayoutOffset(
+      bss_string_entries_, sizeof(GcRoot<mirror::String>), StringReferenceValueComparator());
 }
 
 bool OatWriter::WriteRodata(OutputStream* out) {
@@ -2776,9 +2802,9 @@ bool OatWriter::CheckOatSize(OutputStream* out, size_t file_offset, size_t relat
     DO_STAT(size_oat_dex_file_offset_);
     DO_STAT(size_oat_dex_file_class_offsets_offset_);
     DO_STAT(size_oat_dex_file_lookup_table_offset_);
-    DO_STAT(size_oat_dex_file_dex_layout_sections_offset_);
-    DO_STAT(size_oat_dex_file_dex_layout_sections_);
-    DO_STAT(size_oat_dex_file_dex_layout_sections_alignment_);
+    DO_STAT(size_oat_dex_file_dex_profile_metadata_offset_);
+    DO_STAT(size_oat_dex_file_dex_profile_metadata_);
+    DO_STAT(size_oat_dex_file_dex_profile_metadata_alignment_);
     DO_STAT(size_oat_dex_file_method_bss_mapping_offset_);
     DO_STAT(size_oat_dex_file_type_bss_mapping_offset_);
     DO_STAT(size_oat_dex_file_public_type_bss_mapping_offset_);
@@ -3063,29 +3089,6 @@ size_t OatWriter::WriteIndexBssMappingsHelper(OutputStream* out,
     DCHECK_EQ(0u, package_type_bss_mapping_offset);
   }
 
-  auto string_it = bss_string_entry_references_.find(dex_file);
-  if (string_it != bss_string_entry_references_.end()) {
-    const BitVector& string_indexes = string_it->second;
-    DCHECK_EQ(relative_offset, string_bss_mapping_offset);
-    DCHECK_OFFSET();
-    size_t string_mappings_size = WriteIndexBssMapping(
-        out,
-        dex_file->NumStringIds(),
-        sizeof(GcRoot<mirror::String>),
-        string_indexes,
-        [this, dex_file](uint32_t index) {
-          return bss_string_entries_.find(StringReference(dex_file, dex::StringIndex(index)))
-              ->second;
-        });
-    if (string_mappings_size == 0u) {
-      return 0u;
-    }
-    size_string_bss_mappings_ += string_mappings_size;
-    relative_offset += string_mappings_size;
-  } else {
-    DCHECK_EQ(0u, string_bss_mapping_offset);
-  }
-
   auto method_type_it = bss_method_type_entry_references_.find(dex_file);
   if (method_type_it != bss_method_type_entry_references_.end()) {
     const BitVector& method_type_indexes = method_type_it->second;
@@ -3109,6 +3112,29 @@ size_t OatWriter::WriteIndexBssMappingsHelper(OutputStream* out,
     DCHECK_EQ(0u, method_type_bss_mapping_offset);
   }
 
+  auto string_it = bss_string_entry_references_.find(dex_file);
+  if (string_it != bss_string_entry_references_.end()) {
+    const BitVector& string_indexes = string_it->second;
+    DCHECK_EQ(relative_offset, string_bss_mapping_offset);
+    DCHECK_OFFSET();
+    size_t string_mappings_size = WriteIndexBssMapping(
+        out,
+        dex_file->NumStringIds(),
+        sizeof(GcRoot<mirror::String>),
+        string_indexes,
+        [this, dex_file](uint32_t index) {
+          return bss_string_entries_.find(StringReference(dex_file, dex::StringIndex(index)))
+              ->second;
+        });
+    if (string_mappings_size == 0u) {
+      return 0u;
+    }
+    size_string_bss_mappings_ += string_mappings_size;
+    relative_offset += string_mappings_size;
+  } else {
+    DCHECK_EQ(0u, string_bss_mapping_offset);
+  }
+
   return relative_offset;
 }
 
@@ -3119,8 +3145,8 @@ size_t OatWriter::WriteIndexBssMappings(OutputStream* out,
       bss_type_entry_references_.empty() &&
       bss_public_type_entry_references_.empty() &&
       bss_package_type_entry_references_.empty() &&
-      bss_string_entry_references_.empty() &&
-      bss_method_type_entry_references_.empty()) {
+      bss_method_type_entry_references_.empty() &&
+      bss_string_entry_references_.empty()) {
     return relative_offset;
   }
   // If there are any classes, the class offsets allocation aligns the offset
@@ -3297,7 +3323,8 @@ size_t OatWriter::WriteDataImgRelRo(OutputStream* out,
                                     size_t relative_offset) {
   size_t size = boot_image_rel_ro_entries_.size() +
                 app_image_rel_ro_method_entries_.size() +
-                app_image_rel_ro_type_entries_.size();
+                app_image_rel_ro_type_entries_.size() +
+                app_image_rel_ro_string_entries_.size();
   if (size == 0u) {
     return relative_offset;
   }
@@ -3315,7 +3342,11 @@ size_t OatWriter::WriteDataImgRelRo(OutputStream* out,
   DCHECK_EQ(app_image_rel_ro_method_entries_.size(),
             app_image_rel_ro_method_entries_sorted_.size());
   DCHECK_EQ(app_image_rel_ro_type_entries_.size(), app_image_rel_ro_type_entries_sorted_.size());
-  if (!app_image_rel_ro_method_entries_.empty() || !app_image_rel_ro_type_entries_.empty()) {
+  DCHECK_EQ(app_image_rel_ro_string_entries_.size(),
+            app_image_rel_ro_string_entries_sorted_.size());
+  if (!app_image_rel_ro_method_entries_.empty() ||
+      !app_image_rel_ro_type_entries_.empty() ||
+      !app_image_rel_ro_string_entries_.empty()) {
     DCHECK(GetCompilerOptions().IsAppImage());
     ClassLinker* class_linker = Runtime::Current()->GetClassLinker();
     ScopedObjectAccess soa(Thread::Current());
@@ -3360,6 +3391,22 @@ size_t OatWriter::WriteDataImgRelRo(OutputStream* out,
           class_linker->LookupResolvedType(target_type.TypeIndex(), dex_cache, class_loader);
       CHECK(type != nullptr);
       uint32_t app_image_offset = image_writer_->GetGlobalImageOffset(type.Ptr());
+      data.push_back(app_image_offset);
+    }
+    for (size_t i : Range(app_image_rel_ro_string_entries_sorted_.size())) {
+      if (i != 0 && app_image_rel_ro_string_entries_sorted_[i]->second ==
+                        app_image_rel_ro_string_entries_sorted_[i - 1]->second) {
+        // Skip duplicates. We can do it cheaply by comparing the offsets, without the need to
+        // compare the StringReferences themselves.
+        --size;
+        continue;
+      }
+      StringReference target_string = app_image_rel_ro_string_entries_sorted_[i]->first;
+      update_for_dex_file(target_string.dex_file);
+      ObjPtr<mirror::String> string =
+          class_linker->LookupString(target_string.StringIndex(), dex_cache);
+      CHECK(string != nullptr);
+      uint32_t app_image_offset = image_writer_->GetGlobalImageOffset(string.Ptr());
       data.push_back(app_image_offset);
     }
   }
@@ -3617,19 +3664,40 @@ void OatWriter::InitializeTypeLookupTables(
   }
 }
 
-bool OatWriter::WriteDexLayoutSections(OutputStream* oat_rodata,
-                                       const std::vector<const DexFile*>& opened_dex_files) {
-  TimingLogger::ScopedTiming split(__FUNCTION__, timings_);
-
-  if (!kWriteDexLayoutInfo) {
-    return true;
+void OatWriter::InitializeDexProfileMetadata(
+    const std::vector<std::unique_ptr<const DexFile>>& opened_dex_files) {
+  if (profile_compilation_info_ == nullptr) {
+    return;
   }
+
+  TimingLogger::ScopedTiming split("InitializeDexProfileMetadata", timings_);
+  DCHECK_EQ(opened_dex_files.size(), oat_dex_files_.size());
+  for (size_t i = 0, size = opened_dex_files.size(); i != size; ++i) {
+    ProfileCompilationInfo::ProfileIndexType profile_index =
+        profile_compilation_info_->FindDexFile(*opened_dex_files[i]);
+    // It's perfectly valid for the dex to lack any profile data; for associated metadata, that's
+    // functionally equivalent to the profile being empty.
+    DexProfileMetadata metadata;
+    if (profile_index != ProfileCompilationInfo::MaxProfileIndex()) {
+      metadata.num_startup_classes =
+          profile_compilation_info_->GetNumberOfStartupClasses(profile_index);
+      metadata.num_startup_methods =
+          profile_compilation_info_->GetNumberOfStartupMethods(profile_index);
+    }
+    oat_dex_files_[i].dex_profile_metadata_ = metadata;
+  }
+}
+
+bool OatWriter::WriteDexProfileMetadata(OutputStream* oat_rodata,
+                                        const std::vector<const DexFile*>& opened_dex_files) {
+  TimingLogger::ScopedTiming split(__FUNCTION__, timings_);
 
   uint32_t expected_offset = oat_data_offset_ + oat_size_;
   off_t actual_offset = oat_rodata->Seek(expected_offset, kSeekSet);
   if (static_cast<uint32_t>(actual_offset) != expected_offset) {
-    PLOG(ERROR) << "Failed to seek to dex layout section offset section. Actual: " << actual_offset
-                << " Expected: " << expected_offset << " File: " << oat_rodata->GetLocation();
+    PLOG(ERROR) << "Failed to seek to dex profile metadata offset section. Actual: "
+                << actual_offset << " Expected: " << expected_offset
+                << " File: " << oat_rodata->GetLocation();
     return false;
   }
 
@@ -3637,12 +3705,12 @@ bool OatWriter::WriteDexLayoutSections(OutputStream* oat_rodata,
   size_t rodata_offset = oat_size_;
   for (size_t i = 0, size = opened_dex_files.size(); i != size; ++i) {
     OatDexFile* oat_dex_file = &oat_dex_files_[i];
-    DCHECK_EQ(oat_dex_file->dex_sections_layout_offset_, 0u);
+    DCHECK_EQ(oat_dex_file->dex_profile_metadata_offset_, 0u);
 
-    // Write dex layout section alignment bytes.
+    // Write dex profile metadata alignment bytes.
     size_t rodata_file_offset = GetFileOffset(rodata_offset);
     const size_t padding_size =
-        RoundUp(rodata_file_offset, alignof(DexLayoutSections)) - rodata_file_offset;
+        RoundUp(rodata_file_offset, alignof(DexProfileMetadata)) - rodata_file_offset;
     if (padding_size != 0u) {
       std::vector<uint8_t> buffer(padding_size, 0u);
       if (!oat_rodata->WriteFully(buffer.data(), padding_size)) {
@@ -3651,29 +3719,29 @@ bool OatWriter::WriteDexLayoutSections(OutputStream* oat_rodata,
                     << " Output: " << oat_rodata->GetLocation();
         return false;
       }
-      size_oat_dex_file_dex_layout_sections_alignment_ += padding_size;
+      size_oat_dex_file_dex_profile_metadata_alignment_ += padding_size;
       rodata_offset += padding_size;
     }
 
-    DCHECK_ALIGNED(rodata_offset, alignof(DexLayoutSections));
+    DCHECK_ALIGNED(rodata_offset, alignof(DexProfileMetadata));
     DCHECK_EQ(oat_data_offset_ + rodata_offset,
               static_cast<size_t>(oat_rodata->Seek(0u, kSeekCurrent)));
     DCHECK(oat_dex_file != nullptr);
-    if (!oat_rodata->WriteFully(&oat_dex_file->dex_sections_layout_,
-                                sizeof(oat_dex_file->dex_sections_layout_))) {
-      PLOG(ERROR) << "Failed to write dex layout sections."
+    if (!oat_rodata->WriteFully(&oat_dex_file->dex_profile_metadata_,
+                                sizeof(oat_dex_file->dex_profile_metadata_))) {
+      PLOG(ERROR) << "Failed to write dex profile metadata."
                   << " File: " << oat_dex_file->GetLocation()
                   << " Output: " << oat_rodata->GetLocation();
       return false;
     }
-    oat_dex_file->dex_sections_layout_offset_ = rodata_offset;
-    size_oat_dex_file_dex_layout_sections_ += sizeof(oat_dex_file->dex_sections_layout_);
-    rodata_offset += sizeof(oat_dex_file->dex_sections_layout_);
+    oat_dex_file->dex_profile_metadata_offset_ = rodata_offset;
+    size_oat_dex_file_dex_profile_metadata_ += sizeof(oat_dex_file->dex_profile_metadata_);
+    rodata_offset += sizeof(oat_dex_file->dex_profile_metadata_);
   }
   oat_size_ = rodata_offset;
 
   if (!oat_rodata->Flush()) {
-    PLOG(ERROR) << "Failed to flush stream after writing type dex layout sections."
+    PLOG(ERROR) << "Failed to flush stream after writing type dex profile metadata."
                 << " File: " << oat_rodata->GetLocation();
     return false;
   }
@@ -3919,7 +3987,7 @@ OatWriter::OatDexFile::OatDexFile(std::unique_ptr<const DexFile> dex_file)
       package_type_bss_mapping_offset_(0u),
       string_bss_mapping_offset_(0u),
       method_type_bss_mapping_offset_(0u),
-      dex_sections_layout_offset_(0u),
+      dex_profile_metadata_offset_(0u),
       class_offsets_() {}
 
 size_t OatWriter::OatDexFile::SizeOf() const {
@@ -3929,7 +3997,7 @@ size_t OatWriter::OatDexFile::SizeOf() const {
          sizeof(method_bss_mapping_offset_) + sizeof(type_bss_mapping_offset_) +
          sizeof(public_type_bss_mapping_offset_) + sizeof(package_type_bss_mapping_offset_) +
          sizeof(string_bss_mapping_offset_) + sizeof(method_type_bss_mapping_offset_) +
-         sizeof(dex_sections_layout_offset_);
+         sizeof(dex_profile_metadata_offset_);
 }
 
 bool OatWriter::OatDexFile::Write(OatWriter* oat_writer, OutputStream* out) const {
@@ -3984,11 +4052,12 @@ bool OatWriter::OatDexFile::Write(OatWriter* oat_writer, OutputStream* out) cons
   }
   oat_writer->size_oat_dex_file_lookup_table_offset_ += sizeof(lookup_table_offset_);
 
-  if (!out->WriteFully(&dex_sections_layout_offset_, sizeof(dex_sections_layout_offset_))) {
+  if (!out->WriteFully(&dex_profile_metadata_offset_, sizeof(dex_profile_metadata_offset_))) {
     PLOG(ERROR) << "Failed to write dex section layout info to " << out->GetLocation();
     return false;
   }
-  oat_writer->size_oat_dex_file_dex_layout_sections_offset_ += sizeof(dex_sections_layout_offset_);
+  oat_writer->size_oat_dex_file_dex_profile_metadata_offset_ +=
+      sizeof(dex_profile_metadata_offset_);
 
   if (!out->WriteFully(&method_bss_mapping_offset_, sizeof(method_bss_mapping_offset_))) {
     PLOG(ERROR) << "Failed to write method bss mapping offset to " << out->GetLocation();
@@ -4182,17 +4251,6 @@ bool OatWriter::OatClass::Write(OatWriter* oat_writer, OutputStream* out) const 
 debug::DebugInfo OatWriter::GetDebugInfo() const {
   debug::DebugInfo debug_info{};
   debug_info.compiled_methods = ArrayRef<const debug::MethodDebugInfo>(method_info_);
-  if (VdexWillContainDexFiles()) {
-    DCHECK_EQ(dex_files_->size(), oat_dex_files_.size());
-    for (size_t i = 0, size = dex_files_->size(); i != size; ++i) {
-      const DexFile* dex_file = (*dex_files_)[i];
-      const OatDexFile& oat_dex_file = oat_dex_files_[i];
-      uint32_t dex_file_offset = oat_dex_file.dex_file_offset_;
-      if (dex_file_offset != 0) {
-        debug_info.dex_files.emplace(dex_file_offset, dex_file);
-      }
-    }
-  }
   return debug_info;
 }
 

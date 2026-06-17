@@ -1,5 +1,0 @@
-{
-  "build-param": {
-    "experimental": "var-handles"
-  }
-}

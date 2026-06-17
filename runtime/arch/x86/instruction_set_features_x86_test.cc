@@ -232,4 +232,61 @@ TEST(X86InstructionSetFeaturesTest, X86FeaturesFromAlderlakeVariant) {
 
   EXPECT_FALSE(x86_64_features->Equals(x86_features.get()));
 }
+
+TEST(X86InstructionSetFeaturesTest, X86FeaturesFromPantherlakeVariant) {
+  // Build features for a 32-bit pantherlake x86 processor.
+  std::string error_msg;
+  std::unique_ptr<const InstructionSetFeatures> x86_features(
+      InstructionSetFeatures::FromVariant(InstructionSet::kX86, "pantherlake", &error_msg));
+  ASSERT_TRUE(x86_features.get() != nullptr) << error_msg;
+  EXPECT_EQ(x86_features->GetInstructionSet(), InstructionSet::kX86);
+  EXPECT_TRUE(x86_features->Equals(x86_features.get()));
+  EXPECT_STREQ("ssse3,sse4.1,sse4.2,avx,avx2,popcnt", x86_features->GetFeatureString().c_str());
+  EXPECT_EQ(x86_features->AsBitmap(), 63U);
+
+  // Build features for a 64-bit x86-64 pantherlake processor.
+  std::unique_ptr<const InstructionSetFeatures> x86_64_features(
+      InstructionSetFeatures::FromVariant(InstructionSet::kX86_64, "pantherlake", &error_msg));
+  ASSERT_TRUE(x86_64_features.get() != nullptr) << error_msg;
+  EXPECT_EQ(x86_64_features->GetInstructionSet(), InstructionSet::kX86_64);
+  EXPECT_TRUE(x86_64_features->Equals(x86_64_features.get()));
+  EXPECT_STREQ("ssse3,sse4.1,sse4.2,avx,avx2,popcnt", x86_64_features->GetFeatureString().c_str());
+  EXPECT_EQ(x86_64_features->AsBitmap(), 63U);
+
+  EXPECT_FALSE(x86_64_features->Equals(x86_features.get()));
+}
+TEST(X86InstructionSetFeaturesTest, X86FeaturesFromBitmap) {
+  std::unique_ptr<const InstructionSetFeatures> features_none(
+      InstructionSetFeatures::FromBitmap(InstructionSet::kX86, 0x0));
+
+  EXPECT_EQ(features_none->GetInstructionSet(), InstructionSet::kX86);
+  EXPECT_FALSE(features_none->AsX86InstructionSetFeatures()->HasSSE4_1());
+  EXPECT_FALSE(features_none->AsX86InstructionSetFeatures()->HasAVX());
+  EXPECT_FALSE(features_none->AsX86InstructionSetFeatures()->HasAVX2());
+  EXPECT_FALSE(features_none->AsX86InstructionSetFeatures()->HasPopCnt());
+
+  std::unique_ptr<const InstructionSetFeatures> features_sse4_1(
+      InstructionSetFeatures::FromBitmap(InstructionSet::kX86, 1u << 1));
+
+  EXPECT_EQ(features_sse4_1->GetInstructionSet(), InstructionSet::kX86);
+  EXPECT_TRUE(features_sse4_1->AsX86InstructionSetFeatures()->HasSSE4_1());
+
+  std::unique_ptr<const InstructionSetFeatures> features_avx(
+      InstructionSetFeatures::FromBitmap(InstructionSet::kX86, 1u << 3));
+
+  EXPECT_EQ(features_avx->GetInstructionSet(), InstructionSet::kX86);
+  EXPECT_TRUE(features_avx->AsX86InstructionSetFeatures()->HasAVX());
+
+  std::unique_ptr<const InstructionSetFeatures> features_avx2(
+      InstructionSetFeatures::FromBitmap(InstructionSet::kX86, 1u << 4));
+
+  EXPECT_EQ(features_avx2->GetInstructionSet(), InstructionSet::kX86);
+  EXPECT_TRUE(features_avx2->AsX86InstructionSetFeatures()->HasAVX2());
+
+  std::unique_ptr<const InstructionSetFeatures> features_popcnt(
+      InstructionSetFeatures::FromBitmap(InstructionSet::kX86, 1u << 5));
+
+  EXPECT_EQ(features_avx2->GetInstructionSet(), InstructionSet::kX86);
+  EXPECT_TRUE(features_popcnt->AsX86InstructionSetFeatures()->HasPopCnt());
+}
 }  // namespace art

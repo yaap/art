@@ -73,6 +73,7 @@
 #include "base/utils.h"
 #include "class_linker-inl.h"
 #include "class_root-inl.h"
+#include "com_android_art_rw_flags.h"
 #include "compiler_callbacks.h"
 #include "debugger.h"
 #include "dex/art_dex_file_loader.h"
@@ -143,7 +144,6 @@
 #include "native/java_lang_reflect_Method.h"
 #include "native/java_lang_reflect_Parameter.h"
 #include "native/java_lang_reflect_Proxy.h"
-#include "native/java_util_concurrent_atomic_AtomicLong.h"
 #include "native/jdk_internal_misc_Unsafe.h"
 #include "native/jdk_internal_vm_Continuation.h"
 #include "native/libcore_io_Memory.h"
@@ -185,9 +185,16 @@
 #ifdef ART_TARGET_ANDROID
 #include <android/api-level.h>
 #include <android/set_abort_message.h>
+#include <linux/magic.h>
+#include <sys/vfs.h>
+
 #include "com_android_apex.h"
+
 namespace apex = com::android::apex;
 
+#endif
+#ifdef ART_USE_SIMULATOR
+#include "code_simulator_container.h"
 #endif
 
 // Static asserts to check the values of generated assembly-support macros.
@@ -242,6 +249,47 @@ inline char** GetEnviron() { return environ; }
 
 void CheckConstants() {
   CHECK_EQ(mirror::Array::kFirstElementOffset, mirror::Array::FirstElementOffset());
+}
+
+// Helper method do determine if the given location can safely assume a larger readahead window.
+// For now, we only assume this if 1) the location is in /data, and 2) /data is f2fs. This query
+// is cheap enough to invoke before each madvise, avoiding extra syscalls and allocations
+bool LocationSupportsLargeReadahead([[maybe_unused]] std::string_view location) {
+#if defined(ART_TARGET_ANDROID)
+  static const char* kDataDir = [] {
+    const char* data_dir = getenv("ANDROID_DATA");
+    return (data_dir != nullptr) ? data_dir : "/data";
+  }();
+
+  static const bool kDataIsF2fs = [] {
+    struct statfs buf;
+    // Note that the stat call may fail in sandboxed processes. As this query is purely for
+    // potential optimizations, treat that failure as benign.
+    return statfs(kDataDir, &buf) == 0 && buf.f_type == F2FS_SUPER_MAGIC;
+  }();
+
+  if (!kDataIsF2fs) {
+    return false;
+  }
+
+  std::string_view data_dir(kDataDir);
+
+  // Normalize the ending to simplify root equivalence checks.
+  if (UNLIKELY(data_dir.ends_with('/'))) {
+    data_dir.remove_suffix(1);
+  }
+
+  // Perform a fast boundary-safe lexical check.
+  if (!location.starts_with(data_dir)) {
+    return false;
+  }
+
+  // Check if identical or if the next character is a separator, avoiding matches of
+  // `/datafoo/bar against `/data`.
+  return location.length() == data_dir.length() || location[data_dir.length()] == '/';
+#else
+  return false;
+#endif  // defined(ART_TARGET_ANDROID)
 }
 
 }  // namespace
@@ -539,7 +587,6 @@ Runtime::~Runtime() {
   delete oat_file_manager_;
   oat_file_manager_ = nullptr;
   Thread::Shutdown();
-  QuasiAtomic::Shutdown();
 
   // Destroy allocators before shutting down the MemMap because they may use it.
   java_vm_.reset();
@@ -893,7 +940,8 @@ void Runtime::CallExitHook(jint status) {
 void Runtime::SweepSystemWeaks(IsMarkedVisitor* visitor) {
   // Userfaultfd compaction updates weak intern-table page-by-page via
   // LinearAlloc.
-  if (!GetHeap()->IsPerformingUffdCompaction()) {
+  bool in_uffd_compaction = GetHeap()->IsPerformingUffdCompaction();
+  if (!in_uffd_compaction) {
     GetInternTable()->SweepInternTableWeaks(visitor);
   }
   GetMonitorList()->SweepMonitorList(visitor);
@@ -902,12 +950,19 @@ void Runtime::SweepSystemWeaks(IsMarkedVisitor* visitor) {
   // Sweep JIT tables only if the GC is moving as in other cases the entries are
   // not updated.
   if (GetJit() != nullptr && GetHeap()->IsMovingGc()) {
+    auto* gc = static_cast<gc::collector::GarbageCollector*>(visitor);
+    if (in_uffd_compaction) {
+      gc->GetTimings()->StartTiming("SweepJitCodeCache");
+    }
     // Visit JIT literal tables. Objects in these tables are classes and strings
     // and only classes can be affected by class unloading. The strings always
     // stay alive as they are strongly interned.
     // TODO: Move this closer to CleanupClassLoaders, to avoid blocking weak accesses
     // from mutators. See b/32167580.
     GetJit()->GetCodeCache()->SweepRootTables(visitor);
+    if (in_uffd_compaction) {
+      gc->GetTimings()->EndTiming();
+    }
   }
 
   // All other generic system-weak holders.
@@ -1192,7 +1247,10 @@ bool Runtime::Start() {
         /*ref_profile_filename=*/ "",
         kVMRuntimePrimaryApk);
   }
-
+  // Add a concurrent-gc task after runtime has started if we are in continuous-gc mode.
+  if (heap_->InContinuousGCMode()) {
+    heap_->RequestConcurrentGC(self, gc::kGcCauseBackground, false, heap_->GetCurrentGcNum());
+  }
   return true;
 }
 
@@ -1330,7 +1388,6 @@ void Runtime::InitNonZygoteOrPostFork(
     if (!odrefresh::UploadStatsIfAvailable(&err)) {
       LOG(WARNING) << "Failed to upload odrefresh metrics: " << err;
     }
-    metrics::ReportDeviceMetrics();
   }
 
   if (LIKELY(automatically_set_jni_ids_indirection_) && CanSetJniIdType()) {
@@ -1627,8 +1684,6 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
 
   VLOG(startup) << "Runtime::Init -verbose:startup enabled";
 
-  QuasiAtomic::Startup();
-
   oat_file_manager_ = new OatFileManager();
 
   jni_id_manager_.reset(new jni::JniIdManager());
@@ -1740,18 +1795,17 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   // hiddenapi_platform_enforcement flag is set, otherwise the checks are
   // disabled by default and can be enabled with a command line flag.
   // AndroidRuntime will pass the flag if a system property is set.
-  // TODO(b/377676642): Replace flag with SDK level check when ramped.
   {
     bool always_enable = false;
 #ifdef ART_TARGET_ANDROID
-    if (com::android::art::flags::hiddenapi_platform_enforcement()) {
+    if (hiddenapi::EnableHiddenapiPlatformEnforcement()) {
       always_enable = true;
     }
 #endif
     const char* reason;
     if (always_enable) {
       core_platform_api_policy_ = hiddenapi::EnforcementPolicy::kEnabled;
-      reason = "from the hiddenapi_platform_enforcement flag";
+      reason = "from the hiddenapi_platform_enforcement flag and the device API level";
     } else {
       core_platform_api_policy_ = runtime_options.GetOrDefault(Opt::CorePlatformApiPolicy);
       reason = "by runtime option";
@@ -1796,6 +1850,10 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   //   agents_.push_back(lib);
   // }
 
+  if (InstructionSetFeatures::IsRuntimeDetectionSupported()) {
+    runtime_instruction_set_features_ = InstructionSetFeatures::FromRuntimeDetection();
+  }
+
   float foreground_heap_growth_multiplier;
   if (is_low_memory_mode_ && !runtime_options.Exists(Opt::ForegroundHeapGrowthMultiplier)) {
     // If low memory mode, use 1.0 as the multiplier by default.
@@ -1821,12 +1879,24 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
                         (gUseUserfaultfd ? BackgroundGcOption(gc::kCollectorTypeCMCBackground) :
                                            runtime_options.GetOrDefault(Opt::BackgroundGc));
 
+  bool enable_time_based_gc_trigger =
+      runtime_options.GetOrDefault(Opt::EnableTimeBasedGcTrigger) &&
+      !GetBoolProperty(
+          "persist.device_config.runtime_native_boot.force_disable_time_based_gc_trigger", false);
+
+#ifdef ART_USE_SIMULATOR
+  if (IsSimulatorMode()) {
+    instruction_set_ = kRuntimeQuickCodeISA;
+    simulator_container_.reset(new CodeSimulatorContainer(kRuntimeQuickCodeISA));
+  }
+#endif
+
   heap_ = new gc::Heap(runtime_options.GetOrDefault(Opt::MemoryInitialSize),
                        runtime_options.GetOrDefault(Opt::HeapGrowthLimit),
                        runtime_options.GetOrDefault(Opt::HeapMinFree),
                        runtime_options.GetOrDefault(Opt::HeapMaxFree),
                        runtime_options.GetOrDefault(Opt::HeapTargetUtilization),
-                       runtime_options.GetOrDefault(Opt::EnableTimeBasedGcTrigger),
+                       enable_time_based_gc_trigger,
                        runtime_options.GetOrDefault(Opt::HeapMemoryGcCostFactor),
                        foreground_heap_growth_multiplier,
                        runtime_options.GetOrDefault(Opt::StopForNativeAllocs),
@@ -1860,6 +1930,7 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
                        xgc_option.verify_pre_sweeping_rosalloc_,
                        xgc_option.verify_post_gc_rosalloc_,
                        xgc_option.gcstress_,
+                       xgc_option.continuous_gc_,
                        xgc_option.measure_,
                        runtime_options.GetOrDefault(Opt::EnableHSpaceCompactForOOM),
                        use_generational_gc,
@@ -1960,9 +2031,8 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
   }
 
 #ifdef ART_USE_RESTRICTED_MODE
-  // TODO(Simulator): support signal handling and implicit checks.
+  // TODO(Simulator): support implicit suspend checks.
   implicit_suspend_checks_ = false;
-  implicit_null_checks_ = false;
 #endif  // ART_USE_RESTRICTED_MODE
 
   fault_manager.Init(!no_sig_chain_);
@@ -1983,8 +2053,13 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
       }
 
       if (implicit_null_checks_) {
+#ifdef ART_USE_SIMULATOR
+        fault_manager.AddHandler(new NullPointerHandlerSimulator(),
+                                 NullPointerHandlerSimulator::IsGeneratedCodeHandler());
+#else
         fault_manager.AddHandler(new NullPointerHandler(),
                                  NullPointerHandler::IsGeneratedCodeHandler());
+#endif
       }
 
       if (kEnableJavaStackTraceHandler) {
@@ -2240,10 +2315,9 @@ bool Runtime::Init(RuntimeArgumentMap&& runtime_options_in) {
     LOG(FATAL) << "Unreachable";
     UNREACHABLE();
   }
-  {
-    ScopedObjectAccess soa(self);
-    callbacks_->NextRuntimePhase(RuntimePhaseCallback::RuntimePhase::kInitialAgents);
-  }
+
+  Locks::mutator_lock_->AssertSharedHeld(self);
+  callbacks_->NextRuntimePhase(RuntimePhaseCallback::RuntimePhase::kInitialAgents);
 
   if (IsZygote() && IsPerfettoHprofEnabled()) {
     constexpr const char* plugin_name = kIsDebugBuild ?
@@ -2480,7 +2554,6 @@ void Runtime::RegisterRuntimeNativeMethods(JNIEnv* env) {
   register_java_lang_Thread(env);
   register_java_lang_Throwable(env);
   register_java_lang_VMClassLoader(env);
-  register_java_util_concurrent_atomic_AtomicLong(env);
   register_jdk_internal_misc_Unsafe(env);
   register_jdk_internal_vm_Continuation(env);
   register_libcore_io_Memory(env);
@@ -2927,18 +3000,19 @@ void Runtime::RegisterAppInfo(const std::string& package_name,
                               const std::string& profile_output_filename,
                               const std::string& ref_profile_filename,
                               int32_t code_type) {
+  AppInfo::CodeType internal_code_type = AppInfo::FromVMRuntimeConstants(code_type);
   app_info_.RegisterAppInfo(
       package_name,
       code_paths,
       profile_output_filename,
       ref_profile_filename,
-      AppInfo::FromVMRuntimeConstants(code_type));
+      internal_code_type);
 
   if (AreMetricsInitialized()) {
     metrics_reporter_->NotifyAppInfoUpdated(&app_info_);
   }
 
-  if (jit_.get() == nullptr) {
+  if (jit_ == nullptr) {
     // We are not JITing. Nothing to do.
     return;
   }
@@ -2955,6 +3029,8 @@ void Runtime::RegisterAppInfo(const std::string& package_name,
     LOG(WARNING) << "JIT profile information will not be recorded: code paths is empty.";
     return;
   }
+
+  jit_->RegisterAppInfo(internal_code_type, app_info_.GetCompilerFilter(code_paths[0]));
 
   // Framework calls this method for all split APKs. Ignore the calls for the ones with no dex code
   // so that we don't unnecessarily create profiles for them or write bootclasspath profiling info
@@ -3194,6 +3270,7 @@ double Runtime::GetHashTableMaxLoadFactor() const {
 void Runtime::UpdateProcessState(ProcessState process_state) {
   ProcessState old_process_state = process_state_;
   process_state_ = process_state;
+  was_ever_jank_perceptible_ |= InJankPerceptibleProcessState();
   GetHeap()->UpdateProcessState(old_process_state, process_state);
 
   // When the application switches to the foreground, lock contention on classlinker_classes_lock_
@@ -3428,34 +3505,15 @@ size_t Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
                                     size_t map_size_bytes,
                                     const uint8_t* map_begin,
                                     const uint8_t* map_end,
-                                    const std::string& file_name) {
+                                    const std::string& file_name,
+                                    int optional_fd) {
   // TODO(b/359932564): Fix map_size_bytes adjustment to account for map_begin alignment.
   map_begin = AlignDown(map_begin, gPageSize);
   map_size_bytes = RoundUp(map_size_bytes, gPageSize);
-#ifdef ART_TARGET_ANDROID
-  // Short-circuit the madvise optimization for background processes. This
-  // avoids IO and memory contention with foreground processes, particularly
-  // those involving app startup.
-  // Note: We can only safely short-circuit the madvise on T+, as it requires
-  // the framework to always immediately notify ART of process states.
-  static const int kApiLevel = android_get_device_api_level();
-  const bool accurate_process_state_at_startup = kApiLevel >= __ANDROID_API_T__;
-  if (accurate_process_state_at_startup) {
-    const Runtime* runtime = Runtime::Current();
-    if (runtime != nullptr && !runtime->InJankPerceptibleProcessState()) {
-      return 0;
-    }
-  }
-#endif  // ART_TARGET_ANDROID
-
-  // Ideal blockTransferSize for madvising files (128KiB)
-  static constexpr size_t kIdealIoTransferSizeBytes = 128*1024;
 
   size_t madvised_bytes = 0;
   size_t target_size_bytes = std::min<size_t>(map_size_bytes, madvise_size_limit_bytes);
   if (target_size_bytes > 0) {
-    SCOPED_TRACE << "madvising " << file_name << " size=" << target_size_bytes;
-
     // Based on requested size (target_size_bytes)
     const uint8_t* target_pos = map_begin + target_size_bytes;
 
@@ -3464,18 +3522,45 @@ size_t Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
       target_pos = map_end;
     }
 
-    // Madvise the whole file up to target_pos in chunks of
-    // kIdealIoTransferSizeBytes (to MADV_WILLNEED)
-    // Note:
-    // madvise(MADV_WILLNEED) will prefetch max(fd readahead size, optimal
-    // block size for device) per call, hence the need for chunks. (128KB is a
-    // good default.)
+    // Apply madvise(WILLNEED) to the mapped range up to target_pos, in ideal transfer sized chunks.
+    // Note: madvise(WILLNEED) will prefetch max(fd readahead size, optimal block size for device)
+    // per call, hence the need for chunks. 128KB is a sensible default.
+    static constexpr size_t kDefaultIoTransferSizeBytes = 128 * KB;
+    static constexpr size_t kFadviseSafeIoTransferSizeBytes = 256 * KB;
+    static constexpr size_t kFadviseLargeIoTransferSizeBytes = 16 * MB;
+    static constexpr size_t kFadviseThresholdBytes = kFadviseSafeIoTransferSizeBytes;
+
+    size_t io_transfer_size_bytes = kDefaultIoTransferSizeBytes;
+
+    // fadvise req 1: The target size is sufficiently large *and* we have a valid backing FD.
+    // This unlocks larger readahead and improves IO, but minimizes extra syscalls for small reads.
+    const bool should_fadvise =
+        com::android::art::rw::flags::madvise_optimized_readahead() &&
+        optional_fd >= 0 &&
+        target_size_bytes > kFadviseThresholdBytes;
+    if (should_fadvise) {
+      // fadvise req 2: File is in f2fs-backed /data partition for larger readahead support.
+      // Otherwise, fall back to a more conservative but universally supported window.
+      if (LocationSupportsLargeReadahead(file_name)) {
+        io_transfer_size_bytes = kFadviseLargeIoTransferSizeBytes;
+      } else {
+        io_transfer_size_bytes = kFadviseSafeIoTransferSizeBytes;
+      }
+      // Note: We temporarily hint the entire file, resetting after madvise completes.
+      posix_fadvise(optional_fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+    }
+
+    size_t chunks = (target_pos - map_begin + io_transfer_size_bytes - 1) / io_transfer_size_bytes;
+    SCOPED_TRACE << "madvising " << file_name
+                 << " size=" << target_size_bytes
+                 << " chunks=" << chunks;
+
     for (const uint8_t* madvise_start = map_begin;
          madvise_start < target_pos;
-         madvise_start += kIdealIoTransferSizeBytes) {
+         madvise_start += io_transfer_size_bytes) {
       void* madvise_addr = const_cast<void*>(reinterpret_cast<const void*>(madvise_start));
-      size_t madvise_length = std::min(kIdealIoTransferSizeBytes,
-                                       static_cast<size_t>(target_pos - madvise_start));
+      size_t madvise_length =
+          std::min(io_transfer_size_bytes, static_cast<size_t>(target_pos - madvise_start));
       int status = madvise(madvise_addr, madvise_length, MADV_WILLNEED);
       // In case of error we stop madvising rest of the file
       if (status < 0) {
@@ -3486,11 +3571,39 @@ size_t Runtime::MadviseFileForRange(size_t madvise_size_limit_bytes,
       }
       madvised_bytes += madvise_length;
     }
+    if (should_fadvise) {
+      // Restore the default file-backed readahead behavior.
+      posix_fadvise(optional_fd, 0, 0, POSIX_FADV_NORMAL);
+    }
   }
 
   DCHECK_LE(madvised_bytes, madvise_size_limit_bytes)
       << "Madvise should not have advised more than the requested size.";
   return madvised_bytes;
+}
+
+bool Runtime::ShouldMadviseForAppStartup(const char* dex_location) {
+  // Short-circuit the madvise optimization for background processes. This
+  // avoids IO and memory contention with foreground processes, particularly
+  // those involving app startup.
+  // Note: We can only safely short-circuit the madvise on T+, as it requires
+  // the framework to always immediately notify ART of process states.
+  const bool accurate_process_state_at_startup =
+      IsSdkVersionSetAndAtLeast(sdk_version_, SdkVersion::kT);
+  if (accurate_process_state_at_startup && !InJankPerceptibleProcessState()) {
+    return false;
+  }
+
+  if (!app_info_.HasRegisteredAppInfo()) {
+    // Conservatively madvise everything until app registration is complete and we can definitively
+    // distinguish between primary and secondary dex artifacts.
+    return true;
+  }
+
+  // Only madvise primary/split dex artifacts to reduce unnecessary faulting of unowned code that
+  // may not be on the critical path.
+  const AppInfo::CodeType code_type = app_info_.GetRegisteredCodeType(dex_location);
+  return code_type == AppInfo::CodeType::kPrimaryApk || code_type == AppInfo::CodeType::kSplitApk;
 }
 
 // Return whether a boot image has a profile. This means we'll need to pre-JIT

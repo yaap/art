@@ -31,14 +31,14 @@ std::string PrettyJavaAccessFlags(uint32_t access_flags) {
   if ((access_flags & kAccPrivate) != 0) {
     result += "private ";
   }
-  if ((access_flags & kAccFinal) != 0) {
-    result += "final ";
+  if ((access_flags & kAccAbstract) != 0) {
+    result += "abstract ";
   }
   if ((access_flags & kAccStatic) != 0) {
     result += "static ";
   }
-  if ((access_flags & kAccAbstract) != 0) {
-    result += "abstract ";
+  if ((access_flags & kAccFinal) != 0) {
+    result += "final ";
   }
   if ((access_flags & kAccInterface) != 0) {
     result += "interface ";
@@ -51,6 +51,9 @@ std::string PrettyJavaAccessFlags(uint32_t access_flags) {
   }
   if ((access_flags & kAccSynchronized) != 0) {
     result += "synchronized ";
+  }
+  if (!result.empty()) {
+    return result.substr(0, result.size() - 1);
   }
   return result;
 }

@@ -25,7 +25,7 @@
 
 ## CHECK-START: void TestCase.testInliner() inliner (after)
 ## CHECK-DAG:             CheckCast [<<Phi:l\d+>>,{{l\d+}}]
-## CHECK-DAG:    <<Phi>>  Phi klass:java.lang.Object[] exact:false
+## CHECK-DAG:    <<Phi>>  Phi klass:Main$MyClassA[] exact:false
 
 .method public static testInliner()V
   .registers 3

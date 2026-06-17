@@ -314,15 +314,15 @@ jvmtiError JvmtiWeakTable<T>::GetTaggedObjects(jvmtiEnv* jvmti_env,
   if (tag_count < 0) {
     return ERR(ILLEGAL_ARGUMENT);
   }
+  if (tags == nullptr) {
+    return ERR(NULL_POINTER);
+  }
   if (tag_count > 0) {
     for (size_t i = 0; i != static_cast<size_t>(tag_count); ++i) {
       if (tags[i] == 0) {
         return ERR(ILLEGAL_ARGUMENT);
       }
     }
-  }
-  if (tags == nullptr) {
-    return ERR(NULL_POINTER);
   }
   if (count_ptr == nullptr) {
     return ERR(NULL_POINTER);

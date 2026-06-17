@@ -56,12 +56,6 @@ inline void RegisterLine::SetRegisterTypeImpl(uint32_t vdst, uint16_t new_id) {
   }
 }
 
-inline void RegisterLine::SetRegisterType(uint32_t vdst, RegType::Kind new_kind) {
-  DCHECK(!RegType::IsLowHalf(new_kind));
-  DCHECK(!RegType::IsHighHalf(new_kind));
-  SetRegisterTypeImpl<LockOp::kClear>(vdst, RegTypeCache::IdForRegKind(new_kind));
-}
-
 template <LockOp kLockOp>
 inline void RegisterLine::SetRegisterType(uint32_t vdst, const RegType& new_type) {
   DCHECK(!new_type.IsLowHalf());
@@ -69,6 +63,20 @@ inline void RegisterLine::SetRegisterType(uint32_t vdst, const RegType& new_type
   // Should only keep locks for reference types, or when copying a conflict with `move-object`.
   DCHECK_IMPLIES(kLockOp == LockOp::kKeep, new_type.IsReferenceTypes() || new_type.IsConflict());
   SetRegisterTypeImpl<kLockOp>(vdst, new_type.GetId());
+}
+
+inline void RegisterLine::SetRegisterType(uint32_t vdst, RegType::Kind new_kind) {
+  DCHECK(!RegType::IsLowHalf(new_kind));
+  DCHECK(!RegType::IsHighHalf(new_kind));
+  SetRegisterTypeImpl<LockOp::kClear>(vdst, RegTypeCache::IdForRegKind(new_kind));
+}
+
+inline void RegisterLine::SetRegisterTypeId(uint32_t vdst, uint16_t new_id) {
+  DCHECK_IMPLIES(new_id < RegTypeCache::NumberOfRegKindCacheIds(),
+                 !RegType::IsLowHalf(RegTypeCache::RegKindForId(new_id)));
+  DCHECK_IMPLIES(new_id < RegTypeCache::NumberOfRegKindCacheIds(),
+                 !RegType::IsHighHalf(RegTypeCache::RegKindForId(new_id)));
+  SetRegisterTypeImpl<LockOp::kClear>(vdst, new_id);
 }
 
 inline void RegisterLine::SetRegisterTypeWideImpl(uint32_t vdst,

@@ -131,9 +131,8 @@
     },
     {
         "tests": "154-gc-loop",
-        "variant": "gcstress | jit & debug",
-        "description": ["154-gc-loop depends GC not happening too often"],
-        "bug": "http://b/35917229"
+        "variant": "continuous-gc | gcstress | jit & debug",
+        "description": ["154-gc-loop depends GC not happening too often"]
     },
     {
         "tests": "115-native-bridge",
@@ -219,7 +218,10 @@
         "variant": "trace | stream"
     },
     {
-        "tests": ["570-checker-osr", "570-checker-osr-locals"],
+        "tests": ["570-checker-osr",
+                  "570-checker-osr-locals",
+                  "2398-checkexacttype-methodhandles"
+        ],
         "description": ["These tests wait for OSR, which never happens when tracing."],
         "variant": "trace | stream"
     },
@@ -693,8 +695,65 @@
         "variant": "gcstress & target & debug"
     },
     {
+        "tests": ["004-NativeAllocations"],
+        "variant": "continuous-gc",
+        "description": [ "The test expects native-allocation GCs to finish within certain time-limit." ]
+    },
+    {
+        "tests": ["2271-profile-inline-cache"],
+        "variant": "continuous-gc",
+        "description": [ "The test expects background GCs not to be repeatedly happening." ]
+    },
+    {
+        "tests": ["638-checker-inline-cache-intrinsic",
+                  "566-polymorphic-inlining"
+        ],
+        "variant": "continuous-gc",
+        "env_vars": {"ART_USE_READ_BARRIER": "true"},
+        "bug": "b/462460429",
+        "description": [ "We do not update inline caches while marking. Under continuous-gc, ",
+                         "we may never update inline caches as needed by this test to pass." ]
+    },
+    {
+        "tests": ["961-default-iface-resolution-gen"],
+        "variant": "continuous-gc",
+        "bug": "b/463783831",
+        "env_vars": {"ART_USE_READ_BARRIER": "true"},
+        "description": [ "Lock-order violation only in case of CC." ]
+    },
+    {
+        "tests": ["099-vmdebug"],
+        "variant": "continuous-gc",
+        "bug": "b/462513344",
+        "env_vars": {"ART_USE_READ_BARRIER": "false"},
+        "description": [ "Objects-freed calculation for young CMC GCs needs to be fixed." ]
+    },
+    {
+        "tests": ["203-multi-checkpoint"],
+        "variant": "continuous-gc",
+        "bug": "b/463857863",
+        "description": [ "the thread_list lock acquired in the test needs to be looked into as ",
+                         "it sometimes causes suspend-all on the gc-thread to deadlock" ]
+    },
+    {
+        "tests": ["2031-zygote-compiled-frame-deopt"],
+        "variant": "continuous-gc",
+        "bug": "b/463464286",
+        "env_vars": {"ART_USE_READ_BARRIER": "false"},
+        "description": [ "Deadlock between marking-pause and reclaim-phase of CMC as we have a ",
+             "window not holding the mutator-lock, wherein another thread can acquire ",
+             "mutator-lock exclusively and then wait for weak-ref access." ]
+    },
+    {
+        "tests": ["656-checker-simd-opt-no-interp-ac"],
+        "variant": "continuous-gc & target",
+        "bug": "b/462496090",
+        "description": [ "Timing out on target as test takes long time. Being a checker test, ",
+                "it doesn't add much value to have it in this mode" ]
+    },
+    {
         "tests": ["2040-huge-native-alloc"],
-        "variant": "debuggable | gcstress | interpreter | interp-ac | trace",
+        "variant": "debuggable | gcstress | interpreter | interp-ac | trace | continuous-gc",
         "bug": "b/190148586",
         "description": [ "Checks exact GC timing; fails for many variants that alter that dramatically." ]
     },
@@ -1072,7 +1131,17 @@
           "2281-method-handle-invoke-static-class-unload",
           "2286-invokevirtual-invokeexact",
           "2287-no-temp-component-class",
-          "2288-checker-smali-string-builder-wrong-init"
+          "2288-checker-smali-string-builder-wrong-init",
+          "2289-smali-invalid-rti",
+          "2292-checker-smali-peek-poke-truncation",
+          "2294-smali-select-do-not-simplify",
+          "2295-smali-duplicate-phis",
+          "2299-checker-reducible-and-irreducible-loop-opt",
+          "2397-array-verification-edge-cases",
+          "2398-checkexacttype-methodhandles",
+          "2400-setstaticfield-uninitialized",
+          "2404-checker-string-concat",
+          "2408-singlearg-invoke-polymorphic-range"
         ],
         "variant": "jvm",
         "bug": "b/73888836",
@@ -1178,6 +1247,16 @@
                   "854-image-inlining",
                   "855-native",
                   "860-vdex-failure",
+                  "869-branches",
+                  "870-constant-if",
+                  "871-switch",
+                  "873-dead-handler",
+                  "874-filled-new-array",
+                  "875-shifts",
+                  "876-ifconst",
+                  "877-long",
+                  "878-can-be-null",
+                  "879-loop-entry",
                   "999-redefine-hiddenapi",
                   "1000-non-moving-space-stress",
                   "1001-app-image-regions",
@@ -1239,7 +1318,11 @@
                   "2270-mh-internal-hiddenapi-use",
                   "2271-profile-inline-cache",
                   "2279-aconfig-flags",
-                  "2286-method-tracing-aot-code"],
+                  "2286-method-tracing-aot-code",
+                  "2396-unmodifiable-final-fields",
+                  "2398-method-trace-opt-code",
+                  "2401-serialize-constructor",
+                  "2403-class-isinstance-constant-folding"],
         "variant": "jvm",
         "description": ["Doesn't run on RI."]
     },
@@ -1256,9 +1339,14 @@
         "description": ["Trace prevents class unloading."]
     },
     {
-        "tests": "677-fsi",
+        "tests": ["677-fsi"],
         "variant": "no-image | no-prebuild | jvm",
         "description": ["Test requires a successful dex2oat invocation"]
+    },
+    {
+        "tests": ["184-dex2oat-dlc"],
+        "variant": "no-image | no-prebuild | debuggable | jvm",
+        "description": ["Test requires successful dex2oat invocations and image loading"]
     },
     {
         "tests": ["990-field-trace",
@@ -1369,6 +1457,11 @@
         "variant": "interpreter | interp-ac | trace | no-image | debuggable | prebuild",
         "bug": "b/174470490",
         "description": "Interpreting BigInteger.add() is too slow (timeouts)"
+    },
+    {
+        "tests": ["656-checker-simd-opt-no-interp-ac"],
+        "variant": "interp-ac | gcstress | trace | debuggable | stream",
+        "description": ["Slow test. Prone to timeouts."]
     },
     {
         "tests": ["2029-contended-monitors", "2043-reference-pauses"],
@@ -1626,7 +1719,8 @@
       "env_vars": {"ART_TEST_ON_VM": "true"}
     },
     {
-      "tests": ["2042-reference-processing"],
+      "tests": ["2042-reference-processing",
+                "656-checker-simd-opt-no-interp-ac"],
       "description": ["Timeout on QEMU"],
       "env_vars": {"ART_TEST_ON_VM": "true"}
     },
@@ -1643,6 +1737,7 @@
                 "2392-virtual-thread-pinning-jni",
                 "2393-virtual-thread-pinning-monitor",
                 "2394-continuation-yields",
+                "2395-virtual-thread-class-initializer",
                 "2395-virtual-thread-reentrantlock",
                 "2395-virtual-thread-sleep-api"],
       "variant": "jvm",
@@ -1657,17 +1752,65 @@
                         "when there are no live threads in the group and it is otherwise unreachable."]
     },
     {
-        "tests": ["004-StackWalk",
-                  "141-class-unload",
+        "tests": ["141-class-unload",
                   "178-app-image-native-method",
-                  "597-deopt-busy-loop",
-                  "629-vdex-speed",
-                  "638-checker-inline-cache-intrinsic",
-                  "661-oat-writer-layout",
                   "692-vdex-secondary-loader",
                   "850-checker-branches",
                   "2042-reference-processing"],
         "env_vars": {"ART_USE_RESTRICTED_MODE": "true"},
         "description": ["Test failures when using the restricted mode for simulator."]
+    },
+    {
+        "tests": ["597-deopt-busy-loop",
+                  "638-checker-inline-cache-intrinsic"],
+        "env_vars": {"ART_USE_RESTRICTED_MODE": "true"},
+        "description": ["Simulator doesn't yet support JIT compilation and those test",
+                        "force JIT compilation even in --optimizing mode."]
+    },
+    {
+        "tests": ["107-int-math2",
+                  "018-stack-overflow",
+                  "004-SignalTest"],
+        "env_vars": {"ART_USE_SIMULATOR": "true"},
+        "description": ["TODO: Implement implicit stack overflow checks for the ART simulator."]
+    },
+    {
+        "tests": ["151-OpenFileLimit"],
+        "env_vars": {"ART_USE_SIMULATOR": "true"},
+        "description": ["The simulator requires a temporary file when creating a new",
+                        " simulator/thread. This file is used in Simulator::CanReadMemory to",
+                        " determine whether certain memory addresses are accessible without",
+                        " generating a fault."]
+    },
+    {
+        "tests": ["2237-checker-simulator"],
+        "variant": "jvm",
+        "description": ["Test for ART simulator, not very useful for jvm. The exepectations",
+                        "are slightly different so the test needs a special expectations",
+                        "file to work on jvm and not worth the additional bookkeeping."]
+    },
+    {
+        "tests": ["2401-pop-frame-on-throw"],
+        "variant": "jvm",
+        "description": ["jvm doesn't seem to pop the frame when requested from exception thrown",
+                        "listener when method exit callbacks are enabled. It works without method",
+                        "exit callbacks. It seems like a bug in jvm."]
+    },
+    {
+        "tests": ["137-cfi"],
+        "env_vars": {"ART_USE_SIMULATOR": "true"},
+        "description": ["Simulator does not currently support cfi relocations."]
+    },
+    {
+        "tests": ["904-object-allocation"],
+        "variant": "continuous-gc",
+        "bug": "b/462511710",
+        "description": ["temporarily disable the test till we investigate the test"]
+    },
+    {
+        "tests": ["2274-checker-environment-input-elimination"],
+        "variant": "jvm",
+        "description": ["Test uses Android-specific @DeadReferenceSafe annotation."]
     }
+
 ]

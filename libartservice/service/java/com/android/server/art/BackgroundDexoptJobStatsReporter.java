@@ -16,8 +16,6 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.model.ArtFlags.BatchDexoptPass;
-
 import android.annotation.NonNull;
 import android.app.job.JobParameters;
 import android.os.Build;
@@ -25,6 +23,7 @@ import android.os.Build;
 import androidx.annotation.RequiresApi;
 
 import com.android.server.art.model.ArtFlags;
+import com.android.server.art.model.ArtFlags.BatchDexoptPass;
 import com.android.server.art.model.DexoptResult;
 
 import dalvik.system.DexFile;
@@ -39,7 +38,7 @@ import java.util.Optional;
  */
 @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
 public class BackgroundDexoptJobStatsReporter {
-    public static void reportFailure() {
+    public static void reportFailure(boolean isFirstRun, long jobLatencyMillis) {
         // The fatal error can occur during any pass, but we attribute it to the main pass for
         // simplicity.
         ArtStatsLog.write(ArtStatsLog.BACKGROUND_DEXOPT_JOB_ENDED,
@@ -47,20 +46,22 @@ public class BackgroundDexoptJobStatsReporter {
                 JobParameters.STOP_REASON_UNDEFINED, 0L /* durationMs */, 0L /* deprecated */,
                 0 /* optimizedPackagesCount */, 0 /* packagesDependingOnBootClasspathCount */,
                 0 /* totalPackagesCount */,
-                ArtStatsLog.BACKGROUND_DEXOPT_JOB_ENDED__PASS__PASS_MAIN);
+                ArtStatsLog.BACKGROUND_DEXOPT_JOB_ENDED__PASS__PASS_MAIN, isFirstRun,
+                jobLatencyMillis);
     }
 
     public static void reportSuccess(@NonNull BackgroundDexoptJob.CompletedResult completedResult,
-            Optional<Integer> stopReason) {
+            Optional<Integer> stopReason, boolean isFirstRun, long jobLatencyMillis) {
         for (var entry : completedResult.dexoptResultByPass().entrySet()) {
             reportPass(entry.getKey(), entry.getValue(),
-                    completedResult.durationMsByPass().getOrDefault(entry.getKey(), 0l),
-                    stopReason);
+                    completedResult.durationMsByPass().getOrDefault(entry.getKey(), 0l), stopReason,
+                    isFirstRun, jobLatencyMillis);
         }
     }
 
     public static void reportPass(@BatchDexoptPass int pass, @NonNull DexoptResult dexoptResult,
-            long durationMs, Optional<Integer> stopReason) {
+            long durationMs, Optional<Integer> stopReason, boolean isFirstRun,
+            long jobLatencyMillis) {
         // The job contains multiple passes, so the stop reason may not be for the current pass. We
         // shouldn't report the stop reason if the current pass finished before the job was
         // cancelled.
@@ -75,7 +76,7 @@ public class BackgroundDexoptJobStatsReporter {
                 getStatusForStats(dexoptResult, stopReason), reportedStopReason, durationMs,
                 0L /* deprecated */, getDexoptedPackagesCount(packageDexoptResults),
                 getPackagesDependingOnBootClasspathCount(packageDexoptResults),
-                packageDexoptResults.size(), toStatsdPassEnum(pass));
+                packageDexoptResults.size(), toStatsdPassEnum(pass), isFirstRun, jobLatencyMillis);
     }
 
     @NonNull

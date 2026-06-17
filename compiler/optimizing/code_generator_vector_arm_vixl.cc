@@ -42,7 +42,7 @@ void LocationsBuilderARMVIXL::VisitVecReplicateScalar(HVecReplicateScalar* instr
     case DataType::Type::kUint16:
     case DataType::Type::kInt16:
     case DataType::Type::kInt32:
-      locations->SetInAt(0, Location::RequiresRegister());
+      locations->SetInAt(0, Location::RequiresCoreRegister());
       locations->SetOut(Location::RequiresFpuRegister());
       break;
     default:
@@ -81,7 +81,7 @@ void LocationsBuilderARMVIXL::VisitVecExtractScalar(HVecExtractScalar* instructi
   switch (instruction->GetPackedType()) {
     case DataType::Type::kInt32:
       locations->SetInAt(0, Location::RequiresFpuRegister());
-      locations->SetOut(Location::RequiresRegister());
+      locations->SetOut(Location::RequiresCoreRegister());
       break;
     default:
       LOG(FATAL) << "Unsupported SIMD type: " << instruction->GetPackedType();
@@ -750,7 +750,7 @@ void LocationsBuilderARMVIXL::VisitVecSetScalars(HVecSetScalars* instruction) {
   switch (instruction->GetPackedType()) {
     case DataType::Type::kInt32:
       locations->SetInAt(0, is_zero ? Location::ConstantLocation(input)
-                                    : Location::RequiresRegister());
+                                    : Location::RequiresCoreRegister());
       locations->SetOut(Location::RequiresFpuRegister());
       break;
     default:
@@ -880,7 +880,7 @@ static void CreateVecMemLocations(ArenaAllocator* allocator,
     case DataType::Type::kUint16:
     case DataType::Type::kInt16:
     case DataType::Type::kInt32:
-      locations->SetInAt(0, Location::RequiresRegister());
+      locations->SetInAt(0, Location::RequiresCoreRegister());
       locations->SetInAt(1, Location::RegisterOrConstant(instruction->InputAt(1)));
       if (is_load) {
         locations->SetOut(Location::RequiresFpuRegister());

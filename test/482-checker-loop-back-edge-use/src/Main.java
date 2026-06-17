@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import java.util.Locale;
 
 public class Main {
 
@@ -63,7 +64,7 @@ public class Main {
   public static void loop3(boolean incoming) {
     // 'incoming' only needs a use at the outer loop's back edge.
     while (System.currentTimeMillis() != 42) {
-      while (Runtime.getRuntime() != null) {}
+      while (Locale.getDefault() != null) {}
       System.out.println(incoming);
     }
   }
@@ -77,7 +78,7 @@ public class Main {
     // 'incoming' has no loop use, so should not have back edge uses.
     System.out.println(incoming);
     while (System.currentTimeMillis() != 42) {
-      while (Runtime.getRuntime() != null) {}
+      while (Locale.getDefault() != null) {}
     }
   }
 
@@ -139,7 +140,7 @@ public class Main {
 
   public static void loop7(boolean incoming) {
     // 'incoming' must have a use at both back edges.
-    while (Runtime.getRuntime() != null) {
+    while (Locale.getDefault() != null) {
       System.out.println(incoming);
       while (incoming) {}
       System.nanoTime();  // beat back edge splitting
@@ -161,7 +162,7 @@ public class Main {
   public static void loop8() {
     // 'incoming' must have a use at both back edges.
     boolean incoming = field;
-    while (Runtime.getRuntime() != null) {
+    while (Locale.getDefault() != null) {
       System.nanoTime();  // beat pre-header creation
       while (incoming) {}
       System.nanoTime();  // beat back edge splitting

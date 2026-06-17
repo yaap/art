@@ -116,8 +116,6 @@ static std::vector<uint8_t> MakeMiniDebugInfoInternal(
     [[maybe_unused]] const InstructionSetFeatures* features,
     typename ElfTypes::Addr text_section_address,
     size_t text_section_size,
-    typename ElfTypes::Addr dex_section_address,
-    size_t dex_section_size,
     const DebugInfo& debug_info) {
   std::vector<uint8_t> buffer;
   buffer.reserve(KB);
@@ -127,9 +125,6 @@ static std::vector<uint8_t> MakeMiniDebugInfoInternal(
   // Mirror ELF sections as NOBITS since the added symbols will reference them.
   if (text_section_size != 0) {
     builder->GetText()->AllocateVirtualMemory(text_section_address, text_section_size);
-  }
-  if (dex_section_size != 0) {
-    builder->GetDex()->AllocateVirtualMemory(dex_section_address, dex_section_size);
   }
   if (!debug_info.Empty()) {
     WriteDebugSymbols(builder.get(), /* mini-debug-info= */ true, debug_info);
@@ -145,30 +140,17 @@ static std::vector<uint8_t> MakeMiniDebugInfoInternal(
   return compressed_buffer;
 }
 
-std::vector<uint8_t> MakeMiniDebugInfo(
-    InstructionSet isa,
-    const InstructionSetFeatures* features,
-    uint64_t text_section_address,
-    size_t text_section_size,
-    uint64_t dex_section_address,
-    size_t dex_section_size,
-    const DebugInfo& debug_info) {
+std::vector<uint8_t> MakeMiniDebugInfo(InstructionSet isa,
+                                       const InstructionSetFeatures* features,
+                                       uint64_t text_section_address,
+                                       size_t text_section_size,
+                                       const DebugInfo& debug_info) {
   if (Is64BitInstructionSet(isa)) {
-    return MakeMiniDebugInfoInternal<ElfTypes64>(isa,
-                                                 features,
-                                                 text_section_address,
-                                                 text_section_size,
-                                                 dex_section_address,
-                                                 dex_section_size,
-                                                 debug_info);
+    return MakeMiniDebugInfoInternal<ElfTypes64>(
+        isa, features, text_section_address, text_section_size, debug_info);
   } else {
-    return MakeMiniDebugInfoInternal<ElfTypes32>(isa,
-                                                 features,
-                                                 text_section_address,
-                                                 text_section_size,
-                                                 dex_section_address,
-                                                 dex_section_size,
-                                                 debug_info);
+    return MakeMiniDebugInfoInternal<ElfTypes32>(
+        isa, features, text_section_address, text_section_size, debug_info);
   }
 }
 

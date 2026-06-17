@@ -640,11 +640,9 @@ class ConcurrentCopying::VerifyGrayImmuneObjectsVisitor {
     if (ref != nullptr) {
       if (!collector_->immune_spaces_.ContainsObject(ref.Ptr())) {
         // Not immune, must be a zygote large object.
-        space::LargeObjectSpace* large_object_space =
-            Runtime::Current()->GetHeap()->GetLargeObjectsSpace();
-        CHECK(large_object_space->Contains(ref.Ptr()) &&
-              large_object_space->IsZygoteLargeObject(Thread::Current(), ref.Ptr()))
-            << "Non gray object references non immune, non zygote large object "<< ref << " "
+        auto* heap = Runtime::Current()->GetHeap();
+        CHECK(heap->IsZygoteLargeObject(ref.Ptr()))
+            << "Non gray object references non immune, non zygote large object " << ref << " "
             << mirror::Object::PrettyTypeOf(ref) << " in holder " << holder << " "
             << mirror::Object::PrettyTypeOf(holder) << " offset=" << offset.Uint32Value();
       } else {
@@ -2245,6 +2243,22 @@ size_t ConcurrentCopying::ProcessThreadLocalMarkStacks(bool disable_weak_ref_acc
   return count;
 }
 
+void ConcurrentCopying::VerifyLargeObject(mirror::Object* ref,
+                                          mirror::Object* holder,
+                                          MemberOffset offset) {
+  auto* los = heap_->GetLargeObjectsSpace();
+  if (los == nullptr || !IsAlignedParam(ref, space::LargeObjectSpace::ObjectAlignment())) {
+    if (los == nullptr) {
+      LOG(FATAL_WITHOUT_ABORT)
+          << "ref=" << ref
+          << " doesn't belong to non-moving space and large object space doesn't exist";
+    }
+    // Ref is not aligned as per large-object-space, it must be heap corruption.
+    region_space_->Unprotect();
+    heap_->GetVerification()->LogHeapCorruption(holder, offset, ref, /*fatal=*/true);
+  }
+}
+
 inline void ConcurrentCopying::ProcessMarkStackRef(mirror::Object* to_ref) {
   DCHECK(!region_space_->IsInFromSpace(to_ref));
   size_t obj_size = 0;
@@ -2300,22 +2314,8 @@ inline void ConcurrentCopying::ProcessMarkStackRef(mirror::Object* to_ref) {
       if (kUseBakerReadBarrier) {
         accounting::ContinuousSpaceBitmap* mark_bitmap =
             heap_->GetNonMovingSpace()->GetMarkBitmap();
-        const bool is_los = !mark_bitmap->HasAddress(to_ref);
-        if (is_los) {
-          if (!IsAlignedParam(to_ref, space::LargeObjectSpace::ObjectAlignment())) {
-            // Ref is a large object that is not aligned, it must be heap
-            // corruption. Remove memory protection and dump data before
-            // AtomicSetReadBarrierState since it will fault if the address is not
-            // valid.
-            region_space_->Unprotect();
-            heap_->GetVerification()->LogHeapCorruption(/* obj */ nullptr,
-                                                        MemberOffset(0),
-                                                        to_ref,
-                                                        /* fatal */ true);
-          }
-          DCHECK(heap_->GetLargeObjectsSpace())
-              << "ref=" << to_ref
-              << " doesn't belong to non-moving space and large object space doesn't exist";
+        if (!mark_bitmap->HasAddress(to_ref)) {
+          VerifyLargeObject(to_ref, /*holder=*/nullptr, MemberOffset(0));
           accounting::LargeObjectBitmap* los_bitmap =
               heap_->GetLargeObjectsSpace()->GetMarkBitmap();
           DCHECK(los_bitmap->HasAddress(to_ref));
@@ -3605,17 +3605,7 @@ mirror::Object* ConcurrentCopying::MarkNonMoving(Thread* const self,
   accounting::LargeObjectBitmap* los_bitmap = nullptr;
   const bool is_los = !mark_bitmap->HasAddress(ref);
   if (is_los) {
-    if (!IsAlignedParam(ref, space::LargeObjectSpace::ObjectAlignment())) {
-      // Ref is a large object that is not aligned, it must be heap
-      // corruption. Remove memory protection and dump data before
-      // AtomicSetReadBarrierState since it will fault if the address is not
-      // valid.
-      region_space_->Unprotect();
-      heap_->GetVerification()->LogHeapCorruption(holder, offset, ref, /* fatal= */ true);
-    }
-    DCHECK(heap_->GetLargeObjectsSpace())
-        << "ref=" << ref
-        << " doesn't belong to non-moving space and large object space doesn't exist";
+    VerifyLargeObject(ref, holder, offset);
     los_bitmap = heap_->GetLargeObjectsSpace()->GetMarkBitmap();
     DCHECK(los_bitmap->HasAddress(ref));
   }

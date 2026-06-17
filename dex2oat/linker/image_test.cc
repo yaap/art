@@ -111,8 +111,8 @@ TEST_F(ImageTest, ImageHeaderIsValid) {
 // same oat file.
 TEST_F(ImageTest, TestDefaultMethods) {
   // TODO(b/376621099): investigate LUCI failures (timeouts?) and re-enable this test.
-  // This is not related to riscv64 arch, but a combination of riscv64 and running on VM.
-  TEST_DISABLED_ON_RISCV64_VM();
+  // This is disabled on VM because it times out.
+  TEST_DISABLED_ON_VM();
 
   // Use this test to compile managed code to catch crashes when compiling the boot class path.
   // This test already needs to compile some managed methods and by compiling with "speed" we
@@ -198,16 +198,16 @@ TEST_F(ImageTest, TestImageClassWithArrayClassWithUnresolvedComponent) {
                               "LClassWithStaticConst;",
                               "[LClassWithMissingInterface;",
                               "[[LClassWithMissingInterface;",
-                              "[LClassWithMissingSuper",
-                              "[[LClassWithMissingSuper"},
+                              "[LClassWithMissingSuper;",
+                              "[[LClassWithMissingSuper;"},
           /*image_classes_failing_aot_clinit=*/ {
                               "LClassWithStatic;",
                               "LClassWithStaticConst;"},
           /*image_classes_failing_resolution=*/ {
                               "[LClassWithMissingInterface;",
                               "[[LClassWithMissingInterface;",
-                              "[LClassWithMissingSuper",
-                              "[[LClassWithMissingSuper"});
+                              "[LClassWithMissingSuper;",
+                              "[[LClassWithMissingSuper;"});
 }
 
 TEST_F(ImageTest, TestSuperWithAccessChecks) {

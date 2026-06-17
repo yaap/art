@@ -36,18 +36,18 @@ import com.android.server.LocalManagerRegistry;
 import com.android.server.art.ArtJni;
 import com.android.server.art.ArtManagerLocal;
 import com.android.server.art.ArtModuleServiceInitializer;
-import com.android.server.art.ArtdRefCache;
-import com.android.server.art.AsLog;
 import com.android.server.art.GlobalInjector;
 import com.android.server.art.IArtd;
 import com.android.server.art.IDexoptChrootSetup;
 import com.android.server.art.PreRebootDexoptJob;
 import com.android.server.art.ReasonMapping;
-import com.android.server.art.Utils;
 import com.android.server.art.model.BatchDexoptParams;
 import com.android.server.art.prereboot.PreRebootManagerInterface.SystemRequirementException;
 import com.android.server.art.proto.PreRebootStats.FailureReason;
 import com.android.server.art.proto.PreRebootStats.Status;
+import com.android.server.art.utils.ArtdRefCache;
+import com.android.server.art.utils.AsLog;
+import com.android.server.art.utils.Utils;
 import com.android.server.pm.PackageManagerLocal;
 
 import dalvik.system.DelegateLastClassLoader;
@@ -94,14 +94,16 @@ public class PreRebootDriver {
      * @param mapSnapshotsForOta Whether to map/unmap snapshots. Only applicable to an OTA update.
      */
     public @NonNull PreRebootResult run(@Nullable String otaSlot, boolean mapSnapshotsForOta,
-            @NonNull CancellationSignal cancellationSignal) {
+            @NonNull CancellationSignal cancellationSignal, @NonNull String reason) {
+        Utils.check(reason == ReasonMapping.REASON_PRE_REBOOT_DEXOPT
+                || reason == ReasonMapping.REASON_PRE_REBOOT_DEXOPT_SYNC);
         try {
             try (var snapshot = mInjector.getPackageManagerLocal().withFilteredSnapshot()) {
                 BatchDexoptParams params = mInjector.getArtManagerLocal().getBatchDexoptParams(
-                        snapshot, ReasonMapping.REASON_PRE_REBOOT_DEXOPT, cancellationSignal);
+                        snapshot, reason, cancellationSignal);
                 if (!cancellationSignal.isCanceled()) {
                     setUp(otaSlot, mapSnapshotsForOta);
-                    runFromChroot(cancellationSignal, snapshot, params);
+                    runFromChroot(cancellationSignal, snapshot, params, reason);
                 }
             }
             return new PreRebootResult(Status.STATUS_FINISHED);
@@ -191,26 +193,29 @@ public class PreRebootDriver {
     }
 
     private void tearDown() throws RemoteException, IOException {
-        // In general, the teardown unmounts apexes and partitions, and open files can keep the
-        // mounts busy so that they cannot be unmounted. Therefore, a running Pre-reboot artd
-        // process can prevent the teardown from succeeding. It's managed by the service manager,
-        // and there isn't a reliable API to kill it. We deal with it in two steps:
-        // 1. Trigger GC and finalization. The service manager should gracefully shut it down, since
-        //    there is no reference to it as this point.
-        // 2. Call `ensureNoProcessInDir` to wait for it to exit. If it doesn't exit in 5 seconds,
-        //    `ensureNoProcessInDir` will then kill it.
-        Runtime.getRuntime().gc();
-        Runtime.getRuntime().runFinalization();
-        // At this point, no process other than `artd` is expected to be running. `runFromChroot`
-        // blocks on `artd` calls, even upon cancellation, and `artd` in turn waits for child
-        // processes to exit, even if they are killed due to the cancellation.
-        ArtJni.ensureNoProcessInDir(CHROOT_DIR, 5000 /* timeoutMs */);
+        // In general, the teardown unmounts apexes and partitions. Any open files in the chroot
+        // environment, including the executables of running processes and the files opened by them,
+        // can keep the mounts busy so that they cannot be unmounted, preventing the teardown from
+        // succeeding. Therefore, it is important to make sure no process is running in the chroot
+        // environment.
+        //
+        // At this point, it is true that no process in the chroot environment is expected to be
+        // running because:
+        // 1. During `PreRebootManager.run` (called by `runFromChroot`), any `artd` calls block
+        //    until all child processes of `artd` involved in the call have terminated, even upon
+        //    cancellation.
+        // 2. At the end of `PreRebootManager.run`, the method proactively stops the `artd` process
+        //    itself.
+        //
+        // As a final guarantee, we call `ensureNoProcessInDir` to wait for any running processes to
+        // exit. If they don't exit in 2 seconds, `ensureNoProcessInDir` will then kill them.
+        ArtJni.ensureNoProcessInDir(CHROOT_DIR, 2000 /* timeoutMs */);
         mInjector.getDexoptChrootSetup().tearDown(false /* allowConcurrent */);
     }
 
     private void runFromChroot(@NonNull CancellationSignal cancellationSignal,
             @NonNull PackageManagerLocal.FilteredSnapshot snapshot,
-            @NonNull BatchDexoptParams params)
+            @NonNull BatchDexoptParams params, @NonNull String reason)
             throws ReflectiveOperationException, IOException, ErrnoException {
         // Load the new `service-art.jar` on top of the current classloader, which has the old
         // system server, framework, and Libcore.
@@ -246,10 +251,10 @@ public class PreRebootDriver {
         preRebootManagerClass
                 .getMethod("run", ArtModuleServiceManager.class, Context.class,
                         CancellationSignal.class, PackageManagerLocal.FilteredSnapshot.class,
-                        byte[].class)
+                        byte[].class, String.class)
                 .invoke(preRebootManager, ArtModuleServiceInitializer.getArtModuleServiceManager(),
                         mInjector.getContext(), cancellationSignal, snapshot,
-                        params.toProto().toByteArray());
+                        params.toProto().toByteArray(), reason);
     }
 
     /**

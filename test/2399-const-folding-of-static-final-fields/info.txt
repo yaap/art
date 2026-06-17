@@ -1,0 +1,1 @@
+Tests that `static final` primitive fields are constant folded.

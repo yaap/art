@@ -135,6 +135,9 @@ class CommonRuntimeTestImpl : public CommonArtTestImpl {
   bool RunDex2Oat(const std::vector<std::string>& args, std::string* error_msg);
 
  protected:
+  // Create a `Runtime`. This is usually done during `SetUp()`.
+  void CreateRuntime();
+
   // Allow subclases such as CommonCompilerTest to add extra options.
   virtual void SetUpRuntimeOptions([[maybe_unused]] RuntimeOptions* options) {}
 

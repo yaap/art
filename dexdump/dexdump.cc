@@ -430,7 +430,10 @@ std::string escapeString(std::string_view s) {
         }
         break;
       case 4:
-        oss << '\\' << '0' + (c / 64) << '0' + ((c % 64) / 8) << '0' + (c % 8);
+        oss << '\\'
+            << static_cast<char>('0' + (c / 64))
+            << static_cast<char>('0' + ((c % 64) / 8))
+            << static_cast<char>('0' + (c % 8));
         break;
     }
   }
@@ -1705,14 +1708,17 @@ static void dumpClass(const DexFile* pDexFile, int idx, char** pLastPackage) {
 
   // End of class.
   if (gOptions.outputFormat == OUTPUT_PLAIN) {
-    const char* fileName;
-    if (pClassDef.source_file_idx_.IsValid()) {
-      fileName = pDexFile->GetStringData(pClassDef.source_file_idx_);
-    } else {
-      fileName = "unknown";
+    fprintf(gOutFile, "  source_file_idx   : %d", pClassDef.source_file_idx_.index_);
+    if (gOptions.verbose) {
+      const char* fileName;
+      if (pClassDef.source_file_idx_.IsValid()) {
+        fileName = pDexFile->GetStringData(pClassDef.source_file_idx_);
+      } else {
+        fileName = "unknown";
+      }
+      fprintf(gOutFile, " (%s)", fileName);
     }
-    fprintf(gOutFile, "  source_file_idx   : %d (%s)\n\n",
-            pClassDef.source_file_idx_.index_, fileName);
+    fprintf(gOutFile, "\n\n");
   } else if (gOptions.outputFormat == OUTPUT_XML) {
     fprintf(gOutFile, "</class>\n");
   }
@@ -1910,7 +1916,12 @@ static void dumpCallSite(const DexFile* pDexFile, u4 idx) {
     }
 
     if (gOptions.outputFormat == OUTPUT_PLAIN) {
-      fprintf(gOutFile, "  link_argument[%zu] : %s (%s)\n", argument, value.c_str(), type);
+      if (needsEscape(value)) {
+        std::string escaped = escapeString(value);
+        fprintf(gOutFile, "  link_argument[%zu] : %s (%s)\n", argument, escaped.c_str(), type);
+      } else {
+        fprintf(gOutFile, "  link_argument[%zu] : %s (%s)\n", argument, value.c_str(), type);
+      }
     }
 
     it.Next();
@@ -1958,7 +1969,7 @@ static void processDexFile(const char* fileName,
     fputs("Opened '", gOutFile);
     fputs(fileName, gOutFile);
     if (n > 1) {
-      fprintf(gOutFile, ":%s", DexFileLoader::GetMultiDexClassesDexName(i).c_str());
+      fprintf(gOutFile, ":%s", DexFileLoader::GetMultiDexZipEntryName(i).c_str());
     }
     fprintf(gOutFile, "', DEX version '%.3s'\n", pDexFile->GetHeader().magic_.data() + 4);
   }

@@ -17,72 +17,19 @@
 #ifndef ART_RUNTIME_TI_AGENT_H_
 #define ART_RUNTIME_TI_AGENT_H_
 
+#include <android-base/logging.h>
+#include <android-base/macros.h>
 #include <dlfcn.h>
 #include <jni.h>  // for jint, JavaVM* etc declarations
 
 #include <memory>
 
-#include <android-base/logging.h>
-#include <android-base/macros.h>
-
 #include "base/macros.h"
+#include "nativebridge/native_bridge.h"
+#include "ti/agent_spec.h"
 
 namespace art HIDDEN {
 namespace ti {
-
-class Agent;
-
-enum LoadError {
-  kNoError,              // No error occurred..
-  kLoadingError,         // dlopen or dlsym returned an error.
-  kInitializationError,  // The entrypoint did not return 0. This might require an abort.
-};
-
-class AgentSpec {
- public:
-  explicit AgentSpec(const std::string& arg);
-
-  const std::string& GetName() const {
-    return name_;
-  }
-
-  const std::string& GetArgs() const {
-    return args_;
-  }
-
-  bool HasArgs() const {
-    return !GetArgs().empty();
-  }
-
-  std::unique_ptr<Agent> Load(/*out*/jint* call_res,
-                              /*out*/LoadError* error,
-                              /*out*/std::string* error_msg);
-
-  // Tries to attach the agent using its OnAttach method. Returns true on success.
-  std::unique_ptr<Agent> Attach(JNIEnv* env,
-                                jobject class_loader,
-                                /*out*/jint* call_res,
-                                /*out*/LoadError* error,
-                                /*out*/std::string* error_msg);
-
- private:
-  std::unique_ptr<Agent> DoDlOpen(JNIEnv* env,
-                                  jobject class_loader,
-                                  /*out*/LoadError* error,
-                                  /*out*/std::string* error_msg);
-
-  std::unique_ptr<Agent> DoLoadHelper(JNIEnv* env,
-                                      bool attaching,
-                                      jobject class_loader,
-                                      /*out*/jint* call_res,
-                                      /*out*/LoadError* error,
-                                      /*out*/std::string* error_msg);
-
-  std::string name_;
-  std::string args_;
-
-  friend std::ostream& operator<<(std::ostream &os, AgentSpec const& m);
-};
 
 std::ostream& operator<<(std::ostream &os, AgentSpec const& m);
 
@@ -96,14 +43,15 @@ using AgentOnUnloadFunction = void (*)(JavaVM*);
 // The agent's Agent_OnUnload function will be called during runtime shutdown.
 //
 // TODO: consider splitting ti::Agent into command line, agent and shared library handler classes
-// TODO Support native-bridge. Currently agents can only be the actual runtime ISA of the device.
 class Agent {
  public:
   const std::string& GetName() const {
     return name_;
   }
 
-  void* FindSymbol(const std::string& name) const;
+  void* FindSymbol(const std::string& name,
+                   const char* shorty,
+                   android::JNICallType jni_call_type) const;
 
   // TODO We need to acquire some locks probably.
   void Unload();
@@ -114,11 +62,13 @@ class Agent {
   ~Agent();
 
  private:
-  Agent(const std::string& name, void* dlopen_handle) : name_(name),
-                                                        dlopen_handle_(dlopen_handle),
-                                                        onload_(nullptr),
-                                                        onattach_(nullptr),
-                                                        onunload_(nullptr) {
+  Agent(const std::string& name, void* dlopen_handle, bool needs_native_bridge)
+      : name_(name),
+        dlopen_handle_(dlopen_handle),
+        needs_native_bridge_{needs_native_bridge},
+        onload_(nullptr),
+        onattach_(nullptr),
+        onunload_(nullptr) {
     DCHECK(dlopen_handle != nullptr);
   }
 
@@ -126,6 +76,7 @@ class Agent {
 
   std::string name_;
   void* dlopen_handle_;
+  bool needs_native_bridge_;
 
   // The entrypoints.
   AgentOnLoadFunction onload_;

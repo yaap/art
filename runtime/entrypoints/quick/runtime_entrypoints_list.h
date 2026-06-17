@@ -114,6 +114,14 @@ enum class DeoptimizationKind;
       Thread* self,                                                                               \
       ArtMethod** managed_sp,                                                                     \
       uintptr_t* reserved_area)                                                                   \
+  V(artQuickGenericJniTrampolineSimulator, REQUIRES_SHARED(Locks::mutator_lock_), uint64_t,       \
+      uint64_t native_code_ptr,                                                                   \
+      void* simulated_reserved_area,                                                              \
+      void* out_fp_result)                                                                        \
+  V(artArm64SimulatorGenericJNIPlaceholder, , NO_RETURN void,                                     \
+      uint64_t native_code_ptr,                                                                   \
+      ArtMethod** simulated_reserved_area,                                                        \
+      Thread* self)                                                                               \
   V(artQuickGenericJniEndTrampoline, , uint64_t,                                                  \
       Thread* self,                                                                               \
       jvalue result,                                                                              \
@@ -203,9 +211,6 @@ enum class DeoptimizationKind;
   V(artResolveStringFromCode, REQUIRES_SHARED(Locks::mutator_lock_), mirror::String*,             \
       int32_t string_idx, Thread* self)                                                           \
                                                                                                   \
-  V(artDeoptimize, REQUIRES_SHARED(Locks::mutator_lock_), Context*,                               \
-      Thread* self,                                                                               \
-      bool skip_method_exit_callbacks)                                                            \
   V(artDeoptimizeFromCompiledCode, REQUIRES_SHARED(Locks::mutator_lock_), Context*,               \
       DeoptimizationKind kind,                                                                    \
       Thread* self)                                                                               \

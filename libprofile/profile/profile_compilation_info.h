@@ -93,6 +93,7 @@ class ProfileCompilationInfo {
 
   static constexpr size_t kProfileVersionSize = 4;
   static constexpr uint8_t kIndividualInlineCacheSize = 5;
+  static constexpr dex::TypeIndex kNoPreloadMarker{DexFile::kDexNoIndex16};
 
   // Data structures for encoding the offline representation of inline caches.
   // This is exposed as public in order to make it available to dex2oat compilations
@@ -368,6 +369,39 @@ class ProfileCompilationInfo {
     return true;
   }
 
+  // Add a no-preload class with the specified `type_index` to the profile.
+  // The `type_index` should be a normal index for a `TypeId` in the dex file.
+  // Returns `true` on success, `false` on failure.
+  bool AddClassNoPreload(const DexFile& dex_file, dex::TypeIndex type_index) {
+    DCHECK(type_index.IsValid());
+    DCHECK(type_index.index_ <= dex_file.NumTypeIds());
+    DexFileData* const data = GetOrAddDexFileData(&dex_file, ProfileSampleAnnotation::kNone);
+    if (data == nullptr) {  // Checksum/num_type_ids/num_method_ids mismatch or too many dex files.
+      return false;
+    }
+    data->class_set_no_preload.insert(type_index);
+    has_no_preload_section = true;
+    return true;
+  }
+
+  bool AddNoPreloadMarker(const std::vector<std::unique_ptr<const DexFile>>& dex_files) {
+    // Add no-preload marker for the first dex file (if any): it doesn't matter which dex file,
+    // the marker is only needed to test for the presence of "classes-no-preload" section.
+    DexFileData* const data = dex_files.empty()
+        ? nullptr
+        : GetOrAddDexFileData(dex_files[0].get(), ProfileSampleAnnotation::kNone);
+    if (data == nullptr) {
+      return false;
+    }
+    data->class_set_no_preload.insert(kNoPreloadMarker);
+    has_no_preload_section = true;
+    return true;
+  }
+
+  bool HasNoPreloadSection() const {
+    return has_no_preload_section;
+  }
+
   // Add a class with the specified `descriptor` to the profile.
   // Returns `true` on success, `false` on failure.
   bool AddClass(const DexFile& dex_file,
@@ -515,6 +549,16 @@ class ProfileCompilationInfo {
     return data->IsMethodInProfile(method_index);
   }
 
+  uint32_t GetNumberOfStartupMethods(ProfileIndexType dex_profile_index) const {
+    DCHECK_LT(dex_profile_index, info_.size());
+    return info_[dex_profile_index]->CountStartupMethods();
+  }
+
+  uint32_t GetNumberOfStartupClasses(ProfileIndexType dex_profile_index) const {
+    DCHECK_LT(dex_profile_index, info_.size());
+    return info_[dex_profile_index]->CountStartupClasses();
+  }
+
   // Returns the profile method info for a given method reference.
   //
   // Note that if the profile was built with annotations, the same dex file may be
@@ -560,7 +604,7 @@ class ProfileCompilationInfo {
     std::string_view base_key = GetBaseKeyViewFromAugmentedKey(dex_file_data->profile_key);
     for (const auto& dex_file : dex_files) {
       if (dex_checksum == dex_file->GetLocationChecksum() &&
-          base_key == GetProfileDexFileBaseKeyView(dex_file->GetLocation())) {
+          base_key == GetProfileDexFileBaseKey(dex_file)) {
         return std::addressof(*dex_file);
       }
     }
@@ -593,17 +637,24 @@ class ProfileCompilationInfo {
       const DexFile& dex_file,
       const ProfileSampleAnnotation& annotation = ProfileSampleAnnotation::kNone) const;
 
+  const ArenaSet<dex::TypeIndex>* GetClassesNoPreload(const DexFile& dex_file) const;
+
   // Returns true iff both profiles have the same version.
   bool SameVersion(const ProfileCompilationInfo& other) const;
 
   // Perform an equality test with the `other` profile information.
   bool Equals(const ProfileCompilationInfo& other);
 
+  // Returns the basename of the location (e.g. "base.apk" from "/dir/base.apk").
+  static std::string_view GetLocationBasename(std::string_view base_location);
+
   // Return the base profile key associated with the given dex location. The base profile key
   // is solely constructed based on the dex location (as opposed to the one produced by
   // GetProfileDexFileAugmentedKey which may include additional metadata like the origin
   // package name)
-  static std::string GetProfileDexFileBaseKey(const std::string& dex_location);
+  static std::string GetProfileDexFileBaseKey(std::string_view base_location,
+                                              std::string_view entry_name);
+  static std::string GetProfileDexFileBaseKey(const DexFile* dex_file);
 
   // Returns a base key without the annotation information.
   static std::string GetBaseKeyFromAugmentedKey(const std::string& profile_key);
@@ -629,12 +680,6 @@ class ProfileCompilationInfo {
                                   uint32_t random_seed);
 
   ArenaAllocator* GetAllocator() { return &allocator_; }
-
-  // Return all of the class descriptors in the profile for a set of dex files.
-  // Note: see GetMethodHotness docs for the handling of annotations..
-  HashSet<std::string> GetClassDescriptors(
-      const std::vector<const DexFile*>& dex_files,
-      const ProfileSampleAnnotation& annotation = ProfileSampleAnnotation::kNone);
 
   // Return true if the fd points to a profile file.
   bool IsProfileFile(int fd);
@@ -794,6 +839,7 @@ class ProfileCompilationInfo {
           checksum(location_checksum),
           method_map(std::less<uint16_t>(), allocator->Adapter(kArenaAllocProfile)),
           class_set(std::less<dex::TypeIndex>(), allocator->Adapter(kArenaAllocProfile)),
+          class_set_no_preload(std::less<dex::TypeIndex>(), allocator->Adapter(kArenaAllocProfile)),
           num_type_ids(num_types),
           num_method_ids(num_methods),
           bitmap_storage(allocator->Adapter(kArenaAllocProfile)),
@@ -875,12 +921,15 @@ class ProfileCompilationInfo {
     bool ContainsClass(dex::TypeIndex type_index) const;
 
     uint32_t ClassesDataSize() const;
-    void WriteClasses(SafeBuffer& buffer) const;
+    uint32_t ClassesNoPreloadDataSize() const;
+    void WriteClasses(SafeBuffer& buffer, bool no_preload) const;
     ProfileLoadStatus ReadClasses(
         SafeBuffer& buffer,
         const dchecked_vector<ExtraDescriptorIndex>& extra_descriptors_remap,
-        std::string* error);
+        std::string* error,
+        bool no_preload_section);
     static ProfileLoadStatus SkipClasses(SafeBuffer& buffer, std::string* error);
+    uint32_t CountStartupClasses() const;
 
     uint32_t MethodsDataSize(/*out*/ uint16_t* method_flags = nullptr,
                              /*out*/ size_t* saved_bitmap_bit_size = nullptr) const;
@@ -890,6 +939,7 @@ class ProfileCompilationInfo {
         const dchecked_vector<ExtraDescriptorIndex>& extra_descriptors_remap,
         std::string* error);
     static ProfileLoadStatus SkipMethods(SafeBuffer& buffer, std::string* error);
+    uint32_t CountStartupMethods() const;
 
     // The allocator used to allocate new inline cache maps.
     ArenaAllocator* const allocator_;
@@ -904,6 +954,10 @@ class ProfileCompilationInfo {
     // The classes which have been profiled. Note that these don't necessarily include
     // all the classes that can be found in the inline caches reference.
     ArenaSet<dex::TypeIndex> class_set;
+    // A subset of profiled classes that should not be initialized by zygote or dex2oat
+    // (usually due to some logic in the class static initializer that should not be shared
+    // between processes, e.g. initializing random seed).
+    ArenaSet<dex::TypeIndex> class_set_no_preload;
     // Find the inline caches of the the given method index. Add an empty entry if
     // no previous data is found.
     InlineCacheMap* FindOrAddHotMethod(uint16_t method_index);
@@ -965,7 +1019,7 @@ class ProfileCompilationInfo {
 
   DexFileData* GetOrAddDexFileData(const DexFile* dex_file,
                                    const ProfileSampleAnnotation& annotation) {
-    return GetOrAddDexFileData(GetProfileDexFileAugmentedKey(dex_file->GetLocation(), annotation),
+    return GetOrAddDexFileData(GetProfileDexFileAugmentedKey(dex_file, annotation),
                                dex_file->GetLocationChecksum(),
                                dex_file->NumTypeIds(),
                                dex_file->NumMethodIds());
@@ -1050,10 +1104,6 @@ class ProfileCompilationInfo {
   // Returns the threshold size (in bytes) which will cause save/load failures.
   size_t GetSizeErrorThresholdBytes() const;
 
-  // Implementation of `GetProfileDexFileBaseKey()` but returning a subview
-  // referencing the same underlying data to avoid excessive heap allocations.
-  static std::string_view GetProfileDexFileBaseKeyView(std::string_view dex_location);
-
   // Implementation of `GetBaseKeyFromAugmentedKey()` but returning a subview
   // referencing the same underlying data to avoid excessive heap allocations.
   static std::string_view GetBaseKeyViewFromAugmentedKey(std::string_view dex_location);
@@ -1062,7 +1112,7 @@ class ProfileCompilationInfo {
   // The return key will contain a serialized form of the information from the provided
   // annotation. If the annotation is ProfileSampleAnnotation::kNone then no extra info is
   // added to the key and this method is equivalent to GetProfileDexFileBaseKey.
-  static std::string GetProfileDexFileAugmentedKey(const std::string& dex_location,
+  static std::string GetProfileDexFileAugmentedKey(const DexFile* dex_file,
                                                    const ProfileSampleAnnotation& annotation);
 
   // Migrates the annotation from an augmented key to a base key.
@@ -1094,6 +1144,8 @@ class ProfileCompilationInfo {
 
   // The version of the profile.
   uint8_t version_[kProfileVersionSize];
+
+  bool has_no_preload_section = false;
 };
 
 /**

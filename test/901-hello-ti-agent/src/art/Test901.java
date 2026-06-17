@@ -17,68 +17,68 @@
 package art;
 
 public class Test901 {
-  public static void run() {
-    System.out.println("Hello, world!");
+    public static void run() {
+        System.out.println("Hello, world!");
 
-    if (checkLivePhase()) {
-      System.out.println("Agent in live phase.");
+        if (checkLivePhase()) {
+            System.out.println("Agent in live phase.");
+        }
+        if (checkUnattached()) {
+            System.out.println("Received expected error for unattached JVMTI calls");
+        }
+
+        set(0);  // OTHER
+        set(1);  // GC
+        set(2);  // CLASS
+        set(4);  // JNI
+        set(8);  // Error.
+
+        testErrorNames();
     }
-    if (checkUnattached()) {
-      System.out.println("Received expected error for unattached JVMTI calls");
+
+    private static void set(int i) {
+        System.out.println(i);
+        try {
+            setVerboseFlag(i, true);
+            setVerboseFlag(i, false);
+        } catch (RuntimeException e) {
+            System.out.println(e.getMessage());
+        }
     }
 
-    set(0);  // OTHER
-    set(1);  // GC
-    set(2);  // CLASS
-    set(4);  // JNI
-    set(8);  // Error.
+    private static void testErrorNames() {
+        int consecutiveErrors = 0;
+        String lastError = null;
+        for (int i = -1; i <= 117; i++) {
+            String errorName = null;
+            String error = null;
+            try {
+                errorName = getErrorName(i);
+            } catch (RuntimeException e) {
+                error = e.getMessage();
+            }
 
-    testErrorNames();
+            if (lastError != null &&
+                    (errorName != null || (error != null && !lastError.equals(error)))) {
+                System.out.println(consecutiveErrors + " times " + lastError);
+                lastError = null;
+                consecutiveErrors = 0;
+            }
+
+            if (errorName != null) {
+                System.out.println(i + " = " + errorName);
+            } else {
+                lastError = error;
+                consecutiveErrors++;
+            }
+        }
+        if (consecutiveErrors > 0) {
+            System.out.println(consecutiveErrors + " times " + lastError);
+        }
   }
 
-  private static void set(int i) {
-    System.out.println(i);
-    try {
-      setVerboseFlag(i, true);
-      setVerboseFlag(i, false);
-    } catch (RuntimeException e) {
-      System.out.println(e.getMessage());
-    }
-  }
-
-  private static void testErrorNames() {
-      int consecutiveErrors = 0;
-      String lastError = null;
-      for (int i = -1; i <= 117; i++) {
-          String errorName = null;
-          String error = null;
-          try {
-              errorName = getErrorName(i);
-          } catch (RuntimeException e) {
-              error = e.getMessage();
-          }
-
-          if (lastError != null &&
-                  (errorName != null || (error != null && !lastError.equals(error)))) {
-              System.out.println(consecutiveErrors + " times " + lastError);
-              lastError = null;
-              consecutiveErrors = 0;
-          }
-
-          if (errorName != null) {
-              System.out.println(i + " = " + errorName);
-          } else {
-              lastError = error;
-              consecutiveErrors++;
-          }
-      }
-      if (consecutiveErrors > 0) {
-          System.out.println(consecutiveErrors + " times " + lastError);
-      }
-  }
-
-  private static native boolean checkLivePhase();
-  private static native void setVerboseFlag(int flag, boolean value);
-  private static native boolean checkUnattached();
-  private static native String getErrorName(int error);
+    private static native boolean checkLivePhase();
+    private static native void setVerboseFlag(int flag, boolean value);
+    private static native boolean checkUnattached();
+    private static native String getErrorName(int error);
 }

@@ -117,36 +117,28 @@ void CheckNterpAsmConstants() {
   ptrdiff_t interp_size = reinterpret_cast<uintptr_t>(artNterpAsmInstructionEnd) -
                           reinterpret_cast<uintptr_t>(artNterpAsmInstructionStart);
   static_assert(kNumPackedOpcodes * width != 0);
-  if (interp_size != kNumPackedOpcodes * width) {
+  // For arm/arm64, we have four sets of opcode handlers, 20KiB apart, to get a handler set with
+  // 16KiB alignment for quick opcode dispatch. Each handler set is 16KiB and the 4KiB gaps
+  // hold slow paths for the handler sets. Slow paths for the last handler set are located
+  // after the `artNterpAsmInstructionEnd`.
+  static constexpr size_t kNumHandlerSets =
+      (kRuntimeISA == InstructionSet::kArm64 || kRuntimeISA == InstructionSet::kArm) ? 4 : 1;
+  static constexpr size_t kExpectedSize =
+      kNumHandlerSets * kNumPackedOpcodes * width + (kNumHandlerSets - 1) * 4 * KB;
+  if (interp_size != kExpectedSize) {
     LOG(FATAL) << "ERROR: unexpected asm interp size " << interp_size
                << "(did an instruction handler exceed " << width << " bytes?)";
   }
 }
 
-extern "C" void NterpTryFastCompile(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_) {
-  // It is important this method is not suspended because it can be called on
-  // method entry and async deoptimization does not expect runtime methods other than the
-  // suspend entrypoint before executing the first instruction of a Java
-  // method.
-  ScopedAssertNoThreadSuspension sants("In nterp");
+inline void UpdateHotness(ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_) {
   jit::Jit* jit = Runtime::Current()->GetJit();
-  if (jit != nullptr && jit->UseJitCompilation()) {
-    jit->MaybeEnqueueFastCompilation(method, Thread::Current());
+  if (jit == nullptr || !jit->UseFastCompiler()) {
+    // The hotness we will add to a method when we perform a
+    // field/method/class/string lookup.
+    static constexpr int kHotnessCounter = 0xf;
+    method->UpdateCounter(kHotnessCounter);
   }
-}
-
-inline void UpdateHotness(Thread* self, ArtMethod* method) REQUIRES_SHARED(Locks::mutator_lock_) {
-  // The hotness we will add to a method when we perform a
-  // field/method/class/string lookup.
-  static constexpr int kHotnessCounter = 0xf;
-  if (com::android::art::flags::fast_baseline_compiler() && kRuntimeISA == InstructionSet::kArm64) {
-    size_t counter = method->GetCounter();
-    if (self->IsJitSensitiveThread() &&
-        (counter % jit::kFastCompilerFrequencyCheck) < kHotnessCounter) {
-      NterpTryFastCompile(method);
-    }
-  }
-  method->UpdateCounter(kHotnessCounter);
 }
 
 template<typename T>
@@ -292,7 +284,8 @@ extern "C" const char* NterpGetShortyFromInvokePolymorphic(ArtMethod* caller, ui
   return caller->GetDexFile()->GetShorty(proto_idx);
 }
 
-extern "C" const char* NterpGetShortyFromInvokeCustom(ArtMethod* caller, uint16_t* dex_pc_ptr)
+// Note: arm64 uses the shorty length instead of checking for the terminating zero.
+extern "C" TwoWordReturn NterpGetShortyFromInvokeCustom(ArtMethod* caller, uint16_t* dex_pc_ptr)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   ScopedAssertNoThreadSuspension sants("In nterp");
   const Instruction* inst = Instruction::At(dex_pc_ptr);
@@ -301,7 +294,11 @@ extern "C" const char* NterpGetShortyFromInvokeCustom(ArtMethod* caller, uint16_
       : inst->VRegB_3rc());
   const DexFile* dex_file = caller->GetDexFile();
   dex::ProtoIndex proto_idx = dex_file->GetProtoIndexForCallSite(call_site_index);
-  return dex_file->GetShorty(proto_idx);
+  dex::StringIndex shorty_idx = dex_file->GetProtoId(proto_idx).shorty_idx_;
+  uint32_t length;
+  const char* shorty = dex_file->GetStringDataAndUtf16Length(shorty_idx, &length);
+  DCHECK_EQ(shorty[length], '\0');  // Shorty is ASCII, UTF16 length is also length in bytes.
+  return GetTwoWordSuccessValue(length, reinterpret_cast<uintptr_t>(shorty));
 }
 
 static constexpr uint8_t kInvalidInvokeType = 255u;
@@ -447,7 +444,7 @@ extern "C" size_t NterpGetMethod(Thread* self,
                                  const uint16_t* dex_pc_ptr,
                                  uint32_t* registers)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  UpdateHotness(self, caller);
+  UpdateHotness(caller);
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   Instruction::Code opcode = inst->Opcode();
   DCHECK(IsUint<8>(static_cast<std::underlying_type_t<Instruction::Code>>(opcode)));
@@ -597,11 +594,19 @@ static ArtField* FindFieldSlow(Thread* self,
       /*resolve_field_type=*/ 0);
 }
 
+static uint64_t EncodeField(ArtField* resolved_field, bool is_volatile = false)
+    REQUIRES_SHARED(Locks::mutator_lock_) {
+  uint32_t offset = resolved_field->GetOffset().Uint32Value();
+  mirror::Class* cls = resolved_field->GetDeclaringClass().Ptr();
+  return (static_cast<uint64_t>(reinterpret_cast32<uint32_t>(cls)) << 32) |
+      (is_volatile ? -offset : offset);
+}
+
 LIBART_PROTECTED
-extern "C" size_t NterpGetStaticField(Thread* self,
-                                      ArtMethod* caller,
-                                      const uint16_t* dex_pc_ptr,
-                                      size_t resolve_field_type)  // Resolve if not zero
+extern "C" uint64_t NterpGetStaticField(Thread* self,
+                                        ArtMethod* caller,
+                                        const uint16_t* dex_pc_ptr,
+                                        size_t resolve_field_type)  // Resolve if not zero
     REQUIRES_SHARED(Locks::mutator_lock_) {
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   uint16_t field_index = inst->VRegB_21c();
@@ -616,7 +621,7 @@ extern "C" size_t NterpGetStaticField(Thread* self,
       return 0;
     }
     // Only update hotness for slow lookups.
-    UpdateHotness(self, caller);
+    UpdateHotness(caller);
   }
 
   if (UNLIKELY(!resolved_field->GetDeclaringClass()->IsVisiblyInitialized())) {
@@ -651,20 +656,21 @@ extern "C" size_t NterpGetStaticField(Thread* self,
     // Or the result with 1 to notify to nterp this is a volatile field. We
     // also don't cache the result as we don't want nterp to have its fast path always
     // check for it.
-    return reinterpret_cast<size_t>(resolved_field) | 1;
+    return EncodeField(resolved_field, /* is_volatile= */ true);
   }
 
+  uint64_t result = EncodeField(resolved_field);
   if (update_cache) {
-    UpdateCache(self, dex_pc_ptr, resolved_field);
+    self->GetInterpreterCache()->SetInt64(self, dex_pc_ptr, result);
   }
-  return reinterpret_cast<size_t>(resolved_field);
+  return result;
 }
 
 // For faster execution, `cls` can be a from-space reference which is OK, as
 // we're only using native fields from that object, and checking for state
 // invariants that don't roll back (ie that the class is initialized).
 ALWAYS_INLINE FLATTEN
-static size_t NterpGetLocalStaticFieldInternal(mirror::Class* cls, const uint16_t* dex_pc_ptr)
+static uint64_t NterpGetLocalStaticFieldInternal(mirror::Class* cls, const uint16_t* dex_pc_ptr)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   // We're checking if we're accessing a field of the currently executing class.
   // We only need to check that the class is initialized, and don't need
@@ -676,14 +682,16 @@ static size_t NterpGetLocalStaticFieldInternal(mirror::Class* cls, const uint16_
   ArtField* resolved_field = cls->FindDeclaredField</*kOnlyLookAtIndex=*/true>(
       Instruction::At(dex_pc_ptr)->VRegB_21c());
   if (resolved_field != nullptr && resolved_field->IsStatic() && !resolved_field->IsVolatile()) {
-    return reinterpret_cast<size_t>(resolved_field);
+    // Note we don't store in the thread interpreter cache to leave the cache
+    // for instructions which do not have a fast path like this one.
+    return EncodeField(resolved_field);
   }
   return 0u;
 }
 
 // `cls` can be a from-space, see comment in `NterpGetLocalStaticFieldInternal`.
 FLATTEN
-extern "C" size_t NterpGetLocalStaticField(mirror::Class* cls, const uint16_t* dex_pc_ptr)
+extern "C" uint64_t NterpGetLocalStaticField(mirror::Class* cls, const uint16_t* dex_pc_ptr)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   ScopedAssertNoThreadSuspension sants("In nterp");
   return NterpGetLocalStaticFieldInternal(cls, dex_pc_ptr);
@@ -691,8 +699,8 @@ extern "C" size_t NterpGetLocalStaticField(mirror::Class* cls, const uint16_t* d
 
 // `cls` can be a from-space, see comment in `NterpGetLocalStaticFieldInternal`.
 FLATTEN
-extern "C" size_t NterpGetLocalStaticFieldForSPutObject(mirror::Class* cls,
-                                                        const uint16_t* dex_pc_ptr)
+extern "C" uint64_t NterpGetLocalStaticFieldForSPutObject(mirror::Class* cls,
+                                                          const uint16_t* dex_pc_ptr)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   ScopedAssertNoThreadSuspension sants("In nterp");
   // For object store in methods that may have type check failures, we need to
@@ -713,6 +721,8 @@ static size_t NterpGetLocalInstanceFieldInternal(mirror::Class* cls, const uint1
   uint16_t field_index = inst->VRegC_22c();
   ArtField* resolved_field = cls->FindDeclaredField</*kOnlyLookAtIndex=*/true>(field_index);
   if (resolved_field != nullptr && !resolved_field->IsStatic() && !resolved_field->IsVolatile()) {
+    // Note we don't store in the thread interpreter cache to leave the cache
+    // for instructions which do not have a fast path like this one.
     return resolved_field->GetOffset().Uint32Value();
   }
 
@@ -754,7 +764,7 @@ extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
       return 0;
     }
     // Only update hotness for slow lookups.
-    UpdateHotness(self, caller);
+    UpdateHotness(caller);
   }
 
   // For iput-object, try to resolve the field type even if we were not requested to.
@@ -786,7 +796,7 @@ extern "C" uint32_t NterpGetInstanceFieldOffset(Thread* self,
 
 extern "C" mirror::Object* NterpGetClass(Thread* self, ArtMethod* caller, uint16_t* dex_pc_ptr)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  UpdateHotness(self, caller);
+  UpdateHotness(caller);
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   Instruction::Code opcode = inst->Opcode();
   DCHECK(opcode == Instruction::CHECK_CAST ||
@@ -820,7 +830,7 @@ extern "C" mirror::Object* NterpAllocateObject(Thread* self,
                                                ArtMethod* caller,
                                                uint16_t* dex_pc_ptr)
     REQUIRES_SHARED(Locks::mutator_lock_) {
-  UpdateHotness(self, caller);
+  UpdateHotness(caller);
   const Instruction* inst = Instruction::At(dex_pc_ptr);
   DCHECK_EQ(inst->Opcode(), Instruction::NEW_INSTANCE);
   dex::TypeIndex index = dex::TypeIndex(inst->VRegB_21c());
@@ -856,7 +866,7 @@ extern "C" mirror::Object* NterpLoadObject(Thread* self, ArtMethod* caller, uint
   switch (inst->Opcode()) {
     case Instruction::CONST_STRING:
     case Instruction::CONST_STRING_JUMBO: {
-      UpdateHotness(self, caller);
+      UpdateHotness(caller);
       dex::StringIndex string_index(
           (inst->Opcode() == Instruction::CONST_STRING)
               ? inst->VRegB_21c()
@@ -998,8 +1008,6 @@ extern "C" jit::OsrData* NterpHotMethod(ArtMethod* method, uint16_t* dex_pc_ptr,
   } else {
     // Move the counter to the initial threshold in case we have to re-JIT it.
     method->ResetCounter(runtime->GetJITOptions()->GetWarmupThreshold());
-    // Mark the method as warm for the profile saver.
-    method->SetPreviouslyWarm();
   }
   jit::Jit* jit = runtime->GetJit();
   if (jit != nullptr && jit->UseJitCompilation()) {

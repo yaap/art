@@ -36,6 +36,7 @@
 #include "class_accessor-inl.h"
 #include "descriptors_names.h"
 #include "dex_file-inl.h"
+#include "dex_file_loader.h"
 #include "standard_dex_file.h"
 #include "utf-inl.h"
 
@@ -61,11 +62,17 @@ static_assert(std::is_trivially_copyable<dex::StringIndex>::value, "StringIndex 
 static_assert(sizeof(dex::TypeIndex) == sizeof(uint16_t), "TypeIndex size is wrong");
 static_assert(std::is_trivially_copyable<dex::TypeIndex>::value, "TypeIndex not trivial");
 
-// Print the SHA1 as 20-byte hexadecimal string.
-std::string DexFile::Sha1::ToString() const {
-  auto data = this->data();
-  auto part = [d = data](int i) { return d[i] << 24 | d[i + 1] << 16 | d[i + 2] << 8 | d[i + 3]; };
-  return StringPrintf("%08x%08x%08x%08x%08x", part(0), part(4), part(8), part(12), part(16));
+std::array<char, DexFile::kSha1DigestSize * 2 + 1> DexFile::Sha1::ToHex() const {
+  std::array<char, DexFile::kSha1DigestSize * 2 + 1> result;
+  char* dst = result.data();
+  const char* to_hex = "0123456789abcdef";
+  for (size_t i = 0; i < DexFile::kSha1DigestSize; ++i) {
+    *dst++ = to_hex[this->data()[i] >> 4];
+    *dst++ = to_hex[this->data()[i] & 15];
+  }
+  *dst++ = '\0';
+  DCHECK_EQ(dst, result.end());
+  return result;
 }
 
 uint32_t DexFile::CalculateChecksum() const {
@@ -245,7 +252,6 @@ ArrayRef<const uint8_t> DexFile::GetDataRange(const uint8_t* data, DexFileContai
   size_t size = container->End() - data;
   if (size >= sizeof(StandardDexFile::Header) && StandardDexFile::IsMagicValid(data)) {
     auto header = reinterpret_cast<const DexFile::Header*>(data);
-    CHECK_EQ(container->Data().size(), 0u) << "Unsupported for standard dex";
     if (size >= sizeof(HeaderV41) && header->header_size_ >= sizeof(HeaderV41)) {
       auto headerV41 = reinterpret_cast<const DexFile::HeaderV41*>(data);
       data -= headerV41->header_offset_;  // Allow underflow and later overflow.
@@ -293,7 +299,7 @@ void DexFile::InitializeSectionsFromMapList() {
       num_call_site_ids_ = map_item.size_;
     } else if (map_item.type_ == kDexTypeHiddenapiClassData) {
       hiddenapi_class_data_ =
-          reinterpret_cast<const dex::HiddenapiClassData*>(DataBegin() + map_item.offset_);
+          GetSection<dex::HiddenapiClassData>(&map_item.offset_, container_.get());
     } else {
       // Pointers to other sections are not necessary to retain in the DexFile struct.
       // Other items have pointers directly into their data.

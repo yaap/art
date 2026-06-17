@@ -19,6 +19,9 @@
 
 #include "handle_scope.h"
 
+#include <type_traits>
+#include <utility>
+
 #include "base/casts.h"
 #include "base/mutex.h"
 #include "handle.h"
@@ -127,19 +130,30 @@ inline bool HandleScope::Contains(StackReference<mirror::Object>* handle_scope_e
 }
 
 template <typename Visitor>
-inline void HandleScope::VisitRoots(Visitor& visitor) {
+inline void HandleScope::VisitRoots(Visitor&& visitor) {
   for (size_t i = 0, size = Size(); i < size; ++i) {
     // GetReference returns a pointer to the stack reference within the handle scope. If this
     // needs to be updated, it will be done by the root visitor.
-    visitor.VisitRootIfNonNull(GetHandle<mirror::Object>(i).GetReference());
+    StackReference<mirror::Object>* ref = GetHandle<mirror::Object>(i).GetReference();
+    if constexpr (std::is_invocable_v<std::remove_reference_t<Visitor>,
+                                      StackReference<mirror::Object>*>) {
+      visitor(ref);
+    } else {
+      visitor.VisitRootIfNonNull(ref);
+    }
   }
 }
 
 template <typename Visitor>
-inline void HandleScope::VisitHandles(Visitor& visitor) {
+inline void HandleScope::VisitHandles(Visitor&& visitor) {
   for (size_t i = 0, size = Size(); i < size; ++i) {
-    if (GetHandle<mirror::Object>(i) != nullptr) {
-      visitor.Visit(GetHandle<mirror::Object>(i));
+    Handle<mirror::Object> handle = GetHandle<mirror::Object>(i);
+    if (handle != nullptr) {
+      if constexpr (std::is_invocable_v<std::remove_reference_t<Visitor>, Handle<mirror::Object>>) {
+        visitor(handle);
+      } else {
+        visitor.Visit(handle);
+      }
     }
   }
 }
@@ -165,20 +179,20 @@ inline bool BaseHandleScope::Contains(StackReference<mirror::Object>* handle_sco
 }
 
 template <typename Visitor>
-inline void BaseHandleScope::VisitRoots(Visitor& visitor) {
+inline void BaseHandleScope::VisitRoots(Visitor&& visitor) {
   if (LIKELY(!IsVariableSized())) {
-    AsHandleScope()->VisitRoots(visitor);
+    AsHandleScope()->VisitRoots(std::forward<Visitor>(visitor));
   } else {
-    AsVariableSized()->VisitRoots(visitor);
+    AsVariableSized()->VisitRoots(std::forward<Visitor>(visitor));
   }
 }
 
 template <typename Visitor>
-inline void BaseHandleScope::VisitHandles(Visitor& visitor) {
+inline void BaseHandleScope::VisitHandles(Visitor&& visitor) {
   if (LIKELY(!IsVariableSized())) {
-    AsHandleScope()->VisitHandles(visitor);
+    AsHandleScope()->VisitHandles(std::forward<Visitor>(visitor));
   } else {
-    AsVariableSized()->VisitHandles(visitor);
+    AsVariableSized()->VisitHandles(std::forward<Visitor>(visitor));
   }
 }
 
@@ -305,7 +319,7 @@ Handle<T> VariableSizedHandleScope::GetHandle(size_t i) {
 }
 
 template <typename Visitor>
-inline void VariableSizedHandleScope::VisitRoots(Visitor& visitor) {
+inline void VariableSizedHandleScope::VisitRoots(Visitor&& visitor) {
   LocalScopeType* cur = current_scope_;
   while (cur != nullptr) {
     cur->VisitRoots(visitor);
@@ -314,7 +328,7 @@ inline void VariableSizedHandleScope::VisitRoots(Visitor& visitor) {
 }
 
 template <typename Visitor>
-inline void VariableSizedHandleScope::VisitHandles(Visitor& visitor) {
+inline void VariableSizedHandleScope::VisitHandles(Visitor&& visitor) {
   LocalScopeType* cur = current_scope_;
   while (cur != nullptr) {
     cur->VisitHandles(visitor);

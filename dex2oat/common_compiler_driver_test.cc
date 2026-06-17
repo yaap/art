@@ -37,6 +37,7 @@ void CommonCompilerDriverTest::CompileAll(jobject class_loader,
                                           TimingLogger* timings) {
   TimingLogger::ScopedTiming t(__FUNCTION__, timings);
   SetDexFilesForOatFile(dex_files);
+  compiler_options_->image_classes_ = GetImageClasses();
 
   compiler_driver_->InitializeThreadPools();
 
@@ -80,7 +81,6 @@ void CommonCompilerDriverTest::CreateCompilerDriver() {
   compiler_options_->image_type_ = CompilerOptions::ImageType::kBootImage;
   compiler_options_->compile_pic_ = false;  // Non-PIC boot image is a test configuration.
   compiler_options_->SetCompilerFilter(GetCompilerFilter());
-  compiler_options_->image_classes_.swap(*GetImageClasses());
   compiler_options_->profile_compilation_info_ = GetProfileCompilationInfo();
   compiler_options_->enable_profile_code_ = ShouldEnableProfileCode();
   compiler_driver_.reset(new CompilerDriver(compiler_options_.get(),
@@ -114,9 +114,9 @@ void CommonCompilerDriverTest::TearDown() {
 }
 
 // Get the set of image classes given to the compiler options in CreateCompilerDriver().
-std::unique_ptr<HashSet<std::string>> CommonCompilerDriverTest::GetImageClasses() {
+ImageClassMap CommonCompilerDriverTest::GetImageClasses() {
   // Empty set: by default no classes are retained in the image.
-  return std::make_unique<HashSet<std::string>>();
+  return {};
 }
 
 // Get ProfileCompilationInfo that should be passed to the driver.

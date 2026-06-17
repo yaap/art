@@ -61,11 +61,11 @@ TEST(BitTableTest, TestSingleColumnTable) {
   BitTableBase<1> table(reader);
   EXPECT_EQ(writer.NumberOfWrittenBits(), reader.NumberOfReadBits());
   EXPECT_EQ(4u, table.NumRows());
-  EXPECT_EQ(42u, table.Get(0));
-  EXPECT_EQ(kNoValue, table.Get(1));
-  EXPECT_EQ(1000u, table.Get(2));
-  EXPECT_EQ(kNoValue, table.Get(3));
-  EXPECT_EQ(10u, table.NumColumnBits(0));
+  EXPECT_EQ(42u, table.Get<0>(0));
+  EXPECT_EQ(kNoValue, table.Get<0>(1));
+  EXPECT_EQ(1000u, table.Get<0>(2));
+  EXPECT_EQ(kNoValue, table.Get<0>(3));
+  EXPECT_EQ(10u, table.NumColumnBits<0>());
 }
 
 TEST(BitTableTest, TestUnalignedTable) {
@@ -84,7 +84,7 @@ TEST(BitTableTest, TestUnalignedTable) {
     BitTableBase<1> table(reader);
     EXPECT_EQ(writer.NumberOfWrittenBits(), reader.NumberOfReadBits());
     EXPECT_EQ(1u, table.NumRows());
-    EXPECT_EQ(42u, table.Get(0));
+    EXPECT_EQ(42u, table.Get<0>(0));
   }
 }
 
@@ -105,18 +105,18 @@ TEST(BitTableTest, TestBigTable) {
   BitTableBase<4> table(reader);
   EXPECT_EQ(writer.NumberOfWrittenBits(), reader.NumberOfReadBits());
   EXPECT_EQ(2u, table.NumRows());
-  EXPECT_EQ(42u, table.Get(0, 0));
-  EXPECT_EQ(kNoValue, table.Get(0, 1));
-  EXPECT_EQ(0u, table.Get(0, 2));
-  EXPECT_EQ(static_cast<uint32_t>(-2), table.Get(0, 3));
-  EXPECT_EQ(62u, table.Get(1, 0));
-  EXPECT_EQ(kNoValue, table.Get(1, 1));
-  EXPECT_EQ(63u, table.Get(1, 2));
-  EXPECT_EQ(static_cast<uint32_t>(-3), table.Get(1, 3));
-  EXPECT_EQ(6u, table.NumColumnBits(0));
-  EXPECT_EQ(0u, table.NumColumnBits(1));
-  EXPECT_EQ(7u, table.NumColumnBits(2));
-  EXPECT_EQ(32u, table.NumColumnBits(3));
+  EXPECT_EQ(42u, table.Get<0>(0));
+  EXPECT_EQ(kNoValue, table.Get<1>(0));
+  EXPECT_EQ(0u, table.Get<2>(0));
+  EXPECT_EQ(static_cast<uint32_t>(-2), table.Get<3>(0));
+  EXPECT_EQ(62u, table.Get<0>(1));
+  EXPECT_EQ(kNoValue, table.Get<1>(1));
+  EXPECT_EQ(63u, table.Get<2>(1));
+  EXPECT_EQ(static_cast<uint32_t>(-3), table.Get<3>(1));
+  EXPECT_EQ(6u, table.NumColumnBits<0>());
+  EXPECT_EQ(0u, table.NumColumnBits<1>());
+  EXPECT_EQ(7u, table.NumColumnBits<2>());
+  EXPECT_EQ(32u, table.NumColumnBits<3>());
 }
 
 TEST(BitTableTest, TestDedup) {
@@ -156,7 +156,7 @@ TEST(BitTableTest, TestBitmapTable) {
   EXPECT_EQ(writer.NumberOfWrittenBits(), reader.NumberOfReadBits());
   for (auto it : indices) {
     uint64_t expected = it.first;
-    BitMemoryRegion actual = table.GetBitMemoryRegion(it.second);
+    BitMemoryRegion actual = table.GetBitMemoryRegion<0>(it.second);
     EXPECT_GE(actual.size_in_bits(), MinimumBitsToStore(expected));
     for (size_t b = 0; b < actual.size_in_bits(); b++, expected >>= 1) {
       EXPECT_EQ(expected & 1, actual.LoadBit(b)) << "b=" << b;

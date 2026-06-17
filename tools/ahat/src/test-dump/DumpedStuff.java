@@ -94,6 +94,49 @@ public class DumpedStuff extends SuperDumpedStuff {
 
     bitmapOne = new Bitmap(100, 200, 0xDEADBEEF, bigArray);
     bitmapTwo = new Bitmap(100, 200, 0xBEEFDEAD, bigArray);
+
+    // Initialize Looper/Handler/Messages
+    looper = new android.os.Looper();
+    looper.mThread = Thread.currentThread();
+    looper.mQueue = new android.os.MessageQueue();
+
+    handler = new android.os.Handler();
+    handler.mLooper = looper;
+    handler.mQueue = looper.mQueue;
+
+    message1 = new android.os.Message();
+    message1.when = 1000;
+    message1.target = handler;
+    message1.what = 42;
+
+    barrierMessage = new android.os.Message();
+    barrierMessage.when = 1500;
+    barrierMessage.target = null; // barrier
+    barrierMessage.arg1 = 123; // token
+
+    message2 = new android.os.Message();
+    message2.when = 2000;
+    message2.target = handler;
+    message2.what = 43;
+
+    // Link them in queue
+    looper.mQueue.mMessages = message1;
+    message1.next = barrierMessage;
+    barrierMessage.next = message2;
+    message2.next = null;
+
+    MyActivity a1 = new MyActivity();
+    a1.mDestroyed = true;
+    activityLeaks.add(a1);
+
+    MyActivity a2 = new MyActivity();
+    a2.mDestroyed = true;
+    activityLeaks.add(a2);
+
+    MyActivity a3 = new MyActivity(); // Not destroyed, should not be a leak
+    activityLeaks.add(a3);
+
+    activityLeaks.add(new MyService()); // Not an Activity, should not be a leak
   }
 
   public static class ObjectTree {
@@ -123,6 +166,12 @@ public class DumpedStuff extends SuperDumpedStuff {
 
   public static class StackSmasher {
     public StackSmasher child;
+  }
+
+  public static class MyActivity extends android.app.Activity {
+  }
+
+  public static class MyService extends android.content.Context {
   }
 
   public static class Reference {
@@ -185,6 +234,8 @@ public class DumpedStuff extends SuperDumpedStuff {
   }
 
   public String basicString = "hello, world";
+  public String duplicateString1 = new String("duplicate");
+  public String duplicateString2 = new String("duplicate");
   public String nonAscii = "Sigma (Ʃ) is not ASCII";
   public String embeddedZero = "embedded\0...";  // Non-ASCII for string compression purposes.
   public char[] charArray = "char thing".toCharArray();
@@ -215,6 +266,7 @@ public class DumpedStuff extends SuperDumpedStuff {
   public WeakReference aWeakRefToGcRoot = new WeakReference(Main.class);
   public SoftReference aSoftChain = new SoftReference(new Reference(new Reference(new Object())));
   public Object[] basicStringRef;
+  public java.util.List<android.content.Context> activityLeaks = new java.util.ArrayList<>();
   public AddedObject addedObject;
   public UnchangedObject unchangedObject = new UnchangedObject();
   public RemovedObject removedObject;
@@ -236,6 +288,12 @@ public class DumpedStuff extends SuperDumpedStuff {
   Object fakeBinderService = new FakeBinderService();
   Object binderToken = new android.os.Binder();
   Object namedBinderToken = new android.os.Binder("awesomeToken");
+
+  public android.os.Looper looper;
+  public android.os.Handler handler;
+  public android.os.Message message1;
+  public android.os.Message message2;
+  public android.os.Message barrierMessage;
 
   Object unreachableAnchor = new Object();
 

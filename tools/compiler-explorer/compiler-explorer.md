@@ -5,10 +5,12 @@ This doc describes how to run a local instance of Compiler Explorer
 
 ## Prerequisites
 
-- Compiler Explorer depends on Node.js. You can download it through
-  [Node Version Manager (NVM)](https://nodejs.org/en/download/package-manager) or
-  through your favorite package manager.
-- You need a **full** Android source tree to build compilers.
+-   **Install Node.js**: Compiler Explorer requires Node.js. Before running the
+    setup script, make sure you have `node` and `npm` installed and available in
+    your `PATH`. We recommend using
+    [Node Version Manager (nvm)](https://github.com/nvm-sh/nvm) to install and
+    manage Node.js versions.
+-   You need a **full** Android source tree to build compilers.
 
 ## Instructions
 

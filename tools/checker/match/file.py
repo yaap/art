@@ -321,6 +321,7 @@ class ExecutionState(object):
 def match_test_case(
     test_case,
     c1_pass,
+    isa,
     instruction_set_features,
     read_barrier_type):
   """ Runs a test case against a C1visualizer graph dump.
@@ -330,6 +331,7 @@ def match_test_case(
   assert test_case.name == c1_pass.name
 
   initial_variables = {
+      "ISA": isa,
       "ISA_FEATURES": instruction_set_features,
       "READ_BARRIER_TYPE": read_barrier_type
   }
@@ -361,6 +363,7 @@ def match_files(checker_file, c1_file, target_arch, debuggable_mode, print_cfg):
       match_test_case(
           test_case,
           c1_pass,
+          c1_file.isa,
           c1_file.instruction_set_features,
           c1_file.read_barrier_type)
       Logger.test_passed()

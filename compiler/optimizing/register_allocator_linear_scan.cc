@@ -146,11 +146,12 @@ class RegisterAllocatorLinearScan::LinearScan {
  public:
   struct CoreRegisterTag {};
   struct FpRegisterTag {};
+  struct VectorRegisterTag {};
 
   LinearScan(RegisterAllocatorLinearScan* register_allocator, CoreRegisterTag /*tag*/)
       : codegen_(register_allocator->codegen_),
         number_of_registers_(codegen_->GetNumberOfCoreRegisters()),
-        register_type_(RegisterType::kCoreRegister),
+        register_type_(PhysicalRegisterType::kCoreRegister),
         registers_blocked_for_call_(
             register_allocator->registers_blocked_for_call_.GetCoreRegisterSet()),
         available_registers_(register_allocator->available_registers_.GetCoreRegisterSet()),
@@ -170,7 +171,7 @@ class RegisterAllocatorLinearScan::LinearScan {
   LinearScan(RegisterAllocatorLinearScan* register_allocator, FpRegisterTag /*tag*/)
       : codegen_(register_allocator->codegen_),
         number_of_registers_(codegen_->GetNumberOfFloatingPointRegisters()),
-        register_type_(RegisterType::kFpRegister),
+        register_type_(PhysicalRegisterType::kFpuRegister),
         registers_blocked_for_call_(
             register_allocator->registers_blocked_for_call_.GetFpuRegisterSet()),
         available_registers_(register_allocator->available_registers_.GetFpuRegisterSet()),
@@ -185,6 +186,26 @@ class RegisterAllocatorLinearScan::LinearScan {
             number_of_registers_, kArenaAllocRegisterAllocator)),
         safepoints_(register_allocator->safepoints_) {
     Init(register_allocator, register_allocator->physical_fp_register_intervals_);
+  }
+
+  LinearScan(RegisterAllocatorLinearScan* register_allocator, VectorRegisterTag /*tag*/)
+      : codegen_(register_allocator->codegen_),
+        number_of_registers_(codegen_->GetNumberOfVectorRegisters()),
+        register_type_(PhysicalRegisterType::kVectorRegister),
+        registers_blocked_for_call_(
+            register_allocator->registers_blocked_for_call_.GetVecRegisterSet()),
+        available_registers_(register_allocator->available_registers_.GetVecRegisterSet()),
+        spill_slots_(nullptr),  // Unused, all vector intervals have type `kFloat64`.
+        wide_spill_slots_(&register_allocator->vector_spill_slots_),
+        unhandled_(TakeUnhandledIntervals(&register_allocator->unhandled_vector_intervals_)),
+        handled_(register_allocator->allocator_->Adapter(kArenaAllocRegisterAllocator)),
+        active_(register_allocator->allocator_->Adapter(kArenaAllocRegisterAllocator)),
+        inactive_(register_allocator->allocator_->Adapter(kArenaAllocRegisterAllocator)),
+        instructions_from_positions_(register_allocator->liveness_.GetInstructionsFromPositions()),
+        registers_array_(register_allocator->allocator_->AllocArray<size_t>(
+            number_of_registers_, kArenaAllocRegisterAllocator)),
+        safepoints_(register_allocator->safepoints_) {
+    Init(register_allocator, register_allocator->physical_vector_register_intervals_);
   }
 
   void Run();
@@ -204,6 +225,7 @@ class RegisterAllocatorLinearScan::LinearScan {
     switch (type) {
       case DataType::Type::kFloat64:
       case DataType::Type::kInt64:
+        DCHECK(wide_spill_slots_ != nullptr);
         return wide_spill_slots_;
       case DataType::Type::kUint32:
       case DataType::Type::kUint64:
@@ -219,6 +241,7 @@ class RegisterAllocatorLinearScan::LinearScan {
       case DataType::Type::kInt8:
       case DataType::Type::kBool:
       case DataType::Type::kInt16:
+        DCHECK(spill_slots_ != nullptr);
         return spill_slots_;
     }
   }
@@ -294,7 +317,7 @@ class RegisterAllocatorLinearScan::LinearScan {
   size_t number_of_registers_;
 
   // The register type processed by this `LinearScan` object.
-  const RegisterType register_type_;
+  const PhysicalRegisterType register_type_;
 
   // Mask of registers blocked for a call.
   const uint32_t registers_blocked_for_call_;
@@ -337,8 +360,10 @@ RegisterAllocatorLinearScan::RegisterAllocatorLinearScan(ScopedArenaAllocator* a
       : RegisterAllocator(allocator, codegen, liveness),
         unhandled_core_intervals_(allocator->Adapter(kArenaAllocRegisterAllocator)),
         unhandled_fp_intervals_(allocator->Adapter(kArenaAllocRegisterAllocator)),
+        unhandled_vector_intervals_(allocator->Adapter(kArenaAllocRegisterAllocator)),
         physical_core_register_intervals_(allocator->Adapter(kArenaAllocRegisterAllocator)),
         physical_fp_register_intervals_(allocator->Adapter(kArenaAllocRegisterAllocator)),
+        physical_vector_register_intervals_(allocator->Adapter(kArenaAllocRegisterAllocator)),
         block_registers_for_call_interval_(
             LiveInterval::MakeFixedInterval(allocator, kNoRegisters, DataType::Type::kVoid)),
         block_registers_special_interval_(
@@ -348,6 +373,7 @@ RegisterAllocatorLinearScan::RegisterAllocatorLinearScan(ScopedArenaAllocator* a
         long_spill_slots_(allocator->Adapter(kArenaAllocRegisterAllocator)),
         float_spill_slots_(allocator->Adapter(kArenaAllocRegisterAllocator)),
         double_spill_slots_(allocator->Adapter(kArenaAllocRegisterAllocator)),
+        vector_spill_slots_(allocator->Adapter(kArenaAllocRegisterAllocator)),
         catch_phi_spill_slots_(0),
         safepoints_(allocator->Adapter(kArenaAllocRegisterAllocator)),
         reserved_out_slots_(0) {
@@ -359,6 +385,7 @@ RegisterAllocatorLinearScan::RegisterAllocatorLinearScan(ScopedArenaAllocator* a
 
   physical_core_register_intervals_.resize(codegen->GetNumberOfCoreRegisters(), nullptr);
   physical_fp_register_intervals_.resize(codegen->GetNumberOfFloatingPointRegisters(), nullptr);
+  physical_vector_register_intervals_.resize(codegen->GetNumberOfVectorRegisters(), nullptr);
 }
 
 RegisterAllocatorLinearScan::~RegisterAllocatorLinearScan() {}
@@ -376,8 +403,8 @@ void RegisterAllocatorLinearScan::AllocateRegisters() {
                ArrayRef<LiveInterval* const>(temp_intervals_));
 
   if (kIsDebugBuild) {
-    ValidateInternal(RegisterType::kCoreRegister, /*log_fatal_on_failure=*/ true);
-    ValidateInternal(RegisterType::kFpRegister, /*log_fatal_on_failure=*/ true);
+    ValidateInternal(PhysicalRegisterType::kCoreRegister, /*log_fatal_on_failure=*/ true);
+    ValidateInternal(PhysicalRegisterType::kFpuRegister, /*log_fatal_on_failure=*/ true);
     // Check that the linear order is still correct with regards to lifetime positions.
     // Since only parallel moves have been inserted during the register allocation,
     // these checks are mostly for making sure these moves have been added correctly.
@@ -401,47 +428,60 @@ void RegisterAllocatorLinearScan::AllocateRegisters() {
 }
 
 bool RegisterAllocatorLinearScan::Validate(bool log_fatal_on_failure) {
-  return ValidateInternal(RegisterType::kCoreRegister, log_fatal_on_failure) &&
-         ValidateInternal(RegisterType::kFpRegister, log_fatal_on_failure);
+  return ValidateInternal(PhysicalRegisterType::kCoreRegister, log_fatal_on_failure) &&
+         ValidateInternal(PhysicalRegisterType::kFpuRegister, log_fatal_on_failure);
 }
 
-void RegisterAllocatorLinearScan::BlockRegister(Location location,
+inline ScopedArenaVector<LiveInterval*>* RegisterAllocatorLinearScan::GetPhysicalRegisterIntervals(
+    PhysicalRegisterType register_type) {
+  switch (register_type) {
+    case PhysicalRegisterType::kCoreRegister:
+      return &physical_core_register_intervals_;
+    case PhysicalRegisterType::kFpuRegister:
+      return &physical_fp_register_intervals_;
+    case PhysicalRegisterType::kVectorRegister:
+      return &physical_vector_register_intervals_;
+  }
+}
+
+void RegisterAllocatorLinearScan::BlockRegister(PhysicalRegisterType register_type,
+                                                int reg,
                                                 size_t position,
                                                 bool will_call) {
-  DCHECK(location.IsRegister() || location.IsFpuRegister());
-  int reg = location.reg();
   // Ensure that an explicit input/output/temporary register is marked as being allocated.
-  if (location.IsRegister()) {
-    codegen_->AddAllocatedCoreRegister(reg);
-  } else {
-    codegen_->AddAllocatedFpuRegister(reg);
-  }
+  codegen_->AddAllocatedRegister(register_type, reg);
   if (will_call) {
-    uint32_t registers_blocked_for_call = location.IsRegister()
-        ? registers_blocked_for_call_.GetCoreRegisterSet()
-        : registers_blocked_for_call_.GetFpuRegisterSet();
+    uint32_t registers_blocked_for_call = registers_blocked_for_call_.GetRegisterSet(register_type);
     if ((registers_blocked_for_call & (1u << reg)) != 0u) {
       // Register is already marked as blocked by the `block_registers_for_call_interval_`.
       return;
     }
   }
-  DCHECK(location.IsRegister() || location.IsFpuRegister());
-  LiveInterval* interval = location.IsRegister()
-      ? physical_core_register_intervals_[reg]
-      : physical_fp_register_intervals_[reg];
-  DataType::Type type = location.IsRegister()
-      ? DataType::Type::kInt32
-      : DataType::Type::kFloat32;
+  ArrayRef<LiveInterval*> physical_register_intervals(*GetPhysicalRegisterIntervals(register_type));
+  LiveInterval* interval = physical_register_intervals[reg];
   if (interval == nullptr) {
+    DataType::Type type = (register_type == PhysicalRegisterType::kCoreRegister)
+        ? DataType::Type::kInt32
+        : (register_type == PhysicalRegisterType::kFpuRegister) ? DataType::Type::kFloat32
+                                                                : DataType::Type::kFloat64;
     interval = LiveInterval::MakeFixedInterval(allocator_, 1u << reg, type);
-    if (location.IsRegister()) {
-      physical_core_register_intervals_[reg] = interval;
-    } else {
-      physical_fp_register_intervals_[reg] = interval;
-    }
+    physical_register_intervals[reg] = interval;
   }
   DCHECK_EQ(interval->GetRegisters(), 1u << reg);
   interval->AddRange(position, position + kLivenessPositionsToBlock);
+}
+
+inline void RegisterAllocatorLinearScan::BlockRegisters(Location location,
+                                                        size_t position,
+                                                        bool will_call) {
+  DCHECK(location.IsRegisterKind());
+  PhysicalRegisterType register_type = location.GetRegisterType();
+  if (location.IsRegister()) {
+    BlockRegister(register_type, location.reg(), position, will_call);
+  } else {
+    BlockRegister(register_type, location.low(), position, will_call);
+    BlockRegister(register_type, location.high(), position, will_call);
+  }
 }
 
 void RegisterAllocatorLinearScan::AllocateRegistersInternal() {
@@ -480,6 +520,9 @@ void RegisterAllocatorLinearScan::AllocateRegistersInternal() {
   // of constructing the `LinearScan` object for the FP registers pass.
   if (!unhandled_fp_intervals_.empty()) {
     LinearScan(this, LinearScan::FpRegisterTag()).Run();
+  }
+  if (!unhandled_vector_intervals_.empty()) {
+    LinearScan(this, LinearScan::VectorRegisterTag()).Run();
   }
 }
 
@@ -566,6 +609,7 @@ void RegisterAllocatorLinearScan::ProcessInstruction(HInstruction* instruction) 
   // If needed, add interval to the list of unhandled intervals.
   if (current->HasSpillSlot() || instruction->IsConstant()) {
     // Split just before first register use.
+    DCHECK(!current->RequiresRegisterForDefinitionAt(current->GetStart()));
     size_t first_register_use = current->FirstRegisterUse();
     if (first_register_use != kNoLifetime) {
       LiveInterval* split = SplitBetween(current,
@@ -594,14 +638,14 @@ void RegisterAllocatorLinearScan::CheckForTempLiveIntervals(HInstruction* instru
   // Create synthesized intervals for temporaries.
   for (size_t i = 0; i < locations->GetTempCount(); ++i) {
     Location temp = locations->GetTemp(i);
-    if (temp.IsRegister() || temp.IsFpuRegister()) {
-      BlockRegister(temp, position, will_call);
+    if (temp.IsRegister()) {
+      BlockRegister(temp.GetRegisterType(), temp.reg(), position, will_call);
     } else {
       DCHECK(temp.IsUnallocated());
       switch (temp.GetPolicy()) {
-        case Location::kRequiresRegister: {
+        case Location::kRequiresCoreRegister: {
           LiveInterval* interval = LiveInterval::MakeTempInterval(
-              allocator_, DataType::Type::kInt32, /*is_pair=*/ false, i, position);
+              allocator_, DataType::Type::kInt32, /*is_pair=*/ false, i, position, instruction);
           temp_intervals_.push_back(interval);
           unhandled_core_intervals_.push_back(interval);
           break;
@@ -610,9 +654,17 @@ void RegisterAllocatorLinearScan::CheckForTempLiveIntervals(HInstruction* instru
         case Location::kRequiresFpuRegister: {
           bool is_pair = codegen_->NeedsTwoRegisters(DataType::Type::kFloat64);
           LiveInterval* interval = LiveInterval::MakeTempInterval(
-              allocator_, DataType::Type::kFloat64, is_pair, i, position);
+              allocator_, DataType::Type::kFloat64, is_pair, i, position, instruction);
           temp_intervals_.push_back(interval);
           unhandled_fp_intervals_.push_back(interval);
+          break;
+        }
+
+        case Location::kRequiresVecRegister: {
+          LiveInterval* interval = LiveInterval::MakeTempInterval(
+              allocator_, DataType::Type::kFloat64, /*is_pair=*/ false, i, position, instruction);
+          temp_intervals_.push_back(interval);
+          unhandled_vector_intervals_.push_back(interval);
           break;
         }
 
@@ -635,11 +687,8 @@ void RegisterAllocatorLinearScan::CheckForFixedInputs(HInstruction* instruction,
   size_t position = instruction->GetLifetimePosition();
   for (size_t i = 0; i < locations->GetInputCount(); ++i) {
     Location input = locations->InAt(i);
-    if (input.IsRegister() || input.IsFpuRegister()) {
-      BlockRegister(input, position, will_call);
-    } else if (input.IsPair()) {
-      BlockRegister(input.ToLow(), position, will_call);
-      BlockRegister(input.ToHigh(), position, will_call);
+    if (input.IsRegisterKind()) {
+      BlockRegisters(input, position, will_call);
     }
   }
 }
@@ -660,27 +709,19 @@ void RegisterAllocatorLinearScan::CheckForFixedOutput(HInstruction* instruction,
     if (output.GetPolicy() == Location::kSameAsFirstInput) {
       DCHECK(locations->OutputCanOverlapWithInputs());
       Location first = locations->InAt(0);
-      if (first.IsRegister() || first.IsFpuRegister()) {
+      if (first.IsRegisterKind()) {
         current->SetFrom(position + kLivenessPositionOfFixedOutput);
-        current->SetRegisters(1u << first.reg());
-      } else if (first.IsPair()) {
-        current->SetFrom(position + kLivenessPositionOfFixedOutput);
-        current->SetRegisters((1u << first.low()) | (1u << first.high()));
+        current->SetRegisters(first.GetRegisterSet());
       }
     } else if (com::android::art::flags::reg_alloc_no_output_overlap() &&
                !locations->OutputCanOverlapWithInputs()) {
       current->SetFrom(position + kLivenessPositionOfNonOverlappingOutput);
     }
-  } else if (output.IsRegister() || output.IsFpuRegister()) {
+  } else if (output.IsRegisterKind()) {
     // Shift the interval's start by one to account for the blocked register.
     current->SetFrom(position + kLivenessPositionOfFixedOutput);
-    current->SetRegisters(1u << output.reg());
-    BlockRegister(output, position, will_call);
-  } else if (output.IsPair()) {
-    current->SetFrom(position + kLivenessPositionOfFixedOutput);
-    current->SetRegisters((1u << output.low()) | (1u << output.high()));
-    BlockRegister(output.ToLow(), position, will_call);
-    BlockRegister(output.ToHigh(), position, will_call);
+    current->SetRegisters(output.GetRegisterSet());
+    BlockRegisters(output, position, will_call);
   } else if (output.IsStackSlot() || output.IsDoubleStackSlot()) {
     current->SetSpillSlot(output.GetStackIndex());
   } else {
@@ -723,15 +764,15 @@ inline size_t RegisterAllocatorLinearScan::GetNumberOfSpillSlots() const {
          catch_phi_spill_slots_;
 }
 
-bool RegisterAllocatorLinearScan::ValidateInternal(RegisterType current_register_type,
+bool RegisterAllocatorLinearScan::ValidateInternal(PhysicalRegisterType current_register_type,
                                                    bool log_fatal_on_failure) const {
   auto should_process = [current_register_type](LiveInterval* interval) {
     if (interval == nullptr) {
       return false;
     }
-    RegisterType register_type = DataType::IsFloatingPointType(interval->GetType())
-        ? RegisterType::kFpRegister
-        : RegisterType::kCoreRegister;
+    PhysicalRegisterType register_type = DataType::IsFloatingPointType(interval->GetType())
+        ? PhysicalRegisterType::kFpuRegister
+        : PhysicalRegisterType::kCoreRegister;
     return register_type == current_register_type;
   };
 
@@ -754,7 +795,7 @@ bool RegisterAllocatorLinearScan::ValidateInternal(RegisterType current_register
     }
   }
   const ScopedArenaVector<LiveInterval*>* physical_register_intervals =
-      (current_register_type == RegisterType::kCoreRegister)
+      (current_register_type == PhysicalRegisterType::kCoreRegister)
           ? &physical_core_register_intervals_
           : &physical_fp_register_intervals_;
   for (LiveInterval* fixed : *physical_register_intervals) {
@@ -914,9 +955,7 @@ void RegisterAllocatorLinearScan::LinearScan::Run() {
     }
 
     // For a Phi which has all inputs in the same spill slot as its spill slot hint, use that hint.
-    if (com::android::art::flags::reg_alloc_spill_slot_reuse() &&
-        current->HasSpillSlotHint() &&
-        TryUsingSpillSlotHint(current)) {
+    if (current->HasSpillSlotHint() && TryUsingSpillSlotHint(current)) {
       continue;
     }
 
@@ -959,11 +998,7 @@ void RegisterAllocatorLinearScan::LinearScan::Run() {
       }
     }
   }
-  if (register_type_ == RegisterType::kCoreRegister) {
-    codegen_->AddAllocatedCoreRegisterSet(allocated_registers);
-  } else {
-    codegen_->AddAllocatedFpuRegisterSet(allocated_registers);
-  }
+  codegen_->AddAllocatedRegisterSet(register_type_, allocated_registers);
 }
 
 static uint32_t FreeIfNotCoverAt(
@@ -1034,6 +1069,7 @@ bool RegisterAllocatorLinearScan::LinearScan::TryUsingSpillSlotHint(LiveInterval
     data = new_data;
   }
   current->SetSpillSlot(hint);
+  DCHECK(!current->RequiresRegisterForDefinitionAt(current->GetStart()));
   size_t first_register_use = current->FirstRegisterUse();
   if (first_register_use != kNoLifetime) {
     LiveInterval* split = SplitBetween(current, current->GetStart(), first_register_use - 1);
@@ -1045,7 +1081,7 @@ bool RegisterAllocatorLinearScan::LinearScan::TryUsingSpillSlotHint(LiveInterval
 }
 
 static int RegisterOrLowRegister(Location location) {
-  return location.IsPair() ? location.low() : location.reg();
+  return location.IsRegisterPair() ? location.low() : location.reg();
 }
 
 int RegisterAllocatorLinearScan::LinearScan::FindFirstRegisterHint(
@@ -1077,6 +1113,7 @@ int RegisterAllocatorLinearScan::LinearScan::FindFirstRegisterHint(
     // will avoid a move between the two blocks.
     HBasicBlock* block = SsaLivenessAnalysis::GetBlockFromPosition(
         interval->GetStart() / kLivenessPositionsPerInstruction, instructions_from_positions_);
+    DCHECK(!interval->RequiresRegisterForDefinitionAt(interval->GetStart()));
     size_t next_register_use = interval->FirstRegisterUse();
     for (HBasicBlock* predecessor : block->GetPredecessors()) {
       size_t position = predecessor->GetLifetimeEnd() - 1;
@@ -1224,8 +1261,9 @@ bool RegisterAllocatorLinearScan::LinearScan::TryAllocateFreeReg(LiveInterval* c
     // An interval that starts an instruction (that is, it is not split), may
     // re-use the registers used by the inputs of that instruciton, based on the
     // location summary.
-    HInstruction* defined_by = current->GetDefinedBy();
-    if (defined_by != nullptr && !current->IsSplit()) {
+    if (!current->IsTemp() && !current->IsSplit()) {
+      HInstruction* defined_by = current->GetDefinedBy();
+      DCHECK(defined_by != nullptr);
       LocationSummary* locations = defined_by->GetLocations();
       if (!locations->OutputCanOverlapWithInputs() && locations->Out().IsUnallocated()) {
         HInputsRef inputs = defined_by->GetInputs();
@@ -1431,7 +1469,10 @@ uint32_t RegisterAllocatorLinearScan::LinearScan::TrySplitNonPairOrUnalignedPair
 // we spill `current` instead.
 std::pair<bool, uint32_t> RegisterAllocatorLinearScan::LinearScan::AllocateBlockedReg(
     LiveInterval* current) {
-  size_t first_register_use = current->FirstRegisterUse();
+  size_t first_register_use =
+      (current->IsTemp() || current->RequiresRegisterForDefinitionAt(current->GetStart()))
+          ? current->GetStart()
+          : current->FirstRegisterUse();
   if (first_register_use == kNoLifetime) {
     AllocateSpillSlotFor(current);
     return {false, 0u};
@@ -1448,7 +1489,9 @@ std::pair<bool, uint32_t> RegisterAllocatorLinearScan::LinearScan::AllocateBlock
     DCHECK_NE(register_mask, 0u);
     size_t use = start;
     if (active->HasRegisters()) {
-      if (!active->IsFixed() && !active->IsTemp()) {
+      if (!active->IsFixed() &&
+          !active->IsTemp() &&
+          !active->RequiresRegisterForDefinitionAt(use)) {
         use = active->FirstRegisterUseAfter(use);
         if (use == kNoLifetime) {
           continue;
@@ -1517,10 +1560,10 @@ std::pair<bool, uint32_t> RegisterAllocatorLinearScan::LinearScan::AllocateBlock
         HInstruction* at =
             instructions_from_positions_[first_register_use / kLivenessPositionsPerInstruction];
         CHECK(false) << "There is not enough registers available for "
-          << current->GetParent()->GetDefinedBy()->DebugName() << " "
-          << current->GetParent()->GetDefinedBy()->GetId()
-          << " at " << first_register_use - 1 << " "
-          << (at == nullptr ? "" : at->DebugName());
+            << current->GetDefinedBy()->DebugName() << " "
+            << current->GetDefinedBy()->GetId()
+            << " at " << first_register_use - 1 << " "
+            << (at == nullptr ? "" : at->DebugName());
       }
 
       // If we're allocating a register for `current` because the instruction at
@@ -1575,6 +1618,7 @@ std::pair<bool, uint32_t> RegisterAllocatorLinearScan::LinearScan::AllocateBlock
           DCHECK_EQ(start, split->GetStart());
           AllocateSpillSlotFor(split);
           handled_.push_back(split);
+          DCHECK(!split->RequiresRegisterForDefinitionAt(start));
           size_t register_use = split->FirstRegisterUseAfter(start);
           if (register_use != kNoLifetime) {
             LiveInterval* second_split = SplitBetween(split, start, register_use - 1);
@@ -1699,27 +1743,25 @@ void RegisterAllocatorLinearScan::LinearScan::AllocateSpillSlotFor(LiveInterval*
   size_t slot = 0;
   bool used_hint = false;
 
-  if (com::android::art::flags::reg_alloc_spill_slot_reuse()) {
-    LiveInterval* hint_phi_interval = parent->GetHintPhiInterval();
-    // If the immediate hint Phi does not have a spill hint, we could try to follow the
-    // hint Phi chain to a Phi that does. However, we would need to make sure we don't go
-    // over a Phi loop forever. And we would need to investigate if the additional spill
-    // slot sharing we can find this way is worth the increase in compilation time.
-    if (hint_phi_interval != nullptr && hint_phi_interval->HasSpillSlotOrHint()) {
-      size_t hint = hint_phi_interval->GetSpillSlotHint();
-      DCHECK_LE(hint + number_of_spill_slots_needed, spill_slots->size());
-      ArrayRef<SpillSlotData> range =
-          ArrayRef<SpillSlotData>(*spill_slots).SubArray(hint, number_of_spill_slots_needed);
-      if (std::all_of(range.begin(),
-                      range.end(),
-                      [=](SpillSlotData& data) { return data.CanUseFor(parent, start, end); })) {
-        // Update slots and use the hint.
-        for (SpillSlotData& data : range) {
-          data.UseFor(interval, end);
-        }
-        used_hint = true;
-        slot = hint;
+  LiveInterval* hint_phi_interval = parent->GetHintPhiInterval();
+  // If the immediate hint Phi does not have a spill hint, we could try to follow the
+  // hint Phi chain to a Phi that does. However, we would need to make sure we don't go
+  // over a Phi loop forever. And we would need to investigate if the additional spill
+  // slot sharing we can find this way is worth the increase in compilation time.
+  if (hint_phi_interval != nullptr && hint_phi_interval->HasSpillSlotOrHint()) {
+    size_t hint = hint_phi_interval->GetSpillSlotHint();
+    DCHECK_LE(hint + number_of_spill_slots_needed, spill_slots->size());
+    ArrayRef<SpillSlotData> range =
+        ArrayRef<SpillSlotData>(*spill_slots).SubArray(hint, number_of_spill_slots_needed);
+    if (std::all_of(range.begin(),
+                    range.end(),
+                    [=](SpillSlotData& data) { return data.CanUseFor(parent, start, end); })) {
+      // Update slots and use the hint.
+      for (SpillSlotData& data : range) {
+        data.UseFor(interval, end);
       }
+      used_hint = true;
+      slot = hint;
     }
   }
 
@@ -1759,12 +1801,9 @@ void RegisterAllocatorLinearScan::LinearScan::AllocateSpillSlotFor(LiveInterval*
   // that is when we know the number of spill slots for each type.
   parent->SetSpillSlot(slot);
 
-  if (com::android::art::flags::reg_alloc_spill_slot_reuse()) {
-    LiveInterval* hint_phi_interval = parent->GetHintPhiInterval();
-    while (hint_phi_interval != nullptr && !hint_phi_interval->HasSpillSlotOrHint()) {
-      hint_phi_interval->SetSpillSlotHint(slot);
-      hint_phi_interval = hint_phi_interval->GetHintPhiInterval();
-    }
+  while (hint_phi_interval != nullptr && !hint_phi_interval->HasSpillSlotOrHint()) {
+    hint_phi_interval->SetSpillSlotHint(slot);
+    hint_phi_interval = hint_phi_interval->GetHintPhiInterval();
   }
 }
 

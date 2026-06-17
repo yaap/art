@@ -42,10 +42,8 @@ bool MonitorObjectsStackVisitor::VisitFrame() {
     // Top frame, check for blocked state.
 
     ObjPtr<mirror::Object> monitor_object;
-    uint32_t lock_owner_tid;
-    ThreadState state = Monitor::FetchState(GetThread(),
-                                            &monitor_object,
-                                            &lock_owner_tid);
+    uint32_t lock_owner_thread_id;
+    ThreadState state = Monitor::FetchState(GetThread(), &monitor_object, &lock_owner_thread_id);
     switch (state) {
       case ThreadState::kWaiting:
       case ThreadState::kTimedWaiting:
@@ -57,7 +55,7 @@ bool MonitorObjectsStackVisitor::VisitFrame() {
 
       case ThreadState::kBlocked:
       case ThreadState::kWaitingForLockInflation:
-        VisitBlockedOnObject(monitor_object, state, lock_owner_tid);
+        VisitBlockedOnObject(monitor_object, state, lock_owner_thread_id);
         break;
 
       default:

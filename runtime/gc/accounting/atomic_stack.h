@@ -225,6 +225,9 @@ class AtomicStack {
     return capacity_;
   }
 
+  size_t BytesCapacity() const { return capacity_ * sizeof(StackReference<T>); }
+  void* MapBegin() const { return static_cast<void*>(begin_); }
+
   // Will clear the stack.
   void Resize(size_t new_capacity) {
     capacity_ = new_capacity;

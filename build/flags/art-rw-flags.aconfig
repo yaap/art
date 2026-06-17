@@ -23,8 +23,6 @@ flag {
   namespace: "core_libraries"
   description: "Permanent test read-write flag."
   bug: "391379705"
-  is_fixed_read_only: false
-  is_exported: false
 }
 
 # Flag for using userfaultfd move ioctl in CMC
@@ -36,8 +34,6 @@ flag {
   "2. the necessary kernel bug-fixes aren't there, or "
   "3. app's seccomp filter doesn't allow it."
   bug: "343220989"
-  is_fixed_read_only: false
-  is_exported: false
 }
 
 flag {
@@ -45,35 +41,26 @@ flag {
   namespace: "system_performance"
   description: "Enable support for time based GC triggering strategy"
   bug: "425665469"
-  is_fixed_read_only: false
-  is_exported: false
 }
 
 flag {
-  name: "auto_tune_time_based_gc_triggering"
+  name: "native_alloc_time_based_gc_triggering_bugfix"
   namespace: "system_performance"
-  description: "Tune time based gc triggering based on device specs"
-  bug: "425665469"
-  is_fixed_read_only: false
-  is_exported: false
+  description: "Time based gc triggering support for native alloc gc."
+  bug: "469141032"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
 }
 
 flag {
-  name: "post_ur_job"
-  namespace: "art_cloud"
-  description: "Flag to enable post unattended reboot job."
-  bug: "426478053"
-  is_fixed_read_only: false
-  is_exported: false
-}
-
-flag {
-  name: "assume_value_sdk_int"
+  name: "time_based_gc_triggering_via_integral"
   namespace: "system_performance"
-  description: "Flag to enable use of SDK_INT as a compile-time constant"
-  bug: "204924812"
-  is_fixed_read_only: false
-  is_exported: false
+  description: "Trigger based on area under Java heap curve."
+  bug: "468021712"
+  metadata {
+    purpose: PURPOSE_BUGFIX
+  }
 }
 
 flag {
@@ -81,8 +68,13 @@ flag {
   namespace: "art_performance"
   description: "Flag to control on-demand method tracing feature"
   bug: "352518093"
-  is_fixed_read_only: false
-  is_exported: false
+}
+
+flag {
+  name: "madvise_dex_using_profile"
+  namespace: "system_performance"
+  description: "Flag to enable madvise of vdex using startup hints from the profile"
+  bug: "358590127"
 }
 
 flag {
@@ -90,8 +82,13 @@ flag {
   namespace: "system_performance"
   description: "Flag to enable explicit madvise of the vdex type lookup table"
   bug: "428102886"
-  is_fixed_read_only: false
-  is_exported: false
+}
+
+flag {
+  name: "madvise_optimized_readahead"
+  namespace: "system_performance"
+  description: "Flag to enable optimized readahead settings for dex/odex madvise"
+  bug: "309384435"
 }
 
 flag {
@@ -99,25 +96,84 @@ flag {
   namespace: "art_cloud"
   description: "Flag to enable more verbose logging for the \"pm compile\" command"
   bug: "441818922"
-  is_fixed_read_only: false
-  is_exported: false
 }
 
 flag {
     namespace: "core_libraries"
     name: "read_only_dynamic_code_load_ww_log"
-    is_exported: false
     description: "This flag controls if the system logs to WW when loading native code and read only is not enforced"
     bug: "408070506"
-    is_fixed_read_only: false
 }
 
 flag {
     namespace: "core_libraries"
     name: "read_only_dynamic_code_load_throw_exception"
-    is_exported: false
     description: "This flag controls if the system throws an exception when loading native code and read only is not enforced"
     bug: "408070506"
-    is_fixed_read_only: false
 }
 
+
+flag {
+  name: "dynamic_instrumentation_method_entry_hook"
+  namespace: "responsible_apis"
+  description: "Flag to inject the method entry hook when dynamic instrumentation is requested"
+  bug: "408255571"
+}
+
+flag {
+  name: "lower_young_gc_throughput_expectation"
+  namespace: "art_performance"
+  description: "Lower the expectation of 2x throughput from young GCs to reduce zram reads"
+  bug: "469158682"
+}
+
+flag {
+  name: "packed_switch_simplification"
+  namespace: "art_performance"
+  description: "Simplify packed-switch to a load from constant table"
+  bug: "283699582"
+}
+
+flag {
+  name: "lse_quick_lock"
+  namespace: "system_performance"
+  description: "Use runtime LSE instructions when available to optimize quick lock entry points"
+  bug: "474165956"
+}
+
+flag {
+  name: "hybrid_pre_reboot_dexopt"
+  namespace: "art_cloud"
+  description: "Flag to enable hybrid pre-reboot dexopt for OTA"
+  bug: "477979368"
+}
+
+flag {
+    name: "secure_compilation"
+    namespace: "hardware_backed_security"
+    description: "Flag for API to enable secure compilation"
+    bug: "419024976"
+    is_fixed_read_only: false
+    is_exported: true
+}
+
+flag {
+  name: "skip_background_classes_in_profiles"
+  namespace: "art_performance"
+  description: "Skips adding background classes to the app profiles"
+  bug: "485143995"
+}
+
+flag {
+  name: "jfield_id_change"
+  namespace: "art_performance"
+  description: "Flag for changing the representation of jfieldID"
+  bug: "481456995"
+}
+
+flag {
+  name: "bitmap_metadata_values"
+  namespace: "perfetto"
+  description: "Flag to collect bitmap metadata (e.g. dimensions) while collecting a perfetto heap dump."
+  bug: "493745993"
+}

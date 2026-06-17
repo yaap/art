@@ -63,11 +63,12 @@ class AppInfo {
                        const std::string& ref_profile_filename,
                        CodeType code_type);
 
-  // Registers the optimization status for single code path.
-  void RegisterOdexStatus(const std::string& code_path,
-                          const std::string& compiler_filter,
-                          const std::string& compilation_reason,
-                          const std::string& odex_status);
+  // Registers the optimization status for single code path. Returns the code
+  // type for that code path.
+  AppInfo::CodeType RegisterOdexStatus(const std::string& code_path,
+                                       const std::string& compiler_filter,
+                                       const std::string& compilation_reason,
+                                       const std::string& odex_status);
 
   // Extracts the optimization status of the primary APK into the given arguments.
   // If there are multiple primary APKs registed via RegisterAppInfo, the method
@@ -98,6 +99,7 @@ class AppInfo {
   // The registered code type for a given code path. Note that this will
   // be kUnknown until an explicit registration for that path has been made.
   CodeType GetRegisteredCodeType(const std::string& code_path);
+  std::string GetCompilerFilter(const std::string& code_path);
 
  private:
   // Encapsulates optimization information about a particular code location.

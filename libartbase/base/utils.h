@@ -208,7 +208,7 @@ struct ConciseDiskStats {
   explicit ConciseDiskStats(const char* disk_name);
 
   // Return a string representing the evolution of 'this' from 'earlier'. These should correspond
-  // to the same disk. This is arguably the ony meanigful way to print results.
+  // to the same disk. This is arguably the only meaningful way to print results.
   // Returns an empty string if the information is unavailable.
   std::string SummarizeDiff(ConciseDiskStats earlier);
 

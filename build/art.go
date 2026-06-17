@@ -27,13 +27,13 @@ import (
 	"android/soong/cc/config"
 )
 
-//go:generate go run ../../build/blueprint/gobtools/codegen/gob_gen.go
+//go:generate go run ../../build/blueprint/gobtools/codegen
 
 var supportedArches = []string{"arm", "arm64", "riscv64", "x86", "x86_64"}
 
 // @auto-generate: gob
 type testInstallInfo struct {
-	Testcases map[string]string
+	Testcases map[string]android.Path
 	TestMap   map[string][]string
 }
 
@@ -60,11 +60,6 @@ func globalFlags(ctx android.LoadHookContext) ([]string, []string) {
 
 		// TODO(Simulator): Support other GC types.
 		gcType = "MS"
-	}
-
-	if ctx.Config().IsEnvTrue("ART_USE_SIMULATOR") {
-		cflags = append(cflags, "-DART_USE_SIMULATOR=1")
-		asflags = append(asflags, "-DART_USE_SIMULATOR=1")
 	}
 
 	cflags = append(cflags, "-DART_DEFAULT_GC_TYPE_IS_"+gcType)
@@ -107,6 +102,10 @@ func globalFlags(ctx android.LoadHookContext) ([]string, []string) {
 			ctx.Config().IsEnvFalse("ART_USE_GENERATIONAL_GC")) {
 			cflags = append(cflags, "-DART_USE_GENERATIONAL_GC=1")
 		}
+	}
+
+	if ctx.Config().IsEnvTrue("ART_FORCE_CMC_STW_COMPACTION") {
+		cflags = append(cflags, "-DART_FORCE_CMC_STW_COMPACTION=1")
 	}
 
 	if tlab {
@@ -228,6 +227,12 @@ func globalDefaults(ctx android.LoadHookContext) {
 				Cflags []string
 			}
 		}
+		Multilib struct {
+			Lib64 struct {
+				Cflags []string
+				Asflags []string
+			}
+		}
 		Cflags   []string
 		Asflags  []string
 		Sanitize struct {
@@ -239,6 +244,16 @@ func globalDefaults(ctx android.LoadHookContext) {
 	p.Cflags, p.Asflags = globalFlags(ctx)
 	p.Target.Android.Cflags = deviceFlags(ctx)
 	p.Target.Host.Cflags = hostFlags(ctx)
+
+	if ctx.Config().IsEnvTrue("ART_USE_SIMULATOR") {
+		if !ctx.Config().IsEnvTrue("ART_USE_RESTRICTED_MODE") {
+			panic("ART_USE_SIMULATOR requires ART_USE_RESTRICTED_MODE")
+		}
+
+		// The simulator does not support 32 bit architectures.
+		p.Multilib.Lib64.Cflags = []string{"-DART_USE_SIMULATOR=1"}
+		p.Multilib.Lib64.Asflags = []string{"-DART_USE_SIMULATOR=1"}
+	}
 
 	if ctx.Config().IsEnvTrue("ART_DEX_FILE_ACCESS_TRACKING") {
 		p.Cflags = append(p.Cflags, "-DART_DEX_FILE_ACCESS_TRACKING")
@@ -326,7 +341,7 @@ func addTestcasesFile(data *testInstallInfo) func(ctx android.InstallHookContext
 			return
 		}
 
-		src := ctx.SrcPath().String()
+		src := ctx.SrcPath()
 		path := strings.Split(ctx.Path().String(), "/")
 		// Keep last two parts of the install path (e.g. bin/dex2oat).
 		dst := strings.Join(path[len(path)-2:], "/")
@@ -392,7 +407,7 @@ func artLibrary() android.Module {
 
 	android.AddLoadHook(module, addImplicitFlags)
 	data := &testInstallInfo{
-		Testcases: make(map[string]string),
+		Testcases: make(map[string]android.Path),
 	}
 	android.AddInstallHook(module, addTestcasesFile(data))
 	android.AddPostGenerateAndroidBuildActionsHook(module, setTestInstallInfo(data))
@@ -415,7 +430,7 @@ func artBinary() android.Module {
 	android.AddLoadHook(module, customLinker)
 	android.AddLoadHook(module, prefer32Bit)
 	data := &testInstallInfo{
-		Testcases: make(map[string]string),
+		Testcases: make(map[string]android.Path),
 	}
 	android.AddInstallHook(module, addTestcasesFile(data))
 	android.AddPostGenerateAndroidBuildActionsHook(module, setTestInstallInfo(data))

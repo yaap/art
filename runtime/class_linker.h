@@ -22,7 +22,6 @@
 #include <set>
 #include <string>
 #include <type_traits>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -190,22 +189,15 @@ class ClassLinker {
                             std::vector<std::unique_ptr<const DexFile>>&& additional_dex_files)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
-  // Add image spaces to the class linker, may fix up classloader fields and dex cache fields.
-  // The dex files that were newly opened for the space are placed in the out argument `dex_files`.
+  // Add an image space to the class linker, may fix up classloader fields and dex cache fields.
   // Returns true if the operation succeeded.
-  // The space must be already added to the heap before calling AddImageSpace since we need to
-  // properly handle read barriers and object marking.
-  bool AddImageSpaces(ArrayRef<gc::space::ImageSpace*> spaces,
-                      Handle<mirror::ClassLoader> class_loader,
-                      ClassLoaderContext* context,
-                      /*out*/ std::vector<std::unique_ptr<const DexFile>>* dex_files,
-                      /*out*/ std::string* error_msg) REQUIRES(!Locks::dex_lock_)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  EXPORT bool OpenImageDexFiles(gc::space::ImageSpace* space,
-                                std::vector<std::unique_ptr<const DexFile>>* out_dex_files,
-                                std::string* error_msg)
-      REQUIRES(!Locks::dex_lock_)
+  // The space must be already added to the heap before calling `AddImageSpace()` since we need
+  // to properly handle read barriers and object marking.
+  bool AddImageSpace(gc::space::ImageSpace* space,
+                     Handle<mirror::ClassLoader> class_loader,
+                     ClassLoaderContext* context,
+                     const std::vector<std::unique_ptr<const DexFile>>& dex_files,
+                     std::string* error_msg) REQUIRES(!Locks::dex_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Finds a class by its descriptor, loading it if necessary.
@@ -260,6 +252,9 @@ class ClassLinker {
                                            std::string_view descriptor,
                                            ObjPtr<mirror::ClassLoader> class_loader)
       REQUIRES(!Locks::classlinker_classes_lock_)
+      REQUIRES_SHARED(Locks::mutator_lock_);
+
+  ObjPtr<mirror::DexCache> LookupDexCache(const dex::FieldId& field_id)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   ObjPtr<mirror::Class> LookupPrimitiveClass(char type) REQUIRES_SHARED(Locks::mutator_lock_);
@@ -520,6 +515,10 @@ class ClassLinker {
   // Locks::classlinker_classes_lock_. As the Locks::classlinker_classes_lock_ isn't held this code
   // can race with insertion and deletion of classes while the visitor is being called.
   EXPORT void VisitClassesWithoutClassesLock(ClassVisitor* visitor)
+      REQUIRES_SHARED(Locks::mutator_lock_)
+      REQUIRES(!Locks::dex_lock_);
+
+  void PruneDexCacheAndBssStringEntries(Thread* self)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::dex_lock_);
 
@@ -863,7 +862,7 @@ class ClassLinker {
 
   struct DexCacheData {
     // Construct an invalid data object.
-    DexCacheData() : weak_root(nullptr), class_table(nullptr) {
+    DexCacheData() : weak_root(nullptr), class_table(nullptr), dex_file(nullptr) {
       static std::atomic_uint64_t s_registration_count(0);
       registration_index = s_registration_count.fetch_add(1, std::memory_order_seq_cst);
     }
@@ -880,6 +879,8 @@ class ClassLinker {
     // Monotonically increasing integer which records the order in which DexFiles were registered.
     // Used only to preserve determinism when creating compiled image.
     uint64_t registration_index;
+    // The dex file associated with the dex cache.
+    const DexFile* dex_file;
 
    private:
     DISALLOW_COPY_AND_ASSIGN(DexCacheData);
@@ -1021,7 +1022,9 @@ class ClassLinker {
   };
 
   void VisiblyInitializedCallbackDone(Thread* self, VisiblyInitializedCallback* callback);
-  VisiblyInitializedCallback* MarkClassInitialized(Thread* self, Handle<mirror::Class> klass)
+  VisiblyInitializedCallback* MarkClassInitialized(Thread* self,
+                                                   Handle<mirror::Class> klass,
+                                                   uint32_t hash)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Ensures that the supertype of 'klass' ('supertype') is verified. Returns false and throws
@@ -1248,7 +1251,7 @@ class ClassLinker {
                              ObjPtr<mirror::ClassLoader> class_loader)
       REQUIRES(Locks::dex_lock_)
       REQUIRES_SHARED(Locks::mutator_lock_);
-  const DexCacheData* FindDexCacheDataLocked(const DexFile& dex_file)
+  EXPORT const DexCacheData* FindDexCacheDataLocked(const DexFile& dex_file)
       REQUIRES_SHARED(Locks::dex_lock_);
   const DexCacheData* FindDexCacheDataLocked(const OatDexFile& oat_dex_file)
       REQUIRES_SHARED(Locks::dex_lock_);
@@ -1311,6 +1314,7 @@ class ClassLinker {
       REQUIRES_SHARED(Locks::mutator_lock_);
   bool VerifyRecordClass(Handle<mirror::Class> klass, ObjPtr<mirror::Class> super)
       REQUIRES_SHARED(Locks::mutator_lock_);
+  bool VerifyValueClass(Handle<mirror::Class> klass) REQUIRES_SHARED(Locks::mutator_lock_);
 
   void CheckProxyConstructor(ArtMethod* constructor) const
       REQUIRES_SHARED(Locks::mutator_lock_);
@@ -1320,7 +1324,7 @@ class ClassLinker {
   size_t GetDexCacheCount() REQUIRES_SHARED(Locks::mutator_lock_, Locks::dex_lock_) {
     return dex_caches_.size();
   }
-  const std::unordered_map<const DexFile*, DexCacheData>& GetDexCachesData()
+  const SafeMap<const uint8_t*, DexCacheData>& GetDexCachesData()
       REQUIRES_SHARED(Locks::mutator_lock_, Locks::dex_lock_) {
     return dex_caches_;
   }
@@ -1401,25 +1405,13 @@ class ClassLinker {
   LengthPrefixedArray<ArtField>* GetEmptyFieldArray() REQUIRES_SHARED(Locks::mutator_lock_);
   LengthPrefixedArray<ArtMethod>* GetEmptyMethodArray() REQUIRES_SHARED(Locks::mutator_lock_);
 
-  bool OpenAndInitImageDexFiles(const gc::space::ImageSpace* space,
-                                Handle<mirror::ClassLoader> class_loader,
-                                std::vector<std::unique_ptr<const DexFile>>* out_dex_files,
-                                std::string* error_msg) REQUIRES(!Locks::dex_lock_)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
-  bool AddImageSpace(gc::space::ImageSpace* space,
-                     Handle<mirror::ClassLoader> class_loader,
-                     ClassLoaderContext* context,
-                     const std::vector<std::unique_ptr<const DexFile>>& dex_files,
-                     std::string* error_msg) REQUIRES(!Locks::dex_lock_)
-      REQUIRES_SHARED(Locks::mutator_lock_);
-
   std::vector<const DexFile*> boot_class_path_;
   std::vector<std::unique_ptr<const DexFile>> boot_dex_files_;
 
   // JNI weak globals and side data to allow dex caches to get unloaded. We lazily delete weak
   // globals when we register new dex files.
-  std::unordered_map<const DexFile*, DexCacheData> dex_caches_ GUARDED_BY(Locks::dex_lock_);
+  // The key is the dex file header pointer (dex_file->Begin()).
+  SafeMap<const uint8_t*, DexCacheData> dex_caches_ GUARDED_BY(Locks::dex_lock_);
 
   // This contains the class loaders which have class tables. It is populated by
   // InsertClassTableForClassLoader.

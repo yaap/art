@@ -1,0 +1,2 @@
+Make sure that manually inserted MethodHandle's type comparison with
+callsite type handled well in OSR and JIT.

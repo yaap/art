@@ -22,8 +22,10 @@
 #include "base/pointer_size.h"
 #include "class_linker.h"
 #include "code_generator.h"
+#include "com_android_art_flags.h"
 #include "driver/compiler_options.h"
 #include "driver/dex_compilation_unit.h"
+#include "driver/image_class_map-inl.h"
 #include "gc/heap.h"
 #include "gc/space/image_space.h"
 #include "handle_scope-inl.h"
@@ -55,8 +57,8 @@ static bool ImageAOTCanEmbedMethod(ArtMethod* method, const CompilerOptions& com
   ScopedObjectAccess soa(Thread::Current());
   ObjPtr<mirror::Class> klass = method->GetDeclaringClass();
   DCHECK(klass != nullptr);
-  const DexFile& dex_file = klass->GetDexFile();
-  return compiler_options.IsImageClass(dex_file.GetTypeDescriptor(klass->GetDexTypeIndex()));
+  TypeReference type_ref(&klass->GetDexFile(), klass->GetDexTypeIndex());
+  return compiler_options.IsImageClass(type_ref, /*array_dim=*/ 0u);
 }
 
 HInvokeStaticOrDirect::DispatchInfo HSharpening::SharpenLoadMethod(
@@ -178,9 +180,24 @@ HLoadClass::LoadKind HSharpening::ComputeLoadClassKind(
   dex::TypeIndex type_index = load_class->GetTypeIndex();
   const CompilerOptions& compiler_options = codegen->GetCompilerOptions();
 
-  auto is_class_in_current_image = [&]() {
-    return compiler_options.IsGeneratingImage() &&
-           compiler_options.IsImageClass(dex_file.GetTypeDescriptor(type_index));
+  auto is_class_in_current_image = [&]() REQUIRES_SHARED(Locks::mutator_lock_) {
+    if (!compiler_options.IsGeneratingImage() ||  klass == nullptr) {
+      return false;
+    }
+    auto [component_type, array_dim] =
+        klass->GetInnermostComponentTypeAndArrayDim<kDefaultVerifyFlags, kWithoutReadBarrier>();
+    if (component_type->IsPrimitive()) {
+      if (!compiler_options.IsBootImage()) {
+        return false;
+      }
+      // Primitive classes are attributed to the first boot class path dex file.
+      const DexFile* dex_file = compiler_options.GetDexFilesForOatFile().front();
+      std::string_view descriptor = component_type->GetPrimitiveDescriptorView();
+      return compiler_options.GetImageClasses().Contains(dex_file, descriptor, array_dim);
+    } else {
+      TypeReference type_ref(&component_type->GetDexFile(), component_type->GetDexTypeIndex());
+      return compiler_options.IsImageClass(type_ref, array_dim);
+    }
   };
 
   bool is_in_image = false;
@@ -246,8 +263,7 @@ HLoadClass::LoadKind HSharpening::ComputeLoadClassKind(
         DCHECK(compiler_options.IsBootImageExtension());
         is_in_image = true;
         desired_load_kind = HLoadClass::LoadKind::kBootImageRelRo;
-      } else if ((klass != nullptr) &&
-                 compiler_options.IsImageClass(dex_file.GetTypeDescriptor(type_index))) {
+      } else if (is_class_in_current_image()) {
         is_in_image = true;
         desired_load_kind = HLoadClass::LoadKind::kBootImageLinkTimePcRelative;
       } else {
@@ -327,8 +343,8 @@ static inline bool CanUseTypeCheckBitstring(ObjPtr<mirror::Class> klass, CodeGen
   if (compiler_options.IsJitCompiler()) {
     // If we're JITting, try to assign a type check bitstring (fall through).
   } else if (codegen->GetCompilerOptions().IsBootImage()) {
-    const char* descriptor = klass->GetDexFile().GetTypeDescriptor(klass->GetDexTypeIndex());
-    if (!codegen->GetCompilerOptions().IsImageClass(descriptor)) {
+    TypeReference type_ref(&klass->GetDexFile(), klass->GetDexTypeIndex());
+    if (!codegen->GetCompilerOptions().IsImageClass(type_ref)) {
       return false;
     }
     // If the target is a boot image class, try to assign a type check bitstring (fall through).
@@ -477,6 +493,9 @@ void HSharpening::ProcessLoadString(
       string = class_linker->LookupString(string_index, dex_cache.Get());
       if (string != nullptr && runtime->GetHeap()->ObjectIsInBootImageSpace(string)) {
         desired_load_kind = HLoadString::LoadKind::kBootImageRelRo;
+      } else if (com::android::art::flags::load_string_img_rel_ro() &&
+                 (com::android::art::flags::weak_const_string() || string != nullptr)) {
+        desired_load_kind = HLoadString::LoadKind::kAppImageRelRo;
       } else {
         desired_load_kind = HLoadString::LoadKind::kBssEntry;
       }

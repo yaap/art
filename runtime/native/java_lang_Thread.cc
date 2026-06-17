@@ -75,8 +75,8 @@ static void Thread_setCurrentThreadNative(JNIEnv* env, jclass, jobject java_thre
   soa.Self()->SetCurrentPeer(new_current_thread.Ptr());
 }
 
-static jboolean Thread_interrupted(JNIEnv* env, jclass) {
-  return static_cast<JNIEnvExt*>(env)->GetSelf()->Interrupted() ? JNI_TRUE : JNI_FALSE;
+static jboolean Thread_interrupted() {
+  return Thread::Current()->Interrupted() ? JNI_TRUE : JNI_FALSE;
 }
 
 static jboolean Thread_isInterrupted(JNIEnv* env, jobject java_thread) {
@@ -155,7 +155,7 @@ static jint Thread_nativeGetStatus(JNIEnv* env, jobject java_thread, jboolean ha
 }
 
 static jboolean Thread_holdsLock(JNIEnv* env, jclass, jobject java_object) {
-  ScopedObjectAccess soa(env);
+  ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Object> object = soa.Decode<mirror::Object>(java_object);
   if (object == nullptr) {
     ThrowNullPointerException("object == null");
@@ -256,25 +256,42 @@ static void Thread_yield0(JNIEnv*, jobject) { sched_yield(); }
 
 static void Thread_parkVirtualInternal(
     JNIEnv* env, jobject, jobject v_context, jobject parked_states, jobject vm_error) {
+  CHECK(kIsVirtualThreadEnabled);
   ScopedObjectAccess soa(env);
   PinningReason reason;
-  VirtualThreadPark(soa.Decode<mirror::Object>(v_context),
+  VirtualThreadPark(soa.Decode<mirror::VirtualThreadContext>(v_context),
                     soa.Decode<mirror::Object>(parked_states),
                     soa.Decode<mirror::Throwable>(vm_error),
                     /* is_continuation_api= */ false,
                     reason);
 }
 
+static jint Thread_acquireThinLockId(JNIEnv*, jobject) {
+  CHECK(kIsVirtualThreadEnabled);
+  ThreadList* thread_list = Runtime::Current()->GetThreadList();
+  uint32_t thread_id = thread_list->AllocThreadId(Thread::Current());
+  DCHECK_NE(thread_id, ThreadList::kInvalidThreadId);
+  thread_list->AllocVirtualThreadSuspendCount(thread_id);
+  return thread_id;
+}
+
+static void Thread_releaseThinLockId(JNIEnv*, jobject, jint thread_id) {
+  CHECK(kIsVirtualThreadEnabled);
+  ThreadList* thread_list = Runtime::Current()->GetThreadList();
+  thread_list->ReleaseVirtualThreadSuspendCount(thread_id);
+  thread_list->ReleaseThreadId(Thread::Current(), thread_id);
+}
+
 static JNINativeMethod gMethods[] = {
     FAST_NATIVE_METHOD(Thread, currentCarrierThread, "()Ljava/lang/Thread;"),
     FAST_NATIVE_METHOD(Thread, currentThread, "()Ljava/lang/Thread;"),
     FAST_NATIVE_METHOD(Thread, setCurrentThreadNative, "(Ljava/lang/Thread;)V"),
-    FAST_NATIVE_METHOD(Thread, interrupted, "()Z"),
+    CRITICAL_NATIVE_METHOD(Thread, interrupted, "()Z"),
     FAST_NATIVE_METHOD(Thread, isInterrupted, "()Z"),
     NATIVE_METHOD(Thread, nativeCreate, "(Ljava/lang/Thread;JZ)V"),
     NATIVE_METHOD(Thread, nativeGetStatus, "(Z)I"),
     CRITICAL_NATIVE_METHOD(Thread, nicenessForPriority, "(I)I"),
-    NATIVE_METHOD(Thread, holdsLock, "(Ljava/lang/Object;)Z"),
+    FAST_NATIVE_METHOD(Thread, holdsLock, "(Ljava/lang/Object;)Z"),
     FAST_NATIVE_METHOD(Thread, interrupt0, "()V"),
     CRITICAL_NATIVE_METHOD(Thread, priorityForNiceness, "(I)I"),
     NATIVE_METHOD(Thread, setNativeName, "(Ljava/lang/String;)V"),
@@ -286,6 +303,8 @@ static JNINativeMethod gMethods[] = {
                   parkVirtualInternal,
                   "(Ldalvik/system/VirtualThreadContext;Ldalvik/system/"
                   "VirtualThreadParkedStates;Ldalvik/system/VirtualThreadParkingError;)V"),
+    FAST_NATIVE_METHOD(Thread, acquireThinLockId, "()I"),
+    FAST_NATIVE_METHOD(Thread, releaseThinLockId, "(I)V"),
 };
 
 void register_java_lang_Thread(JNIEnv* env) {

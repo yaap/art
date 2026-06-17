@@ -69,7 +69,7 @@ ALWAYS_INLINE bool VerifyClasses(jobject class_loader, const StandardDexFile* de
 jobject RegisterDexFileAndGetClassLoader(Runtime* runtime, const StandardDexFile* dex_file);
 
 // Initialization for all fuzzers that need a Runtime.
-void FuzzerInitialize(CompilerCallbacks* callbacks);
+void FuzzerInitialize(CompilerCallbacks* callbacks, InstructionSet isa);
 
 // Cleans up memory after the iteration ran.
 ALWAYS_INLINE void IterationCleanup(jobject class_loader, const StandardDexFile* dex_file);
@@ -141,6 +141,15 @@ class FuzzerCompilerCallbacks final : public NoopCompilerCallbacks {
   std::set<ClassReference> rejected_classes_;
 };
 
+// Common code for several compiler's CompileClasses.
+// The compile_method_fn is called for each method that passes the filters.
+// Returns true if the compiler was called for this method; false otherwise.
+template <typename CompileMethodFn>
+ALWAYS_INLINE bool CompileClassesCommon(jobject class_loader,
+                                        const StandardDexFile* dex_file,
+                                        FuzzerCompilerCallbacks* callbacks,
+                                        CompileMethodFn compile_method_fn);
+
 // Compiles all classes within a DEX file. Returns true iff at least one method called the compiler.
 ALWAYS_INLINE bool CompileClasses(jobject class_loader,
                                   const StandardDexFile* dex_file,
@@ -148,16 +157,50 @@ ALWAYS_INLINE bool CompileClasses(jobject class_loader,
                                   FuzzerCompilerCallbacks* callbacks,
                                   bool debug_prints);
 
+// Compiles all classes within a DEX file using the fast compiler. Returns true iff at least one
+// method called the compiler.
+ALWAYS_INLINE bool CompileClassesFast(jobject class_loader,
+                                      const StandardDexFile* dex_file,
+                                      CompilerOptions* compiler_options,
+                                      FuzzerCompilerCallbacks* callbacks,
+                                      bool debug_prints);
+
 // Creates a compiler. As part of this, creates and sets `compiler_options`.
 Compiler* CreateCompiler(const CompilerOptions& compiler_options,
                          CompiledCodeStorage* storage);
-std::unique_ptr<CompilerOptions> CreateCompilerOptions(bool is_baseline);
+std::unique_ptr<CompilerOptions> CreateCompilerOptions(bool is_baseline, InstructionSet isa);
 
 // Common compiler fuzzer main logic.
+template <typename CompilerOrCompilerOptions, typename CompileFn>
+ALWAYS_INLINE int FuzzerTestOneInputCommon(
+    const uint8_t* data,
+    size_t size,
+    CompilerOrCompilerOptions* compiler_or_compiler_options,
+    FuzzerCompilerCallbacks* callbacks,
+    int* skipped_gc_iterations,
+    int max_skip_gc_iterations,
+    bool debug_prints,
+    std::vector<std::unique_ptr<uint8_t[]>>& data_to_delete,
+    std::vector<std::unique_ptr<StandardDexFile>>& dex_files_to_delete,
+    CompileFn compile_fn);
+
+// Baseline and Optimizing compilers
 ALWAYS_INLINE int CompilerFuzzerTestOneInput(
     const uint8_t* data,
     size_t size,
     Compiler* compiler,
+    FuzzerCompilerCallbacks* callbacks,
+    int* skipped_gc_iterations,
+    int max_skip_gc_iterations,
+    bool debug_prints,
+    std::vector<std::unique_ptr<uint8_t[]>>& data_to_delete,
+    std::vector<std::unique_ptr<StandardDexFile>>& dex_files_to_delete);
+
+// Fast compiler
+ALWAYS_INLINE int FastCompilerFuzzerTestOneInput(
+    const uint8_t* data,
+    size_t size,
+    CompilerOptions* compiler_options,
     FuzzerCompilerCallbacks* callbacks,
     int* skipped_gc_iterations,
     int max_skip_gc_iterations,

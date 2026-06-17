@@ -60,6 +60,7 @@ class LinkerPatch {
     kPublicTypeBssEntry,
     kPackageTypeBssEntry,
     kStringRelative,
+    kStringAppImageRelRo,
     kStringBssEntry,
     kMethodTypeBssEntry,
     kCallEntrypoint,
@@ -192,6 +193,16 @@ class LinkerPatch {
     return patch;
   }
 
+  static LinkerPatch StringAppImageRelRoPatch(size_t literal_offset,
+                                              const DexFile* target_dex_file,
+                                              uint32_t pc_insn_offset,
+                                              uint32_t target_string_idx) {
+    LinkerPatch patch(literal_offset, Type::kStringAppImageRelRo, target_dex_file);
+    patch.string_idx_ = target_string_idx;
+    patch.pc_insn_offset_ = pc_insn_offset;
+    return patch;
+  }
+
   static LinkerPatch StringBssEntryPatch(size_t literal_offset,
                                          const DexFile* target_dex_file,
                                          uint32_t pc_insn_offset,
@@ -273,6 +284,7 @@ class LinkerPatch {
 
   StringReference TargetString() const {
     DCHECK(patch_type_ == Type::kStringRelative ||
+           patch_type_ == Type::kStringAppImageRelRo ||
            patch_type_ == Type::kStringBssEntry);
     return StringReference(target_dex_file_, dex::StringIndex(string_idx_));
   }
@@ -295,6 +307,7 @@ class LinkerPatch {
            patch_type_ == Type::kPublicTypeBssEntry ||
            patch_type_ == Type::kPackageTypeBssEntry ||
            patch_type_ == Type::kStringRelative ||
+           patch_type_ == Type::kStringAppImageRelRo ||
            patch_type_ == Type::kStringBssEntry ||
            patch_type_ == Type::kMethodTypeBssEntry);
     return pc_insn_offset_;

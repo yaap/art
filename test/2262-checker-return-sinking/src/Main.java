@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+// TODO: Due to missing flagging support in checker, this checker test is currently
+// doing "before" checks in `control_flow_simplifier (before)` and "after" checks in
+//  when the `code_sinking (after)`. When we implement flagging support or clean up
+// `com::android::art::rw::flags::packed_switch_simplification()`, tighten the checks.
 public class Main {
     public static void main(String[] args) {
         // Switch case.
@@ -35,7 +39,7 @@ public class Main {
         $noinline$testSinkReturnVoidSeparatedReturns(1);
     }
 
-    /// CHECK-START: java.lang.String Main.$noinline$testSinkReturnSwitch(int) code_sinking (before)
+    /// CHECK-START: java.lang.String Main.$noinline$testSinkReturnSwitch(int) control_flow_simplifier (before)
     /// CHECK:     Return
     /// CHECK:     Return
     /// CHECK:     Return
@@ -55,7 +59,7 @@ public class Main {
         }
     }
 
-    /// CHECK-START: void Main.$noinline$testSinkReturnVoidSwitch(int) code_sinking (before)
+    /// CHECK-START: void Main.$noinline$testSinkReturnVoidSwitch(int) control_flow_simplifier (before)
     /// CHECK:     ReturnVoid
     /// CHECK:     ReturnVoid
     /// CHECK:     ReturnVoid
@@ -78,7 +82,7 @@ public class Main {
         }
     }
 
-    /// CHECK-START: java.lang.String Main.$noinline$testSinkReturnIfElse(int) code_sinking (before)
+    /// CHECK-START: java.lang.String Main.$noinline$testSinkReturnIfElse(int) control_flow_simplifier (before)
     /// CHECK:     Return
     /// CHECK:     Return
     /// CHECK:     Return
@@ -97,7 +101,7 @@ public class Main {
         }
     }
 
-    /// CHECK-START: void Main.$noinline$testSinkReturnVoidIfElse(int) code_sinking (before)
+    /// CHECK-START: void Main.$noinline$testSinkReturnVoidIfElse(int) control_flow_simplifier (before)
     /// CHECK:     ReturnVoid
     /// CHECK:     ReturnVoid
     /// CHECK:     ReturnVoid
@@ -119,7 +123,7 @@ public class Main {
         }
     }
 
-    /// CHECK-START: java.lang.String Main.$noinline$testSinkReturnSeparatedReturns(int) code_sinking (before)
+    /// CHECK-START: java.lang.String Main.$noinline$testSinkReturnSeparatedReturns(int) control_flow_simplifier (before)
     /// CHECK:     Return
     /// CHECK:     Return
     /// CHECK:     Return
@@ -142,7 +146,7 @@ public class Main {
         return "default";
     }
 
-    /// CHECK-START: void Main.$noinline$testSinkReturnVoidSeparatedReturns(int) code_sinking (before)
+    /// CHECK-START: void Main.$noinline$testSinkReturnVoidSeparatedReturns(int) control_flow_simplifier (before)
     /// CHECK:     ReturnVoid
     /// CHECK:     ReturnVoid
     /// CHECK:     ReturnVoid

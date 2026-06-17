@@ -59,8 +59,20 @@ inline uintptr_t MarkCompact::LiveWordsBitmap<kAlignment>::SetLiveWords(uintptr_
     // overhead of a function call for this, highly likely (as most of the objects
     // are small), case.
     if (diff > 1) {
+      for (uintptr_t* check_begin = begin_bm_address + 1; check_begin < end_bm_address;
+           check_begin++) {
+        DCHECK_EQ(*check_begin, static_cast<uintptr_t>(0))
+            << " size:" << size << " begin:" << std::hex << begin << " check_begin:" << check_begin
+            << " begin-addr:" << begin_bm_address << " end-addr:" << end_bm_address;
+      }
       // Set all intermediate bits to 1.
       std::memset(static_cast<void*>(begin_bm_address + 1), 0xff, (diff - 1) * sizeof(uintptr_t));
+      for (uintptr_t* check_begin = begin_bm_address + 1; check_begin < end_bm_address;
+           check_begin++) {
+        DCHECK_EQ(*check_begin, static_cast<uintptr_t>(~0))
+            << " size:" << size << " begin:" << std::hex << begin << " check_begin:" << check_begin
+            << " begin-addr:" << begin_bm_address << " end-addr:" << end_bm_address;
+      }
     }
   }
   uintptr_t end_mask = Bitmap::BitIndexToMask(end_bit_idx);
@@ -254,19 +266,15 @@ inline bool MarkCompact::VerifyRootSingleUpdate(void* root,
   // it difficult to recognize and prevent stack pointers from being checked.
   // So skip using double-root update detection on ASANs.
   if (kIsDebugBuild && !kMemoryToolIsAvailable && !kHwAsanEnabled) {
-    void* stack_low_addr = stack_low_addr_;
-    void* stack_high_addr = stack_high_addr_;
     if (!HasAddress(old_ref)) {
       return false;
     }
     Thread* self = Thread::Current();
-    if (UNLIKELY(stack_low_addr == nullptr)) {
-      // TODO(Simulator): Test that this should not operate on the simulated stack when the
-      // simulator supports mark compact.
-      stack_low_addr = self->GetStackEnd<kNativeStackType>();
-      stack_high_addr = reinterpret_cast<char*>(stack_low_addr)
-                        + self->GetUsableStackSize<kNativeStackType>();
-    }
+    // TODO(Simulator): Test that this should not operate on the simulated stack when the
+    // simulator supports mark compact.
+    void* stack_low_addr = self->FindStackTop<kNativeStackType>();
+    void* stack_high_addr =
+        self->GetStackEnd<kNativeStackType>() + self->GetUsableStackSize<kNativeStackType>();
     if (std::less<void*>{}(root, stack_low_addr) || std::greater<void*>{}(root, stack_high_addr)) {
       bool inserted;
       {
@@ -277,6 +285,7 @@ inline bool MarkCompact::VerifyRootSingleUpdate(void* root,
         std::ostringstream oss;
         heap_->DumpSpaces(oss);
         MemMap::DumpMaps(oss, /* terse= */ true);
+        PrintFileToLog("/proc/self/maps", LogSeverity::FATAL_WITHOUT_ABORT);
         CHECK(inserted) << "root=" << root << " old_ref=" << old_ref
                         << " stack_low_addr=" << stack_low_addr
                         << " stack_high_addr=" << stack_high_addr << " maps\n"

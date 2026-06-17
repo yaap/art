@@ -83,7 +83,7 @@ public class AhatBitmapInstance extends AhatClassInstance implements Comparable<
    * @param instances all the instances from where the bitmap dump data will be excluded
    * @return true if valid bitmap dump data is found, false if not
    */
-  public static BitmapDumpData findBitmapDumpData(SuperRoot root, Instances<AhatInstance> instances) {
+  static BitmapDumpData findBitmapDumpData(SuperRoot root, Instances<AhatInstance> instances) {
     final BitmapDumpData result;
     AhatClassObj cls = null;
 
@@ -198,7 +198,7 @@ public class AhatBitmapInstance extends AhatClassInstance implements Comparable<
     private final byte[] buffer;
     private final int bufferHash;
 
-    public BitmapInfo(int width, int height, int format, byte[] buffer) {
+    BitmapInfo(int width, int height, int format, byte[] buffer) {
       this.width = width;
       this.height = height;
       this.format = format;
@@ -366,7 +366,7 @@ public class AhatBitmapInstance extends AhatClassInstance implements Comparable<
       return null;
     }
 
-    /**
+    /*
      * See android.graphics.Bitmap.CompressFormat for definitions
      * -1 for legacy objects with content in `Bitmap.mBuffer`
      */

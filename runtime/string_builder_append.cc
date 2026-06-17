@@ -289,12 +289,13 @@ int32_t StringBuilderAppend::Builder::ConvertFpArgs() {
       if (UNLIKELY(converter == nullptr)) {
         return -1;
       }
-      ArtField* btab_buffer_field =
-          WellKnownClasses::jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_buffer;
       int32_t length;
-      if (converter->GetClass() == btab_buffer_field->GetDeclaringClass()) {
+      if (converter->GetClass() ==
+            WellKnownClasses::jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer.Get()) {
         // Call `converter.getChars(converter.buffer)`.
         StackHandleScope<1u> hs2(hs_.Self());
+        ArtField* btab_buffer_field =
+            WellKnownClasses::jdk_internal_math_FloatingDecimal_BinaryToASCIIBuffer_buffer;
         Handle<mirror::CharArray> buffer =
             hs2.NewHandle(btab_buffer_field->GetObj<mirror::CharArray>(converter));
         DCHECK(buffer != nullptr);
@@ -310,9 +311,11 @@ int32_t StringBuilderAppend::Builder::ConvertFpArgs() {
         DCHECK(mirror::String::AllASCII(buffer->GetData(), length));
         std::copy_n(buffer->GetData(), length, converted_fp_args_[fp_arg_index]);
       } else {
+        DCHECK(converter->GetClass() ==
+            WellKnownClasses::jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer
+                .Get());
         ArtField* ebtab_image_field = WellKnownClasses::
             jdk_internal_math_FloatingDecimal_ExceptionalBinaryToASCIIBuffer_image;
-        DCHECK(converter->GetClass() == ebtab_image_field->GetDeclaringClass());
         ObjPtr<mirror::String> converted = ebtab_image_field->GetObj<mirror::String>(converter);
         DCHECK(converted != nullptr);
         length = converted->GetLength();

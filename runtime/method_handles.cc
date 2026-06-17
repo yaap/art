@@ -407,7 +407,6 @@ static inline bool MethodHandleInvokeTransform(Thread* self,
 
   PerformCall(self,
               accessor,
-              shadow_frame.GetMethod(),
               0 /* first destination register */,
               new_shadow_frame,
               result,
@@ -798,7 +797,6 @@ static bool DoMethodHandleInvokeMethod(Thread* self,
 
   PerformCall(self,
               accessor,
-              shadow_frame.GetMethod(),
               first_dest_reg,
               new_shadow_frame,
               result,
@@ -932,8 +930,8 @@ void MethodHandleInvokeExactWithFrame(Thread* self,
   self->EndAssertNoThreadSuspension(old_cause);
 
   ManagedStack fragment;
-  self->PushManagedStackFragment(&fragment);
-  self->PushShadowFrame(shadow_frame.get());
+  ScopedManagedStackFragment smsf(self, &fragment);
+  ScopedShadowFrame pusher(self, shadow_frame.get());
 
   JValue result;
   RangeInstructionOperands operands(0, num_vregs);
@@ -947,9 +945,6 @@ void MethodHandleInvokeExactWithFrame(Thread* self,
   if (success) {
     emulated_frame->SetReturnValue(self, result);
   }
-
-  self->PopShadowFrame();
-  self->PopManagedStackFragment(fragment);
 }
 
 }  // namespace art

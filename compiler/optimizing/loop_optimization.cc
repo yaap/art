@@ -538,12 +538,30 @@ HLoopOptimization::HLoopOptimization(HGraph* graph,
       vector_header_(nullptr),
       vector_body_(nullptr),
       vector_index_(nullptr),
-      arch_loop_helper_(ArchNoOptsLoopHelper::Create(codegen, global_allocator_)) {}
+      arch_loop_helper_(ArchNoOptsLoopHelper::Create(codegen, global_allocator_)),
+      codegen_(codegen) {}
 
 bool HLoopOptimization::Run() {
-  // Skip if there is no loop or the graph has irreducible loops.
-  // TODO: make this less of a sledgehammer.
-  if (!graph_->HasLoops() || graph_->HasIrreducibleLoops()) {
+  // Skip if there is no loop or the graph only has irreducible loops.
+  if (!graph_->HasLoops()) {
+    return false;
+  }
+
+  // Check if all loop are irreducible first. This lets us avoid linearizing the graph when it is
+  // not needed.
+  bool all_irreducible_loops = true;
+  for (HBasicBlock* block : graph_->GetReversePostOrderSkipEntryBlock()) {
+    if (block->IsLoopHeader()) {
+      HLoopInformation* loop_info = block->GetLoopInformation();
+      if (!loop_info->ContainsIrreducibleLoop()) {
+        all_irreducible_loops = false;
+        break;
+      }
+    }
+  }
+
+  if (all_irreducible_loops) {
+    // All irreducible loops, nothing to do.
     return false;
   }
 
@@ -553,8 +571,10 @@ bool HLoopOptimization::Run() {
 
   // Perform loop optimizations.
   const bool did_loop_opt = LocalRun();
-  if (top_loop_ == nullptr) {
-    graph_->SetHasLoops(false);  // no more loops
+  // Check if we got rid of all the loops. Note that we skipped irreducible loops so those won't be
+  // eliminated by this pass.
+  if (top_loop_ == nullptr && !graph_->HasIrreducibleLoops()) {
+    graph_->SetHasLoops(false);
   }
 
   // Detach allocator.
@@ -576,6 +596,11 @@ bool HLoopOptimization::LocalRun() {
   // Build the loop hierarchy.
   for (HBasicBlock* block : linear_order) {
     if (block->IsLoopHeader()) {
+      HLoopInformation* loop_info = block->GetLoopInformation();
+      // Skip loops that contain irreducible loops
+      if (loop_info->ContainsIrreducibleLoop()) {
+        continue;
+      }
       AddLoop(block->GetLoopInformation());
     }
   }
@@ -585,8 +610,8 @@ bool HLoopOptimization::LocalRun() {
   // temporary data structures using the phase-local allocator. All new HIR
   // should use the global allocator.
   ScopedArenaSet<HInstruction*> iset(loop_allocator_->Adapter(kArenaAllocLoopOptimization));
-  ScopedArenaSafeMap<HInstruction*, HInstruction*> reds(
-      std::less<HInstruction*>(), loop_allocator_->Adapter(kArenaAllocLoopOptimization));
+  ScopedArenaSafeMap<HInstruction*, HInstruction*, HInstructionIdComparator> reds(
+      loop_allocator_->Adapter(kArenaAllocLoopOptimization));
   ScopedArenaSet<ArrayReference> refs(loop_allocator_->Adapter(kArenaAllocLoopOptimization));
   ScopedArenaSafeMap<HInstruction*, HInstruction*> map(
       std::less<HInstruction*>(), loop_allocator_->Adapter(kArenaAllocLoopOptimization));
@@ -1097,7 +1122,7 @@ bool HLoopOptimization::TryLoopScalarOpts(LoopNode* node) {
   }
 
   LoopAnalysisInfo analysis_info(loop_info);
-  LoopAnalysis::CalculateLoopBasicProperties(loop_info, &analysis_info, trip_count);
+  LoopAnalysis::CalculateLoopBasicProperties(loop_info, &analysis_info, trip_count, codegen_);
   if (analysis_info.HasInstructionsPreventingScalarOpts() ||
       arch_loop_helper_->IsLoopNonBeneficialForScalarOpts(&analysis_info)) {
     return false;
@@ -1512,6 +1537,23 @@ void HLoopOptimization::VectorizeTraditional(LoopNode* node,
                                        LoopAnalysisInfo::kNoUnrollingFactor);
   }
 
+// TODO: Refactor to avoid arch-specific details here
+//       Since we have to add arch-specific instruction here, need arch defined macro.
+//       May be separate arch_loop_helper implementations into loop_analysis_arch.cc,
+//       instead of a shared file like loop_analysis.cc
+#if defined(ART_ENABLE_CODEGEN_x86_64)
+  if (arch_loop_helper_->NeedsVectorRegisterClear()) {
+    // No more BB are inserted at the exit of vloop
+    // Add the HX86Clear at the exit of the vloop
+    // This is required for X86 when switching out of AVX2 context
+    HBasicBlock* vloop_header = preheader_for_vector_loop->GetSingleSuccessor();
+    DCHECK(vloop_header != nullptr);
+    HBasicBlock* vloop_exit = vloop_header->GetSuccessors()[0];
+    vloop_exit->InsertInstructionBefore(new (global_allocator_) HX86Clear(),
+                                        vloop_exit->GetLastInstruction());
+  }
+#endif
+
   FinalizeVectorization(node);
 }
 
@@ -1916,7 +1958,9 @@ bool HLoopOptimization::VectorizeUse(LoopNode* node,
              instruction->IsAnd() || instruction->IsOr()  || instruction->IsXor()) {
     // Deal with vector restrictions.
     if ((instruction->IsMul() && HasVectorRestrictions(restrictions, kNoMul)) ||
-        (instruction->IsDiv() && HasVectorRestrictions(restrictions, kNoDiv))) {
+        (instruction->IsDiv() && HasVectorRestrictions(restrictions, kNoDiv)) ||
+        (instruction->IsAdd() && HasVectorRestrictions(restrictions, kNoAdd)) ||
+        (instruction->IsSub() && HasVectorRestrictions(restrictions, kNoSub))) {
       return false;
     }
     // Accept binary operator for vectorizable operands.
@@ -2014,6 +2058,8 @@ bool HLoopOptimization::TrySetVectorType(DataType::Type type, uint64_t* restrict
       *restrictions |= kNoIfCond;
       switch (type) {
         case DataType::Type::kBool:
+          *restrictions |= kNoAdd | kNoSub;
+          FALLTHROUGH_INTENDED;
         case DataType::Type::kUint8:
         case DataType::Type::kInt8:
           *restrictions |= kNoDiv | kNoReduction | kNoDotProd;
@@ -2041,7 +2087,9 @@ bool HLoopOptimization::TrySetVectorType(DataType::Type type, uint64_t* restrict
                              kNoUnsignedHAdd |
                              kNoUnroundedHAdd |
                              kNoSAD |
-                             kNoIfCond;
+                             kNoIfCond |
+                             kNoAdd |
+                             kNoSub;
             return TrySetVectorLength(type, vector_length);
           case DataType::Type::kUint8:
           case DataType::Type::kInt8:
@@ -2083,6 +2131,8 @@ bool HLoopOptimization::TrySetVectorType(DataType::Type type, uint64_t* restrict
         *restrictions |= kNoIfCond;
         switch (type) {
           case DataType::Type::kBool:
+            *restrictions |= kNoAdd | kNoSub;
+            FALLTHROUGH_INTENDED;
           case DataType::Type::kUint8:
           case DataType::Type::kInt8:
             *restrictions |= kNoDiv;
@@ -2113,8 +2163,11 @@ bool HLoopOptimization::TrySetVectorType(DataType::Type type, uint64_t* restrict
       // Allow vectorization for SSE4.1-enabled X86 devices only (128-bit SIMD).
       *restrictions |= kNoIfCond;
       if (features->AsX86InstructionSetFeatures()->HasSSE4_1()) {
+        bool is_supported_type = true;
         switch (type) {
           case DataType::Type::kBool:
+            *restrictions |= kNoAdd | kNoSub;
+            FALLTHROUGH_INTENDED;
           case DataType::Type::kUint8:
           case DataType::Type::kInt8:
             *restrictions |= kNoMul |
@@ -2125,7 +2178,7 @@ bool HLoopOptimization::TrySetVectorType(DataType::Type type, uint64_t* restrict
                              kNoUnroundedHAdd |
                              kNoSAD |
                              kNoDotProd;
-            return TrySetVectorLength(type, 16);
+            break;
           case DataType::Type::kUint16:
             *restrictions |= kNoDiv |
                              kNoAbs |
@@ -2133,29 +2186,38 @@ bool HLoopOptimization::TrySetVectorType(DataType::Type type, uint64_t* restrict
                              kNoUnroundedHAdd |
                              kNoSAD |
                              kNoDotProd;
-            return TrySetVectorLength(type, 8);
+            break;
           case DataType::Type::kInt16:
             *restrictions |= kNoDiv |
                              kNoAbs |
                              kNoSignedHAdd |
                              kNoUnroundedHAdd |
                              kNoSAD;
-            return TrySetVectorLength(type, 8);
+            break;
           case DataType::Type::kInt32:
             *restrictions |= kNoDiv | kNoSAD;
-            return TrySetVectorLength(type, 4);
+            break;
           case DataType::Type::kInt64:
             *restrictions |= kNoMul | kNoDiv | kNoShr | kNoAbs | kNoSAD;
-            return TrySetVectorLength(type, 2);
+            break;
           case DataType::Type::kFloat32:
             *restrictions |= kNoReduction;
-            return TrySetVectorLength(type, 4);
+            break;
           case DataType::Type::kFloat64:
             *restrictions |= kNoReduction;
-            return TrySetVectorLength(type, 2);
+            break;
           default:
+            is_supported_type = false;
             break;
         }  // switch type
+        if (is_supported_type) {
+          // Remove ABS restriction for 64-bit
+          if (compiler_options_->GetInstructionSet() == InstructionSet::kX86_64) {
+            *restrictions &= ~kNoAbs;
+          }
+          DCHECK_EQ(simd_register_size_ % DataType::Size(type), 0U);
+          return TrySetVectorLength(type, simd_register_size_ / DataType::Size(type));
+        }
       }
       return false;
     default:
@@ -2164,7 +2226,8 @@ bool HLoopOptimization::TrySetVectorType(DataType::Type type, uint64_t* restrict
 }
 
 bool HLoopOptimization::TrySetVectorLengthImpl(uint32_t length) {
-  DCHECK(IsPowerOfTwo(length) && length >= 2u);
+  DCHECK_GE(length, 2u);
+  DCHECK(IsPowerOfTwo(length));
   // First time set?
   if (vector_length_ == 0) {
     vector_length_ = length;

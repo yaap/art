@@ -23,9 +23,11 @@
 
 #include "arch/instruction_set.h"
 #include "base/macros.h"
-#include "offsets.h"
+#include "base/offsets.h"
 
 namespace art HIDDEN {
+
+class InstructionSetFeatures;
 
 enum EntryPointCallingConvention {
   // ABI of calls to a method's native code, only used for native methods.
@@ -36,9 +38,15 @@ enum EntryPointCallingConvention {
 
 // Create code that will invoke the function held in thread local storage.
 EXPORT std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline32(
-    InstructionSet isa, EntryPointCallingConvention abi, ThreadOffset32 entry_point_offset);
+    InstructionSet isa,
+    const InstructionSetFeatures* features,
+    EntryPointCallingConvention abi,
+    ThreadOffset32 entry_point_offset);
 EXPORT std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline64(
-    InstructionSet isa, EntryPointCallingConvention abi, ThreadOffset64 entry_point_offset);
+    InstructionSet isa,
+    const InstructionSetFeatures* features,
+    EntryPointCallingConvention abi,
+    ThreadOffset64 entry_point_offset);
 
 }  // namespace art
 

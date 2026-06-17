@@ -100,6 +100,10 @@ cc_defaults {
         acknowledgement: [
             "Santiago Aboy Solanes of Google",
         ],
+        vector: "local_no_privileges_required",
+        service_privilege: "constrained",
+        users: "single_user",
+        fuzzed_code_usage: "shipped",
     },
 }
 
@@ -211,7 +215,7 @@ cc_fuzz {
     // Can not be in defaults due to soong limitations.
     device_common_corpus: [
         ":art_runtest_corpus",
-        "class-verifier-corpus/*",
+        "optimized-compiler-corpus/*",
     ],
 }
 
@@ -225,7 +229,7 @@ cc_fuzz {
     // Can not be in defaults due to soong limitations.
     device_common_corpus: [
         ":art_runtest_corpus",
-        "class-verifier-corpus/*",
+        "optimized-compiler-corpus/*",
     ],
 }
 
@@ -240,7 +244,7 @@ cc_fuzz {
     // Can not be in defaults due to soong limitations.
     device_common_corpus: [
         ":art_runtest_corpus",
-        "class-verifier-corpus/*",
+        "baseline-compiler-corpus/*",
     ],
 }
 
@@ -254,7 +258,36 @@ cc_fuzz {
     // Can not be in defaults due to soong limitations.
     device_common_corpus: [
         ":art_runtest_corpus",
-        "class-verifier-corpus/*",
+        "baseline-compiler-corpus/*",
+    ],
+}
+
+// Fast fuzzer
+cc_fuzz {
+    name: "libart_fast_compiler_fuzzer",
+    srcs: ["libart_fast_compiler_fuzzer.cc"],
+    defaults: [
+        "libart_fuzzer-defaults",
+        "fuzzer-creating-runtime-defaults",
+    ],
+    // Can not be in defaults due to soong limitations.
+    device_common_corpus: [
+        ":art_runtest_corpus",
+        "fast-compiler-corpus/*",
+    ],
+}
+
+cc_fuzz {
+    name: "libart_fast_compiler_fuzzerd",
+    srcs: ["libart_fast_compiler_fuzzer.cc"],
+    defaults: [
+        "libart_fuzzerd-defaults",
+        "fuzzer-creating-runtime-defaults",
+    ],
+    // Can not be in defaults due to soong limitations.
+    device_common_corpus: [
+        ":art_runtest_corpus",
+        "fast-compiler-corpus/*",
     ],
 }
 
@@ -426,6 +459,7 @@ java_genrule {
         "host_009-instanceof_classes.dex",
         "host_010-instance_classes.dex",
         "host_011-array-copy_classes.dex",
+        "host_011-array-copy2_classes.dex",
         "host_012-math_classes.dex",
         "host_013-math2_classes.dex",
         "host_014-math3_classes.dex",
@@ -471,6 +505,7 @@ java_genrule {
         "host_054-uncaught_classes.dex",
         "host_055-enum-performance_classes.dex",
         "host_056-const-string-jumbo_classes.dex",
+        "host_057-math-intrinsics_classes.dex",
         "host_058-enum-order_classes.dex",
         "host_059-finalizer-throw_classes.dex",
         "host_061-out-of-memory_classes.dex",
@@ -628,6 +663,8 @@ java_genrule {
         "host_180-native-default-method_classes.dex",
         "host_181-default-methods_classes.dex",
         "host_182-method-linking_classes.dex",
+        "host_183-rmw-stress-test_classes.dex",
+        "host_184-dex2oat-dlc_classes.dex",
         "host_1900-track-alloc_classes.dex",
         "host_1901-get-bytecodes_classes.dex",
         "host_1902-suspend_classes.dex",
@@ -813,6 +850,7 @@ java_genrule {
         "host_2244-checker-remove-try-boundary_classes.dex",
         "host_2245-checker-smali-instance-of-comparison_classes.dex",
         "host_2246-trace-stream_classes.dex",
+        "host_2246-trace-v2_classes.dex",
         "host_2247-checker-write-barrier-elimination_classes.dex",
         "host_2248-checker-smali-remove-try-until-the-end_classes.dex",
         "host_2249-checker-return-try-boundary-exit-in-loop_classes.dex",
@@ -835,7 +873,49 @@ java_genrule {
         "host_2263-method-trace-jit_classes.dex",
         "host_2264-throwing-systemcleaner_classes.dex",
         "host_2265-checker-select-binary-unary_classes.dex",
+        "host_2265-const-method-type-cached_classes.dex",
+        "host_2266-checker-remove-empty-ifs_classes.dex",
         "host_2267-class-implements-itself_classes.dex",
+        "host_2268-checker-remove-dead-phis_classes.dex",
+        "host_2269-checker-constant-folding-intrinsics_classes.dex",
+        "host_2271-profile-inline-cache_classes.dex",
+        "host_2272-checker-codegen-honor-write-barrier-kind_classes.dex",
+        "host_2273-checker-unreachable-intrinsics_classes.dex",
+        "host_2274-checker-bitwise-gvn_classes.dex",
+        "host_2275-checker-empty-loops_classes.dex",
+        "host_2275-integral-unsigned-arithmetic_classes.dex",
+        "host_2275-pthread-name_classes.dex",
+        "host_2276-const-method-type-gc-cleanup_classes.dex",
+        "host_2277-methodhandle-invokeexact_classes.dex",
+        "host_2278-nested-loops_classes.dex",
+        "host_2279-aconfig-flags_classes.dex",
+        "host_2279-second-inner-loop-references-first_classes.dex",
+        "host_2280-const-method-handle-validation_classes.dex",
+        "host_2281-method-handle-invoke-static-class-unload_classes.dex",
+        "host_2282-checker-always-throws-try-catch_classes.dex",
+        "host_2282-single-step-before-catch_classes.dex",
+        "host_2283-checker-remove-null-check_classes.dex",
+        "host_2284-regression-test-368984521-loop-opt_classes.dex",
+        "host_2285-var-and-methodhandles-staticfield-initialization_classes.dex",
+        "host_2286-invokevirtual-invokeexact_classes.dex",
+        "host_2286-method-tracing-aot-code_classes.dex",
+        "host_2287-no-temp-component-class_classes.dex",
+        "host_2288-checker-smali-string-builder-wrong-init_classes.dex",
+        "host_2289-smali-invalid-rti_classes.dex",
+        "host_2291-checker-no-inline-always-throwing-method_classes.dex",
+        "host_2292-checker-smali-peek-poke-truncation_classes.dex",
+        "host_2293-string-init-unresolved-type_classes.dex",
+        "host_2390-virtual-thread-carrier-leak_classes.dex",
+        "host_2390-virtual-thread-context-leak_classes.dex",
+        "host_2390-virtual-thread-parking-error-leak_classes.dex",
+        "host_2391-virtual-thread-sleeps_classes.dex",
+        "host_2392-virtual-thread-pinning-jni_classes.dex",
+        "host_2393-virtual-thread-pinning-monitor_classes.dex",
+        "host_2394-continuation-yields_classes.dex",
+        "host_2395-virtual-thread-reentrantlock_classes.dex",
+        "host_2395-virtual-thread-sleep-api_classes.dex",
+        "host_2396-unmodifiable-final-fields_classes.dex",
+        "host_2397-array-verification-edge-cases_classes.dex",
         "host_300-package-override_classes.dex",
         "host_301-abstract-protected_classes.dex",
         "host_302-float-conversion_classes.dex",
@@ -910,6 +990,8 @@ java_genrule {
         "host_456-baseline-array-set_classes.dex",
         "host_457-regs_classes.dex",
         "host_458-checker-instruct-simplification_classes.dex",
+        "host_458-checker-riscv64-bit-manipulations_classes.dex",
+        "host_458-checker-riscv64-shift-add_classes.dex",
         "host_458-long-to-fpu_classes.dex",
         "host_459-dead-phi_classes.dex",
         "host_460-multiple-returns3_classes.dex",
@@ -1197,6 +1279,7 @@ java_genrule {
         "host_638-checker-inline-cache-intrinsic_classes.dex",
         "host_638-checker-inline-caches_classes.dex",
         "host_638-checker-inline-caches_classes2.dex",
+        "host_638-no-file-name_classes.dex",
         "host_638-no-line-number_classes.dex",
         "host_639-checker-code-sinking_classes.dex",
         "host_640-checker-boolean-simd_classes.dex",
@@ -1224,6 +1307,7 @@ java_genrule {
         "host_656-annotation-lookup-generic-jni_classes-ex.dex",
         "host_656-annotation-lookup-generic-jni_classes.dex",
         "host_656-checker-simd-opt_classes.dex",
+        "host_656-checker-simd-opt-no-interp-ac_classes.dex",
         "host_656-loop-deopt_classes.dex",
         "host_657-branches_classes.dex",
         "host_658-fp-read-barrier_classes.dex",
@@ -1322,6 +1406,15 @@ java_genrule {
         "host_730-cha-deopt_classes.dex",
         "host_730-checker-inlining-super_classes.dex",
         "host_731-bounds-check-slow-path_classes.dex",
+        "host_732-checker-app-image_classes.dex",
+        "host_733-icce_classes.dex",
+        "host_733-priority-mappings_classes.dex",
+        "host_734-duplicate-fields_classes.dex",
+        "host_735-checker-condition-merging_classes.dex",
+        "host_735-interface-clone_classes.dex",
+        "host_736-interface-super-Object_classes.dex",
+        "host_737-checker-arm-arm64-simplify_classes.dex",
+        "host_738-jit-const-string_classes.dex",
         "host_800-smali_classes.dex",
         "host_801-VoidCheckCast_classes.dex",
         "host_802-deoptimization_classes.dex",
@@ -1382,6 +1475,25 @@ java_genrule {
         "host_848-pattern-match_classes.dex",
         "host_849-records_classes.dex",
         "host_850-checker-branches_classes.dex",
+        "host_851-null-instanceof_classes.dex",
+        "host_852-invoke-super_classes.dex",
+        "host_853-checker-inlining_classes.dex",
+        "host_854-image-inlining_classes.dex",
+        "host_855-native_classes.dex",
+        "host_856-clone_classes.dex",
+        "host_857-default-access_classes.dex",
+        "host_858-checker-unsafe_classes.dex",
+        "host_859-checker-var-handles-intrinsics_classes.dex",
+        "host_860-vdex-failure_classes.dex",
+        "host_861-crc_classes.dex",
+        "host_862-range_classes.dex",
+        "host_863-serialization_classes.dex",
+        "host_864-catch_classes.dex",
+        "host_864-move-object_classes.dex",
+        "host_865-fallthrough_classes.dex",
+        "host_866-fast_classes.dex",
+        "host_867-backwards-catch_classes.dex",
+        "host_868-unresolved-method-type_classes.dex",
         "host_900-hello-plugin_classes.dex",
         "host_901-hello-ti-agent_classes.dex",
         "host_902-hello-transformation_classes.dex",
@@ -1535,5 +1647,16 @@ genrule {
         "$(location soong_zip) -j -L 0 -o $(out) -D $$(dirname $${FILES[0]})",
     srcs: ["baseline-compiler-corpus/*"],
     out: ["baseline_compiler_fuzzer_corpus.zip"],
+    tools: ["soong_zip"],
+}
+
+genrule {
+    name: "art-gtest-jars-FastCompilerFuzzerFolder",
+    // Zip the fast-compiler-corpus folder. To get the folder, we grab the first file
+    // from `in` and use its directory.
+    cmd: "FILES=($(in)) &&" +
+        "$(location soong_zip) -j -L 0 -o $(out) -D $$(dirname $${FILES[0]})",
+    srcs: ["fast-compiler-corpus/*"],
+    out: ["fast_compiler_fuzzer_corpus.zip"],
     tools: ["soong_zip"],
 }

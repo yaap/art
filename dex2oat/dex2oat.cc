@@ -79,6 +79,7 @@
 #include "driver/compiler_driver.h"
 #include "driver/compiler_options.h"
 #include "driver/compiler_options_map-inl.h"
+#include "driver/image_class_map-inl.h"
 #include "gc/space/image_space.h"
 #include "gc/space/space-inl.h"
 #include "gc/verification.h"
@@ -873,9 +874,8 @@ class Dex2Oat final {
     }
 
 #ifdef ART_USE_RESTRICTED_MODE
-    // TODO(Simulator): support signal handling and implicit checks.
+    // TODO(Simulator): support implicit suspend checks.
     compiler_options_->implicit_suspend_checks_ = false;
-    compiler_options_->implicit_null_checks_ = false;
 #endif  // ART_USE_RESTRICTED_MODE
 
     // Done with usage checks, enable watchdog if requested
@@ -1325,6 +1325,7 @@ class Dex2Oat final {
         } else {
           std::string error_msg;
           input_vdex_file_ = VdexFile::Open(input_vdex_fd_,
+                                            /*start=*/0,
                                             s.st_size,
                                             "vdex",
                                             /*low_4gb=*/false,
@@ -1381,7 +1382,7 @@ class Dex2Oat final {
     if (dm_file_ != nullptr) {
       if (input_vdex_file_ == nullptr) {
         std::string error_msg;
-        input_vdex_file_ = VdexFile::OpenFromDm(dm_file_location_, *dm_file_, &error_msg);
+        input_vdex_file_ = VdexFile::OpenFromDm(*dm_file_, dm_file_location_, &error_msg);
         if (input_vdex_file_ != nullptr) {
           VLOG(verifier) << "Doing fast verification with vdex from DexMetadata archive";
         } else {
@@ -1426,18 +1427,55 @@ class Dex2Oat final {
     }
   }
 
-  void LoadImageClassDescriptors() {
+  void LoadImageClasses() {
     if (!IsImage()) {
       return;
     }
-    HashSet<std::string> image_classes;
+    ImageClassMap image_classes;
     if (DoProfileGuidedOptimizations()) {
-      // TODO: The following comment looks outdated or misplaced.
-      // Filter out class path classes since we don't want to include these in the image.
-      image_classes = profile_compilation_info_->GetClassDescriptors(
-          compiler_options_->dex_files_for_oat_file_);
+      const char* unexpected_descriptor = nullptr;
+      for (const DexFile* dex_file : compiler_options_->dex_files_for_oat_file_) {
+        const ArenaSet<dex::TypeIndex>* classes = profile_compilation_info_->GetClasses(*dex_file);
+        if (classes != nullptr) {
+          for (dex::TypeIndex type_index : *classes) {
+            size_t length;
+            const char* raw_descriptor =
+                profile_compilation_info_->GetTypeDescriptor(dex_file, type_index, &length);
+            std::string_view descriptor(raw_descriptor, length);
+            size_t array_dim = descriptor.find_first_not_of('[');
+            if (array_dim == std::string_view::npos) {
+              unexpected_descriptor = raw_descriptor;  // Empty or only `[` characters.
+              continue;
+            }
+            descriptor.remove_prefix(array_dim);
+            if (descriptor.length() == 1u && !IsBootImage()) {
+              // Primitive klass or array in boot image extension or app image.
+              unexpected_descriptor = raw_descriptor;
+              continue;
+            }
+            TypeReference type_ref(dex_file, type_index);
+            if (array_dim != 0u) {
+              const dex::TypeId* type_id = dex_file->FindTypeId(descriptor);
+              if (UNLIKELY(type_id == nullptr)) {
+                unexpected_descriptor = raw_descriptor;  // No type id.
+                continue;
+              }
+              type_ref.index = dex_file->GetIndexForTypeId(*type_id).index_;
+            } else if (UNLIKELY(type_index.index_ >= dex_file->NumTypeIds())) {
+              unexpected_descriptor = raw_descriptor;  // Non-array class in extra descriptors.
+              continue;
+            }
+            image_classes.Add(type_ref, array_dim);
+          }
+        }
+      }
       VLOG(compiler) << "Loaded " << image_classes.size()
-                     << " image class descriptors from profile";
+                     << " image classes (not counting array classes) from profile";
+      if (UNLIKELY(unexpected_descriptor != nullptr)) {
+        // Print only one warning for any number of unexpected descriptors we have encountered.
+        LOG(WARNING) << "Profile contained unexpected descriptors. Last one: "
+                     << unexpected_descriptor;
+      }
     } else if (!com::android::art::flags::ignore_boot_image_extension_class_resolution()
                && (compiler_options_->IsBootImage() || compiler_options_->IsBootImageExtension())) {
       // If we are compiling a boot image but no profile is provided, include all classes in the
@@ -1445,16 +1483,17 @@ class Dex2Oat final {
       // extension classes at startup.
       for (const DexFile* dex_file : compiler_options_->dex_files_for_oat_file_) {
         for (uint32_t i = 0; i < dex_file->NumClassDefs(); i++) {
-          const dex::ClassDef& class_def = dex_file->GetClassDef(i);
-          const char* descriptor = dex_file->GetClassDescriptor(class_def);
-          image_classes.insert(descriptor);
+          TypeReference type_ref(dex_file, dex_file->GetClassDef(i).class_idx_);
+          image_classes.Add(type_ref, /*array_dim=*/ 0u);
         }
       }
     }
     if (VLOG_IS_ON(compiler)) {
-      for (const std::string& s : image_classes) {
-        LOG(INFO) << "Image class " << s;
-      }
+      image_classes.ForEach([](TypeReference type_ref, size_t array_dim) {
+        LOG(INFO) << "Image class "
+            << type_ref.dex_file->GetTypeDescriptorView(type_ref.TypeIndex())
+            << (array_dim != 0u ? " dim=" + std::to_string(array_dim) : "");
+      });
     }
     compiler_options_->image_classes_ = std::move(image_classes);
   }
@@ -2148,7 +2187,7 @@ class Dex2Oat final {
                                           oat_writer->GetBssSize(),
                                           oat_writer->GetBssMethodsOffset(),
                                           oat_writer->GetBssRootsOffset(),
-                                          oat_writer->GetVdexSize());
+                                          oat_writer->GetBssStringsOffset());
         if (IsImage()) {
           // Update oat layout.
           DCHECK(image_writer_ != nullptr);
@@ -2580,7 +2619,14 @@ class Dex2Oat final {
   }
 
   bool PreparePreloadedClasses() {
-    if (!preloaded_classes_fds_.empty()) {
+    if (preloaded_classes_files_.empty() && preloaded_classes_fds_.empty()) {
+      // We don't have any preloaded-classes files: handle all the classes as no-preload.
+      // TODO(b/383506474): deprecate this behavior and rely only on the profile.
+    } else if (profile_compilation_info_ != nullptr &&
+               profile_compilation_info_->HasNoPreloadSection()) {
+      // If the profile has a "classes-no-preload" section, ignore preloaded-classes files.
+      compiler_options_->ignore_preloaded_classes_ = true;
+    } else if (!preloaded_classes_fds_.empty()) {
       for (int fd : preloaded_classes_fds_) {
         if (!ReadCommentedInputFromFd(fd, nullptr, &compiler_options_->preloaded_classes_)) {
           return false;
@@ -3069,7 +3115,7 @@ class ScopedGlobalRef {
 
 static dex2oat::ReturnCode DoCompilation(Dex2Oat& dex2oat) REQUIRES(!Locks::mutator_lock_) {
   Locks::mutator_lock_->AssertNotHeld(Thread::Current());
-  dex2oat.LoadImageClassDescriptors();
+  dex2oat.LoadImageClasses();
   jobject class_loader = dex2oat.Compile();
   // Keep the class loader that was used for compilation live for the rest of the compilation
   // process.

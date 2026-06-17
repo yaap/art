@@ -27,18 +27,31 @@ class CodeGenerator;
 
 namespace helpers {
 
+inline bool CanTypeConversionFitInShifterOperand(HTypeConversion* conversion) {
+  DataType::Type result_type = conversion->GetResultType();
+  DataType::Type input_type = conversion->GetInputType();
+  // We don't expect to see the same type as input and result.
+  return DataType::IsIntegralType(result_type) &&
+         DataType::IsIntegralType(input_type) &&
+         (result_type != input_type);
+}
+
+inline bool CanShiftFitInShifterOperand(HBinaryOperation* shift) {
+  DCHECK(shift->IsShl() || shift->IsShr() || shift->IsUShr());
+  int implicit_mask =
+      (shift->GetType() == DataType::Type::kInt64) ? kMaxLongShiftDistance : kMaxIntShiftDistance;
+  HInstruction* distance = shift->InputAt(1);
+  DCHECK_EQ(distance->IsConstant(), distance->IsIntConstant());
+  return distance->IsIntConstant() && (distance->AsIntConstant()->GetValue() & implicit_mask) != 0;
+}
+
 inline bool CanFitInShifterOperand(HInstruction* instruction) {
   if (instruction->IsTypeConversion()) {
-    HTypeConversion* conversion = instruction->AsTypeConversion();
-    DataType::Type result_type = conversion->GetResultType();
-    DataType::Type input_type = conversion->GetInputType();
-    // We don't expect to see the same type as input and result.
-    return DataType::IsIntegralType(result_type) && DataType::IsIntegralType(input_type) &&
-        (result_type != input_type);
+    return CanTypeConversionFitInShifterOperand(instruction->AsTypeConversion());
+  } else if (instruction->IsShl() || instruction->IsShr() || instruction->IsUShr()) {
+    return CanShiftFitInShifterOperand(instruction->AsBinaryOperation());
   } else {
-    return (instruction->IsShl() && instruction->AsShl()->InputAt(1)->IsIntConstant()) ||
-        (instruction->IsShr() && instruction->AsShr()->InputAt(1)->IsIntConstant()) ||
-        (instruction->IsUShr() && instruction->AsUShr()->InputAt(1)->IsIntConstant());
+    return false;
   }
 }
 

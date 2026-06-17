@@ -63,6 +63,9 @@ static jobject Constructor_newInstance0(JNIEnv* env, jobject javaMethod, jobject
   ScopedFastNativeObjectAccess soa(env);
   ObjPtr<mirror::Constructor> m = soa.Decode<mirror::Constructor>(javaMethod);
   ArtMethod* constructor_art_method = m->GetArtMethod();
+  // newInstance0 isn't called for serialized constructors. See newInstance implementation in
+  // java/lang/reflect/Constructor.java in libcore.
+  DCHECK_NE(constructor_art_method, nullptr);
   StackHandleScope<1> hs(soa.Self());
   Handle<mirror::Class> c(hs.NewHandle(m->GetDeclaringClass()));
   if (UNLIKELY(c->IsAbstract())) {

@@ -22,64 +22,64 @@ import dalvik.system.PathClassLoader;
 // ClassLoader not delegating for non java. packages.
 class DelegateLastPathClassLoader extends PathClassLoader {
 
-  public DelegateLastPathClassLoader(String dexPath, ClassLoader parent) {
-    super(dexPath, parent);
-  }
-
-  @Override
-  protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
-    if (!name.startsWith("java.")) {
-      try {
-        return findClass(name);
-      } catch (ClassNotFoundException ignore) {
-        // Ignore and fall through to parent class loader.
-      }
+    public DelegateLastPathClassLoader(String dexPath, ClassLoader parent) {
+        super(dexPath, parent);
     }
-    return super.loadClass(name, resolve);
-  }
+
+    @Override
+    protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+        if (!name.startsWith("java.")) {
+            try {
+                return findClass(name);
+            } catch (ClassNotFoundException ignore) {
+                // Ignore and fall through to parent class loader.
+            }
+        }
+        return super.loadClass(name, resolve);
+    }
 }
 
 public class Main {
 
-  public static void main(String[] args) throws Exception {
-    System.loadLibrary(args[0]);
-    final String DEX_FILE = System.getenv("DEX_LOCATION") + "/613-inlining-dex-cache-ex.jar";
-    ClassLoader loader = new DelegateLastPathClassLoader(DEX_FILE, Main.class.getClassLoader());
-    Class cls = loader.loadClass("LoadedByAppClassLoader");
-    Method m = cls.getDeclaredMethod("letMeInlineYou");
-    // Invoke the method enough times to get JITted.
-    for (int i = 0; i < 10000; ++i) {
-      m.invoke(null);
+    public static void main(String[] args) throws Exception {
+        System.loadLibrary(args[0]);
+        final String DEX_FILE = System.getenv("DEX_LOCATION") + "/613-inlining-dex-cache-ex.jar";
+        ClassLoader loader = new DelegateLastPathClassLoader(DEX_FILE, Main.class.getClassLoader());
+        Class cls = loader.loadClass("LoadedByAppClassLoader");
+        Method m = cls.getDeclaredMethod("letMeInlineYou");
+        // Invoke the method enough times to get JITted.
+        for (int i = 0; i < 10000; ++i) {
+            m.invoke(null);
+        }
+        ensureJitCompiled(cls, "letMeInlineYou");
+        ClassLoader bLoader = areYouB();
+        if (bLoader != Main.class.getClassLoader()) {
+            throw new Error("Wrong class loader");
+        }
     }
-    ensureJitCompiled(cls, "letMeInlineYou");
-    ClassLoader bLoader = areYouB();
-    if (bLoader != Main.class.getClassLoader()) {
-      throw new Error("Wrong class loader");
+
+    public static void foo(Main o) {
+        // LoadedByAppClassLoader.letMeInlineYou will try to inline this
+        // method but used to pass the wrong class loader. As a result,
+        // the lookup of B.foo was updating the dex cache with the other
+        // class loader's B class.
+        if (o != null) {
+            o.myField.foo();
+        }
     }
-  }
 
-  public static void foo(Main o) {
-    // LoadedByAppClassLoader.letMeInlineYou will try to inline this
-    // method but used to pass the wrong class loader. As a result,
-    // the lookup of B.foo was updating the dex cache with the other
-    // class loader's B class.
-    if (o != null) {
-      o.myField.foo();
+    public B myField;
+
+    public static ClassLoader areYouB() {
+        return OtherClass.getB().getClassLoader();
     }
-  }
 
-  public B myField;
-
-  public static ClassLoader areYouB() {
-    return OtherClass.getB().getClassLoader();
-  }
-
-  public static native void ensureJitCompiled(Class cls, String method_name);
+    public static native void ensureJitCompiled(Class cls, String method_name);
 }
 
 class OtherClass {
-  public static Class getB() {
-    // This used to return the B class of another class loader.
-    return B.class;
-  }
+    public static Class getB() {
+        // This used to return the B class of another class loader.
+        return B.class;
+    }
 }

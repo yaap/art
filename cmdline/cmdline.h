@@ -33,6 +33,7 @@
 #include "base/logging.h"
 #include "base/mutex.h"
 #include "base/utils.h"
+#include "com_android_art_rw_flags.h"
 #include "noop_compiler_callbacks.h"
 #include "oat/oat_file_assistant_context.h"
 #include "runtime.h"
@@ -45,14 +46,28 @@
 
 namespace art {
 
+class CmdlineCompilerCallbacks : public NoopCompilerCallbacks {
+ public:
+  explicit CmdlineCompilerCallbacks(bool allow_profile_code)
+      : allow_profile_code_(allow_profile_code) {}
+
+  bool ShouldEnableProfileCode() override {
+    return allow_profile_code_ && com::android::art::rw::flags::enable_profile_code_rw();
+  }
+
+ private:
+  bool allow_profile_code_;
+};
+
 static Runtime* StartRuntime(const std::vector<std::string>& boot_image_locations,
                              InstructionSet instruction_set,
+                             bool allow_profile_code,
                              const std::vector<const char*>& runtime_args) {
   RuntimeOptions options;
 
   // We are more like a compiler than a run-time. We don't want to execute code.
   {
-    static NoopCompilerCallbacks callbacks;
+    static CmdlineCompilerCallbacks callbacks(allow_profile_code);
     options.push_back(std::make_pair("compilercallbacks", &callbacks));
   }
 
@@ -142,6 +157,8 @@ struct CmdlineArgs {
           return false;
         }
         os_ = out_.get();
+      } else if (option.starts_with("--allow-profile-code")) {
+        allow_profile_code_ = true;
       } else {
         ParseStatus parse_status = ParseCustom(raw_option, option.length(), &error_msg);
 
@@ -186,7 +203,7 @@ struct CmdlineArgs {
         "               (specifies /system/framework/<arch>/boot.art as the image file)\n"
         "\n";
     usage += android::base::StringPrintf(  // Optional.
-        "  --instruction-set=(arm|arm64|x86|x86_64): for locating the image\n"
+        "  --instruction-set=(arm|arm64|x86|x86_64|riscv64): for locating the image\n"
         "      file based on the image location set.\n"
         "      Example: --instruction-set=x86\n"
         "      Default: %s\n"
@@ -222,6 +239,8 @@ struct CmdlineArgs {
   std::ostream* os_ = &std::cout;
   std::unique_ptr<std::ofstream> out_;  // If something besides cout is used
   std::string output_name_;
+  // Enabled by --allow-profiled-code
+  bool allow_profile_code_ = false;
 
   virtual ~CmdlineArgs() {}
 
@@ -444,7 +463,10 @@ struct CmdlineMain {
   Runtime* CreateRuntime(CmdlineArgs* args) {
     CHECK(args != nullptr);
 
-    return StartRuntime(args->boot_image_locations_, args->instruction_set_, args_->runtime_args_);
+    return StartRuntime(args->boot_image_locations_,
+                        args->instruction_set_,
+                        args->allow_profile_code_,
+                        args_->runtime_args_);
   }
 };
 }  // namespace art

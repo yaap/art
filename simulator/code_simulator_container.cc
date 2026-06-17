@@ -26,30 +26,45 @@ namespace art {
 
 CodeSimulatorContainer::CodeSimulatorContainer(InstructionSet target_isa)
     : libart_simulator_handle_(nullptr),
-      simulator_(nullptr) {
+      target_isa_(target_isa) {
   const char* libart_simulator_so_name =
       kIsDebugBuild ? "libartd-simulator.so" : "libart-simulator.so";
   libart_simulator_handle_ = dlopen(libart_simulator_so_name, RTLD_NOW);
   // It is not a real error when libart-simulator does not exist, e.g., on target.
   if (libart_simulator_handle_ == nullptr) {
     VLOG(simulator) << "Could not load " << libart_simulator_so_name << ": " << dlerror();
-  } else {
-    using CreateCodeSimulatorPtr = CodeSimulator*(*)(InstructionSet);
-    CreateCodeSimulatorPtr create_code_simulator =
-        reinterpret_cast<CreateCodeSimulatorPtr>(
-            dlsym(libart_simulator_handle_, "CreateCodeSimulator"));
-    DCHECK(create_code_simulator != nullptr) << "Fail to find symbol of CreateCodeSimulator: "
-        << dlerror();
-    simulator_ = create_code_simulator(target_isa);
   }
 }
 
-CodeSimulatorContainer::~CodeSimulatorContainer() {
-  // Free simulator object before closing libart-simulator because destructor of
-  // CodeSimulator lives in it.
-  if (simulator_ != nullptr) {
-    delete simulator_;
+BasicCodeSimulator* CodeSimulatorContainer::CreateBasicExecutor(size_t stack_size) {
+  if (libart_simulator_handle_ == nullptr) {
+    return nullptr;
   }
+
+  using CreateCodeSimulatorPtr = BasicCodeSimulator*(*)(InstructionSet, size_t);
+  CreateCodeSimulatorPtr create_code_simulator =
+      reinterpret_cast<CreateCodeSimulatorPtr>(
+          dlsym(libart_simulator_handle_, "CreateBasicCodeSimulator"));
+  CHECK(create_code_simulator != nullptr) << "Fail to find symbol of CreateBasicCodeSimulator: "
+      << dlerror();
+  return create_code_simulator(target_isa_, stack_size);
+}
+
+CodeSimulator* CodeSimulatorContainer::CreateExecutor(size_t stack_size) {
+  if (libart_simulator_handle_ == nullptr) {
+    return nullptr;
+  }
+
+  using CreateCodeSimulatorPtr = CodeSimulator*(*)(InstructionSet, size_t);
+  CreateCodeSimulatorPtr create_code_simulator =
+      reinterpret_cast<CreateCodeSimulatorPtr>(
+          dlsym(libart_simulator_handle_, "CreateCodeSimulator"));
+  CHECK(create_code_simulator != nullptr) << "Fail to find symbol of CreateCodeSimulator: "
+      << dlerror();
+  return create_code_simulator(target_isa_, stack_size);
+}
+
+CodeSimulatorContainer::~CodeSimulatorContainer() {
   if (libart_simulator_handle_ != nullptr) {
     dlclose(libart_simulator_handle_);
   }

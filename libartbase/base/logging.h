@@ -17,9 +17,13 @@
 #ifndef ART_LIBARTBASE_BASE_LOGGING_H_
 #define ART_LIBARTBASE_BASE_LOGGING_H_
 
+#include <functional>
+#include <memory>
 #include <sstream>
+#include <utility>
 #include <variant>
 
+#include "android-base/file.h"
 #include "android-base/logging.h"
 #include "macros.h"
 
@@ -149,6 +153,104 @@ class VlogMessage {
                      _LOG_TAG_INTERNAL,        \
                      -1)                       \
       .stream()
+
+// The interface of the helper classes that log a single message, which take the message via
+// `stream` and log it in the destructor.
+// Note: DO NOT USE DIRECTLY. This is an implementation detail.
+class ArtLogMessage {
+ public:
+  virtual std::ostream& stream() = 0;
+  virtual ~ArtLogMessage() = default;
+};
+
+// A helper class that log a single message using the default logger. Typically, the message goes to
+// logcat on Android and stderr on the host.
+// Note: DO NOT USE DIRECTLY. This is an implementation detail.
+class DefaultLogMessage : public ArtLogMessage {
+ public:
+  explicit DefaultLogMessage(const char* file,
+                             unsigned int line,
+                             android::base::LogSeverity severity)
+      : msg_(file, line, severity, _LOG_TAG_INTERNAL, -1) {}
+
+  std::ostream& stream() override { return msg_.stream(); }
+
+ private:
+  // `android::base::LogMessage` logs the message in its destructor.
+  android::base::LogMessage msg_;
+};
+
+// A helper class that log a single message to an FD.
+// Note: DO NOT USE DIRECTLY. This is an implementation detail.
+class FdLogMessage : public ArtLogMessage {
+ public:
+  explicit FdLogMessage(int fd) : fd_(fd) {}
+
+  ~FdLogMessage() {
+    stream_ << '\n';
+    if (!android::base::WriteStringToFd(stream_.str(), fd_)) {
+      PLOG(ERROR) << "Failed to write log to FD " << fd_;
+      LOG(ERROR) << stream_.str();
+    }
+  }
+
+  std::ostream& stream() override { return stream_; }
+
+ private:
+  int fd_;
+  std::stringstream stream_;
+};
+
+// A logger to be used with `LOG_TO`/`VLOG_TO`, to log messages to the designated destination.
+//
+// Compared to `android::base::SetLogger` which redirects logs globally, this class is useful for
+// redirecting logs for specific functions/classes.
+//
+// Example usages:
+//   ArtLogger logger = ArtLogger.FromFd(fd);
+//   LOG_TO(logger, INFO) << "message";
+//   VLOG_TO(logger, compiler) << "message";
+class ArtLogger {
+ public:
+  // Creates a logger that logs messages using the default logger. Typically, the messages go to
+  // logcat on Android and stderr on the host.
+  static ArtLogger Default() {
+    return ArtLogger([=](const char* file, unsigned int line, LogSeverity severity) {
+      return std::make_unique<DefaultLogMessage>(file, line, severity);
+    });
+  }
+
+  // Creates a logger that logs messages to an FD.
+  static ArtLogger FromFd(int fd) {
+    return ArtLogger(
+        [=](const char*, unsigned int, LogSeverity) { return std::make_unique<FdLogMessage>(fd); });
+  }
+
+  std::unique_ptr<ArtLogMessage> CreateLogMessage(const char* file,
+                                                  unsigned int line,
+                                                  LogSeverity severity) const {
+    return log_message_factory_(file, line, severity);
+  }
+
+ private:
+  explicit ArtLogger(
+      std::function<std::unique_ptr<ArtLogMessage>(
+          const char* file, unsigned int line, LogSeverity severity)> log_message_factory)
+      : log_message_factory_(std::move(log_message_factory)) {}
+
+  std::function<std::unique_ptr<ArtLogMessage>(
+      const char* file, unsigned int line, LogSeverity severity)>
+      log_message_factory_;
+};
+
+// See `ArtLogger`.
+#define LOG_TO(logger, severity)        \
+  WOULD_LOG(android::base::severity) && \
+      logger.CreateLogMessage(__FILE__, __LINE__, android::base::severity)->stream()
+
+// See `ArtLogger`.
+#define VLOG_TO(logger, module) \
+  VLOG_IS_ON(module) && logger.CreateLogMessage(__FILE__, __LINE__, android::base::INFO)->stream()
 
 // Check whether an implication holds between x and y, LOG(FATAL) if not. The value
 // of the expressions x and y is evaluated once. Extra logging can be appended

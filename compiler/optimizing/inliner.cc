@@ -51,21 +51,6 @@
 
 namespace art HIDDEN {
 
-// Instruction limit to control memory.
-static constexpr size_t kMaximumNumberOfTotalInstructions = 1024;
-
-// Maximum number of instructions for considering a method small,
-// which we will always try to inline if the other non-instruction limits
-// are not reached.
-static constexpr size_t kMaximumNumberOfInstructionsForSmallMethod = 3;
-
-// Limit the number of dex registers that we accumulate while inlining
-// to avoid creating large amount of nested environments.
-static constexpr size_t kMaximumNumberOfCumulatedDexRegisters = 32;
-
-// Limit recursive call inlining, which do not benefit from too
-// much inlining compared to code locality.
-static constexpr size_t kMaximumNumberOfRecursiveCalls = 4;
 
 // Limit recursive polymorphic call inlining to prevent code bloat, since it can quickly get out of
 // hand in the presence of multiple Wrapper classes. We set this to 0 to disallow polymorphic
@@ -91,6 +76,17 @@ static constexpr bool kInlineTryCatches = true;
 #define LOG_FAIL(stats_ptr, stat) MaybeRecordStat(stats_ptr, stat); LOG_INTERNAL("Fail: ")
 #define LOG_FAIL_NO_STAT() LOG_INTERNAL("Fail: ")
 
+void HInliner::InitializeInlinerOptions() {
+  maximum_number_of_total_instructions_ =
+      codegen_->GetCompilerOptions().GetInlineMaximumNumberOfTotalInstructions();
+  maximum_number_of_instructions_for_small_method_ =
+      codegen_->GetCompilerOptions().GetInlineMaximumNumberOfInstructionsForSmallMethod();
+  maximum_number_of_cumulated_dex_registers_ =
+      codegen_->GetCompilerOptions().GetInlineMaximumNumberOfCumulatedDexRegisters();
+  maximum_number_of_recursive_calls_ =
+      codegen_->GetCompilerOptions().GetInlineMaximumNumberOfRecursiveCalls();
+}
+
 std::string HInliner::DepthString(int line) const {
   std::string value;
   // Indent according to the inlining depth.
@@ -114,13 +110,13 @@ std::string HInliner::DepthString(int line) const {
 }
 
 void HInliner::UpdateInliningBudget() {
-  if (total_number_of_instructions_ >= kMaximumNumberOfTotalInstructions) {
+  if (total_number_of_instructions_ >= maximum_number_of_total_instructions_) {
     // Always try to inline small methods.
-    inlining_budget_ = kMaximumNumberOfInstructionsForSmallMethod;
+    inlining_budget_ = maximum_number_of_instructions_for_small_method_;
   } else {
     inlining_budget_ = std::max(
-        kMaximumNumberOfInstructionsForSmallMethod,
-        kMaximumNumberOfTotalInstructions - total_number_of_instructions_);
+        maximum_number_of_instructions_for_small_method_,
+        maximum_number_of_total_instructions_ - total_number_of_instructions_);
   }
 }
 
@@ -411,7 +407,7 @@ static bool IsMethodVerified(ArtMethod* method)
   return false;
 }
 
-static bool AlwaysThrows(ArtMethod* method)
+static bool AlwaysThrows(ArtMethod* method, const size_t maximum_number_of_total_instructions)
     REQUIRES_SHARED(Locks::mutator_lock_) {
   DCHECK(method != nullptr);
   // Skip non-compilable and unverified methods.
@@ -428,7 +424,7 @@ static bool AlwaysThrows(ArtMethod* method)
   CodeItemDataAccessor accessor(method->DexInstructionData());
   if (!accessor.HasCodeItem() ||
       accessor.TriesSize() != 0 ||
-      accessor.InsnsSizeInCodeUnits() > kMaximumNumberOfTotalInstructions) {
+      accessor.InsnsSizeInCodeUnits() > maximum_number_of_total_instructions) {
     return false;
   }
   // Scan for exits.
@@ -491,13 +487,21 @@ bool HInliner::TryInline(HInvoke* invoke_instruction) {
     receiver_info = receiver->GetReferenceTypeInfo();
     if (!receiver_info.IsValid()) {
       // We have to run the extra type propagation now as we are requiring the RTI.
-      DCHECK(run_extra_type_propagation_);
       run_extra_type_propagation_ = false;
       ReferenceTypePropagation rtp_fixup(graph_,
                                          outer_compilation_unit_.GetDexCache(),
                                          /* is_first_run= */ false);
       rtp_fixup.Run();
       receiver_info = receiver->GetReferenceTypeInfo();
+    }
+
+    // Unresolvable type, as seen in b/477529788. Bail out.
+    if (!receiver_info.IsValid() && receiver->IsPhi()) {
+      LOG_FAIL_NO_STAT() << "Receiver for "
+                         << invoke_instruction->GetMethodReference().PrettyMethod()
+                         << " has an invalid type and is a Phi. Not inlining. "
+                         << receiver->DebugName();
+      return false;
     }
 
     DCHECK(receiver_info.IsValid()) << "Invalid RTI for " << receiver->DebugName();
@@ -530,7 +534,8 @@ bool HInliner::TryInline(HInvoke* invoke_instruction) {
         invoke_to_analyze = invoke_instruction;
       }
       // Set always throws property for non-inlined method call with single target.
-      if (invoke_instruction->AlwaysThrows() || AlwaysThrows(actual_method)) {
+      if (invoke_instruction->AlwaysThrows() || AlwaysThrows(actual_method,
+          codegen_->GetCompilerOptions().GetInlineMaximumNumberOfTotalInstructions())) {
         invoke_to_analyze->SetAlwaysThrows(/* always_throws= */ true);
         graph_->SetHasAlwaysThrowingInvokes(/* value= */ true);
       }
@@ -1425,7 +1430,7 @@ bool HInliner::TryInlineAndReplace(HInvoke* invoke_instruction,
   }
 
   MaybeReplaceAndRemove(return_replacement, invoke_instruction);
-  FixUpReturnReferenceType(method, return_replacement);
+  FixUpReturnReferenceType(return_replacement);
   if (do_rtp) {
     MaybeRunReferenceTypePropagation(return_replacement, invoke_instruction);
   }
@@ -1544,7 +1549,7 @@ bool HInliner::IsInliningSupported(const HInvoke* invoke_instruction,
 bool HInliner::IsInliningEncouraged(const HInvoke* invoke_instruction,
                                     ArtMethod* method,
                                     const CodeItemDataAccessor& accessor) const {
-  if (CountRecursiveCallsOf(method) > kMaximumNumberOfRecursiveCalls) {
+  if (CountRecursiveCallsOf(method) > maximum_number_of_recursive_calls_) {
     LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedRecursiveBudget)
         << "Method "
         << method->PrettyMethod()
@@ -1578,7 +1583,7 @@ bool HInliner::IsInliningEncouraged(const HInvoke* invoke_instruction,
     return false;
   }
 
-  if (total_number_of_dex_registers_ > kMaximumNumberOfCumulatedDexRegisters) {
+  if (total_number_of_dex_registers_ > maximum_number_of_cumulated_dex_registers_) {
     // Heuristic: Skip building the callee graph for large environments, as we will likely discard
     // it later.
     LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedEnvironmentBudget)
@@ -1599,6 +1604,12 @@ bool HInliner::IsInliningEncouraged(const HInvoke* invoke_instruction,
         << "Method " << method->PrettyMethod()
         << " is not inlined because its estimated size based on code item exceeds inlining budget: "
         << estimated_size << " > " << inlining_budget_;
+    return false;
+  }
+
+  if (invoke_instruction->AlwaysThrows()) {
+    LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedAlwaysThrows)
+        << "Method " << method->PrettyMethod() << " will not be inlined because it always throws";
     return false;
   }
 
@@ -1641,6 +1652,7 @@ bool HInliner::TryBuildAndInline(HInvoke* invoke_instruction,
     if (invoke_instruction->GetType() == DataType::Type::kReference) {
       new_invoke->SetReferenceTypeInfoIfValid(invoke_instruction->GetReferenceTypeInfo());
     }
+    new_invoke->SetAlwaysThrows(invoke_instruction->AlwaysThrows());
     *return_replacement = new_invoke;
     return true;
   }
@@ -2026,8 +2038,8 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
       // If the last instruction chain is Return/ReturnVoid -> TryBoundary -> Exit we will have to
       // split a critical edge in InlineInto and might recompute loop information, which is
       // unsupported for irreducible loops.
-      if (!last_instruction->IsThrow() && graph_->HasIrreducibleLoops()) {
-        DCHECK(last_instruction->IsReturn() || last_instruction->IsReturnVoid());
+      if ((last_instruction->IsReturn() || last_instruction->IsReturnVoid()) &&
+          graph_->HasIrreducibleLoops()) {
         // TODO(ngeoffray): Support re-computing loop information to graphs with
         // irreducible loops?
         LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedIrreducibleLoopCaller)
@@ -2038,7 +2050,13 @@ bool HInliner::CanInlineBody(const HGraph* callee_graph,
       }
     }
 
-    if (last_instruction->IsThrow()) {
+    if (last_instruction->IsGoto() && last_instruction->GetPrevious() != nullptr) {
+      last_instruction = last_instruction->GetPrevious();
+      DCHECK(!last_instruction->IsThrow());
+      DCHECK(last_instruction->AlwaysThrows());
+    }
+
+    if (last_instruction->AlwaysThrows()) {
       if (graph_->GetExitBlock() == nullptr) {
         // TODO(ngeoffray): Support adding HExit in the caller graph.
         LOG_FAIL(stats_, MethodCompilationStat::kNotInlinedInfiniteLoop)
@@ -2466,23 +2484,21 @@ bool HInliner::ReturnTypeMoreSpecific(HInstruction* return_replacement,
   return false;
 }
 
-void HInliner::FixUpReturnReferenceType(ArtMethod* resolved_method,
-                                        HInstruction* return_replacement) {
-  if (return_replacement != nullptr) {
-    if (return_replacement->GetType() == DataType::Type::kReference) {
-      if (!return_replacement->GetReferenceTypeInfo().IsValid()) {
-        // Make sure that we have a valid type for the return. We may get an invalid one when
-        // we inline invokes with multiple branches and create a Phi for the result.
-        // TODO: we could be more precise by merging the phi inputs but that requires
-        // some functionality from the reference type propagation.
-        DCHECK(return_replacement->IsPhi());
-        ObjPtr<mirror::Class> cls = resolved_method->LookupResolvedReturnType();
-        ReferenceTypeInfo rti = ReferenceTypePropagation::IsAdmissible(cls)
-            ? ReferenceTypeInfo::Create(graph_->GetHandleCache()->NewHandle(cls))
-            : graph_->GetInexactObjectRti();
-        return_replacement->SetReferenceTypeInfo(rti);
-      }
-    }
+void HInliner::FixUpReturnReferenceType(HInstruction* return_replacement) {
+  // For invalid or inexact Phis, we might have a more precise return type now.
+  if (return_replacement != nullptr &&
+      return_replacement->IsPhi() &&
+      return_replacement->GetType() == DataType::Type::kReference &&
+      (!return_replacement->GetReferenceTypeInfo().IsValid() ||
+        !return_replacement->GetReferenceTypeInfo().IsExact())) {
+    ReferenceTypePropagation rtp_fixup(graph_,
+                                       outer_compilation_unit_.GetDexCache(),
+                                       /* is_first_run= */ false);
+    // TODO(solanes): We should be able to do a full RTP run here and mark
+    // `run_extra_type_propagation_` as false. However, doing a full RTP run might produce worse
+    // results since ReferenceTypePropagation::MergeTypes does not work correctly when the Phi's
+    // inputs are all interfaces.
+    rtp_fixup.Visit(return_replacement);
   }
 }
 

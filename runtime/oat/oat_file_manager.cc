@@ -20,7 +20,6 @@
 #include <sys/stat.h>
 
 #include <memory>
-#include <queue>
 #include <vector>
 
 #include "android-base/file.h"
@@ -40,6 +39,7 @@
 #include "dex/art_dex_file_loader.h"
 #include "dex/dex_file-inl.h"
 #include "dex/dex_file_loader.h"
+#include "dex/dex_file_profile.h"
 #include "dex/dex_file_tracking_registrar.h"
 #include "gc/scoped_gc_critical_section.h"
 #include "gc/space/image_space.h"
@@ -47,6 +47,7 @@
 #include "jit/jit.h"
 #include "jni/java_vm_ext.h"
 #include "jni/jni_internal.h"
+#include "madvise_utils.h"
 #include "mirror/class_loader.h"
 #include "mirror/object-inl.h"
 #include "oat_file.h"
@@ -193,6 +194,60 @@ bool OatFileManager::ShouldLoadAppImage() const {
   return true;
 }
 
+// Wrapper for optional heuristic on picking out startup-optimized dex files for madvise.
+//   * If `madvise_dex_using_profile` is disabled, falls back to sequential madvise.
+//.  * If profile metadata hints are missing, falls back to sequential madvise.
+//   * If the target dex has been optimized with accurate startup profiles, the heuristic should
+//     *generally* pick out only those startup dex files to madvise.
+//   * If the startup dex has *not* been optimized with startup profiles, the heuristic will pick
+//     out dex files based on effective startup class/method representation. In practice, this will
+//     often look like the naive greedy algorithm, with possibly a slightly different ordering.
+static std::vector<size_t> SelectDexFilesToMadvise(
+    const std::vector<std::unique_ptr<const DexFile>>& dex_files) {
+  auto default_greedy_selection = [&] {
+    std::vector<size_t> indices(dex_files.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    return indices;
+  };
+  if (!com::android::art::rw::flags::madvise_dex_using_profile() || dex_files.empty()) {
+    return default_greedy_selection();
+  }
+
+  std::vector<DexFileMadviseMetadata> metadata;
+  metadata.reserve(dex_files.size());
+  bool has_startup_metadata = false;
+  for (size_t i = 0; i < dex_files.size(); ++i) {
+    const DexFile* dex_file = dex_files[i].get();
+    const OatDexFile* oat_dex_file = dex_file->GetOatDexFile();
+    const DexProfileMetadata* profile =
+        (oat_dex_file != nullptr) ? oat_dex_file->GetDexProfileMetadata() : nullptr;
+
+    if (profile == nullptr) {
+      // We require valid dex profile metadata for all dex when aggregating profile data.
+      // This should only happen when there's no backing OAT file.
+      VLOG(oat) << "Madvise - Missing OAT profile metadata for dex: " << dex_file->GetLocation();
+      return default_greedy_selection();
+    }
+
+    has_startup_metadata = has_startup_metadata || profile->num_startup_classes > 0 ||
+                           profile->num_startup_methods > 0;
+    metadata.push_back({.index = i,
+                        .num_startup_classes = profile->num_startup_classes,
+                        .num_classes = dex_file->NumClassDefs(),
+                        .num_startup_methods = profile->num_startup_methods,
+                        .num_methods = dex_file->NumMethodIds()});
+  }
+
+  // If no startup metadata was found (e.g., speed compilation), fall back to greedy madvise.
+  // In theory, a valid profile could completely lack any startup hints, but it's an edge case
+  // where it's fine to just fall back to the default greedy behavior.
+  if (!has_startup_metadata) {
+    return default_greedy_selection();
+  }
+
+  return art::SelectDexFilesToMadvise(std::move(metadata));
+}
+
 std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
     const char* dex_location,
     jobject class_loader,
@@ -212,6 +267,8 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
   std::vector<std::unique_ptr<const DexFile>> dex_files;
   std::unique_ptr<ClassLoaderContext> context(
       ClassLoaderContext::CreateContextForClassLoader(class_loader, dex_elements));
+  AppInfo::CodeType code_type = AppInfo::CodeType::kUnknown;
+  std::string compilation_filter;
 
   // If the class_loader is null there's not much we can do. This happens if a dex files is loaded
   // directly with DexFile APIs instead of using class loaders.
@@ -230,7 +287,6 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
     // oat file as GetBestOatFile used below, and in doing so it already pre-populates
     // some OatFileAssistant internal fields.
     std::string odex_location;
-    std::string compilation_filter;
     std::string compilation_reason;
     std::string odex_status;
     OatFileAssistant::Location ignored_location;
@@ -249,16 +305,6 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
         compilation_filter.c_str(),
         compilation_reason.c_str()));
 
-    const bool has_registered_app_info = Runtime::Current()->GetAppInfo()->HasRegisteredAppInfo();
-    const AppInfo::CodeType code_type =
-        Runtime::Current()->GetAppInfo()->GetRegisteredCodeType(dex_location);
-    // We only want to madvise primary/split dex artifacts as a startup optimization. However,
-    // as the code_type for those artifacts may not be set until the initial app info registration,
-    // we conservatively madvise everything until the app info registration is complete.
-    const bool should_madvise = !has_registered_app_info ||
-                                code_type == AppInfo::CodeType::kPrimaryApk ||
-                                code_type == AppInfo::CodeType::kSplitApk;
-
     // Proceed with oat file loading.
     std::unique_ptr<const OatFile> oat_file(oat_file_assistant->GetBestOatFile().release());
     VLOG(oat) << "OatFileAssistant(" << dex_location << ").GetBestOatFile()="
@@ -275,6 +321,7 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
           CompilerFilter::IsAotCompilationEnabled(oat_file->GetCompilerFilter());
       // Load the dex files from the oat file.
       bool added_image_space = false;
+      const bool should_madvise = runtime->ShouldMadviseForAppStartup(dex_location);
       if (should_madvise) {
         VLOG(oat) << "Madvising oat file: " << oat_file->GetLocation();
         size_t madvise_size_limit = runtime->GetMadviseWillNeedSizeOdex();
@@ -294,12 +341,23 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
         if (oat_file->IsExecutable()) {
           // App images generated by the compiler can only be used if the oat file
           // is executable.
-          image_space = oat_file_assistant->OpenImageSpace(oat_file.get());
+          std::string art_file = ReplaceFileExtension(oat_file->GetLocation(), kArtExtension);
+          DCHECK(!art_file.empty());
+          std::string error_msg;
+          image_space = gc::space::ImageSpace::CreateFromAppImage(
+              art_file.c_str(), oat_file.get(), &error_msg);
+          if (image_space == nullptr && (VLOG_IS_ON(image) || OS::FileExists(art_file.c_str()))) {
+            LOG(INFO) << "Failed to open app image " << art_file.c_str() << " " << error_msg;
+          }
         }
-        // Load the runtime image. This logic must be aligned with the one that determines when to
+        // Load the runtime image if the oat file does not require its own app image.
+        // This logic must be aligned with the one that determines when to
         // keep runtime images in `ArtManagerLocal.cleanup` in
         // `art/libartservice/service/java/com/android/server/art/ArtManagerLocal.java`.
-        if (kEnableRuntimeAppImage && image_space == nullptr && !compilation_enabled) {
+        if (kEnableRuntimeAppImage &&
+            image_space == nullptr &&
+            !compilation_enabled &&
+            !oat_file->RequiresImage()) {
           std::string art_file = RuntimeImage::GetRuntimeImagePath(dex_location);
           std::string error_msg;
           image_space = gc::space::ImageSpace::CreateFromAppImage(
@@ -311,57 +369,61 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
         }
       }
       if (image_space != nullptr) {
+        ScopedTrace image_space_timing("Opening image dex files");
+        std::string temp_error_msg;
+        if (!image_space->OpenAndSetDexFiles(&dex_files, &temp_error_msg)) {
+          LOG(INFO) << "Failed to open image dex files: " << temp_error_msg;
+          dex_files.clear();
+          image_space.reset();
+        }
+      }
+      if (image_space != nullptr) {
         ScopedObjectAccess soa(self);
         StackHandleScope<1> hs(self);
         Handle<mirror::ClassLoader> h_loader(
             hs.NewHandle(soa.Decode<mirror::ClassLoader>(class_loader)));
-        // Can not load app image without class loader.
-        if (h_loader != nullptr) {
-          oat_file->SetAppImageBegin(image_space->Begin());
-          std::string temp_error_msg;
-          // Add image space has a race condition since other threads could be reading from the
-          // spaces array.
+        DCHECK(h_loader != nullptr);  // Non-null strong reference is decoded as non-null.
+        std::string temp_error_msg;
+        // Add image space has a race condition since other threads could be reading from the
+        // spaces array.
+        {
+          ScopedThreadSuspension sts(self, ThreadState::kSuspended);
+          gc::ScopedGCCriticalSection gcs(self,
+                                          gc::kGcCauseAddRemoveAppImageSpace,
+                                          gc::kCollectorTypeAddRemoveAppImageSpace);
+          ScopedSuspendAll ssa("Add image space");
+          runtime->GetHeap()->AddSpace(image_space.get());
+        }
+        {
+          ScopedTrace image_space_timing("Adding image space");
+          added_image_space = runtime->GetClassLinker()->AddImageSpace(
+              image_space.get(),
+              h_loader,
+              context.get(),
+              dex_files,
+              /*out*/ &temp_error_msg);
+        }
+        if (added_image_space) {
+          // Successfully added image space to heap, release the map so that it does not get
+          // freed.
+          image_space.release();  // NOLINT b/117926937
+
+          // Register for tracking.
+          for (const auto& dex_file : dex_files) {
+            dex::tracking::RegisterDexFile(dex_file.get());
+          }
+        } else {
+          LOG(INFO) << "Failed to add image file: " << temp_error_msg;
+          dex_files.clear();
           {
             ScopedThreadSuspension sts(self, ThreadState::kSuspended);
             gc::ScopedGCCriticalSection gcs(self,
                                             gc::kGcCauseAddRemoveAppImageSpace,
                                             gc::kCollectorTypeAddRemoveAppImageSpace);
-            ScopedSuspendAll ssa("Add image space");
-            runtime->GetHeap()->AddSpace(image_space.get());
+            ScopedSuspendAll ssa("Remove image space");
+            runtime->GetHeap()->RemoveSpace(image_space.get());
           }
-          {
-            ScopedTrace image_space_timing("Adding image space");
-            gc::space::ImageSpace* space_ptr = image_space.get();
-            added_image_space = runtime->GetClassLinker()->AddImageSpaces(
-                ArrayRef<gc::space::ImageSpace*>(&space_ptr, /*size=*/1),
-                h_loader,
-                context.get(),
-                /*out*/ &dex_files,
-                /*out*/ &temp_error_msg);
-          }
-          if (added_image_space) {
-            // Successfully added image space to heap, release the map so that it does not get
-            // freed.
-            image_space.release();  // NOLINT b/117926937
-
-            // Register for tracking.
-            for (const auto& dex_file : dex_files) {
-              dex::tracking::RegisterDexFile(dex_file.get());
-            }
-          } else {
-            LOG(INFO) << "Failed to add image file: " << temp_error_msg;
-            oat_file->SetAppImageBegin(nullptr);
-            dex_files.clear();
-            {
-              ScopedThreadSuspension sts(self, ThreadState::kSuspended);
-              gc::ScopedGCCriticalSection gcs(self,
-                                              gc::kGcCauseAddRemoveAppImageSpace,
-                                              gc::kCollectorTypeAddRemoveAppImageSpace);
-              ScopedSuspendAll ssa("Remove image space");
-              runtime->GetHeap()->RemoveSpace(image_space.get());
-            }
-            // Non-fatal, don't update error_msg.
-          }
+          // Non-fatal, don't update error_msg.
         }
       }
       if (!added_image_space) {
@@ -401,7 +463,9 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
         error_msgs->push_back("Failed to open dex files from " + odex_location);
       } else if (should_madvise) {
         size_t madvise_size_limit = Runtime::Current()->GetMadviseWillNeedTotalDexSize();
-        for (const std::unique_ptr<const DexFile>& dex_file : dex_files) {
+        for (const size_t dex_file_index : SelectDexFilesToMadvise(dex_files)) {
+          DCHECK_LT(dex_file_index, dex_files.size());
+          const auto& dex_file = dex_files[dex_file_index];
           // Prefetch the dex file based on vdex size limit (name should
           // have been dex size limit).
           VLOG(oat) << "Madvising dex file: " << dex_file->GetLocation();
@@ -476,7 +540,7 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
       }
     }
 
-    Runtime::Current()->GetAppInfo()->RegisterOdexStatus(
+    code_type = runtime->GetAppInfo()->RegisterOdexStatus(
         dex_location,
         compilation_filter,
         compilation_reason,
@@ -498,15 +562,18 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat(
       error_msgs->push_back("Failed to open dex files from " + std::string(dex_location)
                             + " because: " + error_msg);
     }
+    code_type = runtime->GetAppInfo()->GetRegisteredCodeType(dex_location);
   }
 
-  if (Runtime::Current()->GetJit() != nullptr) {
-    Runtime::Current()->GetJit()->RegisterDexFiles(dex_files, class_loader);
+  jit::Jit* jit = runtime->GetJit();
+  if (jit != nullptr) {
+    jit->RegisterDexFiles(dex_files, class_loader);
+    jit->RegisterAppInfo(code_type, compilation_filter);
   }
 
   // Now that we loaded the dex/odex files, notify the runtime.
   // Note that we do this everytime we load dex files.
-  Runtime::Current()->NotifyDexFileLoaded();
+  runtime->NotifyDexFileLoaded();
 
   return dex_files;
 }
@@ -592,7 +659,7 @@ std::vector<std::unique_ptr<const DexFile>> OatFileManager::OpenDexFilesFromOat_
   for (size_t i = 0; i < dex_mem_maps.size(); ++i) {
     static constexpr bool kVerifyChecksum = true;
     ArtDexFileLoader dex_file_loader(std::move(dex_mem_maps[i]),
-                                     DexFileLoader::GetMultiDexLocation(i, dex_location.c_str()));
+                                     DexFileLoader::GetMultiDexLocation(dex_location.c_str(), i));
     std::unique_ptr<const DexFile> dex_file(dex_file_loader.Open(
         dex_headers[i]->checksum_,
         /* verify= */ (vdex_file == nullptr) && Runtime::Current()->IsVerificationEnabled(),

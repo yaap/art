@@ -48,24 +48,24 @@ public class Main {
         Main m = new Main();
         // 0 + 100 = 100
         $noinline$assertIntEquals(0, (int) INT_VALUE.get(m));
-        m.$noinline$getAndAdd_Int(100);
+        $noinline$assertIntEquals(0, m.$noinline$getAndAdd_Int(100));
         $noinline$assertIntEquals(100, (int) INT_VALUE.get(m));
 
         // 100 - 100 = 0
-        m.$noinline$getAndAdd_Int(-100);
+        $noinline$assertIntEquals(100, m.$noinline$getAndAdd_Int(-100));
         $noinline$assertIntEquals(0, (int) INT_VALUE.get(m));
     }
 
     private static void $noinline$testGetAndSet_Int() {
         Main m = new Main();
         $noinline$assertIntEquals(0, (int) INT_VALUE.get(m));
-        m.$noinline$getAndSet_Int(100);
+        $noinline$assertIntEquals(0, m.$noinline$getAndSet_Int(100));
         $noinline$assertIntEquals(100, (int) INT_VALUE.get(m));
 
-        m.$noinline$getAndSet_Int(-100);
+        $noinline$assertIntEquals(100, m.$noinline$getAndSet_Int(-100));
         $noinline$assertIntEquals(-100, (int) INT_VALUE.get(m));
 
-        m.$noinline$getAndSet_Int(0);
+        $noinline$assertIntEquals(-100, m.$noinline$getAndSet_Int(0));
         $noinline$assertIntEquals(0, (int) INT_VALUE.get(m));
     }
 
@@ -73,26 +73,26 @@ public class Main {
         Main m = new Main();
         // 0 AND X = 0
         $noinline$assertIntEquals(0, (int) INT_VALUE.get(m));
-        m.$noinline$getAndBitwiseAnd_Int(100);
+        $noinline$assertIntEquals(0, m.$noinline$getAndBitwiseAnd_Int(100));
         $noinline$assertIntEquals(0, (int) INT_VALUE.get(m));
 
         // 10101010 AND
         // 11001100 =
         // 10001000
         m.$noinline$getAndSet_Int(0b10101010);
-        m.$noinline$getAndBitwiseAnd_Int(0b11001100);
+        $noinline$assertIntEquals(0b10101010, m.$noinline$getAndBitwiseAnd_Int(0b11001100));
         $noinline$assertIntEquals(0b10001000, (int) INT_VALUE.get(m));
 
         // 10001000 AND
         // 11111111 =
         // 10001000
-        m.$noinline$getAndBitwiseAnd_Int(0b11111111);
+        $noinline$assertIntEquals(0b10001000, m.$noinline$getAndBitwiseAnd_Int(0b11111111));
         $noinline$assertIntEquals(0b10001000, (int) INT_VALUE.get(m));
 
         // 10001000 AND
         // 01110111 =
         // 0
-        m.$noinline$getAndBitwiseAnd_Int(0b01110111);
+        $noinline$assertIntEquals(0b10001000, m.$noinline$getAndBitwiseAnd_Int(0b01110111));
         $noinline$assertIntEquals(0, (int) INT_VALUE.get(m));
     }
 
@@ -101,19 +101,19 @@ public class Main {
 
         // 0 OR X = X
         $noinline$assertIntEquals(0, (int) INT_VALUE.get(m));
-        m.$noinline$getAndBitwiseOr_Int(0b10101010);
+        $noinline$assertIntEquals(0, m.$noinline$getAndBitwiseOr_Int(0b10101010));
         $noinline$assertIntEquals(0b10101010, (int) INT_VALUE.get(m));
 
         // 10101010 OR
         // 01010101 =
         // 11111111
-        m.$noinline$getAndBitwiseOr_Int(0b01010101);
+        $noinline$assertIntEquals(0b10101010, m.$noinline$getAndBitwiseOr_Int(0b01010101));
         $noinline$assertIntEquals(0b11111111, (int) INT_VALUE.get(m));
 
         // 11111111 OR
         // 0 =
         // 11111111
-        m.$noinline$getAndBitwiseOr_Int(0);
+        $noinline$assertIntEquals(0b11111111, m.$noinline$getAndBitwiseOr_Int(0));
         $noinline$assertIntEquals(0b11111111, (int) INT_VALUE.get(m));
 
         // Set to 0 due to precondition. See comment in main.
@@ -126,23 +126,23 @@ public class Main {
 
         // 0 XOR X = X
         $noinline$assertIntEquals(0, (int) INT_VALUE.get(m));
-        m.$noinline$getAndBitwiseXor_Int(0b10101010);
+        $noinline$assertIntEquals(0, m.$noinline$getAndBitwiseXor_Int(0b10101010));
         $noinline$assertIntEquals(0b10101010, (int) INT_VALUE.get(m));
 
         // 10101010 XOR
         // 01010101 =
         // 11111111
-        m.$noinline$getAndBitwiseXor_Int(0b01010101);
+        $noinline$assertIntEquals(0b10101010, m.$noinline$getAndBitwiseXor_Int(0b01010101));
         $noinline$assertIntEquals(0b11111111, (int) INT_VALUE.get(m));
 
         // 11111111 XOR
         // 01010101 =
         // 10101010
-        m.$noinline$getAndBitwiseXor_Int(0b01010101);
+        $noinline$assertIntEquals(0b11111111, m.$noinline$getAndBitwiseXor_Int(0b01010101));
         $noinline$assertIntEquals(0b10101010, (int) INT_VALUE.get(m));
 
         // X XOR X = 0
-        m.$noinline$getAndBitwiseXor_Int(0b10101010);
+        $noinline$assertIntEquals(0b10101010, m.$noinline$getAndBitwiseXor_Int(0b10101010));
         $noinline$assertIntEquals(0, (int) INT_VALUE.get(m));
     }
 
@@ -150,24 +150,24 @@ public class Main {
         Main m = new Main();
         // 0 + 100 = 100
         $noinline$assertLongEquals(0L, (long) LONG_VALUE.get(m));
-        m.$noinline$getAndAdd_Long(100);
+        $noinline$assertLongEquals(0L, m.$noinline$getAndAdd_Long(100));
         $noinline$assertLongEquals(100L, (long) LONG_VALUE.get(m));
 
         // 100 - 100 = 0
-        m.$noinline$getAndAdd_Long(-100);
+        $noinline$assertLongEquals(100L, m.$noinline$getAndAdd_Long(-100));
         $noinline$assertLongEquals(0L, (long) LONG_VALUE.get(m));
     }
 
     private static void $noinline$testGetAndSet_Long() {
         Main m = new Main();
         $noinline$assertLongEquals(0L, (long) LONG_VALUE.get(m));
-        m.$noinline$getAndSet_Long(100);
+        $noinline$assertLongEquals(0L, m.$noinline$getAndSet_Long(100));
         $noinline$assertLongEquals(100L, (long) LONG_VALUE.get(m));
 
-        m.$noinline$getAndSet_Long(-100);
+        $noinline$assertLongEquals(100L, m.$noinline$getAndSet_Long(-100));
         $noinline$assertLongEquals(-100L, (long) LONG_VALUE.get(m));
 
-        m.$noinline$getAndSet_Long(0);
+        $noinline$assertLongEquals(-100L, m.$noinline$getAndSet_Long(0));
         $noinline$assertLongEquals(0L, (long) LONG_VALUE.get(m));
     }
 
@@ -175,26 +175,26 @@ public class Main {
         Main m = new Main();
         // 0 AND X = 0
         $noinline$assertLongEquals(0L, (long) LONG_VALUE.get(m));
-        m.$noinline$getAndBitwiseAnd_Long(100);
+        $noinline$assertLongEquals(0L, m.$noinline$getAndBitwiseAnd_Long(100));
         $noinline$assertLongEquals(0L, (long) LONG_VALUE.get(m));
 
         // 10101010 AND
         // 11001100 =
         // 10001000
         m.$noinline$getAndSet_Long(0b10101010);
-        m.$noinline$getAndBitwiseAnd_Long(0b11001100);
+        $noinline$assertLongEquals(0b10101010L, m.$noinline$getAndBitwiseAnd_Long(0b11001100));
         $noinline$assertLongEquals(0b10001000L, (long) LONG_VALUE.get(m));
 
         // 10001000 AND
         // 11111111 =
         // 10001000
-        m.$noinline$getAndBitwiseAnd_Long(0b11111111);
+        $noinline$assertLongEquals(0b10001000L, m.$noinline$getAndBitwiseAnd_Long(0b11111111));
         $noinline$assertLongEquals(0b10001000L, (long) LONG_VALUE.get(m));
 
         // 10001000 AND
         // 01110111 =
         // 0
-        m.$noinline$getAndBitwiseAnd_Long(0b01110111);
+        $noinline$assertLongEquals(0b10001000L, m.$noinline$getAndBitwiseAnd_Long(0b01110111));
         $noinline$assertLongEquals(0L, (long) LONG_VALUE.get(m));
     }
 
@@ -203,19 +203,19 @@ public class Main {
 
         // 0 OR X = X
         $noinline$assertLongEquals(0L, (long) LONG_VALUE.get(m));
-        m.$noinline$getAndBitwiseOr_Long(0b10101010);
+        $noinline$assertLongEquals(0L, m.$noinline$getAndBitwiseOr_Long(0b10101010));
         $noinline$assertLongEquals(0b10101010L, (long) LONG_VALUE.get(m));
 
         // 10101010 OR
         // 01010101 =
         // 11111111
-        m.$noinline$getAndBitwiseOr_Long(0b01010101);
+        $noinline$assertLongEquals(0b10101010L, m.$noinline$getAndBitwiseOr_Long(0b01010101));
         $noinline$assertLongEquals(0b11111111L, (long) LONG_VALUE.get(m));
 
         // 11111111 OR
         // 0 =
         // 11111111
-        m.$noinline$getAndBitwiseOr_Long(0);
+        $noinline$assertLongEquals(0b11111111L, m.$noinline$getAndBitwiseOr_Long(0));
         $noinline$assertLongEquals(0b11111111L, (long) LONG_VALUE.get(m));
 
         // Set to 0 due to precondition. See comment in main.
@@ -228,23 +228,23 @@ public class Main {
 
         // 0 XOR X = X
         $noinline$assertLongEquals(0L, (long) LONG_VALUE.get(m));
-        m.$noinline$getAndBitwiseXor_Long(0b10101010);
+        $noinline$assertLongEquals(0L, m.$noinline$getAndBitwiseXor_Long(0b10101010));
         $noinline$assertLongEquals(0b10101010L, (long) LONG_VALUE.get(m));
 
         // 10101010 XOR
         // 01010101 =
         // 11111111
-        m.$noinline$getAndBitwiseXor_Long(0b01010101);
+        $noinline$assertLongEquals(0b10101010L, m.$noinline$getAndBitwiseXor_Long(0b01010101));
         $noinline$assertLongEquals(0b11111111L, (long) LONG_VALUE.get(m));
 
         // 11111111 XOR
         // 01010101 =
         // 10101010
-        m.$noinline$getAndBitwiseXor_Long(0b01010101);
+        $noinline$assertLongEquals(0b11111111L, m.$noinline$getAndBitwiseXor_Long(0b01010101));
         $noinline$assertLongEquals(0b10101010L, (long) LONG_VALUE.get(m));
 
         // X XOR X = 0
-        m.$noinline$getAndBitwiseXor_Long(0b10101010);
+        $noinline$assertLongEquals(0b10101010L, m.$noinline$getAndBitwiseXor_Long(0b10101010));
         $noinline$assertLongEquals(0L, (long) LONG_VALUE.get(m));
     }
 
@@ -252,24 +252,24 @@ public class Main {
         Main m = new Main();
         // 0 + 100 = 100
         $noinline$assertFloatEquals(0.0f, (float) FLOAT_VALUE.get(m));
-        m.$noinline$getAndAdd_Float(100.0f);
+        $noinline$assertFloatEquals(0.0f, m.$noinline$getAndAdd_Float(100.0f));
         $noinline$assertFloatEquals(100.0f, (float) FLOAT_VALUE.get(m));
 
         // 100 - 100 = 0
-        m.$noinline$getAndAdd_Float(-100.0f);
+        $noinline$assertFloatEquals(100.0f, m.$noinline$getAndAdd_Float(-100.0f));
         $noinline$assertFloatEquals(0.0f, (float) FLOAT_VALUE.get(m));
     }
 
     private static void $noinline$testGetAndSet_Float() {
         Main m = new Main();
         $noinline$assertFloatEquals(0.0f, (float) FLOAT_VALUE.get(m));
-        m.$noinline$getAndSet_Float(100.0f);
+        $noinline$assertFloatEquals(0.0f, m.$noinline$getAndSet_Float(100.0f));
         $noinline$assertFloatEquals(100.0f, (float) FLOAT_VALUE.get(m));
 
-        m.$noinline$getAndSet_Float(-100.0f);
+        $noinline$assertFloatEquals(100.0f, m.$noinline$getAndSet_Float(-100.0f));
         $noinline$assertFloatEquals(-100.0f, (float) FLOAT_VALUE.get(m));
 
-        m.$noinline$getAndSet_Float(0.0f);
+        $noinline$assertFloatEquals(-100.0f, m.$noinline$getAndSet_Float(0.0f));
         $noinline$assertFloatEquals(0.0f, (float) FLOAT_VALUE.get(m));
     }
 
@@ -277,24 +277,24 @@ public class Main {
         Main m = new Main();
         // 0 + 100 = 100
         $noinline$assertDoubleEquals(0.0d, (double) DOUBLE_VALUE.get(m));
-        m.$noinline$getAndAdd_Double(100.0d);
+        $noinline$assertDoubleEquals(0.0d, m.$noinline$getAndAdd_Double(100.0d));
         $noinline$assertDoubleEquals(100.0d, (double) DOUBLE_VALUE.get(m));
 
         // 100 - 100 = 0
-        m.$noinline$getAndAdd_Double(-100.0d);
+        $noinline$assertDoubleEquals(100.0d, m.$noinline$getAndAdd_Double(-100.0d));
         $noinline$assertDoubleEquals(0.0d, (double) DOUBLE_VALUE.get(m));
     }
 
     private static void $noinline$testGetAndSet_Double() {
         Main m = new Main();
         $noinline$assertDoubleEquals(0.0d, (double) DOUBLE_VALUE.get(m));
-        m.$noinline$getAndSet_Double(100.0d);
+        $noinline$assertDoubleEquals(0.0d, m.$noinline$getAndSet_Double(100.0d));
         $noinline$assertDoubleEquals(100.0d, (double) DOUBLE_VALUE.get(m));
 
-        m.$noinline$getAndSet_Double(-100.0d);
+        $noinline$assertDoubleEquals(100.0d, m.$noinline$getAndSet_Double(-100.0d));
         $noinline$assertDoubleEquals(-100.0d, (double) DOUBLE_VALUE.get(m));
 
-        m.$noinline$getAndSet_Double(0.0d);
+        $noinline$assertDoubleEquals(-100.0d, m.$noinline$getAndSet_Double(0.0d));
         $noinline$assertDoubleEquals(0.0d, (double) DOUBLE_VALUE.get(m));
     }
 
@@ -346,119 +346,119 @@ public class Main {
     // Check that we successfully intrinsify intrinsics (e.g. getAndAdd) by checking that there's no
     // call to the runtime.
 
-    /// CHECK-START-{X86,X86_64}: void Main.$noinline$getAndAdd_Int(int) disassembly (after)
+    /// CHECK-START-{X86,X86_64}: int Main.$noinline$getAndAdd_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndAdd_Int(int) disassembly (after)
+    /// CHECK-START-ARM64: int Main.$noinline$getAndAdd_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndAdd_Int(int) disassembly (after)
+    /// CHECK-START-ARM64: int Main.$noinline$getAndAdd_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndAdd_Int(int) disassembly (after)
+    /// CHECK-START-RISCV64: int Main.$noinline$getAndAdd_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndAdd_Int(int value) {
-        INT_VALUE.getAndAdd(this, value);
+    /// CHECK:     Return
+    private int $noinline$getAndAdd_Int(int value) {
+        return (int) INT_VALUE.getAndAdd(this, value);
     }
 
-    /// CHECK-START-{X86,X86_64}: void Main.$noinline$getAndSet_Int(int) disassembly (after)
+    /// CHECK-START-{X86,X86_64}: int Main.$noinline$getAndSet_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndSet_Int(int) disassembly (after)
+    /// CHECK-START-ARM64: int Main.$noinline$getAndSet_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndSet_Int(int) disassembly (after)
+    /// CHECK-START-ARM64: int Main.$noinline$getAndSet_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndSet_Int(int) disassembly (after)
+    /// CHECK-START-RISCV64: int Main.$noinline$getAndSet_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndSet_Int(int value) {
-        INT_VALUE.getAndSet(this, value);
+    /// CHECK:     Return
+    private int $noinline$getAndSet_Int(int value) {
+        return (int) INT_VALUE.getAndSet(this, value);
     }
 
-    /// CHECK-START-{X86,X86_64}: void Main.$noinline$getAndBitwiseAnd_Int(int) disassembly (after)
+    /// CHECK-START-{X86,X86_64}: int Main.$noinline$getAndBitwiseAnd_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseAnd
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseAnd_Int(int) disassembly (after)
+    /// CHECK-START-ARM64: int Main.$noinline$getAndBitwiseAnd_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseAnd
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseAnd_Int(int) disassembly (after)
+    /// CHECK-START-ARM64: int Main.$noinline$getAndBitwiseAnd_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseAnd
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndBitwiseAnd_Int(int) disassembly (after)
+    /// CHECK-START-RISCV64: int Main.$noinline$getAndBitwiseAnd_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseAnd
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndBitwiseAnd_Int(int value) {
-        INT_VALUE.getAndBitwiseAnd(this, value);
+    /// CHECK:     Return
+    private int $noinline$getAndBitwiseAnd_Int(int value) {
+        return (int) INT_VALUE.getAndBitwiseAnd(this, value);
     }
 
-    /// CHECK-START-{X86,X86_64}: void Main.$noinline$getAndBitwiseOr_Int(int) disassembly (after)
+    /// CHECK-START-{X86,X86_64}: int Main.$noinline$getAndBitwiseOr_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseOr
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseOr_Int(int) disassembly (after)
+    /// CHECK-START-ARM64: int Main.$noinline$getAndBitwiseOr_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseOr
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseOr_Int(int) disassembly (after)
+    /// CHECK-START-ARM64: int Main.$noinline$getAndBitwiseOr_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseOr
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndBitwiseOr_Int(int) disassembly (after)
+    /// CHECK-START-RISCV64: int Main.$noinline$getAndBitwiseOr_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseOr
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndBitwiseOr_Int(int value) {
-        INT_VALUE.getAndBitwiseOr(this, value);
+    /// CHECK:     Return
+    private int $noinline$getAndBitwiseOr_Int(int value) {
+        return (int) INT_VALUE.getAndBitwiseOr(this, value);
     }
 
-    /// CHECK-START-{X86,X86_64}: void Main.$noinline$getAndBitwiseXor_Int(int) disassembly (after)
+    /// CHECK-START-{X86,X86_64}: int Main.$noinline$getAndBitwiseXor_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseXor
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseXor_Int(int) disassembly (after)
+    /// CHECK-START-ARM64: int Main.$noinline$getAndBitwiseXor_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseXor
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseXor_Int(int) disassembly (after)
+    /// CHECK-START-ARM64: int Main.$noinline$getAndBitwiseXor_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseXor
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndBitwiseXor_Int(int) disassembly (after)
+    /// CHECK-START-RISCV64: int Main.$noinline$getAndBitwiseXor_Int(int) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseXor
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndBitwiseXor_Int(int value) {
-        INT_VALUE.getAndBitwiseXor(this, value);
+    /// CHECK:     Return
+    private int $noinline$getAndBitwiseXor_Int(int value) {
+        return (int) INT_VALUE.getAndBitwiseXor(this, value);
     }
 
     private static void $noinline$assertIntEquals(int expected, int result) {
@@ -470,144 +470,144 @@ public class Main {
     // Note that the Long ones do a call for X86.
     // TODO(solanes): Add this support.
 
-    /// CHECK-START-X86: void Main.$noinline$getAndAdd_Long(long) disassembly (after)
+    /// CHECK-START-X86: long Main.$noinline$getAndAdd_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK:     call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-X86_64: void Main.$noinline$getAndAdd_Long(long) disassembly (after)
+    /// CHECK-START-X86_64: long Main.$noinline$getAndAdd_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndAdd_Long(long) disassembly (after)
+    /// CHECK-START-ARM64: long Main.$noinline$getAndAdd_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndAdd_Long(long) disassembly (after)
+    /// CHECK-START-ARM64: long Main.$noinline$getAndAdd_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndAdd_Long(long) disassembly (after)
+    /// CHECK-START-RISCV64: long Main.$noinline$getAndAdd_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndAdd_Long(long value) {
-        LONG_VALUE.getAndAdd(this, value);
+    /// CHECK:     Return
+    private long $noinline$getAndAdd_Long(long value) {
+        return (long) LONG_VALUE.getAndAdd(this, value);
     }
 
-    /// CHECK-START-X86: void Main.$noinline$getAndSet_Long(long) disassembly (after)
+    /// CHECK-START-X86: long Main.$noinline$getAndSet_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK:     call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-X86_64: void Main.$noinline$getAndSet_Long(long) disassembly (after)
+    /// CHECK-START-X86_64: long Main.$noinline$getAndSet_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndSet_Long(long) disassembly (after)
+    /// CHECK-START-ARM64: long Main.$noinline$getAndSet_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndSet_Long(long) disassembly (after)
+    /// CHECK-START-ARM64: long Main.$noinline$getAndSet_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndSet_Long(long) disassembly (after)
+    /// CHECK-START-RISCV64: long Main.$noinline$getAndSet_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndSet_Long(long value) {
-        LONG_VALUE.getAndSet(this, value);
+    /// CHECK:     Return
+    private long $noinline$getAndSet_Long(long value) {
+        return (long) LONG_VALUE.getAndSet(this, value);
     }
 
-    /// CHECK-START-X86: void Main.$noinline$getAndBitwiseAnd_Long(long) disassembly (after)
+    /// CHECK-START-X86: long Main.$noinline$getAndBitwiseAnd_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseAnd
     /// CHECK:     call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-X86_64: void Main.$noinline$getAndBitwiseAnd_Long(long) disassembly (after)
+    /// CHECK-START-X86_64: long Main.$noinline$getAndBitwiseAnd_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseAnd
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseAnd_Long(long) disassembly (after)
+    /// CHECK-START-ARM64: long Main.$noinline$getAndBitwiseAnd_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseAnd
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseAnd_Long(long) disassembly (after)
+    /// CHECK-START-ARM64: long Main.$noinline$getAndBitwiseAnd_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseAnd
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndBitwiseAnd_Long(long) disassembly (after)
+    /// CHECK-START-RISCV64: long Main.$noinline$getAndBitwiseAnd_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseAnd
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndBitwiseAnd_Long(long value) {
-        LONG_VALUE.getAndBitwiseAnd(this, value);
+    /// CHECK:     Return
+    private long $noinline$getAndBitwiseAnd_Long(long value) {
+        return (long) LONG_VALUE.getAndBitwiseAnd(this, value);
     }
 
-    /// CHECK-START-X86: void Main.$noinline$getAndBitwiseOr_Long(long) disassembly (after)
+    /// CHECK-START-X86: long Main.$noinline$getAndBitwiseOr_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseOr
     /// CHECK:     call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-X86_64: void Main.$noinline$getAndBitwiseOr_Long(long) disassembly (after)
+    /// CHECK-START-X86_64: long Main.$noinline$getAndBitwiseOr_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseOr
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseOr_Long(long) disassembly (after)
+    /// CHECK-START-ARM64: long Main.$noinline$getAndBitwiseOr_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseOr
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseOr_Long(long) disassembly (after)
+    /// CHECK-START-ARM64: long Main.$noinline$getAndBitwiseOr_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseOr
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndBitwiseOr_Long(long) disassembly (after)
+    /// CHECK-START-RISCV64: long Main.$noinline$getAndBitwiseOr_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseOr
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndBitwiseOr_Long(long value) {
-        LONG_VALUE.getAndBitwiseOr(this, value);
+    /// CHECK:     Return
+    private long $noinline$getAndBitwiseOr_Long(long value) {
+        return (long) LONG_VALUE.getAndBitwiseOr(this, value);
     }
 
-    /// CHECK-START-X86: void Main.$noinline$getAndBitwiseXor_Long(long) disassembly (after)
+    /// CHECK-START-X86: long Main.$noinline$getAndBitwiseXor_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseXor
     /// CHECK:     call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-X86_64: void Main.$noinline$getAndBitwiseXor_Long(long) disassembly (after)
+    /// CHECK-START-X86_64: long Main.$noinline$getAndBitwiseXor_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseXor
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseXor_Long(long) disassembly (after)
+    /// CHECK-START-ARM64: long Main.$noinline$getAndBitwiseXor_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseXor
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndBitwiseXor_Long(long) disassembly (after)
+    /// CHECK-START-ARM64: long Main.$noinline$getAndBitwiseXor_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseXor
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndBitwiseXor_Long(long) disassembly (after)
+    /// CHECK-START-RISCV64: long Main.$noinline$getAndBitwiseXor_Long(long) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndBitwiseXor
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndBitwiseXor_Long(long value) {
-        LONG_VALUE.getAndBitwiseXor(this, value);
+    /// CHECK:     Return
+    private long $noinline$getAndBitwiseXor_Long(long value) {
+        return (long) LONG_VALUE.getAndBitwiseXor(this, value);
     }
 
     private static void $noinline$assertLongEquals(long expected, long result) {
@@ -616,50 +616,50 @@ public class Main {
         }
     }
 
-    /// CHECK-START-{X86,X86_64}: void Main.$noinline$getAndAdd_Float(float) disassembly (after)
+    /// CHECK-START-{X86,X86_64}: float Main.$noinline$getAndAdd_Float(float) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndAdd_Float(float) disassembly (after)
+    /// CHECK-START-ARM64: float Main.$noinline$getAndAdd_Float(float) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndAdd_Float(float) disassembly (after)
+    /// CHECK-START-ARM64: float Main.$noinline$getAndAdd_Float(float) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndAdd_Float(float) disassembly (after)
+    /// CHECK-START-RISCV64: float Main.$noinline$getAndAdd_Float(float) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndAdd_Float(float value) {
-        FLOAT_VALUE.getAndAdd(this, value);
+    /// CHECK:     Return
+    private float $noinline$getAndAdd_Float(float value) {
+        return (float) FLOAT_VALUE.getAndAdd(this, value);
     }
 
-    /// CHECK-START-{X86,X86_64}: void Main.$noinline$getAndSet_Float(float) disassembly (after)
+    /// CHECK-START-{X86,X86_64}: float Main.$noinline$getAndSet_Float(float) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndSet_Float(float) disassembly (after)
+    /// CHECK-START-ARM64: float Main.$noinline$getAndSet_Float(float) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndSet_Float(float) disassembly (after)
+    /// CHECK-START-ARM64: float Main.$noinline$getAndSet_Float(float) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndSet_Float(float) disassembly (after)
+    /// CHECK-START-RISCV64: float Main.$noinline$getAndSet_Float(float) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndSet_Float(float value) {
-        FLOAT_VALUE.getAndSet(this, value);
+    /// CHECK:     Return
+    private float $noinline$getAndSet_Float(float value) {
+        return (float) FLOAT_VALUE.getAndSet(this, value);
     }
 
     private static void $noinline$assertFloatEquals(float expected, float result) {
@@ -671,60 +671,60 @@ public class Main {
     // Note that the Double ones do a call for X86.
     // TODO(solanes): Add this support.
 
-    /// CHECK-START-X86: void Main.$noinline$getAndAdd_Double(double) disassembly (after)
+    /// CHECK-START-X86: double Main.$noinline$getAndAdd_Double(double) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK:     call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-X86_64: void Main.$noinline$getAndAdd_Double(double) disassembly (after)
+    /// CHECK-START-X86_64: double Main.$noinline$getAndAdd_Double(double) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndAdd_Double(double) disassembly (after)
+    /// CHECK-START-ARM64: double Main.$noinline$getAndAdd_Double(double) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndAdd_Double(double) disassembly (after)
+    /// CHECK-START-ARM64: double Main.$noinline$getAndAdd_Double(double) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndAdd_Double(double) disassembly (after)
+    /// CHECK-START-RISCV64: double Main.$noinline$getAndAdd_Double(double) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndAdd
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndAdd_Double(double value) {
-        DOUBLE_VALUE.getAndAdd(this, value);
+    /// CHECK:     Return
+    private double $noinline$getAndAdd_Double(double value) {
+        return (double) DOUBLE_VALUE.getAndAdd(this, value);
     }
 
-    /// CHECK-START-X86: void Main.$noinline$getAndSet_Double(double) disassembly (after)
+    /// CHECK-START-X86: double Main.$noinline$getAndSet_Double(double) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK:     call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-X86_64: void Main.$noinline$getAndSet_Double(double) disassembly (after)
+    /// CHECK-START-X86_64: double Main.$noinline$getAndSet_Double(double) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: call
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndSet_Double(double) disassembly (after)
+    /// CHECK-START-ARM64: double Main.$noinline$getAndSet_Double(double) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: blx
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-ARM64: void Main.$noinline$getAndSet_Double(double) disassembly (after)
+    /// CHECK-START-ARM64: double Main.$noinline$getAndSet_Double(double) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: blr
-    /// CHECK:     ReturnVoid
+    /// CHECK:     Return
 
-    /// CHECK-START-RISCV64: void Main.$noinline$getAndSet_Double(double) disassembly (after)
+    /// CHECK-START-RISCV64: double Main.$noinline$getAndSet_Double(double) disassembly (after)
     /// CHECK:     InvokePolymorphic intrinsic:VarHandleGetAndSet
     /// CHECK-NOT: jalr
-    /// CHECK:     ReturnVoid
-    private void $noinline$getAndSet_Double(double value) {
-        DOUBLE_VALUE.getAndSet(this, value);
+    /// CHECK:     Return
+    private double $noinline$getAndSet_Double(double value) {
+        return (double) DOUBLE_VALUE.getAndSet(this, value);
     }
 
     private static void $noinline$assertDoubleEquals(double expected, double result) {

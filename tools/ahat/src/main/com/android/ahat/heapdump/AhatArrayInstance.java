@@ -190,7 +190,7 @@ public class AhatArrayInstance extends AhatInstance {
       return 0;
     }
 
-    return Value.getType(mValues.get(0)).size(mRefSize) * getLength();
+    return (long) Value.getType(mValues.get(0)).size(mRefSize) * getLength();
   }
 
   /**
@@ -224,7 +224,7 @@ public class AhatArrayInstance extends AhatInstance {
   }
 
   @Override
-  Iterable<Reference> getReferences() {
+  public Iterable<Reference> getReferences() {
     // The list of references will be empty if this is a primitive array.
     List<Reference> refs = Collections.emptyList();
     if (!mValues.isEmpty()) {
@@ -252,7 +252,7 @@ public class AhatArrayInstance extends AhatInstance {
         };
       }
     }
-    return new SkipNullsIterator(refs);
+    return new SkipNullsIterable<>(refs);
   }
 
   @Override public boolean isArrayInstance() {

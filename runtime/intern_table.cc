@@ -211,6 +211,11 @@ ObjPtr<mirror::String> InternTable::Insert(ObjPtr<mirror::String> s,
   DCHECK_EQ(hash, static_cast<uint32_t>(s->GetStoredHashCode()));
   DCHECK_IMPLIES(hash == 0u, s->ComputeHashCode() == 0);
   Thread* const self = Thread::Current();
+  if (kObjPtrPoisoning) {
+    StackHandleScope<1> hs(self);
+    HandleWrapperObjPtr<mirror::String> s_wrapper = hs.NewHandleWrapper(&s);
+    self->PoisonObjectPointers();
+  }
   MutexLock mu(self, *Locks::intern_table_lock_);
   if (kDebugLocking) {
     Locks::mutator_lock_->AssertSharedHeld(self);
@@ -258,6 +263,7 @@ ObjPtr<mirror::String> InternTable::Intern(
   DCHECK(utf8_data != nullptr);
   uint32_t hash = Utf8String::Hash(utf16_length, utf8_data);
   Thread* self = Thread::Current();
+  self->PoisonObjectPointers();
   ObjPtr<mirror::String> s;
   size_t num_searched_strong_frozen_tables;
   {
@@ -313,6 +319,7 @@ void InternTable::SweepInternTableWeaks(IsMarkedVisitor* visitor) {
 }
 
 void InternTable::Table::Remove(ObjPtr<mirror::String> s, uint32_t hash) {
+  DCHECK(Locks::mutator_lock_->IsSharedHeld(Thread::Current()));
   // Note: We can remove weak interns even from frozen tables when promoting to strong interns.
   // We can remove strong interns only for a transaction rollback.
   for (InternalTable& table : tables_) {
@@ -329,7 +336,7 @@ FLATTEN
 ObjPtr<mirror::String> InternTable::Table::Find(ObjPtr<mirror::String> s,
                                                 uint32_t hash,
                                                 size_t num_searched_frozen_tables) {
-  Locks::intern_table_lock_->AssertHeld(Thread::Current());
+  DCHECK(Locks::mutator_lock_->IsSharedHeld(Thread::Current()));
   auto mid = tables_.begin() + num_searched_frozen_tables;
   for (Table::InternalTable& table : MakeIterationRange(tables_.begin(), mid)) {
     DCHECK(table.set_.FindWithHash(GcRoot<mirror::String>(s), hash) == table.set_.end());
@@ -369,6 +376,7 @@ void InternTable::Table::AddNewTable() {
 }
 
 void InternTable::Table::Insert(ObjPtr<mirror::String> s, uint32_t hash) {
+  DCHECK(Locks::mutator_lock_->IsSharedHeld(Thread::Current()));
   // Always insert the last table, the image tables are before and we avoid inserting into these
   // to prevent dirty pages.
   DCHECK(!tables_.empty());

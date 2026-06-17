@@ -14,7 +14,63 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Builds and packages ART host tools for linux-x86.
+#
+# Usage:
+#   build-linux-x86-host-tools.sh [options]
+#
+# Options:
+#   --stage=host_binaries  Build only the host binaries.
+#   --stage=art_release    Build only the ART release.
+#   --stage=package        Package the host tools.
+#
+# If the user doesn't specify any flags, they will all be run in the order
+# (art release -> binaries -> packaging).
+# If multiple flags are used, the script will run them in the correct order e.g.
+# build-linux-x86-host-tools.sh --stage=packaging --stage=art_release
+# will build the art_release and then the packaging stage. In this example,
+# it is the user's responsibility to have built the host binaries beforehand.
+
 set -e
+
+# Flags used to store which stages are run.
+BUILD_HOST_BINARIES=false
+BUILD_ART_RELEASE=false
+PACKAGE=false
+
+# Check if any stage is specified
+STAGE_SPECIFIED=false
+for arg in "$@"
+do
+    case $arg in
+        --stage=*)
+        STAGE_SPECIFIED=true
+        break
+        ;;
+    esac
+done
+
+# Default to all stages if no stage argument is provided
+if [ "$STAGE_SPECIFIED" = false ]; then
+    BUILD_HOST_BINARIES=true
+    BUILD_ART_RELEASE=true
+    PACKAGE=true
+else
+    for arg in "$@"
+    do
+        case $arg in
+            --stage=host_binaries)
+            BUILD_HOST_BINARIES=true
+            ;;
+            --stage=art_release)
+            BUILD_ART_RELEASE=true
+            ;;
+            --stage=package)
+            PACKAGE=true
+            ;;
+        esac
+    done
+fi
 
 if [ ! -e 'build/make/core/Makefile' ]; then
   echo "Script $0 needs to be run at the root of the android tree"
@@ -48,21 +104,39 @@ SOURCE_FILES=(
   system/apex/proto/apex_manifest.proto
 )
 
-# Build statically linked musl binaries for linux-x86 hosts without the
-# standard glibc implementation.
-build/soong/soong_ui.bash --make-mode USE_HOST_MUSL=true BUILD_HOST_static=true ${HOST_BINARIES[*]}
-# Zip these binaries in a temporary file
-prebuilts/build-tools/linux-x86/bin/soong_zip -o "${DIST_DIR}/temp-host-tools.zip" \
-  -j ${HOST_BINARIES[*]/#/-f } ${SOURCE_FILES[*]/#/-f }
+if [ "$BUILD_ART_RELEASE" = true ]; then
+  echo "Building ART Release"
+  # Build art_release.zip and copy only art jars in a temporary zip
+  build/soong/soong_ui.bash --make-mode dist "${DIST_DIR}/art_release.zip"
+  prebuilts/build-tools/linux-x86/bin/zip2zip -i "${DIST_DIR}/art_release.zip" \
+    -o "${DIST_DIR}/temp-art-jars.zip" "bootjars/*" "licenses/*/*"
+  rm -f "${DIST_DIR}/art_release.zip"
+fi
 
-# Build art_release.zip and copy only art jars in a temporary zip
-build/soong/soong_ui.bash --make-mode dist "${DIST_DIR}/art_release.zip"
-prebuilts/build-tools/linux-x86/bin/zip2zip -i "${DIST_DIR}/art_release.zip" \
-  -o "${DIST_DIR}/temp-art-jars.zip" "bootjars/*" "licenses/*/*"
+if [ "$BUILD_HOST_BINARIES" = true ]; then
+  echo "Building Host Binaries"
+  # Build statically linked musl binaries for linux-x86 hosts without the
+  # standard glibc implementation.
+  build/soong/soong_ui.bash --make-mode USE_HOST_MUSL=true BUILD_HOST_static=true ${HOST_BINARIES[*]}
+  # Zip these binaries in a temporary file
+  prebuilts/build-tools/linux-x86/bin/soong_zip -o "${DIST_DIR}/temp-host-tools.zip" \
+    -j ${HOST_BINARIES[*]/#/-f } ${SOURCE_FILES[*]/#/-f }
+fi
 
-# Merge both temporary zips into output zip
-prebuilts/build-tools/linux-x86/bin/merge_zips "${DIST_DIR}/art-host-tools-linux-x86.zip" \
-  "${DIST_DIR}/temp-host-tools.zip" "${DIST_DIR}/temp-art-jars.zip"
+if [ "$PACKAGE" = true ]; then
+  echo "Packaging Host Tools"
+  if [ ! -f "${DIST_DIR}/temp-host-tools.zip" ]; then
+    echo "Error: Missing ${DIST_DIR}/temp-host-tools.zip for packaging."
+    exit 1
+  fi
+  if [ ! -f "${DIST_DIR}/temp-art-jars.zip" ]; then
+    echo "Error: Missing ${DIST_DIR}/temp-art-jars.zip for packaging."
+    exit 1
+  fi
+  # Merge both temporary zips into output zip
+  prebuilts/build-tools/linux-x86/bin/merge_zips "${DIST_DIR}/art-host-tools-linux-x86.zip" \
+    "${DIST_DIR}/temp-host-tools.zip" "${DIST_DIR}/temp-art-jars.zip"
 
-# Delete temporary zips
-rm "${DIST_DIR}/temp-host-tools.zip" "${DIST_DIR}/temp-art-jars.zip"
+  # Delete temporary zips
+  rm "${DIST_DIR}/temp-host-tools.zip" "${DIST_DIR}/temp-art-jars.zip"
+fi

@@ -2211,15 +2211,22 @@ public class Main {
   /// CHECK-DAG: <<Const3:i\d+>> IntConstant 3
   /// CHECK-DAG:                 ArraySet
   /// CHECK-DAG:                 ArraySet
-  /// CHECK-DAG: <<Phi:i\d+>>    Phi [<<Arg1:i\d+>>,<<Arg2:i\d+>>]
-  /// CHECK-DAG:                 Return [<<Phi>>]
-  /// CHECK-DAG: <<Sub:i\d+>>    Sub [<<Const3>>,<<Phi>>]
-  /// CHECK-DAG:                 Return [<<Sub>>]
-  /// CHECK-EVAL: set(["<<Arg1>>","<<Arg2>>"]) == set(["<<Const1>>","<<Const2>>"])
+  /// CHECK-DAG: <<Sub:i\d+>>    Sub [<<Const3>>,<<Phi:i\d+>>]
+  /// CHECK-DAG: <<Phi>>         Phi [<<PhiArg1:i\d+>>,<<PhiArg2:i\d+>>]
+  // TODO: Due to missing flagging support in checker, this checker test is disabled.
+  // Enable it when we implement flagging support or during the flag cleanup for
+  // `com::android::art::rw::flags::packed_switch_simplification()`.
+  // CHECK-DAG: <<Phi2:i\d+>>   Phi [<<Phi2Arg1:i\d+>>,<<Phi2Arg2:i\d+>>]
+  // CHECK-EVAL: set(["<<PhiArg1>>","<<PhiArg2>>"]) == set(["<<Const1>>","<<Const2>>"])
+  // CHECK-EVAL: set(["<<Phi2Arg1>>","<<Phi2Arg2>>"]) == set(["<<Phi>>","<<Sub>>"])
 
   /// CHECK-START: int Main.testLocalArrayMerge6(int[], boolean, boolean) load_store_elimination (after)
   /// CHECK:                     Phi
-  /// CHECK-NOT:                 Phi
+  // TODO: Due to missing flagging support in checker, this checker test is disabled.
+  // Enable it when we implement flagging support or during the flag cleanup for
+  // `com::android::art::rw::flags::packed_switch_simplification()`.
+  // CHECK:                     Phi
+  // CHECK-NOT:                 Phi
 
   /// CHECK-START: int Main.testLocalArrayMerge6(int[], boolean, boolean) load_store_elimination (after)
   /// CHECK-NOT:                 ArrayGet

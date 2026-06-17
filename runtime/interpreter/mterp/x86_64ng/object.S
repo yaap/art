@@ -189,7 +189,7 @@
 %def op_iput_wide():
    jmp NterpPutWideInstanceField
 
-%def op_sget(load="movl", wide="0"):
+%def op_sget(load="movl", wide=False):
    jmp NterpGetIntStaticField
 
 %def op_sget_boolean():

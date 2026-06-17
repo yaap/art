@@ -24,6 +24,9 @@ import android.system.ErrnoException;
 
 import androidx.annotation.RequiresApi;
 
+import com.android.server.art.utils.ArtdRefCache;
+import com.android.server.art.utils.Utils;
+
 import dalvik.system.VMRuntime;
 
 import java.io.FileDescriptor;

@@ -82,14 +82,14 @@ class TimestampCounter {
   static void InitializeTimestampCounters() {
     // It is sufficient to initialize this once for the entire execution. Just return if it is
     // already initialized.
-    if (tsc_to_nanosec_scaling_factor > 0.0) {
+    if (tsc_to_nanosec_scaling_factor_ > 0.0) {
       return;
     }
 
 #if defined(__arm__)
     // On ARM 32 bit, we don't always have access to the timestamp counters from
     // user space. Seem comment in GetTimestamp for more details.
-    tsc_to_nanosec_scaling_factor = 1.0;
+    tsc_to_nanosec_scaling_factor_ = 1.0;
 #elif defined(__aarch64__)
     uint64_t freq = 0;
     // See Arm Architecture Registers  Armv8 section System Registers
@@ -97,21 +97,23 @@ class TimestampCounter {
     if (freq == 0) {
       // It is expected that cntfrq_el0 is correctly setup during system initialization but some
       // devices don't do this. In such cases fall back to computing the frequency. See b/315139000.
-      tsc_to_nanosec_scaling_factor = computeScalingFactor();
+      tsc_to_nanosec_scaling_factor_ = computeScalingFactor();
     } else {
-      tsc_to_nanosec_scaling_factor = kSecondsToNanoseconds / static_cast<double>(freq);
+      tsc_to_nanosec_scaling_factor_ = kSecondsToNanoseconds / static_cast<double>(freq);
     }
 #elif defined(__i386__) || defined(__x86_64__)
-    tsc_to_nanosec_scaling_factor = GetScalingFactorForX86();
+    tsc_to_nanosec_scaling_factor_ = GetScalingFactorForX86();
 #else
-    tsc_to_nanosec_scaling_factor = 1.0;
+    tsc_to_nanosec_scaling_factor_ = 1.0;
 #endif
   }
 
   static ALWAYS_INLINE uint64_t GetNanoTime(uint64_t counter) {
-    DCHECK(tsc_to_nanosec_scaling_factor > 0.0) << tsc_to_nanosec_scaling_factor;
-    return tsc_to_nanosec_scaling_factor * counter;
+    DCHECK(tsc_to_nanosec_scaling_factor_ > 0.0) << tsc_to_nanosec_scaling_factor_;
+    return tsc_to_nanosec_scaling_factor_ * counter;
   }
+
+  static uint64_t GetFrequency() { return kSecondsToNanoseconds / tsc_to_nanosec_scaling_factor_; }
 
  private:
 #if defined(__i386__) || defined(__x86_64__) || defined(__aarch64__)
@@ -174,7 +176,7 @@ class TimestampCounter {
   // Scaling factor to convert timestamp counter into wall clock time reported in nano seconds.
   // This is initialized at the start of tracing using the timestamp counter update frequency.
   // See InitializeTimestampCounters for more details.
-  static double tsc_to_nanosec_scaling_factor;
+  static double tsc_to_nanosec_scaling_factor_;
 };
 
 }  // namespace art

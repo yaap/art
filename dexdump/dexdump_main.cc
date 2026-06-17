@@ -113,6 +113,7 @@ int dexdumpDriver(int argc, char** argv) {
         break;
       case 'n':  // don't display debug information
         gOptions.showDebugInfo = false;
+        gOptions.verbose = false;
         break;
       case 'o':  // output file
         gOptions.outputFileName = optarg;

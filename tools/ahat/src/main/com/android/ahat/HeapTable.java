@@ -78,7 +78,7 @@ class HeapTable {
     doc.table(DocString.text(config.getHeapsDescription()), subcols, cols);
 
     // Print the entries up to the selected limit.
-    SubsetSelector<T> selector = new SubsetSelector(query, id, elements);
+    SubsetSelector<T> selector = new SubsetSelector<>(query, id, elements);
     ArrayList<DocString> vals = new ArrayList<DocString>();
     for (T elem : selector.selected()) {
       T base = elem.getBaseline();
@@ -136,7 +136,7 @@ class HeapTable {
       vals.add(DocString.size(total, false));
       vals.add(DocString.delta(false, false, total, basetotal));
 
-      for (ValueConfig<T> value : values) {
+      for (int i = 0; i < values.size(); i++) {
         vals.add(DocString.text("..."));
       }
       doc.row(vals.toArray(new DocString[0]));

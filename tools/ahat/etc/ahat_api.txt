@@ -1,4 +1,5 @@
-// Signature format: 2.0
+// Signature format: 6.0
+// - style=java
 package com.android.ahat {
 
   public class Main {
@@ -10,9 +11,9 @@ package com.android.ahat {
 package com.android.ahat.dominators {
 
   public class Dominators<Node> {
-    ctor public Dominators(com.android.ahat.dominators.Dominators.Graph);
+    ctor public Dominators(com.android.ahat.dominators.Dominators.Graph<Node>);
     method public void computeDominators(Node);
-    method public com.android.ahat.dominators.Dominators progress(com.android.ahat.progress.Progress, long);
+    method public com.android.ahat.dominators.Dominators<Node> progress(com.android.ahat.progress.Progress, long);
   }
 
   public static interface Dominators.Graph<Node> {
@@ -29,7 +30,7 @@ package com.android.ahat.dominators {
 
   @Deprecated public static interface DominatorsComputation.Node {
     method @Deprecated public Object getDominatorsComputationState();
-    method @Deprecated public Iterable<? extends Node> getReferencesForDominators();
+    method @Deprecated public Iterable<? extends com.android.ahat.dominators.DominatorsComputation.Node> getReferencesForDominators();
     method @Deprecated public void setDominator(com.android.ahat.dominators.DominatorsComputation.Node);
     method @Deprecated public void setDominatorsComputationState(Object);
   }
@@ -40,13 +41,36 @@ package com.android.ahat.heapdump {
 
   public class AhatArrayInstance extends com.android.ahat.heapdump.AhatInstance {
     method public int getLength();
+    method public Iterable<com.android.ahat.heapdump.Reference> getReferences();
     method public com.android.ahat.heapdump.Value getValue(int);
-    method public List<Value> getValues();
+    method public java.util.List<com.android.ahat.heapdump.Value> getValues();
     method public String toString();
   }
 
+  public class AhatBitmapInstance extends com.android.ahat.heapdump.AhatClassInstance implements Comparable<com.android.ahat.heapdump.AhatBitmapInstance> {
+    method public int compareTo(com.android.ahat.heapdump.AhatBitmapInstance);
+    method public static java.util.List<java.util.List<com.android.ahat.heapdump.AhatBitmapInstance>> findDuplicates(com.android.ahat.heapdump.AhatBitmapInstance.BitmapDumpData);
+    method public com.android.ahat.heapdump.AhatBitmapInstance.Bitmap getBitmap();
+  }
+
+  public static class AhatBitmapInstance.Bitmap {
+    ctor public AhatBitmapInstance.Bitmap(String, byte[], java.awt.image.BufferedImage);
+    field public byte[] buffer;
+    field public String format;
+    field public java.awt.image.BufferedImage image;
+  }
+
+  public static class AhatBitmapInstance.BitmapDumpData {
+  }
+
   public class AhatClassInstance extends com.android.ahat.heapdump.AhatInstance {
-    method public Iterable<FieldValue> getInstanceFields();
+    method public static com.android.ahat.heapdump.AhatClassInstance create(com.android.ahat.heapdump.AhatClassObj, long);
+    method protected com.android.ahat.heapdump.AhatArrayInstance getArrayField(String);
+    method protected byte[] getByteArrayField(String);
+    method public Iterable<com.android.ahat.heapdump.FieldValue> getInstanceFields();
+    method protected Integer getIntField(String, Integer);
+    method protected Long getLongField(String, Long);
+    method public Iterable<com.android.ahat.heapdump.Reference> getReferences();
     method public String toString();
   }
 
@@ -55,8 +79,11 @@ package com.android.ahat.heapdump {
     method public com.android.ahat.heapdump.Field[] getInstanceFields();
     method public long getInstanceSize();
     method public String getName();
-    method public List<FieldValue> getStaticFieldValues();
+    method public Iterable<com.android.ahat.heapdump.Reference> getReferences();
+    method public com.android.ahat.heapdump.Value getStaticField(String);
+    method public java.util.List<com.android.ahat.heapdump.FieldValue> getStaticFieldValues();
     method public com.android.ahat.heapdump.AhatClassObj getSuperClassObj();
+    method public boolean isSubClassOf(String);
     method public String toString();
   }
 
@@ -69,11 +96,13 @@ package com.android.ahat.heapdump {
 
   public abstract class AhatInstance implements com.android.ahat.heapdump.Diffable<com.android.ahat.heapdump.AhatInstance> {
     method public com.android.ahat.heapdump.AhatArrayInstance asArrayInstance();
-    method public BufferedImage asBitmap();
+    method public com.android.ahat.heapdump.AhatBitmapInstance asBitmapInstance();
+    method public byte[] asByteArray();
     method public com.android.ahat.heapdump.AhatClassInstance asClassInstance();
     method public com.android.ahat.heapdump.AhatClassObj asClassObj();
-    method public String asString(int);
+    method public com.android.ahat.heapdump.AhatMessageInstance asMessageInstance();
     method public String asString();
+    method public String asString(int);
     method public com.android.ahat.heapdump.AhatInstance getAssociatedBitmapInstance();
     method public com.android.ahat.heapdump.AhatClassObj getAssociatedClassForOverhead();
     method public com.android.ahat.heapdump.AhatInstance getBaseline();
@@ -83,44 +112,85 @@ package com.android.ahat.heapdump {
     method public String getClassName();
     method public com.android.ahat.heapdump.AhatClassObj getClassObj();
     method public String getDexCacheLocation(int);
-    method public List<AhatInstance> getDominated();
+    method public java.util.List<com.android.ahat.heapdump.AhatInstance> getDominated();
     method public com.android.ahat.heapdump.Value getField(String);
-    method @Deprecated public List<AhatInstance> getHardReverseReferences();
+    method @Deprecated public java.util.List<com.android.ahat.heapdump.AhatInstance> getHardReverseReferences();
     method public com.android.ahat.heapdump.AhatHeap getHeap();
     method public long getId();
     method public com.android.ahat.heapdump.AhatInstance getImmediateDominator();
-    method public List<PathElement> getPathFromGcRoot();
+    method public java.util.List<com.android.ahat.heapdump.PathElement> getPathFromGcRoot();
     method public com.android.ahat.heapdump.Reachability getReachability();
     method public com.android.ahat.heapdump.AhatInstance getRefField(String);
+    method public abstract Iterable<com.android.ahat.heapdump.Reference> getReferences();
     method public com.android.ahat.heapdump.AhatInstance getReferent();
     method public com.android.ahat.heapdump.Size getRetainedSize(com.android.ahat.heapdump.AhatHeap);
-    method public List<AhatInstance> getReverseReferences();
-    method public Collection<RootType> getRootTypes();
+    method public java.util.List<com.android.ahat.heapdump.AhatInstance> getReverseReferences();
+    method public java.util.Collection<com.android.ahat.heapdump.RootType> getRootTypes();
+    method public java.util.List<com.android.ahat.heapdump.PathElement> getSamplePath();
     method public com.android.ahat.heapdump.Site getSite();
     method public com.android.ahat.heapdump.Size getSize();
-    method @Deprecated public List<AhatInstance> getSoftReverseReferences();
+    method @Deprecated public java.util.List<com.android.ahat.heapdump.AhatInstance> getSoftReverseReferences();
     method public com.android.ahat.heapdump.Size getTotalRetainedSize();
+    method public boolean hasByteArray();
     method public boolean isArrayInstance();
+    method public boolean isBitmapInstance();
     method public boolean isClassInstance();
     method public boolean isClassObj();
     method public boolean isInstanceOfClass(String);
+    method public boolean isMessageInstance();
     method public boolean isPlaceHolder();
     method public boolean isRoot();
     method public boolean isStronglyReachable();
     method public boolean isUnreachable();
-    method @Deprecated public boolean isWeaklyReachable();
+    method @Deprecated public final boolean isWeaklyReachable();
     method public abstract String toString();
+  }
+
+  public class AhatMessageInstance extends com.android.ahat.heapdump.AhatClassInstance {
+    method public int getArg1();
+    method public int getArg2();
+    method public com.android.ahat.heapdump.AhatInstance getCallback();
+    method public long getInsertSeq();
+    method public com.android.ahat.heapdump.AhatInstance getLooper();
+    method public com.android.ahat.heapdump.AhatMessageInstance getNext();
+    method public com.android.ahat.heapdump.AhatMessageInstance getNextInQueue();
+    method public com.android.ahat.heapdump.AhatInstance getObj();
+    method public com.android.ahat.heapdump.AhatMessageInstance getPrev();
+    method public com.android.ahat.heapdump.AhatInstance getTarget();
+    method public int getWhat();
+    method public long getWhen();
+    method public boolean isSyncBarrier();
+  }
+
+  public static class AhatMessageInstance.MessageDumpData {
+    ctor public AhatMessageInstance.MessageDumpData();
+    field public java.util.List<com.android.ahat.heapdump.AhatMessageInstance.MessageDumpData.LooperInfo> loopers;
+  }
+
+  public static class AhatMessageInstance.MessageDumpData.LooperInfo {
+    ctor public AhatMessageInstance.MessageDumpData.LooperInfo(com.android.ahat.heapdump.AhatInstance, com.android.ahat.heapdump.AhatInstance, String);
+    field public com.android.ahat.heapdump.AhatInstance looper;
+    field public java.util.List<com.android.ahat.heapdump.AhatMessageInstance> messages;
+    field public com.android.ahat.heapdump.Size retainedSize;
+    field public com.android.ahat.heapdump.AhatInstance thread;
+    field public String threadName;
   }
 
   public class AhatSnapshot implements com.android.ahat.heapdump.Diffable<com.android.ahat.heapdump.AhatSnapshot> {
     method public com.android.ahat.heapdump.AhatClassObj findClassObj(long);
+    method public java.util.List<java.util.List<com.android.ahat.heapdump.AhatBitmapInstance>> findDuplicateBitmaps();
     method public com.android.ahat.heapdump.AhatInstance findInstance(long);
+    method public java.util.List<com.android.ahat.heapdump.AhatInstance> getActivityLeaks();
     method public com.android.ahat.heapdump.AhatSnapshot getBaseline();
+    method public java.util.List<java.util.List<com.android.ahat.heapdump.AhatInstance>> getDuplicateStrings();
     method public com.android.ahat.heapdump.AhatHeap getHeap(String);
-    method public List<AhatHeap> getHeaps();
+    method public java.util.List<com.android.ahat.heapdump.AhatHeap> getHeaps();
+    method public com.android.ahat.heapdump.AhatMessageInstance.MessageDumpData getMessageDumpData();
+    method public com.android.ahat.heapdump.Reachability getRetainedReachability();
     method public com.android.ahat.heapdump.Site getRootSite();
-    method public List<AhatInstance> getRooted();
+    method public java.util.List<com.android.ahat.heapdump.AhatInstance> getRooted();
     method public com.android.ahat.heapdump.Site getSite(long);
+    method public long getUptimeMillis();
     method public boolean isDiffed();
     method public boolean isPlaceHolder();
   }
@@ -130,8 +200,7 @@ package com.android.ahat.heapdump {
   }
 
   public class DiffFields {
-    ctor public DiffFields();
-    method public static List<DiffedFieldValue> diff(Iterable<FieldValue>, Iterable<FieldValue>);
+    method public static java.util.List<com.android.ahat.heapdump.DiffedFieldValue> diff(Iterable<com.android.ahat.heapdump.FieldValue>, Iterable<com.android.ahat.heapdump.FieldValue>);
   }
 
   public interface Diffable<T> {
@@ -142,10 +211,7 @@ package com.android.ahat.heapdump {
   public class DiffedFieldValue {
     method public static com.android.ahat.heapdump.DiffedFieldValue added(com.android.ahat.heapdump.FieldValue);
     method public static com.android.ahat.heapdump.DiffedFieldValue deleted(com.android.ahat.heapdump.FieldValue);
-    method public boolean equals(Object);
-    method public int hashCode();
     method public static com.android.ahat.heapdump.DiffedFieldValue matched(com.android.ahat.heapdump.FieldValue, com.android.ahat.heapdump.FieldValue);
-    method public String toString();
     field public final com.android.ahat.heapdump.Value baseline;
     field public final com.android.ahat.heapdump.Value current;
     field public final String name;
@@ -172,16 +238,16 @@ package com.android.ahat.heapdump {
     field public final com.android.ahat.heapdump.Value value;
   }
 
-  public class HprofFormatException {
+  public class HprofFormatException extends Exception {
   }
 
   public class Parser {
-    ctor public Parser(ByteBuffer);
-    ctor public Parser(File);
+    ctor public Parser(java.io.File) throws java.io.IOException;
+    ctor public Parser(java.nio.ByteBuffer);
     method public com.android.ahat.heapdump.Parser map(com.android.ahat.proguard.ProguardMap);
-    method public com.android.ahat.heapdump.AhatSnapshot parse() throws com.android.ahat.heapdump.HprofFormatException;
-    method public static com.android.ahat.heapdump.AhatSnapshot parseHeapDump(File, com.android.ahat.proguard.ProguardMap) throws com.android.ahat.heapdump.HprofFormatException;
-    method public static com.android.ahat.heapdump.AhatSnapshot parseHeapDump(ByteBuffer, com.android.ahat.proguard.ProguardMap) throws com.android.ahat.heapdump.HprofFormatException;
+    method public com.android.ahat.heapdump.AhatSnapshot parse() throws com.android.ahat.heapdump.HprofFormatException, java.io.IOException;
+    method public static com.android.ahat.heapdump.AhatSnapshot parseHeapDump(java.io.File, com.android.ahat.proguard.ProguardMap) throws com.android.ahat.heapdump.HprofFormatException, java.io.IOException;
+    method public static com.android.ahat.heapdump.AhatSnapshot parseHeapDump(java.nio.ByteBuffer, com.android.ahat.proguard.ProguardMap) throws com.android.ahat.heapdump.HprofFormatException, java.io.IOException;
     method public com.android.ahat.heapdump.Parser progress(com.android.ahat.progress.Progress);
     method public com.android.ahat.heapdump.Parser retained(com.android.ahat.heapdump.Reachability);
   }
@@ -197,13 +263,20 @@ package com.android.ahat.heapdump {
 
   public enum Reachability {
     method public boolean notWeakerThan(com.android.ahat.heapdump.Reachability);
-    method public String toString();
     enum_constant public static final com.android.ahat.heapdump.Reachability FINALIZER;
     enum_constant public static final com.android.ahat.heapdump.Reachability PHANTOM;
     enum_constant public static final com.android.ahat.heapdump.Reachability SOFT;
     enum_constant public static final com.android.ahat.heapdump.Reachability STRONG;
     enum_constant public static final com.android.ahat.heapdump.Reachability UNREACHABLE;
     enum_constant public static final com.android.ahat.heapdump.Reachability WEAK;
+  }
+
+  public class Reference {
+    ctor public Reference(com.android.ahat.heapdump.AhatInstance, String, com.android.ahat.heapdump.AhatInstance, com.android.ahat.heapdump.Reachability);
+    field public final String field;
+    field public final com.android.ahat.heapdump.Reachability reachability;
+    field public final com.android.ahat.heapdump.AhatInstance ref;
+    field public final com.android.ahat.heapdump.AhatInstance src;
   }
 
   public enum RootType {
@@ -226,14 +299,14 @@ package com.android.ahat.heapdump {
   public class Site implements com.android.ahat.heapdump.Diffable<com.android.ahat.heapdump.Site> {
     method public com.android.ahat.heapdump.Site findSite(long);
     method public com.android.ahat.heapdump.Site getBaseline();
-    method public List<Site> getChildren();
+    method public java.util.List<com.android.ahat.heapdump.Site> getChildren();
     method public String getFilename();
     method public long getId();
     method public int getLineNumber();
     method public String getMethodName();
-    method public void getObjects(String, String, Collection<AhatInstance>);
-    method public void getObjects(Predicate<AhatInstance>, Consumer<AhatInstance>);
-    method public List<ObjectsInfo> getObjectsInfos();
+    method public void getObjects(String, String, java.util.Collection<com.android.ahat.heapdump.AhatInstance>);
+    method public void getObjects(java.util.function.Predicate<com.android.ahat.heapdump.AhatInstance>, java.util.function.Consumer<com.android.ahat.heapdump.AhatInstance>);
+    method public java.util.List<com.android.ahat.heapdump.Site.ObjectsInfo> getObjectsInfos();
     method public com.android.ahat.heapdump.Site getParent();
     method public String getSignature();
     method public com.android.ahat.heapdump.Size getSize(com.android.ahat.heapdump.AhatHeap);
@@ -251,13 +324,12 @@ package com.android.ahat.heapdump {
     field public long numInstances;
   }
 
-  public class Size {
+  public class Size implements Comparable<com.android.ahat.heapdump.Size> {
     ctor public Size(long, long);
-    method public boolean equals(Object);
+    method public int compareTo(com.android.ahat.heapdump.Size);
     method public long getJavaSize();
     method public long getRegisteredNativeSize();
     method public long getSize();
-    method public int hashCode();
     method public boolean isZero();
     method public com.android.ahat.heapdump.Size plus(com.android.ahat.heapdump.Size);
     method public com.android.ahat.heapdump.Size plusRegisteredNativeSize(long);
@@ -265,22 +337,20 @@ package com.android.ahat.heapdump {
   }
 
   public class Sort {
-    ctor public Sort();
-    method public static Comparator<AhatInstance> defaultInstanceCompare(com.android.ahat.heapdump.AhatSnapshot);
-    method public static Comparator<Site> defaultSiteCompare(com.android.ahat.heapdump.AhatSnapshot);
-    method public static <T> Comparator<T> withPriority(Comparator<T>...);
-    field public static final Comparator<FieldValue> FIELD_VALUE_BY_NAME;
-    field public static final Comparator<FieldValue> FIELD_VALUE_BY_TYPE;
-    field public static final Comparator<AhatInstance> INSTANCE_BY_TOTAL_RETAINED_SIZE;
-    field public static final Comparator<Site.ObjectsInfo> OBJECTS_INFO_BY_CLASS_NAME;
-    field public static final Comparator<Site.ObjectsInfo> OBJECTS_INFO_BY_HEAP_NAME;
-    field public static final Comparator<Site.ObjectsInfo> OBJECTS_INFO_BY_SIZE;
-    field public static final Comparator<Site> SITE_BY_TOTAL_SIZE;
-    field public static final Comparator<Size> SIZE_BY_SIZE;
+    method public static java.util.Comparator<com.android.ahat.heapdump.AhatInstance> defaultInstanceCompare(com.android.ahat.heapdump.AhatSnapshot);
+    method public static java.util.Comparator<com.android.ahat.heapdump.Site> defaultSiteCompare(com.android.ahat.heapdump.AhatSnapshot);
+    method @java.lang.SafeVarargs public static <T> java.util.Comparator<T> withPriority(java.util.Comparator<T>...);
+    field public static final java.util.Comparator<com.android.ahat.heapdump.FieldValue> FIELD_VALUE_BY_NAME;
+    field public static final java.util.Comparator<com.android.ahat.heapdump.FieldValue> FIELD_VALUE_BY_TYPE;
+    field public static final java.util.Comparator<com.android.ahat.heapdump.AhatInstance> INSTANCE_BY_TOTAL_RETAINED_SIZE;
+    field public static final java.util.Comparator<com.android.ahat.heapdump.Site.ObjectsInfo> OBJECTS_INFO_BY_CLASS_NAME;
+    field public static final java.util.Comparator<com.android.ahat.heapdump.Site.ObjectsInfo> OBJECTS_INFO_BY_HEAP_NAME;
+    field public static final java.util.Comparator<com.android.ahat.heapdump.Site.ObjectsInfo> OBJECTS_INFO_BY_SIZE;
+    field public static final java.util.Comparator<com.android.ahat.heapdump.Site> SITE_BY_TOTAL_SIZE;
+    field public static final java.util.Comparator<com.android.ahat.heapdump.Size> SIZE_BY_SIZE;
   }
 
   public enum Type {
-    method public String toString();
     enum_constant public static final com.android.ahat.heapdump.Type BOOLEAN;
     enum_constant public static final com.android.ahat.heapdump.Type BYTE;
     enum_constant public static final com.android.ahat.heapdump.Type CHAR;
@@ -295,6 +365,7 @@ package com.android.ahat.heapdump {
 
   public abstract class Value {
     method public com.android.ahat.heapdump.AhatInstance asAhatInstance();
+    method public Boolean asBoolean();
     method public Byte asByte();
     method public Character asChar();
     method public Integer asInteger();
@@ -304,17 +375,18 @@ package com.android.ahat.heapdump {
     method public static com.android.ahat.heapdump.Type getType(com.android.ahat.heapdump.Value);
     method public abstract int hashCode();
     method public boolean isAhatInstance();
+    method public boolean isBoolean();
     method public boolean isInteger();
     method public boolean isLong();
-    method public static com.android.ahat.heapdump.Value pack(com.android.ahat.heapdump.AhatInstance);
     method public static com.android.ahat.heapdump.Value pack(boolean);
-    method public static com.android.ahat.heapdump.Value pack(char);
-    method public static com.android.ahat.heapdump.Value pack(float);
-    method public static com.android.ahat.heapdump.Value pack(double);
     method public static com.android.ahat.heapdump.Value pack(byte);
-    method public static com.android.ahat.heapdump.Value pack(short);
+    method public static com.android.ahat.heapdump.Value pack(char);
+    method public static com.android.ahat.heapdump.Value pack(com.android.ahat.heapdump.AhatInstance);
+    method public static com.android.ahat.heapdump.Value pack(double);
+    method public static com.android.ahat.heapdump.Value pack(float);
     method public static com.android.ahat.heapdump.Value pack(int);
     method public static com.android.ahat.heapdump.Value pack(long);
+    method public static com.android.ahat.heapdump.Value pack(short);
     method public abstract String toString();
   }
 
@@ -324,6 +396,7 @@ package com.android.ahat.progress {
 
   public class NullProgress implements com.android.ahat.progress.Progress {
     ctor public NullProgress();
+    method public void advance();
     method public void advance(long);
     method public void done();
     method public void start(String, long);
@@ -347,8 +420,8 @@ package com.android.ahat.proguard {
     method public String getClassName(String);
     method public String getFieldName(String, String);
     method public com.android.ahat.proguard.ProguardMap.Frame getFrame(String, String, String, String, int);
-    method public void readFromFile(File);
-    method public void readFromReader(Reader);
+    method public void readFromFile(java.io.File) throws java.io.FileNotFoundException, java.io.IOException, java.text.ParseException;
+    method public void readFromReader(java.io.Reader) throws java.io.IOException, java.text.ParseException;
   }
 
   public static class ProguardMap.Frame {

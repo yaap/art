@@ -19,6 +19,7 @@
 
 #include <limits.h>  // for INT_MAX
 #include <pthread.h>
+#include <sched.h>
 #include <stdint.h>
 #include <unistd.h>  // for pid_t
 
@@ -257,6 +258,11 @@ class EXPORT LOCKABLE Mutex : public BaseMutex {
   void ExclusiveUnlockUncontended();
 #endif  // ART_USE_FUTEXES
 
+ protected:
+  // The default implementation returns the tid of the thread.
+  virtual pid_t GetSelfId(const Thread* self) const;
+  void ExclusiveLockUncontendedForSelfId(pid_t selfId);
+
  private:
 #if ART_USE_FUTEXES
   // Low order bit: 0 is unheld, 1 is held.
@@ -299,7 +305,30 @@ class EXPORT LOCKABLE Mutex : public BaseMutex {
   uint32_t monitor_id_;
 
   friend class ConditionVariable;
+  friend class MonitorMutex;
   DISALLOW_COPY_AND_ASSIGN(Mutex);
+};
+
+class EXPORT LOCKABLE MonitorMutex : public Mutex {
+ public:
+  static constexpr uint32_t kVTFlag = 1u << 31;
+  MonitorMutex() : Mutex("a monitor lock", kMonitorLock) {}
+  ~MonitorMutex() {}
+
+  // Acquire the mutex, possibly on behalf of another thread. Acquisition must be
+  // uncontended. The virtual thread represented by virtual_thread_id must be
+  // either suspended or mounted to the current platform thread, i.e. Thread::Current().
+  void ExclusiveLockUncontendedForVirtualThreadId(uint32_t virtual_thread_id);
+
+ protected:
+  // Use the most significant bit of a 32-bit integer to indicate that it's a virtual thread.
+  // The max of PID_MAX_LIMIT on Android is 2^22. See Android kernel's <include/linux/threads.h>
+  // pid_t should have at least 32 bits.
+  pid_t GetSelfId(const Thread* self) const override;
+
+  friend class MutexTest;
+  friend class MutexTest_MonitorLockUnlock_Test;
+  DISALLOW_COPY_AND_ASSIGN(MonitorMutex);
 };
 
 // A ReaderWriterMutex is used to achieve mutual exclusion between threads, similar to a Mutex.
@@ -326,6 +355,8 @@ class EXPORT SHARED_LOCKABLE ReaderWriterMutex : public BaseMutex {
 
   bool IsReaderWriterMutex() const override { return true; }
 
+  bool ExclusiveTryLock(Thread* self) EXCLUSIVE_TRYLOCK_FUNCTION(true);
+
   // Block until ReaderWriterMutex is free then acquire exclusive access.
   void ExclusiveLock(Thread* self) ACQUIRE();
   void WriterLock(Thread* self) ACQUIRE() {  ExclusiveLock(self); }
@@ -340,6 +371,9 @@ class EXPORT SHARED_LOCKABLE ReaderWriterMutex : public BaseMutex {
   bool ExclusiveLockWithTimeout(Thread* self, int64_t ms, int32_t ns)
       EXCLUSIVE_TRYLOCK_FUNCTION(true);
 #endif
+
+  // Atomically convert exclusive to shared lock.
+  void Downgrade(Thread* self) RELEASE() ACQUIRE_SHARED();
 
   // Block until ReaderWriterMutex is shared or free then acquire a share on the access.
   void SharedLock(Thread* self) ACQUIRE_SHARED() ALWAYS_INLINE;
@@ -385,7 +419,8 @@ class EXPORT SHARED_LOCKABLE ReaderWriterMutex : public BaseMutex {
 
   // Assert the current thread doesn't hold this ReaderWriterMutex either in shared or exclusive
   // mode.
-  ALWAYS_INLINE void AssertNotHeld(const Thread* self) ASSERT_CAPABILITY(!this) {
+  ALWAYS_INLINE void AssertNotHeld(const Thread* self)
+      ASSERT_CAPABILITY(!this) ASSERT_SHARED_CAPABILITY(!this) {
     if (kDebugLocking && (gAborting == 0)) {
       CHECK(!IsExclusiveHeld(self)) << *this;
       CHECK(!IsSharedHeld(self)) << *this;
@@ -405,14 +440,13 @@ class EXPORT SHARED_LOCKABLE ReaderWriterMutex : public BaseMutex {
   void WakeupToRespondToEmptyCheckpoint() override;
 
  private:
+  ALWAYS_INLINE void FinishRWExclusiveLock(Thread* self);
 #if ART_USE_FUTEXES
   // Out-of-inline path for handling contention for a SharedLock.
   void HandleSharedLockContention(Thread* self, int32_t cur_state);
 
   // -1 implies held exclusive, >= 0: shared held by state_ many owners.
   AtomicInteger state_;
-  // Exclusive owner. Modification guarded by this mutex.
-  Atomic<pid_t> exclusive_owner_;
   // Number of contenders waiting for either a reader share or exclusive access.  We only maintain
   // the sum, since we would otherwise need to read both in all unlock operations.
   // We keep this separate from the state, since futexes are limited to 32 bits, and obvious
@@ -420,8 +454,12 @@ class EXPORT SHARED_LOCKABLE ReaderWriterMutex : public BaseMutex {
   AtomicInteger num_contenders_;
 #else
   pthread_rwlock_t rwlock_;
-  Atomic<pid_t> exclusive_owner_;  // Writes guarded by rwlock_. Asynchronous reads are OK.
+  // We use a second lock to allow downgrades from exclusive to shared, in spite of the fact that
+  // pthread_wlock_t does not support it directly. This second lock is acquired around any writer
+  // critical section, and retained during the downgrade operation.
+  pthread_mutex_t pre_write_lock_;
 #endif
+  Atomic<pid_t> exclusive_owner_;  // Writes guarded by this rwlock. Asynchronous reads are OK.
   DISALLOW_COPY_AND_ASSIGN(ReaderWriterMutex);
 };
 
@@ -549,6 +587,18 @@ class SCOPED_CAPABILITY ReaderMutexLock {
   Thread* const self_;
   ReaderWriterMutex& mu_;
   DISALLOW_COPY_AND_ASSIGN(ReaderMutexLock);
+};
+
+// Pretend to acquire read access for checking purposes, without actually doing so. Use with
+// extreme caution when it is known the condition that the mutex would guard against cannot arise.
+class SCOPED_CAPABILITY FakeReaderMutexLock {
+ public:
+  ALWAYS_INLINE FakeReaderMutexLock(ReaderWriterMutex& mu) ACQUIRE(mu) NO_THREAD_SAFETY_ANALYSIS {}
+
+  ALWAYS_INLINE ~FakeReaderMutexLock() RELEASE() NO_THREAD_SAFETY_ANALYSIS {}
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(FakeReaderMutexLock);
 };
 
 // Scoped locker/unlocker for a ReaderWriterMutex that acquires write access to mu upon

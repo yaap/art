@@ -161,6 +161,10 @@ static jobjectArray Executable_getParameters0(JNIEnv* env, jobject javaMethod) {
 
   Handle<mirror::Method> executable = hs.NewHandle(soa.Decode<mirror::Method>(javaMethod));
   ArtMethod* art_method = executable.Get()->GetArtMethod();
+  // For serialized constructor objects art_method can be null.
+  if (art_method == nullptr) {
+    return nullptr;
+  }
   if (art_method->GetDeclaringClass()->IsProxyClass()) {
     return nullptr;
   }
@@ -352,6 +356,9 @@ static jobjectArray Executable_getParameterTypesInternal(JNIEnv* env, jobject ja
 static jint Executable_getParameterCountInternal(JNIEnv* env, jobject javaMethod) {
   ScopedFastNativeObjectAccess soa(env);
   ArtMethod* method = ArtMethod::FromReflectedMethod(soa, javaMethod);
+  if (method == nullptr) {
+    return 0;
+  }
   method = method->GetInterfaceMethodIfProxy(kRuntimePointerSize);
 
   const dex::TypeList* params = method->GetParameterTypeList();

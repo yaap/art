@@ -16,6 +16,7 @@
 
 #include "dalvik_system_VMDebug.h"
 
+#include <dlfcn.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -37,6 +38,7 @@
 #include "gc/space/zygote_space.h"
 #include "handle_scope-inl.h"
 #include "hprof/hprof.h"
+#include "jit/jit.h"
 #include "jni/java_vm_ext.h"
 #include "jni/jni_internal.h"
 #include "mirror/array-alloc-inl.h"
@@ -316,6 +318,14 @@ static jlong VMDebug_countInstancesOfClass(JNIEnv* env,
   return count;
 }
 
+uintptr_t GetNopUprobeMethodEntryHookAddress();
+
+// Forward declarations for helpers.
+static jobject GetAotExecutableMethodFileOffsets(JNIEnv* env,
+                                                 ObjPtr<mirror::Class> c,
+                                                 const uint8_t* oat_method_quick_code);
+static jobject GetJitExecutableMethodFileOffsets(JNIEnv* env, ArtMethod* art_method);
+
 static jobject VMDebug_getExecutableMethodFileOffsetsNative(JNIEnv* env,
                                                             jclass,
                                                             jobject javaExecutable) {
@@ -335,14 +345,47 @@ static jobject VMDebug_getExecutableMethodFileOffsetsNative(JNIEnv* env,
   }
 
   ArtMethod* art_method = m->GetArtMethod();
+  if (art_method == nullptr) {
+    soa.Self()->ThrowNewExceptionF("Ljava/lang/RuntimeException;",
+                                   "Could not find ArtMethod*. Possibly javaExecutable was a"
+                                   "serialized constructor");
+    return nullptr;
+  }
   auto oat_method_quick_code =
       reinterpret_cast<const uint8_t*>(art_method->GetOatMethodQuickCode(kRuntimePointerSize));
 
   if (oat_method_quick_code == nullptr) {
-    LOG(ERROR) << "No OatMethodQuickCode for method " << art_method->PrettyMethod();
+    return GetJitExecutableMethodFileOffsets(env, art_method);
+  } else {
+    return GetAotExecutableMethodFileOffsets(env, c, oat_method_quick_code);
+  }
+}
+
+static jobject CreateExecutableMethodFileOffsetsObject(JNIEnv* env,
+                                                       jstring container_path,
+                                                       jlong container_offset,
+                                                       jlong method_offset) {
+  ScopedObjectAccess soa(env);
+  ScopedLocalRef<jclass> clazz(
+      env, env->FindClass("dalvik/system/VMDebug$ExecutableMethodFileOffsets"));
+  if (clazz == nullptr) {
+    soa.Self()->ThrowNewExceptionF(
+        "Ljava/lang/RuntimeException;",
+        "Could not find dalvik/system/VMDebug$ExecutableMethodFileOffsets");
     return nullptr;
   }
 
+  jmethodID constructor_id = env->GetMethodID(clazz.get(), "<init>", "(Ljava/lang/String;JJ)V");
+  return env->NewObject(clazz.get(), constructor_id, container_path, container_offset, method_offset);
+}
+
+/*
+ * This is the base case, when the code is AOT compiled.
+ */
+static jobject GetAotExecutableMethodFileOffsets(JNIEnv* env,
+                                                 ObjPtr<mirror::Class> c,
+                                                 const uint8_t* oat_method_quick_code) {
+  ScopedObjectAccess soa(env);
   const OatDexFile* oat_dex_file = c->GetDexFile().GetOatDexFile();
   if (oat_dex_file == nullptr) {
     soa.Self()->ThrowNewExceptionF("Ljava/lang/RuntimeException;", "Could not find oat_dex_file");
@@ -365,21 +408,90 @@ static jobject VMDebug_getExecutableMethodFileOffsetsNative(JNIEnv* env,
 
   size_t adjusted_offset = oat_method_quick_code - elf_begin;
 
+  // `odex_path` is the path to a given odex file containing precompiled native code.
   ScopedLocalRef<jstring> odex_path = CREATE_UTF_OR_RETURN(env, oat_file->GetLocation());
+  // `odex_offset` is the offset of the odex_path within the program's memory.
   auto odex_offset = reinterpret_cast64<jlong>(elf_begin);
+  // `method_offset` is the offset of the method *within* the odex.
   auto method_offset = static_cast<jlong>(adjusted_offset);
 
-  ScopedLocalRef<jclass> clazz(env,
-                               env->FindClass("dalvik/system/VMDebug$ExecutableMethodFileOffsets"));
-  if (clazz == nullptr) {
-    soa.Self()->ThrowNewExceptionF(
-        "Ljava/lang/RuntimeException;",
-        "Could not find dalvik/system/VMDebug$ExecutableMethodFileOffsets");
+  return CreateExecutableMethodFileOffsetsObject(
+      env, odex_path.get(), odex_offset, method_offset);
+}
+
+/*
+ * This is the JIT case, where the code is not AOT compiled. In this case, we compile the
+ * method on the fly. We pass `dynamic_instrumentation=true` to the jit compiler so it
+ * generates a call to a stub at the beginning of the compiled result. The address of the stub
+ * will be returned to the caller. The caller can attach a uprobe to the stub, which has a
+ * static address, as opposed to the address of the JIT compiled method, which is dual mapped in
+ * memory and thus incompatible with uprobes.
+ */
+static jobject GetJitExecutableMethodFileOffsets(JNIEnv* env, ArtMethod* art_method) {
+  if (!com::android::art::rw::flags::dynamic_instrumentation_method_entry_hook()) {
+    return nullptr;
+  }
+  jit::Jit* jit = Runtime::Current()->GetJit();
+  if (jit == nullptr) {
+    LOG(ERROR) << "JIT compiler is null. JIT compilation may be disabled on device. Thus, cannot "
+                  "attach dynamic instrumentation.";
+    return nullptr;
+  }
+  ScopedObjectAccess soa(env);
+
+  // Invalidate any existing, optimized JIT compiled code for the method, as we cannot know if it
+  // was compiled with the dynamic_instrumentation flag enabled or not.
+  jit::JitCodeCache* code_cache = jit->GetCodeCache();
+  const void* entry_point = art_method->GetEntryPointFromQuickCompiledCode();
+  if (code_cache->ContainsPc(entry_point)) {
+    const OatQuickMethodHeader* header = OatQuickMethodHeader::FromEntryPoint(entry_point);
+    if (CodeInfo::IsOptimized(header->GetOptimizedCodeInfoPtr())) {
+      LOG(INFO) << "Invalidating optimized JIT compiled code for method: "
+              << art_method->PrettyMethod();
+      code_cache->InvalidateCompiledCodeFor(art_method, header);
+    }
+  }
+
+  // Now go ahead and compile the method. If this returns false, something has gone wrong since
+  // we just invalidated any existing code. Compilation can fail for sufficiently large methods and
+  // methods that have soft verification failures (like we couldn't verify that all the locks have
+  // corresponding unlocks). These cannot be compiled. We accept this limitation among other rare
+  // corner cases.
+  bool jit_compiled = jit->CompileMethod(art_method,
+                                        soa.Self(),
+                                        CompilationKind::kOptimized,
+                                        /* prejit= */ false,
+                                        /* dynamic_instrumentation= */ true);
+  if (!jit_compiled) {
+    soa.Self()->ThrowNewExceptionF("Ljava/lang/RuntimeException;", "JIT compilation failed");
     return nullptr;
   }
 
-  jmethodID constructor_id = env->GetMethodID(clazz.get(), "<init>", "(Ljava/lang/String;JJ)V");
-  return env->NewObject(clazz.get(), constructor_id, odex_path.get(), odex_offset, method_offset);
+  void* stub_addr = (void*)GetNopUprobeMethodEntryHookAddress();
+  Dl_info info;
+  if (dladdr(stub_addr, &info) != 0) {
+    if (info.dli_fname != NULL && info.dli_fbase != NULL) {
+      // `so_path` is the path to the library containing the stub (e.g. libart.so)
+      auto so_path = CREATE_UTF_OR_RETURN(env, info.dli_fname);
+      auto so_offset = reinterpret_cast64<jlong>(info.dli_fbase);
+      // `method_offset` is the offset of the stub within ART's library.
+      auto method_offset = reinterpret_cast64<jlong>(stub_addr) - so_offset;
+
+      // `art_method` is a pointer to the raw ArtMethod object in memory. It can be used by the
+      // client to disambiguate which method is instrumented, since the `so_path` and
+      // `method_offset` will always be the same address (the stub), as opposed to the address
+      // of the JIT compiled method.
+      // It is okay if art_method` is deleted. Then, we wouldn't see any uprobes for this method.
+      // It is also okay if the same address is reused for another ArtMethod. When a uprobe is set
+      // on the new ArtMethod, the mapping for this address will be updated so we don't see stale
+      // information.
+      return CreateExecutableMethodFileOffsetsObject(
+          env, so_path.get(), reinterpret_cast<jlong>(art_method), method_offset);
+    }
+  } else {
+    LOG(ERROR) << "dladdr failed";
+  }
+  return nullptr;
 }
 
 static jlongArray VMDebug_countInstancesOfClasses(JNIEnv* env,

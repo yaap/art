@@ -1,0 +1,3 @@
+Tests that we do not vectorize boolean values with add or sub as
+VisitVecAdd and VisitVecSub do not support this type. If we were
+to vectorize that loop, it will lead to a crash.

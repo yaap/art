@@ -750,6 +750,13 @@ static jboolean Class_isRecord0(JNIEnv* env, jobject javaThis) {
   return klass->IsRecordClass();
 }
 
+static jboolean Class_isValue(JNIEnv* env, jobject javaThis) {
+  ScopedFastNativeObjectAccess soa(env);
+  StackHandleScope<1> hs(soa.Self());
+  Handle<mirror::Class> klass(hs.NewHandle(DecodeClass(soa, javaThis)));
+  return klass->IsValueClass();
+}
+
 static jboolean Class_isDeclaredAnnotationPresent(JNIEnv* env, jobject javaThis,
                                                   jclass annotationType) {
   ScopedFastNativeObjectAccess soa(env);
@@ -859,7 +866,7 @@ static jobjectArray Class_getPermittedSubclassesFromAnnotation(JNIEnv* env, jobj
   return soa.AddLocalReference<jobjectArray>(classes);
 }
 
-static jobject Class_ensureExtDataPresent(JNIEnv* env, jobject javaThis) {
+static jobject Class_ensureExtDataPresent0(JNIEnv* env, jobject javaThis) {
   ScopedFastNativeObjectAccess soa(env);
   StackHandleScope<2> hs(soa.Self());
   Handle<mirror::Class> klass = hs.NewHandle(DecodeClass(soa, javaThis));
@@ -961,7 +968,7 @@ static jobject Class_newInstance(JNIEnv* env, jobject javaThis) {
 static JNINativeMethod gMethods[] = {
   FAST_NATIVE_METHOD(Class, classForName,
                 "(Ljava/lang/String;ZLjava/lang/ClassLoader;)Ljava/lang/Class;"),
-  FAST_NATIVE_METHOD(Class, ensureExtDataPresent, "()Ldalvik/system/ClassExt;"),
+  FAST_NATIVE_METHOD(Class, ensureExtDataPresent0, "()Ldalvik/system/ClassExt;"),
   FAST_NATIVE_METHOD(Class, getDeclaredAnnotation,
                 "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;"),
   FAST_NATIVE_METHOD(Class, getDeclaredAnnotations, "()[Ljava/lang/annotation/Annotation;"),
@@ -995,6 +1002,7 @@ static JNINativeMethod gMethods[] = {
   FAST_NATIVE_METHOD(Class, isAnonymousClass, "()Z"),
   FAST_NATIVE_METHOD(Class, isDeclaredAnnotationPresent, "(Ljava/lang/Class;)Z"),
   FAST_NATIVE_METHOD(Class, isRecord0, "()Z"),
+  FAST_NATIVE_METHOD(Class, isValue, "()Z"),
   FAST_NATIVE_METHOD(Class, newInstance, "()Ljava/lang/Object;"),
 };
 

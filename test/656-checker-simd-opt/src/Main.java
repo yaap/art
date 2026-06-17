@@ -45,8 +45,15 @@ public class Main {
   //
   /// CHECK-ELSE:
   //
-  ///     CHECK-DAG: <<Incr:i\d+>>  IntConstant 4                        loop:none
-  ///     CHECK-DAG: <<Repl:d\d+>>  VecReplicateScalar [<<Cons>>]        loop:none
+  //      Check 256-bit & 128-bit vectorization
+  ///     CHECK-IF: hasIsaFeature("avx2")
+  ///         CHECK-DAG: <<Incr:i\d+>>  IntConstant 8                        loop:none
+  ///         CHECK-DAG: <<Repl:d\d+>>  VecReplicateScalar [<<Cons>>]        loop:none
+  ///     CHECK-ELSE:
+  ///         CHECK-DAG: <<Incr:i\d+>>  IntConstant 4                        loop:none
+  ///         CHECK-DAG: <<Repl:d\d+>>  VecReplicateScalar [<<Cons>>]        loop:none
+  ///     CHECK-FI:
+  //
   ///     CHECK-NOT:                VecReplicateScalar
   ///     CHECK-DAG: <<Phi:i\d+>>   Phi                                  loop:<<Loop:B\d+>> outer_loop:none
   ///     CHECK-DAG: <<Get1:d\d+>>  VecLoad [{{l\d+}},<<Phi>>]           loop:<<Loop>>      outer_loop:none
@@ -290,13 +297,19 @@ public class Main {
   //
   /// CHECK-ELSE:
   //
-  ///     CHECK-DAG: <<L2:j\d+>>    LongConstant 2               loop:none
+  //      Check 256-bit & 128-bit vectorization
+  ///     CHECK-IF: hasIsaFeature("avx2")
+  ///         CHECK-DAG: <<LC:j\d+>>    LongConstant 4               loop:none
+  ///     CHECK-ELSE:
+  ///         CHECK-DAG: <<LC:j\d+>>    LongConstant 2               loop:none
+  ///     CHECK-FI:
+  //
   ///     CHECK-DAG: <<Rep:d\d+>>   VecReplicateScalar [<<Get>>] loop:none
   ///     CHECK-DAG: <<Set:d\d+>>   VecSetScalars [<<L1>>]       loop:none
   ///     CHECK-DAG: <<Phi1:j\d+>>  Phi [<<L0>>,{{j\d+}}]        loop:<<Loop:B\d+>> outer_loop:none
   ///     CHECK-DAG: <<Phi2:d\d+>>  Phi [<<Set>>,{{d\d+}}]       loop:<<Loop>>      outer_loop:none
   ///     CHECK-DAG:                VecAdd [<<Phi2>>,<<Rep>>]    loop:<<Loop>>      outer_loop:none
-  ///     CHECK-DAG:                Add [<<Phi1>>,<<L2>>]        loop:<<Loop>>      outer_loop:none
+  ///     CHECK-DAG:                Add [<<Phi1>>,<<LC>>]        loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-FI:
   static long longInductionReduction(long[] y) {
@@ -331,11 +344,17 @@ public class Main {
   //
   /// CHECK-ELSE:
   //
-  ///     CHECK-DAG: <<I4:i\d+>>    IntConstant 4                       loop:none
+  //      Check 256-bit & 128-bit vectorization
+  ///     CHECK-IF: hasIsaFeature("avx2")
+  ///         CHECK-DAG: <<IC:i\d+>>    IntConstant 8                       loop:none
+  ///     CHECK-ELSE:
+  ///         CHECK-DAG: <<IC:i\d+>>    IntConstant 4                       loop:none
+  ///     CHECK-FI:
+  //
   ///     CHECK-DAG: <<Rep:d\d+>>   VecReplicateScalar [<<Cnv>>]        loop:none
   ///     CHECK-DAG: <<Phi:i\d+>>   Phi [<<I0>>,{{i\d+}}]               loop:<<Loop:B\d+>> outer_loop:none
   ///     CHECK-DAG:                VecStore [{{l\d+}},<<Phi>>,<<Rep>>] loop:<<Loop>>      outer_loop:none
-  ///     CHECK-DAG:                Add [<<Phi>>,<<I4>>]                loop:<<Loop>>      outer_loop:none
+  ///     CHECK-DAG:                Add [<<Phi>>,<<IC>>]                loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-FI:
   static void intVectorLongInvariant(int[] x, long[] y) {
@@ -372,13 +391,19 @@ public class Main {
   //
   /// CHECK-ELSE:
   //
-  ///     CHECK-DAG: <<I4:i\d+>>    IntConstant 4                       loop:none
+  //      Check 256-bit & 128-bit vectorization
+  ///     CHECK-IF: hasIsaFeature("avx2")
+  ///         CHECK-DAG: <<IC:i\d+>>    IntConstant 8                       loop:none
+  ///     CHECK-ELSE:
+  ///         CHECK-DAG: <<IC:i\d+>>    IntConstant 4                       loop:none
+  ///     CHECK-FI:
+  //
   ///     CHECK-DAG: <<Rep:d\d+>>   VecReplicateScalar [<<Cnv>>]        loop:none
   ///     CHECK-DAG: <<Phi:i\d+>>   Phi [<<I0>>,{{i\d+}}]               loop:<<Loop:B\d+>> outer_loop:none
   ///     CHECK-DAG: <<Load:d\d+>>  VecLoad [{{l\d+}},<<Phi>>]          loop:<<Loop>>      outer_loop:none
   ///     CHECK-DAG: <<Add:d\d+>>   VecAdd [<<Load>>,<<Rep>>]           loop:<<Loop>>      outer_loop:none
   ///     CHECK-DAG:                VecStore [{{l\d+}},<<Phi>>,<<Add>>] loop:<<Loop>>      outer_loop:none
-  ///     CHECK-DAG:                Add [<<Phi>>,<<I4>>]                loop:<<Loop>>      outer_loop:none
+  ///     CHECK-DAG:                Add [<<Phi>>,<<IC>>]                loop:<<Loop>>      outer_loop:none
   //
   /// CHECK-FI:
   static void longCanBeDoneWithInt(int[] x, int[] y) {

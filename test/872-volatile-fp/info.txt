@@ -1,0 +1,2 @@
+Regression test for the fast compiler when storing a value in a static volatile
+float field.

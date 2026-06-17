@@ -16,13 +16,13 @@
 
 #include "jni_macro_assembler_arm64.h"
 
+#include "base/offsets.h"
 #include "entrypoints/quick/quick_entrypoints.h"
 #include "jni/indirect_reference_table.h"
 #include "jni/jni_env_ext.h"
 #include "jni/local_reference_table.h"
 #include "lock_word.h"
 #include "managed_register_arm64.h"
-#include "offsets.h"
 #include "thread.h"
 
 using namespace vixl::aarch64;  // NOLINT(build/namespaces)
@@ -719,16 +719,23 @@ void Arm64JNIMacroAssembler::TryToTransitionFromRunnableToNative(
   Register scratch2 = temps.AcquireW();
 
   // CAS release, old_value = kRunnableStateValue, new_value = kNativeStateValue, no flags.
-  vixl::aarch64::Label retry;
-  ___ Bind(&retry);
-  static_assert(thread_flags_offset.Int32Value() == 0);  // LDXR/STLXR require exact address.
-  ___ Ldxr(scratch, MEM_OP(reg_x(TR)));
-  ___ Mov(scratch2, kNativeStateValue);
   // If any flags are set, go to the slow path.
+  static_assert(thread_flags_offset.Int32Value() == 0);  // LDXR/STLXR/CASL require exact address.
   static_assert(kRunnableStateValue == 0u);
-  ___ Cbnz(scratch, Arm64JNIMacroLabel::Cast(label)->AsArm64());
-  ___ Stlxr(scratch, scratch2, MEM_OP(reg_x(TR)));
-  ___ Cbnz(scratch, &retry);
+  if (___ GetCPUFeatures()->Has(vixl::CPUFeatures::kAtomics)) {
+    ___ Mov(scratch, kRunnableStateValue);
+    ___ Mov(scratch2, kNativeStateValue);
+    ___ Casl(scratch, scratch2, MEM_OP(reg_x(TR)));
+    ___ Cbnz(scratch, Arm64JNIMacroLabel::Cast(label)->AsArm64());
+  } else {
+    vixl::aarch64::Label retry;
+    ___ Bind(&retry);
+    ___ Ldxr(scratch, MEM_OP(reg_x(TR)));
+    ___ Mov(scratch2, kNativeStateValue);
+    ___ Cbnz(scratch, Arm64JNIMacroLabel::Cast(label)->AsArm64());
+    ___ Stlxr(scratch, scratch2, MEM_OP(reg_x(TR)));
+    ___ Cbnz(scratch, &retry);
+  }
 
   // Clear `self->tlsPtr_.held_mutexes[kMutatorLock]`.
   ___ Str(xzr, MEM_OP(reg_x(TR), thread_held_mutex_mutator_lock_offset.Int32Value()));
@@ -748,22 +755,29 @@ void Arm64JNIMacroAssembler::TryToTransitionFromNativeToRunnable(
 
   UseScratchRegisterScope temps(asm_.GetVIXLAssembler());
   Register scratch = temps.AcquireW();
-  Register scratch2 = temps.AcquireW();
 
   // CAS acquire, old_value = kNativeStateValue, new_value = kRunnableStateValue, no flags.
-  vixl::aarch64::Label retry;
-  ___ Bind(&retry);
-  static_assert(thread_flags_offset.Int32Value() == 0);  // LDAXR/STXR require exact address.
-  ___ Ldaxr(scratch, MEM_OP(reg_x(TR)));
-  ___ Mov(scratch2, kNativeStateValue);
   // If any flags are set, or the state is not Native, go to the slow path.
   // (While the thread can theoretically transition between different Suspended states,
   // it would be very unexpected to see a state other than Native at this point.)
-  ___ Cmp(scratch, scratch2);
-  ___ B(ne, Arm64JNIMacroLabel::Cast(label)->AsArm64());
+  static_assert(thread_flags_offset.Int32Value() == 0);  // LDAXR/STXR/CASA require exact address.
   static_assert(kRunnableStateValue == 0u);
-  ___ Stxr(scratch, wzr, MEM_OP(reg_x(TR)));
-  ___ Cbnz(scratch, &retry);
+  if (___ GetCPUFeatures()->Has(vixl::CPUFeatures::kAtomics)) {
+    ___ Mov(scratch, kNativeStateValue);
+    ___ Casa(scratch, wzr, MEM_OP(reg_x(TR)));
+    ___ Cmp(scratch, kNativeStateValue);
+    ___ B(ne, Arm64JNIMacroLabel::Cast(label)->AsArm64());
+  } else {
+    Register scratch2 = temps.AcquireW();
+    vixl::aarch64::Label retry;
+    ___ Bind(&retry);
+    ___ Ldaxr(scratch, MEM_OP(reg_x(TR)));
+    ___ Mov(scratch2, kNativeStateValue);
+    ___ Cmp(scratch, scratch2);
+    ___ B(ne, Arm64JNIMacroLabel::Cast(label)->AsArm64());
+    ___ Stxr(scratch, wzr, MEM_OP(reg_x(TR)));
+    ___ Cbnz(scratch, &retry);
+  }
 
   // Set `self->tlsPtr_.held_mutexes[kMutatorLock]` to the mutator lock.
   ___ Ldr(scratch.X(), MEM_OP(reg_x(TR), thread_mutator_lock_offset.Int32Value()));

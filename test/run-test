@@ -31,6 +31,7 @@ from shutil import copyfile, copytree
 from testrunner import env
 from typing import Optional, Dict, List
 from zipfile import ZipFile
+from base64 import b32encode
 
 COLOR = (os.environ.get("LUCI_CONTEXT") == None)  # Disable colors on LUCI.
 COLOR_BLUE = '\033[94m' if COLOR else ''
@@ -108,9 +109,10 @@ def make_tmp_dir():
   parent = Path(os.environ.get("TMPDIR", "/tmp")) / "art" / "test"
   parent.mkdir(parents=True, exist_ok=True)
   args = [a for a in sys.argv[1:] if not a.startswith("--create-runner")]
-  hash = sha1((" ".join(args)).encode()).hexdigest()
+  args += [os.environ.get("TARGET_ARCH", "")]
+  hash = b32encode(sha1((" ".join(args)).encode()).digest()).decode().lower()[:6]
   for i in range(100):
-    tmp_dir = parent / (f"{hash[:8]}" + (f"-{i}" if i > 0 else ""))
+    tmp_dir = parent / (f"{hash}" + (f"-{i}" if i > 0 else ""))
     lock = tmp_dir.with_suffix(".lock")  # NB: Next to the directory, not inside.
     lock_handle = open(lock, "w")
     try:
@@ -311,6 +313,8 @@ if True:
                     help="Run with gc stress testing")
   argp.add_argument("--gcverify", action='store_true',
                     help="Run with gc verification")
+  argp.add_argument("--continuous-gc", action='store_true',
+                    help="Run with continuous background GCs")
   argp.add_argument("--jvmti-trace-stress", action='store_true',
                     help="Run with jvmti method tracing stress testing")
   argp.add_argument("--jvmti-step-stress", action='store_true',
@@ -368,6 +372,8 @@ if True:
                     help="Perform bisection bug search.")
   argp.add_argument("--temp-path", type=str,
                     help="Location where to execute the tests.")
+  argp.add_argument("--simulator", action='store_true',
+                    help="Enable the ART simulator.")
   argp.add_argument("test_name", nargs="?", default='-', type=str,
                     help="Name of the test to run.")
   argp.add_argument("test_args", nargs="*", default=None,
@@ -445,6 +451,7 @@ if True:
     if gc_stress:
         basic_verify = True
 
+    continuous_gc = args.continuous_gc
     jvmti_step_stress = args.jvmti_step_stress
     jvmti_redefine_stress = args.jvmti_redefine_stress
     jvmti_field_stress = args.jvmti_field_stress
@@ -613,6 +620,10 @@ if True:
         "--gc-stress --runtime-option -Xgc:gcstress --runtime-option -Xms2m "
         "--runtime-option -Xmx16m"
     ]
+  if continuous_gc:
+    run_args += [
+        "--continuous-gc --runtime-option -Xgc:continuous_gc"
+    ]
   if jvmti_redefine_stress:
     run_args += ["--no-app-image --jvmti-redefine-stress"]
   if jvmti_step_stress:
@@ -677,7 +688,16 @@ if True:
     else:
       pass  # defaults to using target BOOTCLASSPATH
   elif runtime == "art":
-    if not target_mode:
+    if args.simulator:
+      target_arch_name = guess_target_arch_name()
+      run_args += ["--simulator"]
+      run_args += [
+          f'--boot "{ANDROID_PRODUCT_OUT}/system/apex/art_boot_images/javalib/boot.art"'
+      ]
+
+      java_lp = f"{host_lib_root}/lib{suffix64}:{host_lib_root}/nativetest{suffix64}"
+      run_args += [f'--runtime-option "-Djava.library.path={java_lp}"']
+    elif not target_mode:
       host_arch_name = guess_host_arch_name()
       run_args += [
           f'--boot "{ANDROID_HOST_OUT}/apex/art_boot_images/javalib/boot.art"'
@@ -765,7 +785,9 @@ if True:
           run_checker = False
           cfg_output_dir = tmp_dir
 
-        if not target_mode:
+        if args.simulator:
+          checker_args = f"--arch={target_arch_name.upper()}"
+        elif not target_mode:
           cfg_output_dir = tmp_dir
           checker_args = f"--arch={host_arch_name.upper()}"
         else:
@@ -853,6 +875,8 @@ if True:
     parsed_args.stdout_file = os.path.join(DEX_LOCATION, test_stdout)
     parsed_args.stderr_file = os.path.join(DEX_LOCATION, test_stderr)
 
+    if full_test_name := os.environ.get('FULL_TEST_NAME'):
+      ctx.export(FULL_TEST_NAME=full_test_name)
     ctx.run(f"cd {DEX_LOCATION}")
     if not target_mode:
       # Make "out" directory accessible from test directory.
@@ -893,7 +917,6 @@ if True:
   runner = create_runner_script()
 
   if args.create_runner:
-    # TODO: Generate better unique names.
     dst = args.create_runner / TEST_NAME / f"{Path(tmp_dir).name}.sh"
     assert not dst.exists(), dst
     dst.parent.mkdir(parents=True, exist_ok=True)

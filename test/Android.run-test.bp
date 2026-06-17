@@ -3,6 +3,7 @@
 
 TEST_BUILD_COMMON_ARGS = "$(location run_test_build.py) --out $(out) " +
     "--bootclasspath $(location :art-run-test-bootclasspath) " +
+    "--systemmodule $(location :art-run-test-system-module{.zip}) " +
     "--d8 $(location d8) " +
     "--jasmin $(location jasmin) " +
     "--rewrapper $(location rewrapper) " +
@@ -2646,8 +2647,9 @@ genrule_defaults {
         "jvmti-common/*.java",
         "utils/python/**/*.py",
         ":art-run-test-bootclasspath",
+        ":art-run-test-system-module{.zip}",
         ":development_docs",
-        ":asm-9.6-filegroup",
+        ":ow2-asm",
         ":ojluni-AbstractCollection",
         "988-method-trace/expected-stdout.txt",
         "988-method-trace/expected-stderr.txt",
@@ -2659,6 +2661,7 @@ genrule_defaults {
         // Files needed to generate runner scripts.
         "testrunner/*.py",
         "knownfailures.json",
+        "knownfailures.py",
         "default_run.py",
         "globals.py",
         "run-test",
@@ -2675,7 +2678,7 @@ genrule_defaults {
 }
 
 java_genrule {
-    name: "art-test-host-tmp",
+    name: "art-run-test-host-tgz-tmp",
     out: ["art-test-host.tgz"],
     srcs: [
         ":art-run-test-host-data-shard00-tmp",
@@ -2787,14 +2790,14 @@ java_genrule {
 // This filegroup is so that the host prebuilt etc can depend on a device genrule,
 // as prebuilt_etc doesn't have the equivalent of device_common_srcs.
 filegroup {
-    name: "art-test-host-fg",
-    device_common_srcs: [":art-test-host-tmp"],
+    name: "art-run-test-host-tgz-fg",
+    device_common_srcs: [":art-run-test-host-tgz-tmp"],
 }
 
 // Install in the output directory to make it accessible for tests.
 prebuilt_etc_host {
-    name: "art-test-host",
-    src: ":art-test-host-fg",
+    name: "art-run-test-host-tgz",
+    src: ":art-run-test-host-tgz-fg",
     required: [
         "art-run-test-host-data-shard00",
         "art-run-test-host-data-shard01",
@@ -2899,7 +2902,7 @@ prebuilt_etc_host {
         "art-run-test-host-data-shardHiddenApi",
     ],
     sub_dir: "art",
-    filename: "art-test-host.tgz",
+    filename: "art-run-test-host-tgz.tgz",
 }
 
 // Phony target used to build all shards
@@ -5766,8 +5769,9 @@ genrule_defaults {
         "jvmti-common/*.java",
         "utils/python/**/*.py",
         ":art-run-test-bootclasspath",
+        ":art-run-test-system-module{.zip}",
         ":development_docs",
-        ":asm-9.6-filegroup",
+        ":ow2-asm",
         ":ojluni-AbstractCollection",
         "988-method-trace/expected-stdout.txt",
         "988-method-trace/expected-stderr.txt",
@@ -5779,6 +5783,7 @@ genrule_defaults {
         // Files needed to generate runner scripts.
         "testrunner/*.py",
         "knownfailures.json",
+        "knownfailures.py",
         "default_run.py",
         "globals.py",
         "run-test",
@@ -5795,7 +5800,7 @@ genrule_defaults {
 }
 
 java_genrule {
-    name: "art-test-target-tmp",
+    name: "art-run-test-target-tgz-tmp",
     out: ["art-test-target.tgz"],
     srcs: [
         ":art-run-test-target-data-shard00-tmp",
@@ -5907,14 +5912,14 @@ java_genrule {
 // This filegroup is so that the host prebuilt etc can depend on a device genrule,
 // as prebuilt_etc doesn't have the equivalent of device_common_srcs.
 filegroup {
-    name: "art-test-target-fg",
-    device_common_srcs: [":art-test-target-tmp"],
+    name: "art-run-test-target-tgz-fg",
+    device_common_srcs: [":art-run-test-target-tgz-tmp"],
 }
 
 // Install in the output directory to make it accessible for tests.
 prebuilt_etc_host {
-    name: "art-test-target",
-    src: ":art-test-target-fg",
+    name: "art-run-test-target-tgz",
+    src: ":art-run-test-target-tgz-fg",
     required: [
         "art-run-test-target-data-shard00",
         "art-run-test-target-data-shard01",
@@ -6019,7 +6024,7 @@ prebuilt_etc_host {
         "art-run-test-target-data-shardHiddenApi",
     ],
     sub_dir: "art",
-    filename: "art-test-target.tgz",
+    filename: "art-run-test-target-tgz.tgz",
 }
 
 // Phony target used to build all shards
@@ -8886,8 +8891,9 @@ genrule_defaults {
         "jvmti-common/*.java",
         "utils/python/**/*.py",
         ":art-run-test-bootclasspath",
+        ":art-run-test-system-module{.zip}",
         ":development_docs",
-        ":asm-9.6-filegroup",
+        ":ow2-asm",
         ":ojluni-AbstractCollection",
         "988-method-trace/expected-stdout.txt",
         "988-method-trace/expected-stderr.txt",
@@ -8899,6 +8905,7 @@ genrule_defaults {
         // Files needed to generate runner scripts.
         "testrunner/*.py",
         "knownfailures.json",
+        "knownfailures.py",
         "default_run.py",
         "globals.py",
         "run-test",
@@ -8915,7 +8922,7 @@ genrule_defaults {
 }
 
 java_genrule {
-    name: "art-test-jvm-tmp",
+    name: "art-run-test-jvm-tgz-tmp",
     out: ["art-test-jvm.tgz"],
     srcs: [
         ":art-run-test-jvm-data-shard00-tmp",
@@ -9027,14 +9034,14 @@ java_genrule {
 // This filegroup is so that the host prebuilt etc can depend on a device genrule,
 // as prebuilt_etc doesn't have the equivalent of device_common_srcs.
 filegroup {
-    name: "art-test-jvm-fg",
-    device_common_srcs: [":art-test-jvm-tmp"],
+    name: "art-run-test-jvm-tgz-fg",
+    device_common_srcs: [":art-run-test-jvm-tgz-tmp"],
 }
 
 // Install in the output directory to make it accessible for tests.
 prebuilt_etc_host {
-    name: "art-test-jvm",
-    src: ":art-test-jvm-fg",
+    name: "art-run-test-jvm-tgz",
+    src: ":art-run-test-jvm-tgz-fg",
     required: [
         "art-run-test-jvm-data-shard00",
         "art-run-test-jvm-data-shard01",
@@ -9139,7 +9146,7 @@ prebuilt_etc_host {
         "art-run-test-jvm-data-shardHiddenApi",
     ],
     sub_dir: "art",
-    filename: "art-test-jvm.tgz",
+    filename: "art-run-test-jvm-tgz.tgz",
 }
 
 // Phony target used to build all shards

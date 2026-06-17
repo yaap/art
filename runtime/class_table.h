@@ -118,9 +118,8 @@ class ClassTable {
 
   class ClassDescriptorHash {
    public:
-    // uint32_t for cross compilation.
-    // NO_THREAD_SAFETY_ANALYSIS: Used from unannotated `HashSet<>` functions.
-    uint32_t operator()(const TableSlot& slot) const NO_THREAD_SAFETY_ANALYSIS;
+    // uint32_t for cross compilation. Requires mutator lock, but caller is not properly annotated.
+    uint32_t operator()(const TableSlot& slot) const;
     // uint32_t for cross compilation.
     uint32_t operator()(const DescriptorHashPair& pair) const;
   };

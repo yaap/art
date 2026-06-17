@@ -61,21 +61,6 @@ class PACKED(4) ManagedStack {
         link_(nullptr),
         top_shadow_frame_(nullptr) {}
 
-  void PushManagedStackFragment(ManagedStack* fragment) {
-    // Copy this top fragment into given fragment.
-    memcpy(fragment, this, sizeof(ManagedStack));
-    // Clear this fragment, which has become the top.
-    memset(this, 0, sizeof(ManagedStack));
-    // Link our top fragment onto the given fragment.
-    link_ = fragment;
-  }
-
-  void PopManagedStackFragment(const ManagedStack& fragment) {
-    DCHECK(&fragment == link_);
-    // Copy this given fragment back to the top.
-    memcpy(this, &fragment, sizeof(ManagedStack));
-  }
-
   ManagedStack* GetLink() const {
     return link_;
   }
@@ -137,6 +122,21 @@ class PACKED(4) ManagedStack {
   }
 
  private:
+  void PushManagedStackFragment(ManagedStack* fragment) {
+    // Copy this top fragment into given fragment.
+    memcpy(fragment, this, sizeof(ManagedStack));
+    // Clear this fragment, which has become the top.
+    memset(this, 0, sizeof(ManagedStack));
+    // Link our top fragment onto the given fragment.
+    link_ = fragment;
+  }
+
+  void PopManagedStackFragment(const ManagedStack& fragment) {
+    DCHECK(&fragment == link_);
+    // Copy this given fragment back to the top.
+    memcpy(this, &fragment, sizeof(ManagedStack));
+  }
+
   // Encodes the top quick frame (which must be at least 4-byte aligned)
   // and a flag that marks the GenericJNI trampoline.
   class TaggedTopQuickFrame {
@@ -184,6 +184,45 @@ class PACKED(4) ManagedStack {
   TaggedTopQuickFrame tagged_top_quick_frame_;
   ManagedStack* link_;
   ShadowFrame* top_shadow_frame_;
+
+  // For PushManagedStackFragment and PopManagedStackFragment.
+  friend class Thread;
+};
+
+// Scoped class to manage pushing and popping ShadowFrame on the stack that ensures that a pushed
+// shadow frame is always popped when the scope is exited.
+//
+// Example usage:
+//   ManagedStack fragment;
+//   ScopedManagedStackFragment smsf(self, &fragment);
+//   // ... code that uses the new stack fragment ...
+//   // fragment is automatically popped when smsf goes out of scope.
+class ScopedManagedStackFragment {
+ public:
+  ScopedManagedStackFragment(Thread* self, ManagedStack* fragment);
+  ~ScopedManagedStackFragment();
+
+ private:
+  Thread* self_;
+  ManagedStack* fragment_;
+};
+
+// Scoped class to manage pushing and popping ShadowFrame on the stack that ensures that a pushed
+// shadow frame is always popped when the scope is exited.
+//
+// Example usage:
+//   ShadowFrame* shadow_frame = ...;
+//   ScopedShadowFrame ssf(self, shadow_frame);
+//   // ... code that uses the shadow frame ...
+//   // shadow_frame is automatically popped when ssf goes out of scope.
+class ScopedShadowFrame {
+ public:
+  ScopedShadowFrame(Thread* self, ShadowFrame* sf);
+  ~ScopedShadowFrame();
+
+ private:
+  Thread* self_;
+  ShadowFrame* sf_;
 };
 
 }  // namespace art

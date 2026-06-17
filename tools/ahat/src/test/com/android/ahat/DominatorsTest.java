@@ -16,16 +16,20 @@
 
 package com.android.ahat;
 
+import static org.junit.Assert.assertEquals;
+
+import com.android.ahat.AsciiProgress;
 import com.android.ahat.dominators.Dominators;
 import com.android.ahat.dominators.DominatorsComputation;
+
+import org.junit.Test;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.junit.Test;
-import static org.junit.Assert.assertEquals;
 
 public class DominatorsTest {
 
@@ -72,9 +76,10 @@ public class DominatorsTest {
   public void singleNode() {
     // --> n
     // Trivial case.
+    // Also: regression test for a divide by zero bug in AsciiProgress.
     Graph graph = new Graph();
     graph.node("n");
-    new Dominators(graph).computeDominators("n");
+    new Dominators(graph).progress(new AsciiProgress(), 1).computeDominators("n");
   }
 
   @Test

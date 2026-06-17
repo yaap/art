@@ -109,7 +109,15 @@ public class OdsignTestUtils {
         String artApexPath = m.group(1);
         String artApexName = m.group(2);
 
-        assertCommandSucceeds("pm install --apex " + artApexPath);
+        // Copy the backing APEX file to a temp file first. Note that `pm install` doesn't work
+        // with a block file while APEX can be backed by a block file.
+        String tmpApexPath = "/data/local/tmp/art.apex";
+        assertCommandSucceeds("cp " + artApexPath + " " + tmpApexPath);
+        try {
+            assertCommandSucceeds("pm install --apex " + tmpApexPath);
+        } finally {
+            mTestInfo.getDevice().executeShellCommand("rm -f " + tmpApexPath);
+        }
 
         mTestInfo.properties().put(PACKAGE_NAME_KEY, artApexName);
 

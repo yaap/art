@@ -16,6 +16,9 @@
 
 package com.android.ahat;
 
+import com.google.errorprone.annotations.FormatMethod;
+import com.google.errorprone.annotations.FormatString;
+
 import java.io.PrintStream;
 import java.net.URI;
 import java.util.ArrayList;
@@ -49,7 +52,8 @@ class HtmlDoc implements Doc {
   }
 
   @Override
-  public void title(String format, Object... args) {
+  @FormatMethod
+  public void title(@FormatString String format, Object... args) {
     ps.print("<h1>");
     ps.print(DocString.text(String.format(format, args)).html());
     ps.println("</h1>");

@@ -62,6 +62,7 @@ def parse_args(argv):
   argp.add_argument("--experimental", default=[], action="append")
   argp.add_argument("--external-log-tags", action="store_true")
   argp.add_argument("--gc-stress", action="store_true")
+  argp.add_argument("--continuous-gc", action="store_true")
   argp.add_argument("--gdb", action="store_true")
   argp.add_argument("--gdb-arg", default=[], action="append")
   argp.add_argument("--gdb-dex2oat", action="store_true")
@@ -95,6 +96,7 @@ def parse_args(argv):
   argp.add_argument("--secondary-class-loader-context", default="")
   argp.add_argument("--secondary-compilation", default=True, action=opt_bool)
   argp.add_argument("--simpleperf", action="store_true")
+  argp.add_argument("--simulator", action="store_true")
   argp.add_argument("--sync", action="store_true")
   argp.add_argument("--testlib", default=[], action="append")
   argp.add_argument("--timeout", default=0, type=int)
@@ -153,28 +155,40 @@ def get_apex_bootclasspath_impl(bpath_prefix: str):
 
 
 # Gets a -Xbootclasspath paths with the apex modules.
-def get_apex_bootclasspath(host: bool):
+def get_apex_bootclasspath(host: bool, simulator: bool):
   bpath_prefix = ""
 
-  if host:
+  if simulator:
+    bpath_prefix = os.environ["ANDROID_PRODUCT_OUT"] + "/system"
+  elif host:
     bpath_prefix = os.environ["ANDROID_HOST_OUT"]
 
   return get_apex_bootclasspath_impl(bpath_prefix)
 
 
 # Gets a -Xbootclasspath-location paths with the apex modules.
-def get_apex_bootclasspath_locations(host: bool):
+def get_apex_bootclasspath_locations(host: bool, simulator: bool):
   bpath_location_prefix = ""
+  out_path = ""
 
-  if host:
+  # For target, no prefix is needed.
+  if simulator:
+    out_path = os.environ["ANDROID_PRODUCT_OUT"] + "/system"
+  elif host:
+    out_path = os.environ["ANDROID_HOST_OUT"]
+
+  # out_path contains the absolute path, including ANDROID_BUILD_TOP, but the
+  # bootclasspath is expected to be a relative path from ANDROID_BUILD_TOP,
+  # therefore remove it from the location prefix.
+  if host or simulator:
     ANDROID_BUILD_TOP=os.environ["ANDROID_BUILD_TOP"]
-    ANDROID_HOST_OUT=os.environ["ANDROID_HOST_OUT"]
-    if ANDROID_HOST_OUT[0:len(ANDROID_BUILD_TOP)+1] == f"{ANDROID_BUILD_TOP}/":
-      bpath_location_prefix=ANDROID_HOST_OUT[len(ANDROID_BUILD_TOP)+1:]
+    if out_path[0:len(ANDROID_BUILD_TOP)+1] == f"{ANDROID_BUILD_TOP}/":
+      bpath_location_prefix=out_path[len(ANDROID_BUILD_TOP)+1:]
     else:
-      print(f"ANDROID_BUILD_TOP/ is not a prefix of ANDROID_HOST_OUT"\
+      out_path_env = "ANDROID_PRODUCT_OUT" if simulator else "ANDROID_HOST_OUT"
+      print(f"ANDROID_BUILD_TOP/ is not a prefix of {out_path_env}"\
             "\nANDROID_BUILD_TOP={ANDROID_BUILD_TOP}"\
-            "\nANDROID_HOST_OUT={ANDROID_HOST_OUT}")
+            "\n{out_path_env}={out_path}")
       sys.exit(1)
 
   return get_apex_bootclasspath_impl(bpath_location_prefix)
@@ -320,6 +334,7 @@ def default_run(ctx, args, **kwargs):
   ANDROID_FLAGS += (" -Xcompiler-option --runtime-arg -Xcompiler-option "
                     "-XX:SlowDebug=true")
   COMPILER_FLAGS = "  --runtime-arg -XX:SlowDebug=true"
+  SIMULATOR = args.simulator
 
   # Let the compiler and runtime know that we are running tests.
   COMPILE_FLAGS += " --compile-art-test"
@@ -329,8 +344,8 @@ def default_run(ctx, args, **kwargs):
     IS_JVMTI_TEST = True
     # Secondary images block some tested behavior.
     SECONDARY_APP_IMAGE = False
-  if args.gc_stress:
-    # Give an extra 20 mins if we are gc-stress.
+  if args.gc_stress or args.continuous_gc:
+    # Give an extra 20 mins if we are stress or continuous gc.
     TIME_OUT_EXTRA += 1200
   for arg in args.testlib:
     ARGS += f" {arg}"
@@ -423,6 +438,13 @@ def default_run(ctx, args, **kwargs):
   if args.vdex_arg:
     arg = args.vdex_arg
     VDEX_ARGS += f" {arg}"
+  if SIMULATOR:
+    HOST = True
+    ANDROID_PRODUCT_OUT = os.environ.get("ANDROID_PRODUCT_OUT")
+    ANDROID_ROOT = f"{ANDROID_PRODUCT_OUT}/system"
+    ANDROID_RUNTIME_ROOT = f"{ANDROID_PRODUCT_OUT}/apex/com.android.runtime.debug"
+    # Simulation has some overhead so give an extra 50 mins.
+    TIME_OUT_EXTRA += 3000
 
 # HACK: Force the use of `signal_dumper` on host.
   if HOST or ON_VM or ON_SBC:
@@ -584,14 +606,20 @@ def default_run(ctx, args, **kwargs):
     # Some jvmti tests are flaky without -Xint on the RI.
     if IS_JVMTI_TEST:
       FLAGS += " -Xint"
+
+    # Disable the creation of perf data files (e.g., in /tmp/hsperfdata_...).
+    # When tests are run in parallel, these files can cause "locked by another process"
+    # warnings. This pollutes stdout/stderr and causes the test's output diff to fail.
+    FLAGS += " -XX:-UsePerfData"
+
     # Xmx is necessary since we don't pass down the ART flags to JVM.
     # We pass the classes2 path whether it's used (src-multidex) or not.
     cmdline = f"{JAVA} {DEBUGGER_OPTS} {JVM_VERIFY_ARG} -Xmx256m -classpath classes:classes2 {FLAGS} {MAIN} {ARGS}"
     ctx.run(tee(cmdline), expected_exit_code=args.expected_exit_code)
     return
 
-  b_path = get_apex_bootclasspath(HOST)
-  b_path_locations = get_apex_bootclasspath_locations(HOST)
+  b_path = get_apex_bootclasspath(HOST, SIMULATOR)
+  b_path_locations = get_apex_bootclasspath_locations(HOST, SIMULATOR)
 
   BCPEX = ""
   if isfile(f"{TEST_NAME}-bcpex.jar"):
@@ -686,7 +714,9 @@ def default_run(ctx, args, **kwargs):
       "/", "@")
   assert len(VDEX_NAME) <= max_filename_size, "Dex location path too long"
 
-  if HOST:
+  if SIMULATOR:
+    ANDROID_ART_BIN_DIR = f"{ANDROID_HOST_OUT}/bin"
+  elif HOST:
     # On host, run binaries (`dex2oat(d)`, `dalvikvm`, `profman`) from the `bin`
     # directory under the "Android Root" (usually `out/host/linux-x86`).
     #
@@ -705,6 +735,12 @@ def default_run(ctx, args, **kwargs):
     FLAGS += " -Xmetrics-write-to-statsd:false"
 
   profman_cmdline = "true"
+  profman_cmdline_ex = "true"
+
+  if SIMULATOR:
+    # TODO(Simulator): replace hard-coded ISA value with a dynamic one based on the target ISA.
+    ISA = "arm64"
+
   dex2oat_cmdline = "true"
   vdex_cmdline = "true"
   dm_cmdline = "true"
@@ -734,23 +770,33 @@ def default_run(ctx, args, **kwargs):
   # specific profile to run properly.
   if PROFILE or RANDOM_PROFILE:
     profman_cmdline = f"{ANDROID_ART_BIN_DIR}/profman  \
-      --apk={DEX_LOCATION}/{TEST_NAME}.jar \
-      --dex-location={DEX_LOCATION}/{TEST_NAME}.jar"
-
-    if isfile(f"{TEST_NAME}-ex.jar") and SECONDARY_COMPILATION:
-      profman_cmdline = f"{profman_cmdline} \
-        --apk={DEX_LOCATION}/{TEST_NAME}-ex.jar \
-        --dex-location={DEX_LOCATION}/{TEST_NAME}-ex.jar"
-
+        --apk={DEX_LOCATION}/{TEST_NAME}.jar \
+        --dex-location={DEX_LOCATION}/{TEST_NAME}.jar"
     COMPILE_FLAGS = f"{COMPILE_FLAGS} --profile-file={DEX_LOCATION}/{TEST_NAME}.prof"
     FLAGS = f"{FLAGS} -Xcompiler-option --profile-file={DEX_LOCATION}/{TEST_NAME}.prof"
     if PROFILE:
       profman_cmdline = f"{profman_cmdline} --create-profile-from={DEX_LOCATION}/profile \
           --reference-profile-file={DEX_LOCATION}/{TEST_NAME}.prof"
-
     else:
-      profman_cmdline = f"{profman_cmdline} --generate-test-profile={DEX_LOCATION}/{TEST_NAME}.prof \
+      profman_cmdline = f"{profman_cmdline} \
+          --generate-test-profile={DEX_LOCATION}/{TEST_NAME}.prof \
           --generate-test-profile-seed=0"
+
+    if isfile(f"{TEST_NAME}-ex.jar") and SECONDARY_COMPILATION:
+      profman_cmdline_ex = f"{ANDROID_ART_BIN_DIR}/profman  \
+          --apk={DEX_LOCATION}/{TEST_NAME}-ex.jar \
+          --dex-location={DEX_LOCATION}/{TEST_NAME}-ex.jar"
+      COMPILE_FLAGS = f"{COMPILE_FLAGS} --profile-file={DEX_LOCATION}/{TEST_NAME}-ex.prof"
+      FLAGS = f"{FLAGS} -Xcompiler-option --profile-file={DEX_LOCATION}/{TEST_NAME}-ex.prof"
+      if PROFILE:
+        # Note: We're currently using the same `profile` text file as for the primary profile.
+        # This does not allow requesting a duplicate class to be included only in one profile.
+        profman_cmdline_ex = f"{profman_cmdline_ex} --create-profile-from={DEX_LOCATION}/profile \
+            --reference-profile-file={DEX_LOCATION}/{TEST_NAME}-ex.prof"
+      else:
+        profman_cmdline_ex = f"{profman_cmdline_ex} \
+            --generate-test-profile={DEX_LOCATION}/{TEST_NAME}-ex.prof \
+            --generate-test-profile-seed=0"
 
   def write_dex2oat_cmdlines(name: str):
     nonlocal dex2oat_cmdline, dm_cmdline, vdex_cmdline
@@ -927,6 +973,7 @@ def default_run(ctx, args, **kwargs):
   dm_cmdline = re.sub(" +", " ", dm_cmdline)
   vdex_cmdline = re.sub(" +", " ", vdex_cmdline)
   profman_cmdline = re.sub(" +", " ", profman_cmdline)
+  profman_cmdline_ex = re.sub(" +", " ", profman_cmdline_ex)
 
   # Use an empty ASAN_OPTIONS to enable defaults.
   # Note: this is required as envsetup right now exports detect_leaks=0.
@@ -1045,6 +1092,7 @@ def default_run(ctx, args, **kwargs):
 
     ctx.run(f"rm -rf {DEX_LOCATION}/{{oat,dalvik-cache}}/ && mkdir -p {mkdir_locations}")
     ctx.run(f"{profman_cmdline}")
+    ctx.run(f"{profman_cmdline_ex}")
     ctx.run(f"{dex2oat_cmdline}", desc="Dex2oat")
     ctx.run(f"{dm_cmdline}")
     ctx.run(f"{vdex_cmdline}")
@@ -1058,7 +1106,13 @@ def default_run(ctx, args, **kwargs):
 
   else:
     # Host run.
-    LD_LIBRARY_PATH = f"{ANDROID_ROOT}/{LIBRARY_DIRECTORY}:{ANDROID_ROOT}/{TEST_DIRECTORY}"
+    if SIMULATOR:
+      # In simulator mode host native libraries should be used.
+      PATH_PREFIX = ANDROID_HOST_OUT
+    else:
+      PATH_PREFIX = ANDROID_ROOT
+
+    LD_LIBRARY_PATH = f"{PATH_PREFIX}/{LIBRARY_DIRECTORY}:{PATH_PREFIX}/{TEST_DIRECTORY}"
 
     ctx.export(
       ANDROID_PRINTF_LOG = "brief",
@@ -1115,6 +1169,7 @@ def default_run(ctx, args, **kwargs):
     ctx.run(linkroot_cmdline)
     ctx.run(linkroot_overlay_cmdline)
     ctx.run(profman_cmdline)
+    ctx.run(profman_cmdline_ex)
     ctx.run(dex2oat_cmdline, desc="Dex2oat")
     ctx.run(dm_cmdline)
     ctx.run(vdex_cmdline)

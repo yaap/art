@@ -16,19 +16,23 @@
 
 #include "var_handle.h"
 
+#include <cstdint>
+
+#include "android-base/logging.h"
 #include "array-inl.h"
 #include "art_field-inl.h"
 #include "base/casts.h"
 #include "class-inl.h"
 #include "class_linker.h"
 #include "class_root-inl.h"
+#include "common_throws.h"
 #include "intrinsics_enum.h"
 #include "jni/jni_internal.h"
 #include "jvalue-inl.h"
 #include "method_handles-inl.h"
 #include "method_type-inl.h"
-#include "object_array-alloc-inl.h"
 #include "obj_ptr-inl.h"
+#include "object_array-alloc-inl.h"
 #include "well_known_classes.h"
 
 namespace art HIDDEN {
@@ -1149,7 +1153,7 @@ class PrimitiveArrayElementAccessor {
 template <typename T>
 class ByteArrayViewAccessor {
  public:
-  static inline bool IsAccessAligned(int8_t* data, int data_index) {
+  static inline bool IsAccessAligned(int8_t* data, int64_t data_index) {
     static_assert(IsPowerOfTwo(sizeof(T)), "unexpected size");
     static_assert(std::is_arithmetic<T>::value, "unexpected type");
     uintptr_t alignment_mask = sizeof(T) - 1;
@@ -1165,11 +1169,10 @@ class ByteArrayViewAccessor {
 
   static bool Dispatch(const VarHandle::AccessMode access_mode,
                        int8_t* const data,
-                       const int data_index,
+                       const int64_t data_index,
                        const bool byte_swap,
                        ShadowFrameGetter* const getter,
-                       JValue* const result)
-      REQUIRES_SHARED(Locks::mutator_lock_) {
+                       JValue* const result) REQUIRES_SHARED(Locks::mutator_lock_) {
     const bool is_aligned = IsAccessAligned(data, data_index);
     if (!is_aligned) {
       switch (access_mode) {
@@ -1480,6 +1483,9 @@ bool VarHandle::Access(AccessMode access_mode,
     return vh->Access(access_mode, shadow_frame, operands, result);
   } else if (klass == GetClassRoot<ByteBufferViewVarHandle>(class_roots)) {
     auto vh = ObjPtr<ByteBufferViewVarHandle>::DownCast(this);
+    return vh->Access(access_mode, shadow_frame, operands, result);
+  } else if (klass == GetClassRoot<MemorySegmentVarHandle>(class_roots)) {
+    auto vh = ObjPtr<MemorySegmentVarHandle>::DownCast(this);
     return vh->Access(access_mode, shadow_frame, operands, result);
   } else {
     LOG(FATAL) << "Unknown varhandle kind";
@@ -2027,6 +2033,101 @@ bool ByteBufferViewVarHandle::Access(AccessMode access_mode,
     case Primitive::kPrimByte:
     case Primitive::kPrimVoid:
       // These are not supported for byte array views and not instantiable.
+      break;
+  }
+  LOG(FATAL) << "Unreachable: Unexpected primitive " << primitive_type;
+  UNREACHABLE();
+}
+
+bool MemorySegmentVarHandle::GetNativeByteOrder() {
+  return GetFieldBoolean(NativeByteOrderOffset());
+}
+
+int64_t MemorySegmentVarHandle::GetByteAlignment() {
+  int64_t byte_alignment = GetField64(ByteAlignmentOffset());
+  DCHECK_GT(byte_alignment, 0);
+  // byte alignment a power of two
+  DCHECK_EQ(byte_alignment & (byte_alignment - 1), 0);
+  return byte_alignment;
+}
+
+bool MemorySegmentVarHandle::Access(AccessMode access_mode,
+                                    ShadowFrame* shadow_frame,
+                                    const InstructionOperands* const operands,
+                                    JValue* result) {
+  ShadowFrameGetter getter(*shadow_frame, operands);
+
+  // The MemorySegment is the first coordinate argument.
+  ObjPtr<Object> memory_segment(getter.GetReference());
+  if (memory_segment == nullptr) {
+    ThrowNullPointerExceptionForCoordinate();
+    return false;
+  }
+
+  // Check if MemorySegment is NativeMemorySegment
+  // since it is the only supported type at the moment
+  DCHECK(memory_segment->InstanceOf(
+    WellKnownClasses::jdk_internal_foreign_NativeMemorySegmentImpl.Get()));
+
+  // The byte offset is the second coordinate argument.
+  const int64_t byte_offset = getter.GetLong();
+
+  // Check access mode is compatible with MemorySegment's read-only property.
+  bool is_read_only = memory_segment->GetFieldBoolean(
+      WellKnownClasses::jdk_internal_foreign_AbstractMemorySegmentImpl_readOnly->GetOffset());
+  if (is_read_only && !IsReadOnlyAccessMode(access_mode)) {
+    ThrowIllegalArgumentException("Memory segment is read-only");
+    return false;
+  }
+
+  const int64_t segment_length = memory_segment->GetField64(
+      WellKnownClasses::jdk_internal_foreign_AbstractMemorySegmentImpl_length->GetOffset());
+
+  // Bounds check uses var type from MemorySegmentVarHandle
+  const Primitive::Type primitive_type = GetVarType()->GetPrimitiveType();
+  const int64_t component_size = Primitive::ComponentSize(primitive_type);
+  if (byte_offset < 0 || byte_offset > segment_length - component_size) {
+    ThrowIndexOutOfBoundsException(byte_offset,
+                                   segment_length);
+    return false;
+  }
+
+  const int64_t native_address = memory_segment->GetField64(
+      WellKnownClasses::jdk_internal_foreign_NativeMemorySegmentImpl_min->GetOffset());
+
+  int8_t* data = reinterpret_cast<int8_t*>(native_address);
+
+  int64_t byte_alignment = GetByteAlignment();
+
+  if (((native_address + byte_offset) & (byte_alignment - 1)) != 0) {
+    ThrowIllegalArgumentException(
+        std::format(
+            "Target offset {} is incompatible with alignment constraint {} for segment 0x{:x}",
+            byte_offset,
+            byte_alignment,
+            native_address)
+            .c_str());
+    return false;
+  }
+
+  const int64_t checked_offset64 = byte_offset;
+
+  bool byte_swap = !GetNativeByteOrder();
+  switch (primitive_type) {
+    case Primitive::kPrimInt:
+      return ByteArrayViewAccessor<int32_t>::Dispatch(
+          access_mode, data, checked_offset64, byte_swap, &getter, result);
+    // TODO: b/446845636 - Support for these types will be added later
+    case Primitive::kPrimBoolean:
+    case Primitive::kPrimByte:
+    case Primitive::kPrimChar:
+    case Primitive::kPrimShort:
+    case Primitive::kPrimFloat:
+    case Primitive::kPrimLong:
+    case Primitive::kPrimDouble:
+    case Primitive::Type::kPrimNot:
+    case Primitive::kPrimVoid:
+      // These are not supported for memory segment views and not instantiable.
       break;
   }
   LOG(FATAL) << "Unreachable: Unexpected primitive " << primitive_type;

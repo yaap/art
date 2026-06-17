@@ -74,7 +74,7 @@ class ScopedPriorityChange {
   void ResetInternal();
 
   Thread* self_;
-  bool priority_changed_;
+  bool priority_changed_;  // Can't use Thread::niceness_before_boost_ in nested case.
 };
 
 }  // namespace art

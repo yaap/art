@@ -1,0 +1,14 @@
+JNI_OnLoad called
+SimpleFunction value: 42
+Java_Main_simpleJniMethod REACHED!
+Java_Main_jniMethodWithManyParameters REACHED!
+Java_Main_jniNonStaticReturnsDouble REACHED!
+No exception thrown as expected
+ArithmeticException caught as expected
+Java_Main_jniNewException REACHED!
+Exception caught: java.lang.RuntimeException: Thrown from JNI thrown
+LoopWithAllocations passed
+AllocObject passed
+ClassCastException caught as expected
+Exception caught: java.lang.NullPointerException: Attempt to read from null array
+passed

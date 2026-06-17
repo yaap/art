@@ -554,6 +554,16 @@ static jboolean VMRuntime_isArtTestRwFlagEnabled([[maybe_unused]] JNIEnv* env,
   return is_test_rw_flag_enabled();
 }
 
+static jboolean VMRuntime_isReadOnlyDynamicCodeLoadThrowExceptionEnabled([[maybe_unused]] JNIEnv* env,
+                                                 [[maybe_unused]] jclass klass) {
+  return is_read_only_dynamic_code_load_throw_exception_enabled();
+}
+
+static jboolean VMRuntime_isReadOnlyDynamicCodeLoadWwLogEnabled([[maybe_unused]] JNIEnv* env,
+                                                 [[maybe_unused]] jclass klass) {
+  return is_read_only_dynamic_code_load_ww_log_enabled();
+}
+
 static JNINativeMethod gMethods[] = {
     FAST_NATIVE_METHOD(VMRuntime, addressOf, "(Ljava/lang/Object;)J"),
     NATIVE_METHOD(VMRuntime, bootClassPath, "()Ljava/lang/String;"),
@@ -609,6 +619,8 @@ static JNINativeMethod gMethods[] = {
         VMRuntime, getBaseApkOptimizationInfo, "()Ldalvik/system/DexFile$OptimizationInfo;"),
     NATIVE_METHOD(VMRuntime, getFullGcCount, "()J"),
     NATIVE_METHOD(VMRuntime, isArtTestRwFlagEnabled, "()Z"),
+    NATIVE_METHOD(VMRuntime, isReadOnlyDynamicCodeLoadThrowExceptionEnabled, "()Z"),
+    NATIVE_METHOD(VMRuntime, isReadOnlyDynamicCodeLoadWwLogEnabled, "()Z"),
 };
 
 void register_dalvik_system_VMRuntime(JNIEnv* env) {

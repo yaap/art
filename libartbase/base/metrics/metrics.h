@@ -91,7 +91,9 @@
   METRIC(FullGcCountDelta, MetricsDeltaCounter)                      \
   METRIC(TimeElapsedDelta, MetricsDeltaCounter)                      \
   METRIC(AppSlowPathDuringYoungGcDurationDelta, MetricsDeltaCounter) \
-  METRIC(AppSlowPathDuringFullGcDurationDelta, MetricsDeltaCounter)
+  METRIC(AppSlowPathDuringFullGcDurationDelta, MetricsDeltaCounter)  \
+  METRIC(BcpStaticFinalFieldOverwrite, MetricsDeltaCounter)          \
+  METRIC(AppStaticFinalFieldOverwrite, MetricsDeltaCounter)
 
 #define ART_METRICS(METRIC) \
   ART_EVENT_METRICS(METRIC) \

@@ -21,7 +21,9 @@
 
 #include <android-base/logging.h>
 
+#include "base/sdk_version.h"
 #include "class_linker-inl.h"
+#include "class_root.h"
 #include "dex/dex_file-inl.h"
 #include "dex/primitive.h"
 #include "gc/accounting/card_table-inl.h"
@@ -31,6 +33,7 @@
 #include "mirror/object-inl.h"
 #include "obj_ptr-inl.h"
 #include "thread-current-inl.h"
+#include "well_known_classes.h"
 
 namespace art HIDDEN {
 
@@ -471,6 +474,99 @@ inline ArtField* ArtField::FindStaticFieldWithOffset(ObjPtr<mirror::Class> klass
 
 inline ObjPtr<mirror::ClassLoader> ArtField::GetClassLoader() {
   return GetDeclaringClass()->GetClassLoader();
+}
+
+inline void ArtField::SetMonotonicField() {
+  DCHECK_EQ(access_flags_ & kAccMonotonic, 0u);
+  DCHECK(IsFinal());
+  uint32_t new_access_flags = access_flags_ | kAccMonotonic;
+  SetAccessFlags(new_access_flags);
+}
+
+inline bool ArtField::IsWriteProtected() {
+  if (this == WellKnownClasses::java_lang_System_in ||
+      this == WellKnownClasses::java_lang_System_out ||
+      this == WellKnownClasses::java_lang_System_err) {
+    return true;
+  }
+  // TODO(b/423809429): some `static final` fields defined in android.os.Build and
+  // android.os.Build$VERSION are overwritten for App Compat reasons on dogfood builds.
+  // Once these fields are no longer modified checks below could be removed altogether as released
+  // Android versions should not modify these fields.
+  if (IsStatic() && IsFinal()) {
+    // No read barrier needed for reading chains of constant references for comparison
+    // with null and for reading constant primitive data.
+    ObjPtr<mirror::Class> declaring_class = GetDeclaringClass<kWithoutReadBarrier>();
+    if (!declaring_class->IsBootStrapClassLoaded()) {
+      return false;
+    }
+    if (declaring_class->DescriptorEquals("Landroid/os/Build;") ||
+        declaring_class->DescriptorEquals("Landroid/os/Build$VERSION;")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+inline bool ArtField::IsUnmodifiable(auto&& get_field_type) {
+  if (!IsFinal()) {
+    return false;
+  }
+
+  ObjPtr<mirror::Class> declaring_class = GetDeclaringClass();
+  DCHECK(declaring_class != nullptr);
+
+  // Write-protected fields are `static final`, but can be modified nevertheless.
+  if (IsWriteProtected()) {
+    return false;
+  }
+
+  if (IsMonotonic()) {
+    return true;
+  }
+
+  // Before and on Android B any field could be overwritten using reflection with final fields in
+  // record classes being the only exception. For compatibility purposes allow apps targeting B
+  // or an older release to overwrite such fields.
+  uint32_t target_sdk_version = Runtime::Current()->GetTargetSdkVersion();
+  if (IsSdkVersionSetAndAtMost(target_sdk_version, SdkVersion::kB)) {
+    return false;
+  }
+
+  // `static final` fields with declared VarHandle, MethodHandle, Atomic*FieldUpdater or Unsafe
+  // types are unmodifiable on apps targeting C or higher.
+  if (IsStatic()) {
+    ObjPtr<mirror::Class> field_type = get_field_type();
+    DCHECK(field_type != nullptr);
+    if (field_type->IsBootStrapClassLoaded()) {
+      // These classes are abstract and exact implementations are exposed neither to apps
+      // nor in the platform, hence plain comparison instead of subtype checks.
+      if (field_type == GetClassRoot(ClassRoot::kJavaLangInvokeMethodHandle) ||
+          field_type == GetClassRoot(ClassRoot::kJavaLangInvokeVarHandle) ||
+          field_type == WellKnownClasses::ToClass(
+              WellKnownClasses::java_util_concurrent_atomic_AIFU) ||
+          field_type == WellKnownClasses::ToClass(
+              WellKnownClasses::java_util_concurrent_atomic_ALFU) ||
+          field_type == WellKnownClasses::ToClass(
+              WellKnownClasses::java_util_concurrent_atomic_ARFU) ||
+          // Unsafe classes are final and there is only one instance of them.
+          field_type == WellKnownClasses::ToClass(
+              WellKnownClasses::jdk_internal_misc_Unsafe) ||
+          field_type == WellKnownClasses::ToClass(
+              WellKnownClasses::sun_misc_Unsafe)) {
+        return true;
+      }
+    }
+  }
+
+  // Make sure that OEMs code in bootclasspath won't be affected after ART module update.
+  uint32_t sdk_version = Runtime::Current()->GetSdkVersion();
+  if (IsSdkVersionSetAndAtMost(sdk_version, SdkVersion::kB)) {
+    return false;
+  }
+
+  // static final fields can't be modified once initialized.
+  return IsStatic();
 }
 
 }  // namespace art

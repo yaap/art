@@ -169,7 +169,7 @@ std::unique_ptr<RuntimeParser> ParsedOptions::MakeParser(bool ignore_unrecognize
           .WithValueMap({{"false", false}, {"true", true}})
           .IntoKey(M::EnableTimeBasedGcTrigger)
       .Define("-XX:HeapMemoryGcCostFactor=_")
-          .WithType<MemoryKiB>()
+          .WithType<double>().WithRange(0.1, 100.0)
           .IntoKey(M::HeapMemoryGcCostFactor)
       .Define("-XX:ForegroundHeapGrowthMultiplier=_")
           .WithType<double>().WithRange(0.1, 5.0)
@@ -434,7 +434,7 @@ std::unique_ptr<RuntimeParser> ParsedOptions::MakeParser(bool ignore_unrecognize
           .WithValueMap(hiddenapi_policy_valuemap)
           .IntoKey(M::HiddenApiPolicy)
       .Define("-Xcore-platform-api-policy:_")
-          .WithHelp("Ignored if the hiddenapi_platform_enforcement flag is set.")
+          .WithHelp("Ignored on API level 37+ if the hiddenapi_platform_enforcement flag is set.")
           .WithType<hiddenapi::EnforcementPolicy>()
           .WithValueMap(hiddenapi_policy_valuemap)
           .IntoKey(M::CorePlatformApiPolicy)
@@ -796,8 +796,8 @@ bool ParsedOptions::DoParse(const RuntimeOptions& options,
     args.Set(M::HeapGrowthLimit, args.GetOrDefault(M::MemoryMaximumSize));
   }
 
-  // Increase log thresholds for GC stress mode to avoid excessive log spam.
-  if (args.GetOrDefault(M::GcOption).gcstress_) {
+  // Increase log thresholds for GC in stress/continuous mode to avoid excessive log spam.
+  if (args.GetOrDefault(M::GcOption).gcstress_ || args.GetOrDefault(M::GcOption).continuous_gc_) {
     args.SetIfMissing(M::AlwaysLogExplicitGcs, false);
     args.SetIfMissing(M::LongPauseLogThreshold, gc::Heap::kDefaultLongPauseLogThresholdGcStress);
     args.SetIfMissing(M::LongGCLogThreshold, gc::Heap::kDefaultLongGCLogThresholdGcStress);

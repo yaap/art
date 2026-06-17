@@ -66,6 +66,8 @@ enum GcCause {
   kGcCauseProfileSaver,
   // GC cause for deleting dex cache arrays at startup.
   kGcCauseDeletingDexCacheArrays,
+  // GC cause for clamping heap to growth-limit.
+  kGcCauseClampGrowthLimit,
 };
 
 const char* PrettyCause(GcCause cause);

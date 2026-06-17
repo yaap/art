@@ -698,8 +698,16 @@ bool HDeadCodeElimination::RemoveUnneededTries() {
   // Use local allocator for allocating memory.
   ScopedArenaAllocator allocator(graph_->GetArenaStack());
 
+  struct HBasicBlockIdComparator {
+    bool operator()(const HBasicBlock* a, const HBasicBlock* b) const {
+      DCHECK(a != nullptr);
+      DCHECK(b != nullptr);
+      return a->GetBlockId() < b->GetBlockId();
+    }
+  };
+
   // Collect which blocks are part of which try.
-  ScopedArenaUnorderedMap<HBasicBlock*, TryBelongingInformation> tries(
+  ScopedArenaSafeMap<HBasicBlock*, TryBelongingInformation, HBasicBlockIdComparator> tries(
       allocator.Adapter(kArenaAllocDCE));
   for (HBasicBlock* block : graph_->GetReversePostOrderSkipEntryBlock()) {
     if (block->IsTryBlock()) {

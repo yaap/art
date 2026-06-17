@@ -16,6 +16,8 @@
 
 #include "image_test.h"
 
+#include "driver/image_class_map-inl.h"
+
 namespace art {
 namespace linker {
 
@@ -47,6 +49,17 @@ void ImageWriteReadTest::TestWriteRead(ImageHeader::StorageMode storage_mode,
     ASSERT_TRUE(space->IsMallocSpace());
     image_file_sizes.push_back(file->GetLength());
   }
+
+  // Collect image class descriptors.
+  HashSet<std::string> image_classes;
+  compiler_options_->GetImageClasses().ForEach([&](TypeReference type_ref, size_t array_dim) {
+    std::string descriptor(type_ref.dex_file->GetTypeDescriptorView(type_ref.TypeIndex()));
+    image_classes.insert(descriptor);
+    for (size_t i = 0; i != array_dim; ++i) {
+      descriptor.insert(descriptor.begin(), '[');
+      image_classes.insert(descriptor);
+    }
+  });
 
   // Need to delete the compiler since it has worker threads which are attached to runtime.
   compiler_driver_.reset();
@@ -91,7 +104,6 @@ void ImageWriteReadTest::TestWriteRead(ImageHeader::StorageMode storage_mode,
 
   // We loaded the runtime with an explicit image, so it must exist.
   ASSERT_EQ(heap->GetBootImageSpaces().size(), image_file_sizes.size());
-  const HashSet<std::string>& image_classes = compiler_options_->GetImageClasses();
   for (size_t i = 0; i < helper.dex_file_locations.size(); ++i) {
     std::unique_ptr<const DexFile> dex(
         LoadExpectSingleDexFile(helper.dex_file_locations[i].c_str()));

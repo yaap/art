@@ -17,18 +17,18 @@
 import dalvik.system.PathClassLoader;
 
 class Main {
-  static final String TEST_NAME = "811-checker-invoke-super-secondary";
+    static final String TEST_NAME = "811-checker-invoke-super-secondary";
 
-  static final String DEX_FILE = System.getenv("DEX_LOCATION") + "/" + TEST_NAME + ".jar";
+    static final String DEX_FILE = System.getenv("DEX_LOCATION") + "/" + TEST_NAME + ".jar";
 
-  static final String SECONDARY_NAME = TEST_NAME + "-ex";
-  static final String SECONDARY_DEX_FILE =
-    System.getenv("DEX_LOCATION") + "/" + SECONDARY_NAME + ".jar";
+    static final String SECONDARY_NAME = TEST_NAME + "-ex";
+    static final String SECONDARY_DEX_FILE =
+        System.getenv("DEX_LOCATION") + "/" + SECONDARY_NAME + ".jar";
 
-  public static void main(String[] args) throws Exception {
-    PathClassLoader pcl = new PathClassLoader(SECONDARY_DEX_FILE, Main.class.getClassLoader());
+    public static void main(String[] args) throws Exception {
+        PathClassLoader pcl = new PathClassLoader(SECONDARY_DEX_FILE, Main.class.getClassLoader());
 
-    Class<?> secondaryCls = pcl.loadClass("OtherClass");
-    secondaryCls.getDeclaredMethod("$noinline$foo").invoke(secondaryCls.newInstance());
-  }
+        Class<?> secondaryCls = pcl.loadClass("OtherClass");
+        secondaryCls.getDeclaredMethod("$noinline$foo").invoke(secondaryCls.newInstance());
+    }
 }

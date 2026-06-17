@@ -32,6 +32,8 @@ message PackageDexUseProto {
     string owning_package_name = 1;  // key
     repeated PrimaryDexUseProto primary_dex_use = 2;
     repeated SecondaryDexUseProto secondary_dex_use = 3;
+    double package_score = 4;
+    int64 package_score_updated_at_ms = 5;
 }
 
 message PrimaryDexUseProto {

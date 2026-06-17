@@ -44,6 +44,9 @@ bootclasspath_fragment {
         "art-bootclasspath-fragment-soong-config-defaults",
     ],
     image_name: "art",
+    dex_preopt: {
+        profile:  "art/build/boot/boot-image-profile.txt",
+    },
     // Must match the ART_APEX_JARS set in build/make/core/envsetup.mk
     contents: [
         "core-oj",
@@ -85,8 +88,7 @@ bootclasspath_fragment {
         },
     },
     visibility: [
-        "//art/build/apex",
-        "//art/build/sdk",
+        "//art:__subpackages__",
     ],
     apex_available: [
         "com.android.art",

@@ -1,0 +1,2 @@
+Tests streaming method tracing. It verifies that method exit events aren't
+generated for optimized code compiled without debugging support when unwinding.

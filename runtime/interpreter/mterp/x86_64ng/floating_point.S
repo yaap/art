@@ -34,7 +34,7 @@
     SET_VREG %eax, rINSTq
     ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 
-%def fpcvt(source_suffix="", dest_suffix="", wide=""):
+%def fpcvt(source_suffix="", dest_suffix="", wide=False):
 /*
  * Generic 32-bit FP conversion operation.
  */
@@ -43,13 +43,12 @@
     sarl    $$4, rINST                      # rINST <- B
     andb    $$0xf, %cl                      # ecx <- A
     cvts${source_suffix}2s${dest_suffix}    VREG_ADDRESS(rINSTq), %xmm0
-    .if $wide
-    SET_VREG_XMMd %xmm0, %rcx
-    CLEAR_WIDE_REF %rcx
-    .else
-    SET_VREG_XMMs %xmm0, %rcx
-    CLEAR_REF %rcx
-    .endif
+%   if wide:
+      SET_VREG_XMMd %xmm0, %rcx
+      CLEAR_WIDE_REF %rcx
+%   else:
+      SET_VREG_XMMs %xmm0, %rcx
+      CLEAR_REF %rcx
     ADVANCE_PC_FETCH_AND_GOTO_NEXT 1
 
 %def sseBinop(instr="", suff=""):
@@ -124,34 +123,34 @@
 %  sseBinop2Addr(instr="divs", suff="s")
 
 %def op_double_to_float():
-%  fpcvt(source_suffix="d", dest_suffix="s", wide="0")
+%  fpcvt(source_suffix="d", dest_suffix="s")
 
 %def op_double_to_int():
-%  cvtfp_int(fp_suffix="d", i_suffix="l", max_const="$0x7fffffff", result_reg="%eax", wide="0")
+%  cvtfp_int(fp_suffix="d", i_suffix="l", max_const="$0x7fffffff", result_reg="%eax")
 
 %def op_double_to_long():
-%  cvtfp_int(fp_suffix="d", i_suffix="q", max_const="$0x7fffffffffffffff", result_reg="%rax", wide="1")
+%  cvtfp_int(fp_suffix="d", i_suffix="q", max_const="$0x7fffffffffffffff", result_reg="%rax", wide=True)
 
 %def op_float_to_double():
-%  fpcvt(source_suffix="s", dest_suffix="d", wide="1")
+%  fpcvt(source_suffix="s", dest_suffix="d", wide=True)
 
 %def op_float_to_int():
-%  cvtfp_int(fp_suffix="s", i_suffix="l", max_const="$0x7fffffff", result_reg="%eax", wide="0")
+%  cvtfp_int(fp_suffix="s", i_suffix="l", max_const="$0x7fffffff", result_reg="%eax")
 
 %def op_float_to_long():
-%  cvtfp_int(fp_suffix="s", i_suffix="q", max_const="$0x7fffffffffffffff", result_reg="%rax", wide="1")
+%  cvtfp_int(fp_suffix="s", i_suffix="q", max_const="$0x7fffffffffffffff", result_reg="%rax", wide=True)
 
 %def op_int_to_double():
-%  fpcvt(source_suffix="i", dest_suffix="dl", wide="1")
+%  fpcvt(source_suffix="i", dest_suffix="dl", wide=True)
 
 %def op_int_to_float():
-%  fpcvt(source_suffix="i", dest_suffix="sl", wide="0")
+%  fpcvt(source_suffix="i", dest_suffix="sl")
 
 %def op_long_to_double():
-%  fpcvt(source_suffix="i", dest_suffix="dq", wide="1")
+%  fpcvt(source_suffix="i", dest_suffix="dq", wide=True)
 
 %def op_long_to_float():
-%  fpcvt(source_suffix="i", dest_suffix="sq", wide="0")
+%  fpcvt(source_suffix="i", dest_suffix="sq")
 
 %def op_mul_double():
 %  sseBinop(instr="muls", suff="d")
@@ -166,7 +165,7 @@
 %  sseBinop2Addr(instr="muls", suff="s")
 
 %def op_neg_double():
-%  unop(preinstr="    movq    $0x8000000000000000, %rsi", instr="    xorq    %rsi, %rax", wide="1")
+%  unop(preinstr="    movq    $0x8000000000000000, %rsi", instr="    xorq    %rsi, %rax", wide=True)
 
 %def op_neg_float():
 %  unop(instr="    xorl    $0x80000000, %eax")

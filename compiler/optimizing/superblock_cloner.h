@@ -136,8 +136,15 @@ inline bool IsEdgeValid(HEdge edge, HGraph* graph) {
 class SuperblockCloner : public ValueObject {
  public:
   // TODO: Investigate optimal types for the containers.
+  struct HInstructionIdComparator {
+    bool operator()(const HInstruction* a, const HInstruction* b) const {
+      DCHECK(a != nullptr);
+      DCHECK(b != nullptr);
+      return a->GetId() < b->GetId();
+    }
+  };
   using HBasicBlockMap = ArenaSafeMap<HBasicBlock*, HBasicBlock*>;
-  using HInstructionMap = ArenaSafeMap<HInstruction*, HInstruction*>;
+  using HInstructionMap = ArenaSafeMap<HInstruction*, HInstruction*, HInstructionIdComparator>;
   using HBasicBlockSet = ArenaBitVector;
   using HEdgeSet = ArenaHashSet<HEdge>;
 
@@ -196,15 +203,6 @@ class SuperblockCloner : public ValueObject {
     HBasicBlock* block = bb_map_->Get(orig_block);
     DCHECK(block != nullptr);
     return block;
-  }
-
-  HInstruction* GetInstrOrig(HInstruction* copy_instr) const {
-    for (auto it : *hir_map_) {
-      if (it.second == copy_instr) {
-        return it.first;
-      }
-    }
-    return nullptr;
   }
 
   bool IsInOrigBBSet(uint32_t block_id) const {

@@ -23,8 +23,8 @@
 #include "base/arena_containers.h"
 #include "base/array_ref.h"
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "base/pointer_size.h"
-#include "offsets.h"
 #include "utils/jni_macro_assembler.h"
 
 namespace art HIDDEN {

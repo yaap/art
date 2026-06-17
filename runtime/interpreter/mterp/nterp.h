@@ -44,7 +44,11 @@ constexpr uint16_t kNterpHotnessValue = 0;
 constexpr size_t kNterpMaxFrame = 3 * KB;
 
 // The maximum size for each nterp opcode handler.
+#if defined(__aarch64__) || defined(__arm__)
+constexpr size_t kNterpHandlerSize = 64;
+#else
 constexpr size_t kNterpHandlerSize = 128;
+#endif
 
 }  // namespace interpreter
 }  // namespace art

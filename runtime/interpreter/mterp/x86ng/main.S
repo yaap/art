@@ -1,4 +1,3 @@
-%def header():
 /*
  * Copyright (C) 2021 The Android Open Source Project
  *
@@ -246,6 +245,7 @@
     .global SYMBOL(\name)
     .balign 16
 SYMBOL(\name):
+%   pass
 .endm
 
 .macro ENTRY name
@@ -254,6 +254,7 @@ SYMBOL(\name):
     .global SYMBOL(\name)
     FUNCTION_TYPE(\name)
 SYMBOL(\name):
+%   pass
 .endm
 
 .macro END name
@@ -264,27 +265,44 @@ SYMBOL(\name):
 // (we're not holding references there), but there is no
 // kDontSave runtime method. So just use the kSaveRefsOnly runtime method.
 .macro NTERP_TRAMPOLINE name, helper
-DEFINE_FUNCTION \name
-  movd %ebx, %xmm0
-  SETUP_SAVE_REFS_ONLY_FRAME ebx
-  movd %xmm0, %ebx
-  PUSH_ARG ebx
-  PUSH_ARG edx
-  PUSH_ARG ecx
-  PUSH_ARG eax
-  call \helper
-  DECREASE_FRAME 16
-  RESTORE_IBASE_WITH_CFA
-  FETCH_INST_CLEAR_OPCODE
-  RESTORE_SAVE_REFS_ONLY_FRAME
-  cmpl LITERAL(0), %fs:THREAD_EXCEPTION_OFFSET
-  jne nterp_deliver_pending_exception
-  ret
-END_FUNCTION \name
+  DEFINE_FUNCTION \name
+    movd %ebx, %xmm0
+    SETUP_SAVE_REFS_ONLY_FRAME ebx
+    movd %xmm0, %ebx
+    PUSH_ARG ebx
+    PUSH_ARG edx
+    PUSH_ARG ecx
+    PUSH_ARG eax
+    call \helper
+    DECREASE_FRAME 16
+    RESTORE_IBASE_WITH_CFA
+    FETCH_INST_CLEAR_OPCODE
+    RESTORE_SAVE_REFS_ONLY_FRAME
+    cmpl LITERAL(0), %fs:THREAD_EXCEPTION_OFFSET
+    jne nterp_deliver_pending_exception
+    ret
+  END_FUNCTION \name
 .endm
 
-.macro CLEAR_VOLATILE_MARKER reg
-  andl MACRO_LITERAL(-2), \reg
+.macro NTERP_TRAMPOLINE_RETURN_LONG name, helper
+  DEFINE_FUNCTION \name
+    movd %ebx, %xmm0
+    SETUP_SAVE_REFS_ONLY_FRAME ebx
+    movd %xmm0, %ebx
+    PUSH_ARG ebx
+    PUSH_ARG edx
+    PUSH_ARG ecx
+    PUSH_ARG eax
+    call \helper
+    movl %edx, %ecx
+    DECREASE_FRAME 16
+    RESTORE_IBASE_WITH_CFA
+    FETCH_INST_CLEAR_OPCODE
+    RESTORE_SAVE_REFS_ONLY_FRAME
+    cmpl LITERAL(0), %fs:THREAD_EXCEPTION_OFFSET
+    jne nterp_deliver_pending_exception
+    ret
+  END_FUNCTION \name
 .endm
 
 .macro EXPORT_PC
@@ -318,7 +336,7 @@ END_FUNCTION \name
     // Fetch outs size.
     movzwl CODE_ITEM_OUTS_SIZE_OFFSET(\code_item), \outs
     .if \load_ins
-    movzwl CODE_ITEM_INS_SIZE_OFFSET(\code_item), \ins
+      movzwl CODE_ITEM_INS_SIZE_OFFSET(\code_item), \ins
     .endif
     addl $$CODE_ITEM_INSNS_OFFSET, \code_item
 .endm
@@ -382,6 +400,7 @@ END_FUNCTION \name
     cmpl %eax, \fp
     jne 1b
 2:
+%   pass
 .endm
 
 // Puts the next floating point argument into the expected register,
@@ -448,6 +467,7 @@ END_FUNCTION \name
 8:
     GET_VREG_XMMs REG_VAR(xmm_reg), %eax
 4:
+%   pass
 .endm
 
 // Puts the next int/long/object argument in the expected register,
@@ -483,31 +503,31 @@ END_FUNCTION \name
     jmp 5f
 2:  // FOUND_LONG
     .if \is_ebx
-    // Put back shorty and exit
-    subl MACRO_LITERAL(1), REG_VAR(shorty)
-    jmp 5f
+      // Put back shorty and exit
+      subl MACRO_LITERAL(1), REG_VAR(shorty)
+      jmp 5f
     .else
-    movl REG_VAR(inst), %eax
-    andl MACRO_LITERAL(0xf), %eax
-    GET_VREG REG_VAR(gpr_reg), %eax
-    shrl MACRO_LITERAL(4), REG_VAR(inst)
-    addl MACRO_LITERAL(1), REG_VAR(arg_index)
-    cmpl MACRO_LITERAL(4), REG_VAR(arg_index)
-    je 9f
-    movl REG_VAR(inst), %eax
-    andl MACRO_LITERAL(0xf), %eax
-    shrl MACRO_LITERAL(4), REG_VAR(inst)
-    addl MACRO_LITERAL(1), REG_VAR(arg_index)
-    jmp 10f
+      movl REG_VAR(inst), %eax
+      andl MACRO_LITERAL(0xf), %eax
+      GET_VREG REG_VAR(gpr_reg), %eax
+      shrl MACRO_LITERAL(4), REG_VAR(inst)
+      addl MACRO_LITERAL(1), REG_VAR(arg_index)
+      cmpl MACRO_LITERAL(4), REG_VAR(arg_index)
+      je 9f
+      movl REG_VAR(inst), %eax
+      andl MACRO_LITERAL(0xf), %eax
+      shrl MACRO_LITERAL(4), REG_VAR(inst)
+      addl MACRO_LITERAL(1), REG_VAR(arg_index)
+      jmp 10f
 9:
-    // Fetch PC
-    movl LOCAL1(%esp), %eax
-    movl -8(%eax), %eax
-    movzbl 1(%eax), %eax
-    andl MACRO_LITERAL(0xf), %eax
+      // Fetch PC
+      movl LOCAL1(%esp), %eax
+      movl -8(%eax), %eax
+      movzbl 1(%eax), %eax
+      andl MACRO_LITERAL(0xf), %eax
 10:
-    GET_VREG REG_VAR(gpr_long_reg), %eax
-    jmp \if_long
+      GET_VREG REG_VAR(gpr_long_reg), %eax
+      jmp \if_long
     .endif
 3:  // SKIP_FLOAT
     shrl MACRO_LITERAL(4), REG_VAR(inst)
@@ -518,6 +538,7 @@ END_FUNCTION \name
     addl MACRO_LITERAL(2), REG_VAR(arg_index)
     jmp 1b
 5:
+%   pass
 .endm
 
 // Puts the next int/long/object argument in the expected stack slot,
@@ -536,9 +557,9 @@ END_FUNCTION \name
     cmpb MACRO_LITERAL(68), %al   // if (al == 'D') goto SKIP_DOUBLE
     je 4f
     .if \is_string_init
-    cmpl MACRO_LITERAL(3), REG_VAR(arg_index)
+      cmpl MACRO_LITERAL(3), REG_VAR(arg_index)
     .else
-    cmpl MACRO_LITERAL(4), REG_VAR(arg_index)
+      cmpl MACRO_LITERAL(4), REG_VAR(arg_index)
     .endif
     je 7f
     movl REG_VAR(inst), %eax
@@ -566,9 +587,9 @@ END_FUNCTION \name
     shrl MACRO_LITERAL(4), REG_VAR(inst)
     addl MACRO_LITERAL(1), REG_VAR(arg_index)
     .if \is_string_init
-    cmpl MACRO_LITERAL(3), REG_VAR(arg_index)
+      cmpl MACRO_LITERAL(3), REG_VAR(arg_index)
     .else
-    cmpl MACRO_LITERAL(4), REG_VAR(arg_index)
+      cmpl MACRO_LITERAL(4), REG_VAR(arg_index)
     .endif
     je 9f
     movl REG_VAR(inst), %eax
@@ -628,6 +649,7 @@ END_FUNCTION \name
     addl MACRO_LITERAL(1), REG_VAR(arg_index)
     add MACRO_LITERAL(1), REG_VAR(stack_index)
 4:
+%   pass
 .endm
 
 // Puts the next floating point argument into the expected stack slot,
@@ -692,13 +714,13 @@ END_FUNCTION \name
     jmp 5f
 2:  // FOUND_LONG
     .if \is_ebx
-    // Put back shorty and exit
-    subl MACRO_LITERAL(1), REG_VAR(shorty)
+      // Put back shorty and exit
+      subl MACRO_LITERAL(1), REG_VAR(shorty)
     .else
-    movl (rFP, REG_VAR(arg_index), 4), REG_VAR(gpr_reg)
-    movl 4(rFP, REG_VAR(arg_index), 4), REG_VAR(gpr_long_reg)
-    addl MACRO_LITERAL(2), REG_VAR(arg_index)
-    addl MACRO_LITERAL(2), REG_VAR(stack_index)
+      movl (rFP, REG_VAR(arg_index), 4), REG_VAR(gpr_reg)
+      movl 4(rFP, REG_VAR(arg_index), 4), REG_VAR(gpr_long_reg)
+      addl MACRO_LITERAL(2), REG_VAR(arg_index)
+      addl MACRO_LITERAL(2), REG_VAR(stack_index)
     .endif
     jmp \if_long
 3:  // SKIP_FLOAT
@@ -710,6 +732,7 @@ END_FUNCTION \name
     addl MACRO_LITERAL(2), REG_VAR(stack_index)
     jmp 1b
 5:
+%   pass
 .endm
 
 // Puts the next int/long/object argument in the expected stack slot,
@@ -774,6 +797,7 @@ END_FUNCTION \name
     movss REG_VAR(xmm_reg), (REG_VAR(fp), REG_VAR(arg_index), 4)
     addl MACRO_LITERAL(1), REG_VAR(arg_index)
 4:
+%   pass
 .endm
 
 // Puts the next int/long/object parameter passed in physical register
@@ -801,14 +825,14 @@ END_FUNCTION \name
     jmp 5f
 2:  // FOUND_LONG
     .if \is_ebx
-    // Put back shorty and jump to \if_long
-    subl MACRO_LITERAL(1), REG_VAR(shorty)
+      // Put back shorty and jump to \if_long
+      subl MACRO_LITERAL(1), REG_VAR(shorty)
     .else
-    movl \offset(REG_VAR(stack_ptr)), %eax
-    movl %eax, (REG_VAR(regs), REG_VAR(arg_index), 4)
-    movl \offset_long(REG_VAR(stack_ptr)), %eax
-    movl %eax, 4(REG_VAR(regs), REG_VAR(arg_index), 4)
-    addl MACRO_LITERAL(2), REG_VAR(arg_index)
+      movl \offset(REG_VAR(stack_ptr)), %eax
+      movl %eax, (REG_VAR(regs), REG_VAR(arg_index), 4)
+      movl \offset_long(REG_VAR(stack_ptr)), %eax
+      movl %eax, 4(REG_VAR(regs), REG_VAR(arg_index), 4)
+      addl MACRO_LITERAL(2), REG_VAR(arg_index)
     .endif
     jmp \if_long
 3:  // SKIP_FLOAT
@@ -822,6 +846,7 @@ END_FUNCTION \name
     movl %eax, (REG_VAR(regs), REG_VAR(arg_index), 4)
     addl MACRO_LITERAL(1), REG_VAR(arg_index)
 5:
+%   pass
 .endm
 
 // Puts the next floating point parameter passed in stack
@@ -947,32 +972,32 @@ END_FUNCTION \name
    push %eax
    push %ecx
    .if \is_polymorphic
-   push rPC
-   push 12(%esp)
-   call SYMBOL(NterpGetShortyFromInvokePolymorphic)
-   addl MACRO_LITERAL(8), %esp
+     push rPC
+     push 12(%esp)
+     call SYMBOL(NterpGetShortyFromInvokePolymorphic)
+     addl MACRO_LITERAL(8), %esp
    .elseif \is_custom
-   push rPC
-   push 12(%esp)
-   call SYMBOL(NterpGetShortyFromInvokeCustom)
-   addl MACRO_LITERAL(8), %esp
+     push rPC
+     push 12(%esp)
+     call SYMBOL(NterpGetShortyFromInvokeCustom)
+     addl MACRO_LITERAL(8), %esp
    .elseif \is_interface
-   subl MACRO_LITERAL(16), %esp
-   // Save interface method.
-   movss %xmm7, (%esp)
-   movzwl 2(rPC), %eax
-   pushl %eax
-   // Caller is at 8 (saved ArtMethod + ecx) + 16 + 4 (second argument)
-   pushl 28(%esp)
-   call SYMBOL(NterpGetShortyFromMethodId)
-   // Restore interface method.
-   movss 8(%esp), %xmm7
-   addl MACRO_LITERAL(24), %esp
+     subl MACRO_LITERAL(16), %esp
+     // Save interface method.
+     movss %xmm7, (%esp)
+     movzwl 2(rPC), %eax
+     pushl %eax
+     // Caller is at 8 (saved ArtMethod + ecx) + 16 + 4 (second argument)
+     pushl 28(%esp)
+     call SYMBOL(NterpGetShortyFromMethodId)
+     // Restore interface method.
+     movss 8(%esp), %xmm7
+     addl MACRO_LITERAL(24), %esp
    .else
-   subl MACRO_LITERAL(4), %esp  // Alignment
-   push %eax
-   call SYMBOL(NterpGetShorty)
-   addl MACRO_LITERAL(8), %esp
+     subl MACRO_LITERAL(4), %esp  // Alignment
+     push %eax
+     call SYMBOL(NterpGetShorty)
+     addl MACRO_LITERAL(8), %esp
    .endif
    movl %eax, \dest
    pop %ecx
@@ -987,24 +1012,24 @@ END_FUNCTION \name
    subl MACRO_LITERAL(4), %esp
    movss %xmm0, (%esp)
    .if \is_interface
-   // Alignment.
-   subl MACRO_LITERAL(8), %esp
-   movzwl 2(rPC), %eax
-   pushl %eax
-   // Caller is at 16 (parameters) + 8 (alignment) + 4 (second argument).
-   pushl 28(%esp)
-   call SYMBOL(NterpGetShortyFromMethodId)
-   movl %eax, \dest
-   movss 16(%esp), %xmm0
-   addl MACRO_LITERAL(20), %esp
+     // Alignment.
+     subl MACRO_LITERAL(8), %esp
+     movzwl 2(rPC), %eax
+     pushl %eax
+     // Caller is at 16 (parameters) + 8 (alignment) + 4 (second argument).
+     pushl 28(%esp)
+     call SYMBOL(NterpGetShortyFromMethodId)
+     movl %eax, \dest
+     movss 16(%esp), %xmm0
+     addl MACRO_LITERAL(20), %esp
    .else
-   // Alignment.
-   subl MACRO_LITERAL(12), %esp
-   pushl %eax
-   call SYMBOL(NterpGetShorty)
-   movl %eax, \dest
-   movss 16(%esp), %xmm0
-   addl MACRO_LITERAL(20), %esp
+     // Alignment.
+     subl MACRO_LITERAL(12), %esp
+     pushl %eax
+     call SYMBOL(NterpGetShorty)
+     movl %eax, \dest
+     movss 16(%esp), %xmm0
+     addl MACRO_LITERAL(20), %esp
    .endif
    popl %edx
    popl %ecx
@@ -1029,21 +1054,24 @@ END_FUNCTION \name
 
 .macro DO_CALL is_polymorphic, is_custom
    .if \is_polymorphic
-   call SYMBOL(art_quick_invoke_polymorphic)
+     call SYMBOL(art_quick_invoke_polymorphic)
    .elseif \is_custom
-   call SYMBOL(art_quick_invoke_custom)
+     call SYMBOL(art_quick_invoke_custom)
    .else
-   call *ART_METHOD_QUICK_CODE_OFFSET_32(%eax)
+     call *ART_METHOD_QUICK_CODE_OFFSET_32(%eax)
    .endif
 .endm
 
 .macro COMMON_INVOKE_NON_RANGE is_static=0, is_interface=0, suffix="", is_string_init=0, is_polymorphic=0, is_custom=0
    .if \is_polymorphic
-   // No fast path for polymorphic calls.
+     // No fast path for polymorphic calls.
+%    pass
    .elseif \is_custom
-   // No fast path for custom calls.
+     // No fast path for custom calls.
+%    pass
    .elseif \is_string_init
-   // No fast path for string.init.
+     // No fast path for string.init.
+%    pass
    .else
      testl $$ART_METHOD_NTERP_INVOKE_FAST_PATH_FLAG, ART_METHOD_ACCESS_FLAGS_OFFSET(%eax)
      je .Lfast_path_with_few_args_\suffix
@@ -1051,15 +1079,15 @@ END_FUNCTION \name
      movl %edx, %ebx
      shrl MACRO_LITERAL(4), %ebx # Number of arguments
      .if \is_static
-     jz .Linvoke_fast_path_\suffix  # shl sets the Z flag
+       jz .Linvoke_fast_path_\suffix  # shl sets the Z flag
      .else
-     cmpl MACRO_LITERAL(1), %ebx
-     je .Linvoke_fast_path_\suffix
+       cmpl MACRO_LITERAL(1), %ebx
+       je .Linvoke_fast_path_\suffix
      .endif
      movzwl 4(rPC), %esi
      cmpl MACRO_LITERAL(2), %ebx
      .if \is_static
-     jl .Lone_arg_fast_path_\suffix
+       jl .Lone_arg_fast_path_\suffix
      .endif
      je .Ltwo_args_fast_path_\suffix
      cmpl MACRO_LITERAL(4), %ebx
@@ -1086,10 +1114,11 @@ END_FUNCTION \name
      GET_VREG    %edx, %edx
 .Lone_arg_fast_path_\suffix:
      .if \is_static
-     andl        MACRO_LITERAL(0xf), %esi
-     GET_VREG    %ecx, %esi
+       andl        MACRO_LITERAL(0xf), %esi
+       GET_VREG    %ecx, %esi
      .else
-     // First argument already in %ecx.
+       // First argument already in %ecx.
+%      pass
      .endif
 .Linvoke_fast_path_\suffix:
      // Fetch PC before calling for proper stack unwinding.
@@ -1106,22 +1135,22 @@ END_FUNCTION \name
      movzbl 1(rPC), %edx
      shrl MACRO_LITERAL(4), %edx # Number of arguments
      .if \is_static
-     cmpl MACRO_LITERAL(1), %edx
-     jl .Linvoke_with_few_args_\suffix
-     jne .Lget_shorty_\suffix
-     movzwl 4(rPC), %ecx
-     andl MACRO_LITERAL(0xf), %ecx  // dex register of first argument
-     GET_VREG %ecx, %ecx
-     movd %ecx, %xmm0
+       cmpl MACRO_LITERAL(1), %edx
+       jl .Linvoke_with_few_args_\suffix
+       jne .Lget_shorty_\suffix
+       movzwl 4(rPC), %ecx
+       andl MACRO_LITERAL(0xf), %ecx  // dex register of first argument
+       GET_VREG %ecx, %ecx
+       movd %ecx, %xmm0
      .else
-     cmpl MACRO_LITERAL(2), %edx
-     jl .Linvoke_with_few_args_\suffix
-     jne .Lget_shorty_\suffix
-     movzwl 4(rPC), %edx
-     shrl MACRO_LITERAL(4), %edx
-     andl MACRO_LITERAL(0xf), %edx  // dex register of second argument
-     GET_VREG %edx, %edx
-     movd %edx, %xmm0
+       cmpl MACRO_LITERAL(2), %edx
+       jl .Linvoke_with_few_args_\suffix
+       jne .Lget_shorty_\suffix
+       movzwl 4(rPC), %edx
+       shrl MACRO_LITERAL(4), %edx
+       andl MACRO_LITERAL(0xf), %edx  // dex register of second argument
+       GET_VREG %edx, %edx
+       movd %edx, %xmm0
      .endif
 .Linvoke_with_few_args_\suffix:
      // Check if the next instruction is move-result or move-result-wide.
@@ -1151,13 +1180,13 @@ END_FUNCTION \name
    leal 1(%ebx), %edx  // shorty + 1  ; ie skip return arg character
    movzwl 4(rPC), %ebx // arguments
    .if \is_string_init
-   shrl MACRO_LITERAL(4), %ebx
-   movl $$1, %ebp       // ignore first argument
+     shrl MACRO_LITERAL(4), %ebx
+     movl $$1, %ebp       // ignore first argument
    .elseif \is_static
-   movl $$0, %ebp       // arg_index
+     movl $$0, %ebp       // arg_index
    .else
-   shrl MACRO_LITERAL(4), %ebx
-   movl $$1, %ebp       // arg_index
+     shrl MACRO_LITERAL(4), %ebx
+     movl $$1, %ebp       // arg_index
    .endif
    LOOP_OVER_SHORTY_LOADING_XMMS xmm0, ebx, edx, ebp, .Lxmm_setup_finished_\suffix
    LOOP_OVER_SHORTY_LOADING_XMMS xmm1, ebx, edx, ebp, .Lxmm_setup_finished_\suffix
@@ -1183,15 +1212,15 @@ END_FUNCTION \name
    leal 1(%ebx), %ebx  // shorty + 1  ; ie skip return arg character
    movzwl 4(rPC), %esi // arguments
    .if \is_string_init
-   movl $$0, %ebp       // arg_index
-   shrl MACRO_LITERAL(4), %esi
-   LOOP_OVER_SHORTY_LOADING_GPRS ecx, edx, esi, ebx, ebp, .Lrestore_saved_values_\suffix, .Lif_long_ebx_\suffix, is_ebx=0
+     movl $$0, %ebp       // arg_index
+     shrl MACRO_LITERAL(4), %esi
+     LOOP_OVER_SHORTY_LOADING_GPRS ecx, edx, esi, ebx, ebp, .Lrestore_saved_values_\suffix, .Lif_long_ebx_\suffix, is_ebx=0
    .elseif \is_static
-   movl $$0, %ebp       // arg_index
-   LOOP_OVER_SHORTY_LOADING_GPRS ecx, edx, esi, ebx, ebp, .Lrestore_saved_values_\suffix, .Lif_long_ebx_\suffix, is_ebx=0
+     movl $$0, %ebp       // arg_index
+     LOOP_OVER_SHORTY_LOADING_GPRS ecx, edx, esi, ebx, ebp, .Lrestore_saved_values_\suffix, .Lif_long_ebx_\suffix, is_ebx=0
    .else
-   shrl MACRO_LITERAL(4), %esi
-   movl $$1, %ebp       // arg_index
+     shrl MACRO_LITERAL(4), %esi
+     movl $$1, %ebp       // arg_index
    .endif
    // For long argument, store second half in eax to not overwrite the shorty.
    LOOP_OVER_SHORTY_LOADING_GPRS edx, eax, esi, ebx, ebp, .Lrestore_saved_values_\suffix, .Lif_long_\suffix, is_ebx=0
@@ -1226,17 +1255,17 @@ END_FUNCTION \name
 .Ldone_return_\suffix:
    /* resume execution of caller */
    .if \is_string_init
-   movzwl 4(rPC), %ecx // arguments
-   andl $$0xf, %ecx
-   GET_VREG rINST, %ecx
-   UPDATE_REGISTERS_FOR_STRING_INIT rINST, %eax
+     movzwl 4(rPC), %ecx // arguments
+     andl $$0xf, %ecx
+     GET_VREG rINST, %ecx
+     UPDATE_REGISTERS_FOR_STRING_INIT rINST, %eax
    .endif
    RESTORE_IBASE
 
    .if \is_polymorphic
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 4
+     ADVANCE_PC_FETCH_AND_GOTO_NEXT 4
    .else
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 3
+     ADVANCE_PC_FETCH_AND_GOTO_NEXT 3
    .endif
 
 .Linvoke_double_\suffix:
@@ -1254,27 +1283,30 @@ END_FUNCTION \name
 
 .macro COMMON_INVOKE_RANGE is_static=0, is_interface=0, suffix="", is_string_init=0, is_polymorphic=0, is_custom=0
    .if \is_polymorphic
-   // No fast path for polymorphic calls.
+     // No fast path for polymorphic calls.
+%    pass
    .elseif \is_custom
-   // No fast path for custom calls.
+     // No fast path for custom calls.
+%    pass
    .elseif \is_string_init
-   // No fast path for string.init.
+     // No fast path for string.init.
+%    pass
    .else
      testl $$ART_METHOD_NTERP_INVOKE_FAST_PATH_FLAG, ART_METHOD_ACCESS_FLAGS_OFFSET(%eax)
      je .Lfast_path_with_few_args_range_\suffix
      movzbl 1(rPC), %edx  // number of arguments
      .if \is_static
-     testl %edx, %edx
-     je .Linvoke_fast_path_range_\suffix
+       testl %edx, %edx
+       je .Linvoke_fast_path_range_\suffix
      .else
-     cmpl MACRO_LITERAL(1), %edx
-     je .Linvoke_fast_path_range_\suffix
+       cmpl MACRO_LITERAL(1), %edx
+       je .Linvoke_fast_path_range_\suffix
      .endif
      movzwl 4(rPC), %ebx  // dex register of first argument
      leal (rFP, %ebx, 4), %esi  // location of first dex register value
      cmpl MACRO_LITERAL(2), %edx
      .if \is_static
-     jl .Lone_arg_fast_path_range_\suffix
+       jl .Lone_arg_fast_path_range_\suffix
      .endif
      je .Ltwo_args_fast_path_range_\suffix
      cmp MACRO_LITERAL(4), %edx
@@ -1293,9 +1325,10 @@ END_FUNCTION \name
      movl 4(%esi), %edx
 .Lone_arg_fast_path_range_\suffix:
      .if \is_static
-     movl 0(%esi), %ecx
+       movl 0(%esi), %ecx
      .else
-     // First argument already in %ecx.
+       // First argument already in %ecx.
+%      pass
      .endif
 .Linvoke_fast_path_range_\suffix:
      FETCH_PC
@@ -1309,20 +1342,20 @@ END_FUNCTION \name
      // is one argument, we can put it in both floating point and core register.
      movzbl 1(rPC), %ebx # Number of arguments
      .if \is_static
-     cmpl MACRO_LITERAL(1), %ebx
-     jl .Linvoke_with_few_args_range_\suffix
-     jne .Lget_shorty_range_\suffix
-     movzwl 4(rPC), %ebx  // Dex register of first argument
-     GET_VREG %ecx, %ebx
-     movd %ecx, %xmm0
+       cmpl MACRO_LITERAL(1), %ebx
+       jl .Linvoke_with_few_args_range_\suffix
+       jne .Lget_shorty_range_\suffix
+       movzwl 4(rPC), %ebx  // Dex register of first argument
+       GET_VREG %ecx, %ebx
+       movd %ecx, %xmm0
      .else
-     cmpl MACRO_LITERAL(2), %ebx
-     jl .Linvoke_with_few_args_range_\suffix
-     jne .Lget_shorty_range_\suffix
-     movzwl 4(rPC), %ebx
-     addl MACRO_LITERAL(1), %ebx  // dex register of second argument
-     GET_VREG %edx, %ebx
-     movd %edx, %xmm0
+       cmpl MACRO_LITERAL(2), %ebx
+       jl .Linvoke_with_few_args_range_\suffix
+       jne .Lget_shorty_range_\suffix
+       movzwl 4(rPC), %ebx
+       addl MACRO_LITERAL(1), %ebx  // dex register of second argument
+       GET_VREG %edx, %ebx
+       movd %edx, %xmm0
      .endif
 .Linvoke_with_few_args_range_\suffix:
      // Check if the next instruction is move-result or move-result-wide.
@@ -1352,13 +1385,13 @@ END_FUNCTION \name
    leal 1(%ebx), %edx  // shorty + 1  ; ie skip return arg character
    movzwl 4(rPC), %ebx // arg start index
    .if \is_string_init
-   addl $$1, %ebx       // arg start index
-   movl $$0, %ebp       // index in stack
+     addl $$1, %ebx       // arg start index
+     movl $$0, %ebp       // index in stack
    .elseif \is_static
-   movl $$0, %ebp       // index in stack
+     movl $$0, %ebp       // index in stack
    .else
-   addl $$1, %ebx       // arg start index
-   movl $$1, %ebp       // index in stack
+     addl $$1, %ebx       // arg start index
+     movl $$1, %ebp       // index in stack
    .endif
    LOOP_RANGE_OVER_SHORTY_LOADING_XMMS xmm0, edx, ebx, ebp, .Lxmm_setup_finished_range_\suffix
    LOOP_RANGE_OVER_SHORTY_LOADING_XMMS xmm1, edx, ebx, ebp, .Lxmm_setup_finished_range_\suffix
@@ -1379,15 +1412,15 @@ END_FUNCTION \name
    movzwl 4(rPC), %ebp // arg start index
    // rPC (esi) is now available
    .if \is_string_init
-   addl $$1, %ebp       // arg start index
-   movl $$0, %esi       // index in stack
-   LOOP_RANGE_OVER_SHORTY_LOADING_GPRS ecx, edx, ebx, ebp, esi, .Lrestore_saved_values_range_\suffix, .Lif_long_ebx_range_\suffix, is_ebx=0
+     addl $$1, %ebp       // arg start index
+     movl $$0, %esi       // index in stack
+     LOOP_RANGE_OVER_SHORTY_LOADING_GPRS ecx, edx, ebx, ebp, esi, .Lrestore_saved_values_range_\suffix, .Lif_long_ebx_range_\suffix, is_ebx=0
    .elseif \is_static
-   movl $$0, %esi // index in stack
-   LOOP_RANGE_OVER_SHORTY_LOADING_GPRS ecx, edx, ebx, ebp, esi, .Lrestore_saved_values_range_\suffix, .Lif_long_ebx_range_\suffix, is_ebx=0
+     movl $$0, %esi // index in stack
+     LOOP_RANGE_OVER_SHORTY_LOADING_GPRS ecx, edx, ebx, ebp, esi, .Lrestore_saved_values_range_\suffix, .Lif_long_ebx_range_\suffix, is_ebx=0
    .else
-   addl $$1, %ebp // arg start index
-   movl $$1, %esi // index in stack
+     addl $$1, %ebp // arg start index
+     movl $$1, %esi // index in stack
    .endif
    // For long argument, store second half in eax to not overwrite the shorty.
    LOOP_RANGE_OVER_SHORTY_LOADING_GPRS edx, eax, ebx, ebp, esi, .Lrestore_saved_values_range_\suffix, .Lif_long_range_\suffix, is_ebx=0
@@ -1424,15 +1457,15 @@ END_FUNCTION \name
 .Ldone_return_range_\suffix:
    /* resume execution of caller */
    .if \is_string_init
-   movzwl 4(rPC), %ecx // arguments
-   GET_VREG rINST, %ecx
-   UPDATE_REGISTERS_FOR_STRING_INIT rINST, %eax
+     movzwl 4(rPC), %ecx // arguments
+     GET_VREG rINST, %ecx
+     UPDATE_REGISTERS_FOR_STRING_INIT rINST, %eax
    .endif
    RESTORE_IBASE
    .if \is_polymorphic
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 4
+     ADVANCE_PC_FETCH_AND_GOTO_NEXT 4
    .else
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 3
+     ADVANCE_PC_FETCH_AND_GOTO_NEXT 3
    .endif
 .Lreturn_range_double_\suffix:
    FETCH_PC
@@ -1447,29 +1480,74 @@ END_FUNCTION \name
    jmp .Ldone_return_range_\suffix
 .endm
 
+%def fetch_from_thread_cache(dest_reg, miss_label):
+   // Fetch some information from the thread cache.
+   // Uses eax, and ecx as temporaries.
+   movl rSELF:THREAD_SELF_OFFSET, %eax
+   movl rPC, %ecx
+   andl MACRO_LITERAL(THREAD_INTERPRETER_CACHE_KEY_MASK), %ecx
+   cmpl THREAD_INTERPRETER_CACHE_OFFSET(%eax, %ecx, 2), rPC
+   jne  ${miss_label}
+   movl __SIZEOF_POINTER__+THREAD_INTERPRETER_CACHE_OFFSET(%eax, %ecx, 2), ${dest_reg}
+
+%def fetch_uint64_from_thread_cache_eax_ecx(miss_label):
+   // Fetch some information from the thread cache.
+   // Uses eax, and ecx as temporaries.
+   movl rSELF:THREAD_SELF_OFFSET, %eax
+   movl rPC, %ecx
+   andl MACRO_LITERAL(THREAD_INTERPRETER_CACHE_KEY_MASK & (~1<<THREAD_INTERPRETER_CACHE_KEY_LOW_BIT)), %ecx
+   cmpl THREAD_INTERPRETER_CACHE_OFFSET(%eax, %ecx, 2), rPC
+   jne  ${miss_label}
+   cmpl 2*__SIZEOF_POINTER__+THREAD_INTERPRETER_CACHE_OFFSET(%eax, %ecx, 2), rPC
+   jne  ${miss_label}
+   leal THREAD_INTERPRETER_CACHE_OFFSET(%eax, %ecx, 2), %ecx
+   movl __SIZEOF_POINTER__(%ecx), %eax
+   movl 3*__SIZEOF_POINTER__(%ecx), %ecx
+
+%def fetch_field_from_fast_path(get_local, success_label, fail_label, is_static=False):
+   movl 0(%esp), %eax
+   testl $$ART_METHOD_IS_OBSOLETE_FLAG, ART_METHOD_ACCESS_FLAGS_OFFSET(%eax)
+   jne ${fail_label}
+   // We don't do a read barrier for faster execution.
+   // See comment in `NterpGetLocalStaticFieldInternal`.
+   movl ART_METHOD_DECLARING_CLASS_OFFSET(%eax), %eax
+   subl MACRO_LITERAL(8), %esp
+   pushl rPC
+   pushl %eax
+   call ${get_local}
+%  if is_static:
+     mov %edx, %ecx
+   addl MACRO_LITERAL(16), %esp
+   RESTORE_IBASE
+   FETCH_INST_CLEAR_OPCODE
+   cmpl MACRO_LITERAL(0), %eax
+%  if is_static:
+     jne ${success_label}
+%  else:
+     jge ${success_label}
+
+
 // Helper for static field get.
 .macro OP_SGET load="movl", wide="0"
    // Fast-path which gets the field from thread-local cache.
-%  fetch_from_thread_cache("%eax", miss_label="2f")
+%  fetch_uint64_from_thread_cache_eax_ecx(miss_label="2f")
 1:
-   movl ART_FIELD_OFFSET_OFFSET(%eax), %ecx
-   movl ART_FIELD_DECLARING_CLASS_OFFSET(%eax), %eax
    cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
    jne 3f
 4:
    .if \wide
-   addl %ecx, %eax
-   \load (%eax), %ecx
-   SET_VREG %ecx, rINST            # fp[A] <- value
-   \load 4(%eax), %ecx
-   SET_VREG_HIGH %ecx, rINST
+     addl %ecx, %eax
+     \load (%eax), %ecx
+     SET_VREG %ecx, rINST            # fp[A] <- value
+     \load 4(%eax), %ecx
+     SET_VREG_HIGH %ecx, rINST
    .else
-   \load (%eax, %ecx, 1), %eax
-   SET_VREG %eax, rINST            # fp[A] <- value
+     \load (%ecx, %eax, 1), %eax
+     SET_VREG %eax, rINST            # fp[A] <- value
    .endif
    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 2:
-%  fetch_field_from_fast_path("NterpGetLocalStaticField", success_label="1b", fail_label="9f", is_static="1")
+%  fetch_field_from_fast_path("NterpGetLocalStaticField", success_label="1b", fail_label="9f", is_static=True)
 9:
    EXPORT_PC
    movl rSELF:THREAD_SELF_OFFSET, ARG0
@@ -1477,53 +1555,48 @@ END_FUNCTION \name
    movl rPC, ARG2
    movl $$0, ARG3
    call nterp_get_static_field
+   testl %eax, %eax
+   jns 1b
+   negl %eax
    .if !\wide
-   CLEAR_VOLATILE_MARKER %eax
-   jmp 1b
+     jmp 1b
    .else
-   testl MACRO_LITERAL(1), %eax
-   je 1b
-   CLEAR_VOLATILE_MARKER %eax
-   movl ART_FIELD_OFFSET_OFFSET(%eax), %ecx
-   movl ART_FIELD_DECLARING_CLASS_OFFSET(%eax), %eax
-   cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
-   jne 5f
+     cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
+     jne 5f
 6:
-   movsd (%eax, %ecx, 1), %xmm0
-   SET_WIDE_FP_VREG %xmm0, rINST
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+     movsd (%ecx, %eax, 1), %xmm0
+     SET_WIDE_FP_VREG %xmm0, rINST
+     ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 5:
-   call art_quick_read_barrier_mark_reg00
-   jmp 6b
+     call art_quick_read_barrier_mark_reg01
+     jmp 6b
    .endif
 3:
-   call art_quick_read_barrier_mark_reg00
+   call art_quick_read_barrier_mark_reg01
    jmp 4b
 .endm
 
 // Helper for static field put.
 .macro OP_SPUT rINST_reg="rINST", store="movl", wide="0":
    // Fast-path which gets the field from thread-local cache.
-%  fetch_from_thread_cache("%eax", miss_label="2f")
+%  fetch_uint64_from_thread_cache_eax_ecx(miss_label="2f")
 1:
-   movl ART_FIELD_OFFSET_OFFSET(%eax), %ecx
-   movl ART_FIELD_DECLARING_CLASS_OFFSET(%eax), %eax
    cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
    jne 3f
 4:
    .if \wide
-   addl %ecx, %eax
-   GET_VREG %ecx, rINST                  # rINST <- v[A]
-   movl %ecx, (%eax)
-   GET_VREG_HIGH %ecx, rINST
-   movl %ecx, 4(%eax)
+     addl %ecx, %eax
+     GET_VREG %ecx, rINST                  # rINST <- v[A]
+     movl %ecx, (%eax)
+     GET_VREG_HIGH %ecx, rINST
+     movl %ecx, 4(%eax)
    .else
-   GET_VREG rINST, rINST                  # rINST <- v[A]
-   \store    \rINST_reg, (%eax,%ecx,1)
+     GET_VREG rINST, rINST                  # rINST <- v[A]
+     \store    \rINST_reg, (%ecx,%eax,1)
    .endif
    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 2:
-%  fetch_field_from_fast_path("NterpGetLocalStaticField", success_label="1b", fail_label="7f", is_static="1")
+%  fetch_field_from_fast_path("NterpGetLocalStaticField", success_label="1b", fail_label="7f", is_static=True)
 7:
    EXPORT_PC
    movl rSELF:THREAD_SELF_OFFSET, ARG0
@@ -1531,30 +1604,27 @@ END_FUNCTION \name
    movl rPC, ARG2
    movl $$0, ARG3
    call nterp_get_static_field
-   testl MACRO_LITERAL(1), %eax
-   je 1b
-   // Clear the marker that we put for volatile fields.
-   CLEAR_VOLATILE_MARKER %eax
-   movl ART_FIELD_OFFSET_OFFSET(%eax), %ecx
-   movl ART_FIELD_DECLARING_CLASS_OFFSET(%eax), %eax
+   testl %eax, %eax
+   jns 1b
+   negl %eax
    cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
    jne 6f
 5:
    .if \wide
-   addl %ecx, %eax
-   GET_WIDE_FP_VREG %xmm0, rINST
-   movsd %xmm0, (%eax)
+     addl %ecx, %eax
+     GET_WIDE_FP_VREG %xmm0, rINST
+     movsd %xmm0, (%eax)
    .else
-   GET_VREG rINST, rINST                  # rINST <- v[A]
-   \store    \rINST_reg, (%eax,%ecx,1)
+     GET_VREG rINST, rINST                  # rINST <- v[A]
+     \store    \rINST_reg, (%ecx,%eax,1)
    .endif
    lock addl $$0, (%esp)
    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 3:
-   call art_quick_read_barrier_mark_reg00
+   call art_quick_read_barrier_mark_reg01
    jmp 4b
 6:
-   call art_quick_read_barrier_mark_reg00
+   call art_quick_read_barrier_mark_reg01
    jmp 5b
 .endm
 
@@ -1567,12 +1637,12 @@ END_FUNCTION \name
    je      common_errNullObject
    andb    $$0xf, rINSTbl                  # rINST <- A
    .if \wide
-   addl %ecx, %eax
-   GET_WIDE_FP_VREG %xmm0, rINST
-   movsd %xmm0, (%eax)
+     addl %ecx, %eax
+     GET_WIDE_FP_VREG %xmm0, rINST
+     movsd %xmm0, (%eax)
    .else
-   GET_VREG rINST, rINST                  # rINST <- v[A]
-   \store \rINST_reg, (%ecx,%eax,1)
+     GET_VREG rINST, rINST                  # rINST <- v[A]
+     \store \rINST_reg, (%ecx,%eax,1)
    .endif
 .endm
 
@@ -1584,7 +1654,7 @@ END_FUNCTION \name
    OP_IPUT_INTERNAL \rINST_reg, \store, \wide, volatile=0
    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 2:
-%  fetch_field_from_fast_path("NterpGetLocalInstanceField", success_label="1b", fail_label="3f", is_static="0")
+%  fetch_field_from_fast_path("NterpGetLocalInstanceField", success_label="1b", fail_label="3f")
 3:
    EXPORT_PC
    movl rSELF:THREAD_SELF_OFFSET, ARG0
@@ -1612,18 +1682,18 @@ END_FUNCTION \name
    je      common_errNullObject
    andb    $$0xf,rINSTbl                   # rINST <- A
    .if \wide
-   addl %ecx, %eax
-   \load (%eax), %ecx
-   SET_VREG %ecx, rINST
-   \load 4(%eax), %ecx
-   SET_VREG_HIGH %ecx, rINST
+     addl %ecx, %eax
+     \load (%eax), %ecx
+     SET_VREG %ecx, rINST
+     \load 4(%eax), %ecx
+     SET_VREG_HIGH %ecx, rINST
    .else
-   \load (%ecx,%eax,1), %eax
-   SET_VREG %eax, rINST                    # fp[A] <- value
+     \load (%ecx,%eax,1), %eax
+     SET_VREG %eax, rINST                    # fp[A] <- value
    .endif
    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 2:
-%  fetch_field_from_fast_path("NterpGetLocalInstanceField", success_label="1b", fail_label="3f", is_static="0")
+%  fetch_field_from_fast_path("NterpGetLocalInstanceField", success_label="1b", fail_label="3f")
 3:
    EXPORT_PC
    movl rSELF:THREAD_SELF_OFFSET, ARG0
@@ -1635,17 +1705,17 @@ END_FUNCTION \name
    jns 1b
    negl %eax
    .if !\wide
-   jmp 1b
+     jmp 1b
    .else
-   movl    rINST, %ecx                     # ecx <- BA
-   sarl    $$4, %ecx                       # ecx <- B
-   GET_VREG %ecx, %ecx                     # vB (object we're operating on)
-   testl   %ecx, %ecx                      # is object null?
-   je      common_errNullObject
-   andb    $$0xf,rINSTbl                   # rINST <- A
-   movsd (%eax, %ecx, 1), %xmm0
-   SET_WIDE_FP_VREG %xmm0, rINST
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+     movl    rINST, %ecx                     # ecx <- BA
+     sarl    $$4, %ecx                       # ecx <- B
+     GET_VREG %ecx, %ecx                     # vB (object we're operating on)
+     testl   %ecx, %ecx                      # is object null?
+     je      common_errNullObject
+     andb    $$0xf,rINSTbl                   # rINST <- A
+     movsd (%eax, %ecx, 1), %xmm0
+     SET_WIDE_FP_VREG %xmm0, rINST
+     ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
    .endif
 .endm
 
@@ -1693,7 +1763,6 @@ END_FUNCTION \name
 .endm
 
 
-%def entry():
 /*
  * ArtMethod entry point.
  *
@@ -1727,6 +1796,7 @@ OAT_ENTRY ExecuteNterpWithClinitImpl
     .cfi_endproc
     .global SYMBOL(EndExecuteNterpWithClinitImpl)
 SYMBOL(EndExecuteNterpWithClinitImpl):
+%   pass
 
 OAT_ENTRY ExecuteNterpImpl
     .cfi_startproc
@@ -1855,38 +1925,7 @@ OAT_ENTRY ExecuteNterpImpl
     END ExecuteNterpImpl
 
 %def opcode_pre():
-
-%def fetch_from_thread_cache(dest_reg, miss_label):
-   // Fetch some information from the thread cache.
-   // Uses eax, and ecx as temporaries.
-   movl rSELF:THREAD_SELF_OFFSET, %eax
-   movl rPC, %ecx
-   sall MACRO_LITERAL(THREAD_INTERPRETER_CACHE_SIZE_SHIFT), %ecx
-   andl MACRO_LITERAL(THREAD_INTERPRETER_CACHE_SIZE_MASK), %ecx
-   cmpl THREAD_INTERPRETER_CACHE_OFFSET(%eax, %ecx, 1), rPC
-   jne  ${miss_label}
-   movl __SIZEOF_POINTER__+THREAD_INTERPRETER_CACHE_OFFSET(%eax, %ecx, 1), ${dest_reg}
-
-%def fetch_field_from_fast_path(get_local, success_label, fail_label, is_static):
-   movl 0(%esp), %eax
-   testl $$ART_METHOD_IS_OBSOLETE_FLAG, ART_METHOD_ACCESS_FLAGS_OFFSET(%eax)
-   jne ${fail_label}
-   // We don't do a read barrier for faster execution.
-   // See comment in `NterpGetLocalStaticFieldInternal`.
-   movl ART_METHOD_DECLARING_CLASS_OFFSET(%eax), %eax
-   subl MACRO_LITERAL(8), %esp
-   pushl rPC
-   pushl %eax
-   call ${get_local}
-   addl MACRO_LITERAL(16), %esp
-   RESTORE_IBASE
-   FETCH_INST_CLEAR_OPCODE
-   cmpl MACRO_LITERAL(0), %eax
-   .if ${is_static}
-   jne ${success_label}
-   .else
-   jge ${success_label}
-   .endif
+%   pass
 
 %def footer():
 /*
@@ -1895,11 +1934,11 @@ OAT_ENTRY ExecuteNterpImpl
  * ===========================================================================
  */
 
-    .text
-    .align  2
+  .text
+  .align  2
 
-// Enclose all code below in a symbol (which gets printed in backtraces).
-ENTRY nterp_helper
+  // Enclose all code below in a symbol (which gets printed in backtraces).
+  ENTRY nterp_helper
 
 // Note: mterp also uses the common_* names below for helpers, but that's OK
 // as the assembler compiled each interpreter separately.
@@ -1950,304 +1989,300 @@ NterpCommonInvokeCustomRange:
     COMMON_INVOKE_RANGE is_static=1, is_interface=0, is_polymorphic=0, is_custom=1, suffix="invokeCustom"
 
 NterpHandleStringInit:
-   COMMON_INVOKE_NON_RANGE is_static=0, is_interface=0, is_string_init=1, suffix="stringInit"
+    COMMON_INVOKE_NON_RANGE is_static=0, is_interface=0, is_string_init=1, suffix="stringInit"
 
 NterpHandleStringInitRange:
-   COMMON_INVOKE_RANGE is_static=0, is_interface=0, is_string_init=1, suffix="stringInit"
+    COMMON_INVOKE_RANGE is_static=0, is_interface=0, is_string_init=1, suffix="stringInit"
 
 NterpNewInstance:
-   EXPORT_PC
-   // Fast-path which gets the class from thread-local cache.
-%  fetch_from_thread_cache("%eax", miss_label="2f")
-   cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
-   jne 3f
+    EXPORT_PC
+    // Fast-path which gets the class from thread-local cache.
+%   fetch_from_thread_cache("%eax", miss_label="2f")
+    cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
+    jne 3f
 4:
-   call *rSELF:THREAD_ALLOC_OBJECT_ENTRYPOINT_OFFSET
-   RESTORE_IBASE
-   FETCH_INST_CLEAR_OPCODE
+    call *rSELF:THREAD_ALLOC_OBJECT_ENTRYPOINT_OFFSET
+    RESTORE_IBASE
+    FETCH_INST_CLEAR_OPCODE
 1:
-   SET_VREG_OBJECT %eax, rINST             # fp[A] <- value
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+    SET_VREG_OBJECT %eax, rINST             # fp[A] <- value
+    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 2:
-   movl rSELF:THREAD_SELF_OFFSET, ARG0
-   movl 0(%esp), ARG1
-   movl rPC, ARG2
-   call nterp_allocate_object
-   jmp 1b
+    movl rSELF:THREAD_SELF_OFFSET, ARG0
+    movl 0(%esp), ARG1
+    movl rPC, ARG2
+    call nterp_allocate_object
+    jmp 1b
 3:
-   // 00 is %eax
-   call art_quick_read_barrier_mark_reg00
-   jmp 4b
+    // 00 is %eax
+    call art_quick_read_barrier_mark_reg00
+    jmp 4b
 
 NterpNewArray:
-   /* new-array vA, vB, class@CCCC */
-   EXPORT_PC
-   // Fast-path which gets the class from thread-local cache.
-%  fetch_from_thread_cache("%eax", miss_label="2f")
-   cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
-   jne 3f
+    /* new-array vA, vB, class@CCCC */
+    EXPORT_PC
+    // Fast-path which gets the class from thread-local cache.
+%   fetch_from_thread_cache("%eax", miss_label="2f")
+    cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
+    jne 3f
 1:
-   movzbl  rINSTbl, %ecx
-   sarl    $$4, %ecx                         # ecx<- B
-   GET_VREG %ecx %ecx                        # ecx<- vB (array length)
-   call *rSELF:THREAD_ALLOC_ARRAY_ENTRYPOINT_OFFSET
-   RESTORE_IBASE
-   FETCH_INST_CLEAR_OPCODE
-   andb    $$0xf, rINSTbl                   # rINST<- A
-   SET_VREG_OBJECT %eax, rINST              # fp[A] <- value
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+    movzbl  rINSTbl, %ecx
+    sarl    $$4, %ecx                         # ecx<- B
+    GET_VREG %ecx %ecx                        # ecx<- vB (array length)
+    call *rSELF:THREAD_ALLOC_ARRAY_ENTRYPOINT_OFFSET
+    RESTORE_IBASE
+    FETCH_INST_CLEAR_OPCODE
+    andb    $$0xf, rINSTbl                   # rINST<- A
+    SET_VREG_OBJECT %eax, rINST              # fp[A] <- value
+    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 2:
-   movl rSELF:THREAD_SELF_OFFSET, ARG0
-   movl 0(%esp), ARG1
-   movl rPC, ARG2
-   call nterp_get_class
-   jmp 1b
+    movl rSELF:THREAD_SELF_OFFSET, ARG0
+    movl 0(%esp), ARG1
+    movl rPC, ARG2
+    call nterp_get_class
+    jmp 1b
 3:
-   // 00 is %eax
-   call art_quick_read_barrier_mark_reg00
-   jmp 1b
+    // 00 is %eax
+    call art_quick_read_barrier_mark_reg00
+    jmp 1b
 
 NterpPutObjectInstanceField:
-   // Fast-path which gets the field from thread-local cache.
-%  fetch_from_thread_cache("%eax", miss_label="2f")
+    // Fast-path which gets the field from thread-local cache.
+%   fetch_from_thread_cache("%eax", miss_label="2f")
 1:
-   movl    rINST, %ecx                     # ecx <- BA
-   andl    $$0xf, %ecx                     # ecx <- A
-   GET_VREG %ecx, %ecx                     # ecx <- v[A]
-   sarl    $$4, rINST
-   GET_VREG rINST, rINST                   # vB (object we're operating on)
-   testl   rINST, rINST                    # is object null?
-   je      common_errNullObject
-   POISON_HEAP_REF ecx
-   movl %ecx, (rINST, %eax, 1)
-   testl %ecx, %ecx
-   je 4f
-   movl rSELF:THREAD_CARD_TABLE_OFFSET, %eax
-   shrl $$CARD_TABLE_CARD_SHIFT, rINST
-   movb %al, (%eax, rINST, 1)
+    movl    rINST, %ecx                     # ecx <- BA
+    andl    $$0xf, %ecx                     # ecx <- A
+    GET_VREG %ecx, %ecx                     # ecx <- v[A]
+    sarl    $$4, rINST
+    GET_VREG rINST, rINST                   # vB (object we're operating on)
+    testl   rINST, rINST                    # is object null?
+    je      common_errNullObject
+    POISON_HEAP_REF ecx
+    movl %ecx, (rINST, %eax, 1)
+    testl %ecx, %ecx
+    je 4f
+    movl rSELF:THREAD_CARD_TABLE_OFFSET, %eax
+    shrl $$CARD_TABLE_CARD_SHIFT, rINST
+    movb %al, (%eax, rINST, 1)
 4:
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 2:
-%  fetch_field_from_fast_path("NterpGetLocalInstanceFieldForIPutObject", success_label="1b", fail_label="6f", is_static="0")
+%   fetch_field_from_fast_path("NterpGetLocalInstanceFieldForIPutObject", success_label="1b", fail_label="6f")
 6:
-   EXPORT_PC
-   movl rSELF:THREAD_SELF_OFFSET, ARG0
-   movl 0(%esp), ARG1
-   movl rPC, ARG2
-   movl rFP, ARG3
-   call nterp_get_instance_field_offset
-   testl %eax, %eax
-   jns 1b
-   negl %eax
-   // Reload the value as it may have moved.
-   movl    rINST, %ecx                     # ecx <- BA
-   andl    $$0xf, %ecx                     # ecx <- A
-   GET_VREG %ecx, %ecx                     # ecx <- v[A]
-   sarl    $$4, rINST
-   GET_VREG rINST, rINST                   # vB (object we're operating on)
-   testl   rINST, rINST                    # is object null?
-   je      common_errNullObject
-   POISON_HEAP_REF ecx
-   movl %ecx, (rINST, %eax, 1)
-   testl %ecx, %ecx
-   je 5f
-   movl rSELF:THREAD_CARD_TABLE_OFFSET, %eax
-   shrl $$CARD_TABLE_CARD_SHIFT, rINST
-   movb %al, (%eax, rINST, 1)
+    EXPORT_PC
+    movl rSELF:THREAD_SELF_OFFSET, ARG0
+    movl 0(%esp), ARG1
+    movl rPC, ARG2
+    movl rFP, ARG3
+    call nterp_get_instance_field_offset
+    testl %eax, %eax
+    jns 1b
+    negl %eax
+    // Reload the value as it may have moved.
+    movl    rINST, %ecx                     # ecx <- BA
+    andl    $$0xf, %ecx                     # ecx <- A
+    GET_VREG %ecx, %ecx                     # ecx <- v[A]
+    sarl    $$4, rINST
+    GET_VREG rINST, rINST                   # vB (object we're operating on)
+    testl   rINST, rINST                    # is object null?
+    je      common_errNullObject
+    POISON_HEAP_REF ecx
+    movl %ecx, (rINST, %eax, 1)
+    testl %ecx, %ecx
+    je 5f
+    movl rSELF:THREAD_CARD_TABLE_OFFSET, %eax
+    shrl $$CARD_TABLE_CARD_SHIFT, rINST
+    movb %al, (%eax, rINST, 1)
 5:
-   lock addl $$0, (%esp)
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+    lock addl $$0, (%esp)
+    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 
 NterpGetObjectInstanceField:
-   // Fast-path which gets the field from thread-local cache.
-%  fetch_from_thread_cache("%eax", miss_label="2f")
+    // Fast-path which gets the field from thread-local cache.
+%   fetch_from_thread_cache("%eax", miss_label="2f")
 1:
-   movl    rINST, %ecx                     # ecx <- BA
-   sarl    $$4, %ecx                       # ecx <- B
-   GET_VREG %ecx, %ecx                     # vB (object we're operating on)
-   testl   %ecx, %ecx                      # is object null?
-   je      common_errNullObject
-   testb $$READ_BARRIER_TEST_VALUE, GRAY_BYTE_OFFSET(%ecx)
-   movl (%ecx,%eax,1), %eax
-   jnz 3f
-   UNPOISON_HEAP_REF eax  // Affects flags, so we cannot unpoison before the jnz.
+    movl    rINST, %ecx                     # ecx <- BA
+    sarl    $$4, %ecx                       # ecx <- B
+    GET_VREG %ecx, %ecx                     # vB (object we're operating on)
+    testl   %ecx, %ecx                      # is object null?
+    je      common_errNullObject
+    testb $$READ_BARRIER_TEST_VALUE, GRAY_BYTE_OFFSET(%ecx)
+    movl (%ecx,%eax,1), %eax
+    jnz 3f
+    UNPOISON_HEAP_REF eax  // Affects flags, so we cannot unpoison before the jnz.
 4:
-   andb    $$0xf,rINSTbl                   # rINST <- A
-   SET_VREG_OBJECT %eax, rINST             # fp[A] <- value
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+    andb    $$0xf,rINSTbl                   # rINST <- A
+    SET_VREG_OBJECT %eax, rINST             # fp[A] <- value
+    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 2:
-%  fetch_field_from_fast_path("NterpGetLocalInstanceField", success_label="1b", fail_label="5f", is_static="0")
+%   fetch_field_from_fast_path("NterpGetLocalInstanceField", success_label="1b", fail_label="5f")
 5:
-   EXPORT_PC
-   movl rSELF:THREAD_SELF_OFFSET, ARG0
-   movl 0(%esp), ARG1
-   movl rPC, ARG2
-   movl rFP, ARG3
-   call nterp_get_instance_field_offset
-   testl %eax, %eax
-   jns 1b
-   // For volatile fields, we return a negative offset. Remove the sign
-   // and no need for any barrier thanks to the memory model.
-   negl %eax
-   jmp 1b
+    EXPORT_PC
+    movl rSELF:THREAD_SELF_OFFSET, ARG0
+    movl 0(%esp), ARG1
+    movl rPC, ARG2
+    movl rFP, ARG3
+    call nterp_get_instance_field_offset
+    testl %eax, %eax
+    jns 1b
+    // For volatile fields, we return a negative offset. Remove the sign
+    // and no need for any barrier thanks to the memory model.
+    negl %eax
+    jmp 1b
 3:
-   UNPOISON_HEAP_REF eax
-   // reg00 is eax
-   call art_quick_read_barrier_mark_reg00
-   jmp 4b
+    UNPOISON_HEAP_REF eax
+    // reg00 is eax
+    call art_quick_read_barrier_mark_reg00
+    jmp 4b
 
 NterpPutObjectStaticField:
-   // Fast-path which gets the field from thread-local cache.
-%  fetch_from_thread_cache("%eax", miss_label="2f")
+    // Fast-path which gets the field from thread-local cache.
+%   fetch_uint64_from_thread_cache_eax_ecx(miss_label="2f")
 1:
-   GET_VREG rINST, rINST
-   movl ART_FIELD_OFFSET_OFFSET(%eax), %ecx
-   movl ART_FIELD_DECLARING_CLASS_OFFSET(%eax), %eax
-   cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
-   jne 3f
+    GET_VREG rINST, rINST
+    cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
+    jne 3f
 5:
-   POISON_HEAP_REF ebx  // `rINST` is `%ebx` but we need to pass `ebx`.
-   movl rINST, (%eax, %ecx, 1)
-   testl rINST, rINST
-   je 4f
-   movl rSELF:THREAD_CARD_TABLE_OFFSET, %ecx
-   shrl $$CARD_TABLE_CARD_SHIFT, %eax
-   movb %cl, (%ecx, %eax, 1)
+    POISON_HEAP_REF ebx  // `rINST` is `%ebx` but we need to pass `ebx`.
+    movl rINST, (%eax, %ecx, 1)
+    testl rINST, rINST
+    je 4f
+    movl rSELF:THREAD_CARD_TABLE_OFFSET, %eax
+    shrl $$CARD_TABLE_CARD_SHIFT, %ecx
+    movb %al, (%ecx, %eax, 1)
 4:
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 2:
-%  fetch_field_from_fast_path("NterpGetLocalStaticFieldForSPutObject", success_label="1b", fail_label="9f", is_static="1")
+%   fetch_field_from_fast_path("NterpGetLocalStaticFieldForSPutObject", success_label="1b", fail_label="9f", is_static=True)
 9:
-   EXPORT_PC
-   movl rSELF:THREAD_SELF_OFFSET, ARG0
-   movl 0(%esp), ARG1
-   movl rPC, ARG2
-   GET_VREG ARG3, rINST
-   call nterp_get_static_field
-   testl MACRO_LITERAL(1), %eax
-   je 1b
-   CLEAR_VOLATILE_MARKER %eax
-   movl ART_FIELD_OFFSET_OFFSET(%eax), %ecx
-   movl ART_FIELD_DECLARING_CLASS_OFFSET(%eax), %eax
-   cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
-   jne 7f
+    EXPORT_PC
+    movl rSELF:THREAD_SELF_OFFSET, ARG0
+    movl 0(%esp), ARG1
+    movl rPC, ARG2
+    GET_VREG ARG3, rINST
+    call nterp_get_static_field
+    testl %eax, %eax
+    jns 1b
+    negl %eax
+    cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
+    jne 7f
 6:
-   GET_VREG rINST, rINST
-   POISON_HEAP_REF ebx  // `rINST` is `%ebx` but we need to pass `ebx`.
-   movl rINST, (%eax, %ecx, 1)
-   testl rINST, rINST
-   je 8f
-   movl rSELF:THREAD_CARD_TABLE_OFFSET, %ecx
-   shrl $$CARD_TABLE_CARD_SHIFT, %eax
-   movb %cl, (%ecx, %eax, 1)
+    GET_VREG rINST, rINST
+    POISON_HEAP_REF ebx  // `rINST` is `%ebx` but we need to pass `ebx`.
+    movl rINST, (%eax, %ecx, 1)
+    testl rINST, rINST
+    je 8f
+    movl rSELF:THREAD_CARD_TABLE_OFFSET, %eax
+    shrl $$CARD_TABLE_CARD_SHIFT, %ecx
+    movb %al, (%ecx, %eax, 1)
 8:
-   lock addl $$0, (%esp)
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+    lock addl $$0, (%esp)
+    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 3:
-   call art_quick_read_barrier_mark_reg00
-   jmp 5b
+    call art_quick_read_barrier_mark_reg01
+    jmp 5b
 7:
-   call art_quick_read_barrier_mark_reg00
-   jmp 6b
+    call art_quick_read_barrier_mark_reg01
+    jmp 6b
 
 NterpGetObjectStaticField:
-   // Fast-path which gets the field from thread-local cache.
-%  fetch_from_thread_cache("%eax", miss_label="2f")
+    // Fast-path which gets the field from thread-local cache.
+%   fetch_uint64_from_thread_cache_eax_ecx(miss_label="2f")
 1:
-   movl ART_FIELD_OFFSET_OFFSET(%eax), %ecx
-   movl ART_FIELD_DECLARING_CLASS_OFFSET(%eax), %eax
-   cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
-   jne 5f
+    cmpl $$0, rSELF:THREAD_READ_BARRIER_MARK_REG00_OFFSET
+    jne 5f
 6:
-   testb $$READ_BARRIER_TEST_VALUE, GRAY_BYTE_OFFSET(%eax)
-   movl (%eax, %ecx, 1), %eax
-   jnz 3f
-   UNPOISON_HEAP_REF eax  // Affects flags, so we cannot unpoison before the jnz.
+    testb $$READ_BARRIER_TEST_VALUE, GRAY_BYTE_OFFSET(%ecx)
+    movl (%ecx, %eax, 1), %eax
+    jnz 3f
+    UNPOISON_HEAP_REF eax  // Affects flags, so we cannot unpoison before the jnz.
 4:
-   SET_VREG_OBJECT %eax, rINST             # fp[A] <- value
-   ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
+    SET_VREG_OBJECT %eax, rINST             # fp[A] <- value
+    ADVANCE_PC_FETCH_AND_GOTO_NEXT 2
 2:
-%  fetch_field_from_fast_path("NterpGetLocalStaticField", success_label="1b", fail_label="9f", is_static="1")
+%   fetch_field_from_fast_path("NterpGetLocalStaticField", success_label="1b", fail_label="9f", is_static=True)
 9:
-   EXPORT_PC
-   movl rSELF:THREAD_SELF_OFFSET, ARG0
-   movl 0(%esp), ARG1
-   movl rPC, ARG2
-   movl $$0, ARG3
-   call nterp_get_static_field
-   CLEAR_VOLATILE_MARKER %eax
-   jmp 1b
+    EXPORT_PC
+    movl rSELF:THREAD_SELF_OFFSET, ARG0
+    movl 0(%esp), ARG1
+    movl rPC, ARG2
+    movl $$0, ARG3
+    call nterp_get_static_field
+    testl %eax, %eax
+    jns 1b
+    negl %eax
+    jmp 1b
 3:
-   UNPOISON_HEAP_REF eax
-   call art_quick_read_barrier_mark_reg00
-   jmp 4b
+    UNPOISON_HEAP_REF eax
+    call art_quick_read_barrier_mark_reg00
+    jmp 4b
 5:
-   call art_quick_read_barrier_mark_reg00
-   jmp 6b
+    call art_quick_read_barrier_mark_reg01
+    jmp 6b
 
 NterpGetBooleanStaticField:
-  OP_SGET load="movzbl", wide=0
+    OP_SGET load="movzbl", wide=0
 
 NterpGetByteStaticField:
-  OP_SGET load="movsbl", wide=0
+    OP_SGET load="movsbl", wide=0
 
 NterpGetCharStaticField:
-  OP_SGET load="movzwl", wide=0
+    OP_SGET load="movzwl", wide=0
 
 NterpGetShortStaticField:
-  OP_SGET load="movswl", wide=0
+    OP_SGET load="movswl", wide=0
 
 NterpGetWideStaticField:
-  OP_SGET load="movl", wide=1
+    OP_SGET load="movl", wide=1
 
 NterpGetIntStaticField:
-  OP_SGET load="movl", wide=0
+    OP_SGET load="movl", wide=0
 
 NterpPutStaticField:
-  OP_SPUT rINST_reg=rINST, store="movl", wide=0
+    OP_SPUT rINST_reg=rINST, store="movl", wide=0
 
 NterpPutBooleanStaticField:
 NterpPutByteStaticField:
-  OP_SPUT rINST_reg=rINSTbl, store="movb", wide=0
+    OP_SPUT rINST_reg=rINSTbl, store="movb", wide=0
 
 NterpPutCharStaticField:
 NterpPutShortStaticField:
-  OP_SPUT rINST_reg=rINSTw, store="movw", wide=0
+    OP_SPUT rINST_reg=rINSTw, store="movw", wide=0
 
 NterpPutWideStaticField:
-  OP_SPUT rINST_reg=rINST, store="movl", wide=1
+    OP_SPUT rINST_reg=rINST, store="movl", wide=1
 
 NterpPutInstanceField:
-  OP_IPUT rINST_reg=rINST, store="movl", wide=0
+    OP_IPUT rINST_reg=rINST, store="movl", wide=0
 
 NterpPutBooleanInstanceField:
 NterpPutByteInstanceField:
-  OP_IPUT rINST_reg=rINSTbl, store="movb", wide=0
+    OP_IPUT rINST_reg=rINSTbl, store="movb", wide=0
 
 NterpPutCharInstanceField:
 NterpPutShortInstanceField:
-  OP_IPUT rINST_reg=rINSTw, store="movw", wide=0
+    OP_IPUT rINST_reg=rINSTw, store="movw", wide=0
 
 NterpPutWideInstanceField:
-  OP_IPUT rINST_reg=rINST, store="movl", wide=1
+    OP_IPUT rINST_reg=rINST, store="movl", wide=1
 
 NterpGetBooleanInstanceField:
-  OP_IGET load="movzbl", wide=0
+    OP_IGET load="movzbl", wide=0
 
 NterpGetByteInstanceField:
-  OP_IGET load="movsbl", wide=0
+    OP_IGET load="movsbl", wide=0
 
 NterpGetCharInstanceField:
-  OP_IGET load="movzwl", wide=0
+    OP_IGET load="movzwl", wide=0
 
 NterpGetShortInstanceField:
-  OP_IGET load="movswl", wide=0
+    OP_IGET load="movswl", wide=0
 
 NterpGetWideInstanceField:
-  OP_IGET load="movl", wide=1
+    OP_IGET load="movl", wide=1
 
 NterpGetInstanceField:
-  OP_IGET load="movl", wide=0
+    OP_IGET load="movl", wide=0
 
 NterpCallSuspendAndGotoNext:
     EXPORT_PC
@@ -2326,43 +2361,43 @@ NterpHotnessCheck:
     ret
 
 NterpHandleInvokeInterfaceOnObjectMethodRange:
-   shrl $$16, %eax
-   movl MIRROR_CLASS_VTABLE_OFFSET_32(%edx, %eax, 4), %eax
-   jmp NterpCommonInvokeInstanceRange
+    shrl $$16, %eax
+    movl MIRROR_CLASS_VTABLE_OFFSET_32(%edx, %eax, 4), %eax
+    jmp NterpCommonInvokeInstanceRange
 
 NterpHandleInvokeInterfaceOnObjectMethod:
-   shrl $$16, %eax
-   movl MIRROR_CLASS_VTABLE_OFFSET_32(%edx, %eax, 4), %eax
-   jmp NterpCommonInvokeInstance
+    shrl $$16, %eax
+    movl MIRROR_CLASS_VTABLE_OFFSET_32(%edx, %eax, 4), %eax
+    jmp NterpCommonInvokeInstance
 
-// This is the logical end of ExecuteNterpImpl, where the frame info applies.
-// EndExecuteNterpImpl includes the methods below as we want the runtime to
-// see them as part of the Nterp PCs.
-.cfi_endproc
+    // This is the logical end of ExecuteNterpImpl, where the frame info applies.
+    // EndExecuteNterpImpl includes the methods below as we want the runtime to
+    // see them as part of the Nterp PCs.
+    .cfi_endproc
 
-END nterp_helper
+  END nterp_helper
 
-// This is the end of PCs contained by the OatQuickMethodHeader created for the interpreter
-// entry point.
-    FUNCTION_TYPE(EndExecuteNterpImpl)
-    ASM_HIDDEN SYMBOL(EndExecuteNterpImpl)
-    .global SYMBOL(EndExecuteNterpImpl)
-SYMBOL(EndExecuteNterpImpl):
+  // This is the end of PCs contained by the OatQuickMethodHeader created for the interpreter
+  // entry point.
+  FUNCTION_TYPE(EndExecuteNterpImpl)
+  ASM_HIDDEN SYMBOL(EndExecuteNterpImpl)
+  .global SYMBOL(EndExecuteNterpImpl)
+  SYMBOL(EndExecuteNterpImpl):
 
-// Entrypoints into runtime.
-NTERP_TRAMPOLINE nterp_get_static_field, NterpGetStaticField
-NTERP_TRAMPOLINE nterp_get_instance_field_offset, NterpGetInstanceFieldOffset
-NTERP_TRAMPOLINE nterp_filled_new_array, NterpFilledNewArray
-NTERP_TRAMPOLINE nterp_filled_new_array_range, NterpFilledNewArrayRange
-NTERP_TRAMPOLINE nterp_get_class, NterpGetClass
-NTERP_TRAMPOLINE nterp_allocate_object, NterpAllocateObject
-NTERP_TRAMPOLINE nterp_get_method, NterpGetMethod
-NTERP_TRAMPOLINE nterp_hot_method, NterpHotMethod
-NTERP_TRAMPOLINE nterp_load_object, NterpLoadObject
+  // Entrypoints into runtime.
+  NTERP_TRAMPOLINE_RETURN_LONG nterp_get_static_field, NterpGetStaticField
+  NTERP_TRAMPOLINE nterp_get_instance_field_offset, NterpGetInstanceFieldOffset
+  NTERP_TRAMPOLINE nterp_filled_new_array, NterpFilledNewArray
+  NTERP_TRAMPOLINE nterp_filled_new_array_range, NterpFilledNewArrayRange
+  NTERP_TRAMPOLINE nterp_get_class, NterpGetClass
+  NTERP_TRAMPOLINE nterp_allocate_object, NterpAllocateObject
+  NTERP_TRAMPOLINE nterp_get_method, NterpGetMethod
+  NTERP_TRAMPOLINE nterp_hot_method, NterpHotMethod
+  NTERP_TRAMPOLINE nterp_load_object, NterpLoadObject
 
-DEFINE_FUNCTION nterp_deliver_pending_exception
-    DELIVER_PENDING_EXCEPTION
-END_FUNCTION nterp_deliver_pending_exception
+  DEFINE_FUNCTION nterp_deliver_pending_exception
+      DELIVER_PENDING_EXCEPTION
+  END_FUNCTION nterp_deliver_pending_exception
 
 // gen_mterp.py will inline the following definitions
 // within [ExecuteNterpImpl, EndExecuteNterpImpl).
@@ -2382,18 +2417,20 @@ SYMBOL(artNterpAsmInstructionEnd):
     FUNCTION_TYPE(artNterpAsmInstructionStart)
     ASM_HIDDEN SYMBOL(artNterpAsmInstructionStart)
     .global SYMBOL(artNterpAsmInstructionStart)
-SYMBOL(artNterpAsmInstructionStart) = .L_op_nop
+    SYMBOL(artNterpAsmInstructionStart) = ${opcode_name_prefix}op_nop
     .text
 
-%def opcode_name_prefix():
-%   return "nterp_"
+%def opcode_name_prefixes():
+%   return ["nterp_"]
 %def opcode_start():
-    ENTRY nterp_${opcode}
+    ENTRY ${opcode}
+%     pass
 %def opcode_end():
-    END nterp_${opcode}
+    END ${opcode}
     // Advance to the end of this handler. Causes error if we are past that point.
-    .org nterp_${opcode} + NTERP_HANDLER_SIZE  // ${opcode} handler is too big!
+    .org ${opcode} + NTERP_HANDLER_SIZE  // ${opcode} handler is too big!
 %def opcode_slow_path_start(name):
     ENTRY ${name}
+%     pass
 %def opcode_slow_path_end(name):
     END ${name}

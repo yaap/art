@@ -73,10 +73,10 @@ class Summarizer {
     }
 
     // Annotate Strings with their values.
-    String stringValue = inst.asString(kMaxChars);
-    if (stringValue != null) {
-      formatted.appendFormat(" \"%s", stringValue);
-      formatted.append(kMaxChars == stringValue.length() ? "..." : "\"");
+    DocString stringFormatted = summarizeString(inst);
+    if (stringFormatted != null) {
+      formatted.append(" ");
+      formatted.append(stringFormatted);
     }
 
     // Annotate Reference with its referent
@@ -159,5 +159,23 @@ class Summarizer {
     }
     URI uri = DocString.formattedUri("site?id=%d", site.getId());
     return DocString.link(uri, text);
+  }
+
+  /**
+   * Returns a formatted DocString with a summary of the string value associated with the given
+   * instance.
+   *
+   * The string is quoted and truncated if it is too long.
+   * Returns null if the instance is not a string.
+   */
+  public static DocString summarizeString(AhatInstance inst) {
+    String stringValue = inst.asString(kMaxChars);
+    if (stringValue == null) {
+      return null;
+    }
+    DocString formatted = new DocString();
+    formatted.appendFormat("\"%s", stringValue);
+    formatted.append(kMaxChars == stringValue.length() ? "..." : "\"");
+    return formatted;
   }
 }

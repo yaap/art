@@ -16,8 +16,6 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.Utils.Abi;
-
 import android.os.Build;
 
 import androidx.annotation.NonNull;
@@ -25,6 +23,8 @@ import androidx.annotation.RequiresApi;
 
 import com.android.server.art.model.DetailedDexInfo;
 import com.android.server.art.model.DexMetadata;
+import com.android.server.art.utils.Utils;
+import com.android.server.art.utils.Utils.Abi;
 
 import java.util.ArrayList;
 import java.util.HashMap;

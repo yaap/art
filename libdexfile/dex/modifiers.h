@@ -120,6 +120,8 @@ static constexpr uint32_t kAccMemorySharedMethod =       0x40000000;
 
 // Set by the compiler driver when compiling boot classes with intrinsic methods.
 static constexpr uint32_t kAccIntrinsic  =            0x80000000;  // method (runtime)
+// Whether this field's value can be modified only once.
+static constexpr uint32_t kAccMonotonic  =            0x80000000;  // field (runtime)
 
 // Special runtime-only flags.
 // Interface and all its super-interfaces with default methods have been recursively initialized.

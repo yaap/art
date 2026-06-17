@@ -63,43 +63,6 @@ inline ObjPtr<mirror::Class> CompilerDriver::ResolveCompilingMethodsClass(
   return ResolveClass(soa, dex_cache, class_loader, referrer_method_id.class_idx_, mUnit);
 }
 
-inline ArtField* CompilerDriver::ResolveField(const ScopedObjectAccess& soa,
-                                              Handle<mirror::DexCache> dex_cache,
-                                              Handle<mirror::ClassLoader> class_loader,
-                                              uint32_t field_idx,
-                                              bool is_static) {
-  ArtField* resolved_field = Runtime::Current()->GetClassLinker()->ResolveField(
-      field_idx, dex_cache, class_loader, is_static);
-  DCHECK_EQ(resolved_field == nullptr, soa.Self()->IsExceptionPending());
-  if (UNLIKELY(resolved_field == nullptr)) {
-    // Clean up any exception left by type resolution.
-    soa.Self()->ClearException();
-    return nullptr;
-  }
-  if (UNLIKELY(resolved_field->IsStatic() != is_static)) {
-    // ClassLinker can return a field of the wrong kind directly from the DexCache.
-    // Silently return null on such incompatible class change.
-    return nullptr;
-  }
-  return resolved_field;
-}
-
-inline std::pair<bool, bool> CompilerDriver::IsFastInstanceField(
-    ObjPtr<mirror::DexCache> dex_cache,
-    ObjPtr<mirror::Class> referrer_class,
-    ArtField* resolved_field,
-    uint16_t field_idx) {
-  DCHECK(!resolved_field->IsStatic());
-  ObjPtr<mirror::Class> fields_class = resolved_field->GetDeclaringClass();
-  bool fast_get = referrer_class != nullptr &&
-      referrer_class->CanAccessResolvedField(fields_class,
-                                             resolved_field,
-                                             dex_cache,
-                                             field_idx);
-  bool fast_put = fast_get && (!resolved_field->IsFinal() || fields_class == referrer_class);
-  return std::make_pair(fast_get, fast_put);
-}
-
 inline const CompilerDriver::CompiledMethodArray* CompilerDriver::GetCompiledMethods(
     const DexFile* dex_file) const {
   return compiled_methods_.GetArray(dex_file);

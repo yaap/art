@@ -332,7 +332,8 @@ bool SsaBuilder::FixAmbiguousArrayOps() {
 
     for (HArrayGet* aget_int : ambiguous_agets_) {
       HInstruction* array = aget_int->GetArray();
-      if (!array->GetReferenceTypeInfo().IsPrimitiveArrayClass()) {
+      if (!array->GetReferenceTypeInfo().IsValid() ||
+          !array->GetReferenceTypeInfo().IsPrimitiveArrayClass()) {
         // RTP did not type the input array. Bail.
         VLOG(compiler) << "Not compiled: Could not infer an array type for array operation at "
                        << aget_int->GetDexPc();
@@ -374,7 +375,8 @@ bool SsaBuilder::FixAmbiguousArrayOps() {
 
     for (HArraySet* aset : ambiguous_asets_) {
       HInstruction* array = aset->GetArray();
-      if (!array->GetReferenceTypeInfo().IsPrimitiveArrayClass()) {
+      if (!array->GetReferenceTypeInfo().IsValid() ||
+          !array->GetReferenceTypeInfo().IsPrimitiveArrayClass()) {
         // RTP did not type the input array. Bail.
         VLOG(compiler) << "Not compiled: Could not infer an array type for array operation at "
                        << aset->GetDexPc();
@@ -515,6 +517,78 @@ static bool HasPhiEquivalentAtLoopEntry(HGraph* graph) {
   return false;
 }
 
+static bool IsSameSizeConstant(const HInstruction* insn1, const HInstruction* insn2) {
+  return insn1->IsConstant()
+      && insn2->IsConstant()
+      && DataType::Is64BitType(insn1->GetType()) == DataType::Is64BitType(insn2->GetType());
+}
+
+static bool IsConstantEquivalent(const HInstruction* insn1,
+                                 const HInstruction* insn2,
+                                 BitVector* visited) {
+  if (insn1->IsPhi() && insn1->AsPhi()->IsVRegEquivalentOf(insn2)) {
+    HConstInputsRef insn1_inputs = insn1->GetInputs();
+    HConstInputsRef insn2_inputs = insn2->GetInputs();
+    if (insn1_inputs.size() != insn2_inputs.size()) {
+      return false;
+    }
+
+    // Testing only one of the two inputs for recursion is sufficient.
+    if (visited->IsBitSet(insn1->GetId())) {
+      return true;
+    }
+    visited->SetBit(insn1->GetId());
+
+    for (size_t i = 0; i < insn1_inputs.size(); ++i) {
+      if (!IsConstantEquivalent(insn1_inputs[i], insn2_inputs[i], visited)) {
+        return false;
+      }
+    }
+    return true;
+  } else if (IsSameSizeConstant(insn1, insn2)) {
+    return insn1->AsConstant()->GetValueAsUint64() == insn2->AsConstant()->GetValueAsUint64();
+  } else {
+    return false;
+  }
+}
+
+static void VerifyDuplicatePhis(HGraph* graph) {
+  for (HBasicBlock* block : graph->GetReversePostOrderSkipEntryBlock()) {
+    for (HInstructionIteratorPrefetchNext it(block->GetPhis()); !it.Done(); it.Advance()) {
+      HPhi* phi = it.Current()->AsPhi();
+      if (phi->GetRegNumber() == kNoRegNumber) {
+        continue;
+      }
+
+      for (HInstructionIteratorPrefetchNext other_it(block->GetPhis()); !other_it.Done();
+           other_it.Advance()) {
+        HPhi* other_phi = other_it.Current()->AsPhi();
+        if (phi == other_phi ||
+            phi->GetRegNumber() != other_phi->GetRegNumber() ||
+            phi->GetType() == other_phi->GetType() ||
+            phi->GetType() == DataType::Type::kReference) {
+          continue;
+        }
+        // Use local allocator for allocating memory.
+        ScopedArenaAllocator allocator(graph->GetArenaStack());
+        // If we get here, make sure we allocate all the necessary storage at once
+        // because the BitVector reallocation strategy has very bad worst-case behavior.
+        ArenaBitVector visited(&allocator,
+                               graph->GetCurrentInstructionId(),
+                               /* expandable= */ false,
+                               kArenaAllocGraphChecker);
+        if (!IsConstantEquivalent(phi, other_phi, &visited)) {
+          LOG(FATAL) << "Two phis (" << phi->GetId() << " and " << other_phi->GetId()
+                     << ") found for VReg " << phi->GetRegNumber()
+                     << " but they are not equivalents of constants.";
+          UNREACHABLE();
+        }
+      }
+    }
+  }
+  return;
+}
+
 GraphAnalysisResult SsaBuilder::BuildSsa() {
   DCHECK(!graph_->IsInSsaForm());
 
@@ -593,6 +667,10 @@ GraphAnalysisResult SsaBuilder::BuildSsa() {
 
   if (graph_->IsCompilingOsr() && HasPhiEquivalentAtLoopEntry(graph_)) {
     return kAnalysisFailPhiEquivalentInOsr;
+  }
+
+  if (kIsDebugBuild) {
+    VerifyDuplicatePhis(graph_);
   }
 
   graph_->SetInSsaForm();

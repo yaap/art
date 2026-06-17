@@ -97,6 +97,7 @@ class RegTypeCache {
                                      MethodVerifier* verifier)
       REQUIRES_SHARED(Locks::mutator_lock_);
 
+  uint16_t IdFromTypeIndex(dex::TypeIndex type_index) REQUIRES_SHARED(Locks::mutator_lock_);
   const RegType& FromTypeIndex(dex::TypeIndex type_index) REQUIRES_SHARED(Locks::mutator_lock_);
 
   // Note: this should not be used outside of RegType::ClassJoin!

@@ -17,69 +17,69 @@
 package art;
 
 public class OtherThread {
-  public static void doTestOtherThreadWait() throws Exception {
-    System.out.println("################################");
-    System.out.println("### Other thread (suspended) ###");
-    System.out.println("################################");
-    final ControlData data = new ControlData();
-    data.waitFor = new Object();
-    Thread t = new Thread("OtherThread doTestOtherThreadWait") {
-      public void run() {
-        Recurse.foo(4, 0, 0, data);
-      }
-    };
-    t.start();
-    data.reached.await();
-    Thread.yield();
-    Thread.sleep(500);  // A little bit of time...
+    public static void doTestOtherThreadWait() throws Exception {
+        System.out.println("################################");
+        System.out.println("### Other thread (suspended) ###");
+        System.out.println("################################");
+        final ControlData data = new ControlData();
+        data.waitFor = new Object();
+        Thread t = new Thread("OtherThread doTestOtherThreadWait") {
+            public void run() {
+                Recurse.foo(4, 0, 0, data);
+            }
+        };
+        t.start();
+        data.reached.await();
+        Thread.yield();
+        Thread.sleep(500);  // A little bit of time...
 
-    System.out.println("From top");
-    PrintThread.print(t, 0, 25);
-    PrintThread.print(t, 1, 25);
-    PrintThread.print(t, 0, 7);
-    PrintThread.print(t, 2, 7);
-    PrintThread.print(t, 2, 1);
+        System.out.println("From top");
+        PrintThread.print(t, 0, 25);
+        PrintThread.print(t, 1, 25);
+        PrintThread.print(t, 0, 7);
+        PrintThread.print(t, 2, 7);
+        PrintThread.print(t, 2, 1);
 
-    System.out.println("From bottom");
-    PrintThread.print(t, -1, 25);
-    PrintThread.print(t, -5, 5);
-    PrintThread.print(t, -7, 5);
+        System.out.println("From bottom");
+        PrintThread.print(t, -1, 25);
+        PrintThread.print(t, -5, 5);
+        PrintThread.print(t, -7, 5);
 
-    // Let the thread make progress and die.
-    synchronized(data.waitFor) {
-      data.waitFor.notifyAll();
+        // Let the thread make progress and die.
+        synchronized(data.waitFor) {
+            data.waitFor.notifyAll();
+        }
+        t.join();
     }
-    t.join();
-  }
 
-  public static void doTestOtherThreadBusyLoop() throws Exception {
-    System.out.println("###########################");
-    System.out.println("### Other thread (live) ###");
-    System.out.println("###########################");
-    final ControlData data = new ControlData();
-    Thread t = new Thread("OtherThread doTestOtherThreadBusyLoop") {
-      public void run() {
-        Recurse.foo(4, 0, 0, data);
-      }
-    };
-    t.start();
-    data.reached.await();
-    Thread.yield();
-    Thread.sleep(500);  // A little bit of time...
+    public static void doTestOtherThreadBusyLoop() throws Exception {
+        System.out.println("###########################");
+        System.out.println("### Other thread (live) ###");
+        System.out.println("###########################");
+        final ControlData data = new ControlData();
+        Thread t = new Thread("OtherThread doTestOtherThreadBusyLoop") {
+            public void run() {
+                Recurse.foo(4, 0, 0, data);
+            }
+        };
+        t.start();
+        data.reached.await();
+        Thread.yield();
+        Thread.sleep(500);  // A little bit of time...
 
-    System.out.println("From top");
-    PrintThread.print(t, 0, 25);
-    PrintThread.print(t, 1, 25);
-    PrintThread.print(t, 0, 5);
-    PrintThread.print(t, 2, 5);
+        System.out.println("From top");
+        PrintThread.print(t, 0, 25);
+        PrintThread.print(t, 1, 25);
+        PrintThread.print(t, 0, 5);
+        PrintThread.print(t, 2, 5);
 
-    System.out.println("From bottom");
-    PrintThread.print(t, -1, 25);
-    PrintThread.print(t, -5, 5);
-    PrintThread.print(t, -7, 5);
+        System.out.println("From bottom");
+        PrintThread.print(t, -1, 25);
+        PrintThread.print(t, -5, 5);
+        PrintThread.print(t, -7, 5);
 
-    // Let the thread stop looping and die.
-    data.stop = true;
-    t.join();
-  }
+        // Let the thread stop looping and die.
+        data.stop = true;
+        t.join();
+    }
 }

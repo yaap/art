@@ -436,7 +436,13 @@ class ArtdTest : public CommonArtTest {
                 .isOtherReadable = true,
                 .isOtherExecutable = true,
             },
-        .fileFsPermission =
+        .odexFileFsPermission =
+            FsPermission{
+                .uid = static_cast<int32_t>(st.st_uid),
+                .gid = static_cast<int32_t>(st.st_gid),
+                .isOtherReadable = true,
+            },
+        .vdexFileFsPermission =
             FsPermission{
                 .uid = static_cast<int32_t>(st.st_uid),
                 .gid = static_cast<int32_t>(st.st_gid),
@@ -619,8 +625,8 @@ class ArtdTest : public CommonArtTest {
     CreateFile(dex_file_);
     std::filesystem::permissions(dex_file_,
                                  std::filesystem::perms::others_read,
-                                 dex_file_other_readable_ ? std::filesystem::perm_options::add :
-                                                            std::filesystem::perm_options::remove);
+                                 dex_file_other_readable_ ? std::filesystem::perm_options::add
+                                                          : std::filesystem::perm_options::remove);
 
     // Optional files.
     if (vdex_path_.has_value()) {
@@ -634,8 +640,8 @@ class ArtdTest : public CommonArtTest {
       CreateFile(path);
       std::filesystem::permissions(path,
                                    std::filesystem::perms::others_read,
-                                   profile_other_readable_ ? std::filesystem::perm_options::add :
-                                                             std::filesystem::perm_options::remove);
+                                   profile_other_readable_ ? std::filesystem::perm_options::add
+                                                           : std::filesystem::perm_options::remove);
     }
 
     // Files to be replaced.
@@ -1093,32 +1099,33 @@ TEST_F(ArtdTest, dexoptFlagsFromSystemProps) {
       .WillOnce(Return("--flag1 --flag2  --flag3"));
   EXPECT_CALL(*mock_props_, GetProperty("ro.build.version.sdk")).WillOnce(Return("77"));
 
-  EXPECT_CALL(*mock_exec_utils_,
-              DoExecAndReturnCode(
-                  WhenSplitBy("--",
-                              _,
-                              AllOf(Not(Contains(Flag("--swap-fd=", _))),
-                                    Contains(Flag("--instruction-set-features=", "features")),
-                                    Contains(Flag("--instruction-set-variant=", "variant")),
-                                    Contains(Flag("--max-image-block-size=", "size")),
-                                    Contains(Flag("--very-large-app-threshold=", "threshold")),
-                                    Contains(Flag("--resolve-startup-const-strings=", "strings")),
-                                    Contains("--generate-debug-info"),
-                                    Contains("--generate-mini-debug-info"),
-                                    Not(Contains("-Xdeny-art-apex-data-files")),
-                                    Contains(Flag("-Xms", "xms")),
-                                    Contains(Flag("-Xmx", "xmx")),
-                                    Contains("--compile-individually"),
-                                    Contains(Flag("--image-format=", "imgfmt")),
-                                    Not(Contains("--force-jit-zygote")),
-                                    Contains(Flag("--boot-image=", "boot-image")),
-                                    Contains(Flag("--assume-value=",
-                                                  "Landroid/os/Build$VERSION;->SDK_INT:77")),
-                                    Contains("--flag1"),
-                                    Contains("--flag2"),
-                                    Contains("--flag3"))),
-                  _,
-                  _))
+  EXPECT_CALL(
+      *mock_exec_utils_,
+      DoExecAndReturnCode(
+          WhenSplitBy(
+              "--",
+              _,
+              AllOf(Not(Contains(Flag("--swap-fd=", _))),
+                    Contains(Flag("--instruction-set-features=", "features")),
+                    Contains(Flag("--instruction-set-variant=", "variant")),
+                    Contains(Flag("--max-image-block-size=", "size")),
+                    Contains(Flag("--very-large-app-threshold=", "threshold")),
+                    Contains(Flag("--resolve-startup-const-strings=", "strings")),
+                    Contains("--generate-debug-info"),
+                    Contains("--generate-mini-debug-info"),
+                    Not(Contains("-Xdeny-art-apex-data-files")),
+                    Contains(Flag("-Xms", "xms")),
+                    Contains(Flag("-Xmx", "xmx")),
+                    Contains("--compile-individually"),
+                    Contains(Flag("--image-format=", "imgfmt")),
+                    Not(Contains("--force-jit-zygote")),
+                    Contains(Flag("--boot-image=", "boot-image")),
+                    Contains(Flag("--assume-value=", "Landroid/os/Build$VERSION;->SDK_INT:77")),
+                    Contains("--flag1"),
+                    Contains("--flag2"),
+                    Contains("--flag3"))),
+          _,
+          _))
       .WillOnce(Return(0));
   RunDexopt();
 }
@@ -1319,6 +1326,7 @@ TEST_F(ArtdTest, dexoptCancelledBeforeDex2oat) {
         callbacks.on_end(kPid);
         return Error();
       });
+  EXPECT_CALL(*mock_injector_, Kill(kPid, SIGKILL));
   EXPECT_CALL(*mock_injector_, Kill(-kPid, SIGKILL));
 
   cancellation_signal->cancel();
@@ -1328,6 +1336,35 @@ TEST_F(ArtdTest, dexoptCancelledBeforeDex2oat) {
   CheckContent(scratch_path_ + "/a/oat/arm64/b.odex", "old_oat");
   CheckContent(scratch_path_ + "/a/oat/arm64/b.vdex", "old_vdex");
   CheckContent(scratch_path_ + "/a/oat/arm64/b.art", "old_art");
+}
+
+TEST_F(ArtdTest, cancelRightBeforeForkTest) {
+  std::shared_ptr<IArtdCancellationSignal> input_cancellation_signal;
+  ASSERT_TRUE(artd_->createCancellationSignal(&input_cancellation_signal).isOk());
+  // Assume cancelled in Java.
+  input_cancellation_signal->cancel();
+
+  ArtdCancellationSignal* cancellation_signal =
+      static_cast<ArtdCancellationSignal*>(input_cancellation_signal.get());
+  ASSERT_TRUE(cancellation_signal->IsCancelled());
+
+  std::string error_msg;
+  const std::vector<std::string> args{GetBin("sleep"), "9"};
+  constexpr int kTimeoutSeconds = 10;
+  constexpr bool kIsNewProcessGroup = true;
+  constexpr ProcessStat* kProcessStat = nullptr;
+
+  EXPECT_CALL(*mock_injector_, Kill).WillRepeatedly(kill);
+  std::unique_ptr<ExecUtils> exec_utils = std::make_unique<ExecUtils>();
+  ExecResult result = exec_utils->ExecAndReturnResult(args,
+                                                      kTimeoutSeconds,
+                                                      cancellation_signal->CreateExecCallbacks(),
+                                                      kIsNewProcessGroup,
+                                                      kProcessStat,
+                                                      &error_msg);
+
+  EXPECT_EQ(result.status, ExecResult::kSignaled) << error_msg;
+  EXPECT_EQ(result.signal, SIGKILL) << error_msg;
 }
 
 TEST_F(ArtdTest, dexoptCancelledDuringDex2oat) {
@@ -1352,6 +1389,7 @@ TEST_F(ArtdTest, dexoptCancelledDuringDex2oat) {
         return Error();
       });
 
+  EXPECT_CALL(*mock_injector_, Kill(kPid, SIGKILL));
   EXPECT_CALL(*mock_injector_, Kill(-kPid, SIGKILL)).WillOnce([&](auto, auto) {
     // Step 4.
     process_killed_cv.notify_one();
@@ -1417,11 +1455,12 @@ TEST_F(ArtdTest, dexoptProfileNotOtherReadable) {
   EXPECT_CALL(*mock_exec_utils_, DoExecAndReturnCode(_, _, _)).Times(0);
   RunDexopt(AllOf(Property(&ndk::ScopedAStatus::getExceptionCode, EX_SERVICE_SPECIFIC),
                   Property(&ndk::ScopedAStatus::getMessage,
-                           HasSubstr("Outputs cannot be other-readable because the profile"))));
+                           HasSubstr("Odex file cannot be other-readable because the profile"))));
 }
 
 TEST_F(ArtdTest, dexoptOutputNotOtherReadable) {
-  output_artifacts_.permissionSettings.fileFsPermission.isOtherReadable = false;
+  output_artifacts_.permissionSettings.odexFileFsPermission.isOtherReadable = false;
+  output_artifacts_.permissionSettings.vdexFileFsPermission.isOtherReadable = false;
   dex_file_other_readable_ = false;
   profile_other_readable_ = false;
   EXPECT_CALL(*mock_exec_utils_, DoExecAndReturnCode(_, _, _)).WillOnce(Return(0));
@@ -1430,9 +1469,19 @@ TEST_F(ArtdTest, dexoptOutputNotOtherReadable) {
   CheckOtherReadable(scratch_path_ + "/a/oat/arm64/b.vdex", false);
 }
 
+TEST_F(ArtdTest, dexoptOutputNotOtherReadableExceptVdex) {
+  output_artifacts_.permissionSettings.odexFileFsPermission.isOtherReadable = false;
+  dex_file_other_readable_ = true;  // APk is other-readable.
+  profile_other_readable_ = false;
+  EXPECT_CALL(*mock_exec_utils_, DoExecAndReturnCode(_, _, _)).WillOnce(Return(0));
+  RunDexopt();
+  CheckOtherReadable(scratch_path_ + "/a/oat/arm64/b.odex", false);
+  CheckOtherReadable(scratch_path_ + "/a/oat/arm64/b.vdex", true);
+}
+
 TEST_F(ArtdTest, dexoptUidMismatch) {
-  output_artifacts_.permissionSettings.fileFsPermission.uid = 12345;
-  output_artifacts_.permissionSettings.fileFsPermission.isOtherReadable = false;
+  output_artifacts_.permissionSettings.odexFileFsPermission.uid = 12345;
+  output_artifacts_.permissionSettings.odexFileFsPermission.isOtherReadable = false;
   dex_file_other_readable_ = false;
   EXPECT_CALL(*mock_exec_utils_, DoExecAndReturnCode(_, _, _)).Times(0);
   RunDexopt(AllOf(Property(&ndk::ScopedAStatus::getExceptionCode, EX_SERVICE_SPECIFIC),
@@ -1441,8 +1490,8 @@ TEST_F(ArtdTest, dexoptUidMismatch) {
 }
 
 TEST_F(ArtdTest, dexoptGidMismatch) {
-  output_artifacts_.permissionSettings.fileFsPermission.gid = 12345;
-  output_artifacts_.permissionSettings.fileFsPermission.isOtherReadable = false;
+  output_artifacts_.permissionSettings.odexFileFsPermission.gid = 12345;
+  output_artifacts_.permissionSettings.odexFileFsPermission.isOtherReadable = false;
   dex_file_other_readable_ = false;
   EXPECT_CALL(*mock_exec_utils_, DoExecAndReturnCode(_, _, _)).Times(0);
   RunDexopt(AllOf(Property(&ndk::ScopedAStatus::getExceptionCode, EX_SERVICE_SPECIFIC),
@@ -1451,13 +1500,15 @@ TEST_F(ArtdTest, dexoptGidMismatch) {
 }
 
 TEST_F(ArtdTest, dexoptGidMatchesUid) {
-  output_artifacts_.permissionSettings.fileFsPermission = {
+  output_artifacts_.permissionSettings.odexFileFsPermission = {
+      .uid = 123, .gid = 123, .isOtherReadable = false};
+  output_artifacts_.permissionSettings.vdexFileFsPermission = {
       .uid = 123, .gid = 123, .isOtherReadable = false};
   EXPECT_CALL(*mock_injector_, Fstat(_, _)).WillRepeatedly(fstat);  // For profile.
   EXPECT_CALL(*mock_injector_, Fstat(FdOf(dex_file_), _))
-      .WillOnce(DoAll(SetArgPointee<1>((struct stat){
-                          .st_mode = S_IRUSR | S_IRGRP, .st_uid = 123, .st_gid = 456}),
-                      Return(0)));
+      .WillRepeatedly(DoAll(SetArgPointee<1>((struct stat){
+                                .st_mode = S_IRUSR | S_IRGRP, .st_uid = 123, .st_gid = 456}),
+                            Return(0)));
   ON_CALL(*mock_exec_utils_, DoExecAndReturnCode(_, _, _)).WillByDefault(Return(0));
   // It's okay to fail on chown. This happens when the test is not run as root.
   RunDexopt(AnyOf(Property(&ndk::ScopedAStatus::getExceptionCode, EX_NONE),
@@ -1466,13 +1517,15 @@ TEST_F(ArtdTest, dexoptGidMatchesUid) {
 }
 
 TEST_F(ArtdTest, dexoptGidMatchesGid) {
-  output_artifacts_.permissionSettings.fileFsPermission = {
+  output_artifacts_.permissionSettings.odexFileFsPermission = {
+      .uid = 123, .gid = 456, .isOtherReadable = false};
+  output_artifacts_.permissionSettings.vdexFileFsPermission = {
       .uid = 123, .gid = 456, .isOtherReadable = false};
   EXPECT_CALL(*mock_injector_, Fstat(_, _)).WillRepeatedly(fstat);  // For profile.
   EXPECT_CALL(*mock_injector_, Fstat(FdOf(dex_file_), _))
-      .WillOnce(DoAll(SetArgPointee<1>((struct stat){
-                          .st_mode = S_IRUSR | S_IRGRP, .st_uid = 123, .st_gid = 456}),
-                      Return(0)));
+      .WillRepeatedly(DoAll(SetArgPointee<1>((struct stat){
+                                .st_mode = S_IRUSR | S_IRGRP, .st_uid = 123, .st_gid = 456}),
+                            Return(0)));
   ON_CALL(*mock_exec_utils_, DoExecAndReturnCode(_, _, _)).WillByDefault(Return(0));
   // It's okay to fail on chown. This happens when the test is not run as root.
   RunDexopt(AnyOf(Property(&ndk::ScopedAStatus::getExceptionCode, EX_NONE),
@@ -1482,7 +1535,9 @@ TEST_F(ArtdTest, dexoptGidMatchesGid) {
 
 TEST_F(ArtdTest, dexoptUidGidChangeOk) {
   // The dex file is other-readable, so we don't check uid and gid.
-  output_artifacts_.permissionSettings.fileFsPermission = {
+  output_artifacts_.permissionSettings.odexFileFsPermission = {
+      .uid = 12345, .gid = 12345, .isOtherReadable = false};
+  output_artifacts_.permissionSettings.vdexFileFsPermission = {
       .uid = 12345, .gid = 12345, .isOtherReadable = false};
   ON_CALL(*mock_exec_utils_, DoExecAndReturnCode(_, _, _)).WillByDefault(Return(0));
   // It's okay to fail on chown. This happens when the test is not run as root.
@@ -1492,7 +1547,9 @@ TEST_F(ArtdTest, dexoptUidGidChangeOk) {
 }
 
 TEST_F(ArtdTest, dexoptNoUidGidChange) {
-  output_artifacts_.permissionSettings.fileFsPermission = {
+  output_artifacts_.permissionSettings.odexFileFsPermission = {
+      .uid = -1, .gid = -1, .isOtherReadable = false};
+  output_artifacts_.permissionSettings.vdexFileFsPermission = {
       .uid = -1, .gid = -1, .isOtherReadable = false};
   dex_file_other_readable_ = false;
   EXPECT_CALL(*mock_exec_utils_, DoExecAndReturnCode(_, _, _)).WillOnce(Return(0));
@@ -1960,26 +2017,48 @@ TEST_F(ArtdGetVisibilityTest, getProfileVisibilityPermissionDenied) {
                                     OR_FATAL(BuildProfileOrDmPath(profile_path_.value())));
 }
 
-TEST_F(ArtdGetVisibilityTest, getArtifactsVisibilityOtherReadable) {
-  TestGetVisibilityOtherReadable(&Artd::getArtifactsVisibility,
+TEST_F(ArtdGetVisibilityTest, getOdexVisibilityOtherReadable) {
+  TestGetVisibilityOtherReadable(&Artd::getOdexVisibility,
                                  artifacts_path_,
                                  OR_FATAL(BuildArtifactsPath(artifacts_path_)).oat_path);
 }
 
-TEST_F(ArtdGetVisibilityTest, getArtifactsVisibilityNotOtherReadable) {
-  TestGetVisibilityNotOtherReadable(&Artd::getArtifactsVisibility,
+TEST_F(ArtdGetVisibilityTest, getOdexVisibilityNotOtherReadable) {
+  TestGetVisibilityNotOtherReadable(&Artd::getOdexVisibility,
                                     artifacts_path_,
                                     OR_FATAL(BuildArtifactsPath(artifacts_path_)).oat_path);
 }
 
-TEST_F(ArtdGetVisibilityTest, getArtifactsVisibilityNotFound) {
-  TestGetVisibilityNotFound(&Artd::getArtifactsVisibility, artifacts_path_);
+TEST_F(ArtdGetVisibilityTest, getOdexVisibilityNotFound) {
+  TestGetVisibilityNotFound(&Artd::getOdexVisibility, artifacts_path_);
 }
 
-TEST_F(ArtdGetVisibilityTest, getArtifactsVisibilityPermissionDenied) {
-  TestGetVisibilityPermissionDenied(&Artd::getArtifactsVisibility,
+TEST_F(ArtdGetVisibilityTest, getOdexVisibilityPermissionDenied) {
+  TestGetVisibilityPermissionDenied(&Artd::getOdexVisibility,
                                     artifacts_path_,
                                     OR_FATAL(BuildArtifactsPath(artifacts_path_)).oat_path);
+}
+
+TEST_F(ArtdGetVisibilityTest, getVdexVisibilityOtherReadable) {
+  TestGetVisibilityOtherReadable(&Artd::getVdexVisibility,
+                                 artifacts_path_,
+                                 OR_FATAL(BuildArtifactsPath(artifacts_path_)).vdex_path);
+}
+
+TEST_F(ArtdGetVisibilityTest, getVdexVisibilityNotOtherReadable) {
+  TestGetVisibilityNotOtherReadable(&Artd::getVdexVisibility,
+                                    artifacts_path_,
+                                    OR_FATAL(BuildArtifactsPath(artifacts_path_)).vdex_path);
+}
+
+TEST_F(ArtdGetVisibilityTest, getVdexVisibilityNotFound) {
+  TestGetVisibilityNotFound(&Artd::getVdexVisibility, artifacts_path_);
+}
+
+TEST_F(ArtdGetVisibilityTest, getVdexVisibilityPermissionDenied) {
+  TestGetVisibilityPermissionDenied(&Artd::getVdexVisibility,
+                                    artifacts_path_,
+                                    OR_FATAL(BuildArtifactsPath(artifacts_path_)).vdex_path);
 }
 
 TEST_F(ArtdGetVisibilityTest, getDexFileVisibilityOtherReadable) {
@@ -2857,6 +2936,38 @@ TEST_F(ArtdProfileSaveNotificationTest, initProcessGone) {
   EXPECT_TRUE(aidl_return);
 }
 
+TEST_F(ArtdTest, hasAllClcDexFilesTrue) {
+  CreateFile(android_data_ + "/app/~~nkfeankfna==/com.android.foo-jfoeaofiew==/base.apk",
+             "base_apk");
+  CreateFile(android_data_ + "/user/0/com.android.foo/secondary1.jar", "secondary1_jar");
+  CreateFile(android_data_ + "/user/0/com.android.foo/secondary2.jar", "secondary2_jar");
+
+  bool aidl_return;
+  ASSERT_STATUS_OK(artd_->hasAllClcDexFiles(
+      android_data_ + "/user/0/com.android.foo/secondary2.jar",
+      ART_FORMAT(
+          "PCL[secondary1.jar];PCL[{}/app/~~nkfeankfna==/com.android.foo-jfoeaofiew==/base.apk]",
+          android_data_),
+      &aidl_return));
+  EXPECT_TRUE(aidl_return);
+}
+
+TEST_F(ArtdTest, hasAllClcDexFilesFalse) {
+  // Simulate that the base APK has gone (e.g., moved to a different directory due to an app
+  // update).
+  CreateFile(android_data_ + "/user/0/com.android.foo/secondary1.jar", "secondary1_jar");
+  CreateFile(android_data_ + "/user/0/com.android.foo/secondary2.jar", "secondary2_jar");
+
+  bool aidl_return;
+  ASSERT_STATUS_OK(artd_->hasAllClcDexFiles(
+      android_data_ + "/user/0/com.android.foo/secondary2.jar",
+      ART_FORMAT(
+          "PCL[secondary1.jar];PCL[{}/app/~~nkfeankfna==/com.android.foo-jfoeaofiew==/base.apk]",
+          android_data_),
+      &aidl_return));
+  EXPECT_FALSE(aidl_return);
+}
+
 TEST_F(ArtdTest, commitPreRebootStagedFiles) {
   CreateFile(android_data_ + "/dalvik-cache/arm64/system@app@Foo@Foo.apk@classes.dex.staged",
              "new_odex_1");
@@ -3134,20 +3245,20 @@ TEST_F(ArtdPreRebootTest, preRebootInit) {
 
   InSequence seq;
 
-  EXPECT_CALL(*mock_exec_utils_,
-              DoExecAndReturnCode(
-                  AllOf(WhenSplitBy("--",
-                                    AllOf(Contains(art_root_ + "/bin/art_exec"),
-                                          Contains("--drop-capabilities")),
-                                    AllOf(Contains("/apex/com.android.sdkext/bin/derive_classpath"),
-                                          Contains(Flag("--override-device-sdk-version=",
-                                                        kDefaultBuildVersionSdk)),
-                                          Contains(Flag("--override-device-codename=", "Baklava")),
-                                          Contains(Flag("--override-device-known-codenames=",
-                                                        "VanillaIceCream,Baklava")))),
-                        HasKeepFdsFor("/proc/self/fd/")),
-                  _,
-                  _))
+  EXPECT_CALL(
+      *mock_exec_utils_,
+      DoExecAndReturnCode(
+          AllOf(WhenSplitBy(
+                    "--",
+                    AllOf(Contains(art_root_ + "/bin/art_exec"), Contains("--drop-capabilities")),
+                    AllOf(Contains("/apex/com.android.sdkext/bin/derive_classpath"),
+                          Contains(Flag("--override-device-sdk-version=", kDefaultBuildVersionSdk)),
+                          Contains(Flag("--override-device-codename=", "Baklava")),
+                          Contains(Flag("--override-device-known-codenames=",
+                                        "VanillaIceCream,Baklava")))),
+                HasKeepFdsFor("/proc/self/fd/")),
+          _,
+          _))
       .WillOnce(DoAll(WithArg<0>(WriteToFdFlag("/proc/self/fd/", "export BOOTCLASSPATH /foo:/bar")),
                       Return(0)));
 
@@ -3261,6 +3372,7 @@ TEST_F(ArtdPreRebootTest, preRebootInitCancelled) {
         return Error();
       });
 
+  EXPECT_CALL(*mock_injector_, Kill(kPid, SIGKILL));
   EXPECT_CALL(*mock_injector_, Kill(-kPid, SIGKILL)).WillOnce([&](auto, auto) {
     // Step 4.
     process_killed_cv.notify_one();
@@ -3295,16 +3407,14 @@ TEST_F(ArtdPreRebootTest, dexopt) {
 
   dexopt_options_.generateAppImage = true;
 
-  EXPECT_CALL(
-      *mock_exec_utils_,
-      DoExecAndReturnCode(
-          WhenSplitBy(
-              "--",
-              _,
-              AllOf(Contains(Flag("--profile-file-fd=", FdOf(profile_file))),
-                    Contains(Flag("--assume-value=", assume_value_sdk_int)))),
-          _,
-          _))
+  EXPECT_CALL(*mock_exec_utils_,
+              DoExecAndReturnCode(
+                  WhenSplitBy("--",
+                              _,
+                              AllOf(Contains(Flag("--profile-file-fd=", FdOf(profile_file))),
+                                    Contains(Flag("--assume-value=", assume_value_sdk_int)))),
+                  _,
+                  _))
       .WillOnce(DoAll(WithArg<0>(WriteToFdFlag("--oat-fd=", "oat")),
                       WithArg<0>(WriteToFdFlag("--output-vdex-fd=", "vdex")),
                       WithArg<0>(WriteToFdFlag("--app-image-fd=", "art")),

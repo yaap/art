@@ -31,17 +31,23 @@ import java.util.NoSuchElementException;
 public class AhatClassInstance extends AhatInstance {
 
   /**
-   * Create an AhatClassInstance or AhatBitmapInstance if it's a subclass of
-   * android.graphics.Bitmap
+   * Create a new AhatClassInstance for an object of the given class.
+   * This may return a more specialized subclass of AhatClassInstance, such
+   * as AhatBitmapInstance or AhatMessageInstance, if one is available for
+   * the given class.
    *
    * @param classObj - the class of this object
    * @param objectId - the object Id
-   * @return an AhatClassInstance or AhatBitmapInstance
+   * @return the new AhatClassInstance
    */
   public static AhatClassInstance create(AhatClassObj classObj, long objectId) {
-    return classObj.isSubClassOf("android.graphics.Bitmap")
-        ? new AhatBitmapInstance(objectId)
-        : new AhatClassInstance(objectId);
+    if (classObj.isSubClassOf("android.graphics.Bitmap")) {
+      return new AhatBitmapInstance(objectId);
+    }
+    if (classObj.isSubClassOf("android.os.Message")) {
+      return new AhatMessageInstance(objectId);
+    }
+    return new AhatClassInstance(objectId);
   }
 
   // Instance fields of the object. These are stored in order of the instance
@@ -119,12 +125,12 @@ public class AhatClassInstance extends AhatInstance {
    * @return Iterable over the instance field values.
    */
   public Iterable<FieldValue> getInstanceFields() {
-    return new InstanceFieldIterator(mFields, getClassObj());
+    return new InstanceFieldIterable(mFields, getClassObj());
   }
 
   @Override
-  Iterable<Reference> getReferences() {
-    return new ReferenceIterator();
+  public Iterable<Reference> getReferences() {
+    return new ReferenceIterable(this, getJavaLangRefType());
   }
 
   /**
@@ -321,11 +327,25 @@ public class AhatClassInstance extends AhatInstance {
     return rna;
   }
 
-  private static class InstanceFieldIterator implements Iterable<FieldValue>,
-                                                        Iterator<FieldValue> {
+  private static class InstanceFieldIterable implements Iterable<FieldValue> {
+    private final Value[] mValues;
+    private final AhatClassObj mClassObj;
+
+    InstanceFieldIterable(Value[] values, AhatClassObj classObj) {
+      mValues = values;
+      mClassObj = classObj;
+    }
+
+    @Override
+    public Iterator<FieldValue> iterator() {
+      return new InstanceFieldIterator(mValues, mClassObj);
+    }
+  }
+
+  private static class InstanceFieldIterator implements Iterator<FieldValue> {
     // The complete list of instance field values to iterate over, including
     // superclass field values.
-    private Value[] mValues;
+    private final Value[] mValues;
     private int mValueIndex;
 
     // The list of field descriptors specific to the current class in the
@@ -336,7 +356,7 @@ public class AhatClassInstance extends AhatInstance {
     private int mFieldIndex;
     private AhatClassObj mNextClassObj;
 
-    public InstanceFieldIterator(Value[] values, AhatClassObj classObj) {
+    InstanceFieldIterator(Value[] values, AhatClassObj classObj) {
       mValues = values;
       mFields = classObj.getInstanceFields();
       mValueIndex = 0;
@@ -366,11 +386,6 @@ public class AhatClassInstance extends AhatInstance {
       Value value = mValues[mValueIndex++];
       return new FieldValue(field.name, field.type, value);
     }
-
-    @Override
-    public Iterator<FieldValue> iterator() {
-      return this;
-    }
   }
 
   /**
@@ -393,18 +408,39 @@ public class AhatClassInstance extends AhatInstance {
     return Reachability.STRONG;
   }
 
+  private static class ReferenceIterable implements Iterable<Reference> {
+    private final AhatClassInstance mInstance;
+    private final Reachability mJavaLangRefType;
+
+    ReferenceIterable(AhatClassInstance instance, Reachability javaLangRefType) {
+      mInstance = instance;
+      mJavaLangRefType = javaLangRefType;
+    }
+
+    @Override
+    public Iterator<Reference> iterator() {
+      return new ReferenceIterator(mInstance, mJavaLangRefType);
+    }
+  }
+
   /**
    * A Reference iterator that iterates over the fields of this instance.
    */
-  private class ReferenceIterator implements Iterable<Reference>,
-                                             Iterator<Reference> {
-    private final Iterator<FieldValue> mIter = getInstanceFields().iterator();
+  private static class ReferenceIterator implements Iterator<Reference> {
+    private final AhatClassInstance mInstance;
+    private final Iterator<FieldValue> mIter;
     private Reference mNext = null;
 
     // If we are iterating over a subclass of java.lang.ref.Reference, the
     // 'referent' field doesn't have strong reachability. mJavaLangRefType
     // describes what type of java.lang.ref.Reference subinstance this is.
-    private final Reachability mJavaLangRefType = getJavaLangRefType();
+    private final Reachability mJavaLangRefType;
+
+    ReferenceIterator(AhatClassInstance instance, Reachability javaLangRefType) {
+      mInstance = instance;
+      mIter = instance.getInstanceFields().iterator();
+      mJavaLangRefType = javaLangRefType;
+    }
 
     @Override
     public boolean hasNext() {
@@ -416,7 +452,7 @@ public class AhatClassInstance extends AhatInstance {
             reachability = mJavaLangRefType;
           }
           AhatInstance ref = field.value.asAhatInstance();
-          mNext = new Reference(AhatClassInstance.this, "." + field.name, ref, reachability);
+          mNext = new Reference(mInstance, "." + field.name, ref, reachability);
         }
       }
       return mNext != null;
@@ -430,11 +466,6 @@ public class AhatClassInstance extends AhatInstance {
       Reference next = mNext;
       mNext = null;
       return next;
-    }
-
-    @Override
-    public Iterator<Reference> iterator() {
-      return this;
     }
   }
 }

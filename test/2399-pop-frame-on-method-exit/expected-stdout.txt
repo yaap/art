@@ -1,0 +1,9 @@
+JNI_OnLoad called
+Single call with PopFrame on TestObject { cnt: 0 callerCnt: 0 }
+MethodExitCallback public void Main$TestObject.calledFunction()
+MethodExitCallback public void Main$TestObject.calledFunction()
+result is TestObject { cnt: 2 callerCnt: 1 }
+Single call with PopFrame on TestObject { cnt: 0 callerCnt: 0 }
+MethodExitCallback public void Main$TestObject.calledFunctionJit()
+MethodExitCallback public void Main$TestObject.calledFunctionJit()
+result is TestObject { cnt: 2 callerCnt: 1 }

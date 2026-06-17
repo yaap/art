@@ -157,6 +157,7 @@ art_cc_defaults {
         "optimizing/control_flow_simplifier.cc",
         "optimizing/data_type.cc",
         "optimizing/dead_code_elimination.cc",
+        "optimizing/environment_input_elimination.cc",
         "optimizing/escape.cc",
         "optimizing/graph.cc",
         "optimizing/graph_checker.cc",
@@ -307,6 +308,7 @@ gensrcs {
         "optimizing/locations.h",
         "optimizing/nodes.h",
         "optimizing/optimizing_compiler_stats.h",
+        "optimizing/physical_register_type.h",
 
         "utils/arm/constants_arm.h",
     ],
@@ -545,11 +547,13 @@ art_cc_defaults {
         },
         x86: {
             srcs: [
+                "optimizing/instruction_simplifier_x86_test.cc",
                 "utils/x86/managed_register_x86_test.cc",
             ],
         },
         x86_64: {
             srcs: [
+                "optimizing/instruction_simplifier_x86_64_test.cc",
                 // Is this test a bit-rotten copy of the x86 test? b/77951326
                 // "utils/x86_64/managed_register_x86_64_test.cc",
             ],

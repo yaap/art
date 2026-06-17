@@ -20,35 +20,31 @@
 #include <android-base/logging.h>
 
 #include "arch/instruction_set.h"
+#include "code_simulator.h"
 
 namespace art {
 
 class CodeSimulator;
 
-// This container dynamically opens and closes libart-simulator.
+// This class represents a runtime simulator root concept - one per Runtime instance.
+// It also acts as a container - dynamically opens and closes libart-simulator.
 class CodeSimulatorContainer {
  public:
   explicit CodeSimulatorContainer(InstructionSet target_isa);
   ~CodeSimulatorContainer();
 
-  bool CanSimulate() const {
-    return simulator_ != nullptr;
-  }
+  // Create a basic simulator executor. If this was not possible because libart-simulator was
+  // previously not loaded (e.g: on target) then return nullptr instead.
+  BasicCodeSimulator* CreateBasicExecutor(size_t stack_size);
 
-  CodeSimulator* Get() {
-    DCHECK(CanSimulate());
-    return simulator_;
-  }
-
-  const CodeSimulator* Get() const {
-    DCHECK(CanSimulate());
-    return simulator_;
-  }
+  // Create an ART runtime aware simulator executor. If this was not possible because
+  // libart-simulator was previously not loaded (e.g: on target) then return nullptr instead.
+  CodeSimulator* CreateExecutor(size_t stack_size);
 
  private:
+  // A handle for the libart_simulator dynamic library.
   void* libart_simulator_handle_;
-  CodeSimulator* simulator_;
-
+  InstructionSet target_isa_;
   DISALLOW_COPY_AND_ASSIGN(CodeSimulatorContainer);
 };
 

@@ -1,11 +1,12 @@
-// Signature format: 2.0
+// Signature format: 6.0
+// - style=java
 package com.android.server.art {
 
   public final class ArtManagedInstallFileHelper {
-    method @NonNull public static java.util.List<java.lang.String> filterPathsForApk(@NonNull java.util.List<java.lang.String>, @NonNull String);
+    method @NonNull public static java.util.List<String> filterPathsForApk(@NonNull java.util.List<String>, @NonNull String);
     method @NonNull public static String getTargetPathForApk(@NonNull String, @NonNull String);
     method public static boolean isArtManaged(@NonNull String);
-    method @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") @CheckResult @NonNull public static java.util.List<com.android.server.art.model.ValidationResult> validateFiles(@NonNull java.util.List<java.lang.String>);
+    method @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") @CheckResult @NonNull public static java.util.List<com.android.server.art.model.ValidationResult> validateFiles(@NonNull java.util.List<String>);
   }
 
   public final class ArtManagerLocal {
@@ -38,6 +39,7 @@ package com.android.server.art {
     method @NonNull public android.os.ParcelFileDescriptor snapshotBootImageProfile(@NonNull com.android.server.pm.PackageManagerLocal.FilteredSnapshot) throws com.android.server.art.ArtManagerLocal.SnapshotProfileException;
     method public void startBackgroundDexoptJob();
     method public void unscheduleBackgroundDexoptJob();
+    method @FlaggedApi("com.android.art.rw.flags.secure_compilation") @NonNull public com.android.server.art.model.VerifyDexoptArtifactsResult verifyDexoptArtifacts(@NonNull com.android.server.pm.PackageManagerLocal.FilteredSnapshot);
   }
 
   public static interface ArtManagerLocal.AdjustCompilerFilterCallback {
@@ -45,7 +47,7 @@ package com.android.server.art {
   }
 
   public static interface ArtManagerLocal.BatchDexoptStartCallback {
-    method public void onBatchDexoptStart(@NonNull com.android.server.pm.PackageManagerLocal.FilteredSnapshot, @NonNull String, @NonNull java.util.List<java.lang.String>, @NonNull com.android.server.art.model.BatchDexoptParams.Builder, @NonNull android.os.CancellationSignal);
+    method public void onBatchDexoptStart(@NonNull com.android.server.pm.PackageManagerLocal.FilteredSnapshot, @NonNull String, @NonNull java.util.List<String>, @NonNull com.android.server.art.model.BatchDexoptParams.Builder, @NonNull android.os.CancellationSignal);
   }
 
   public static interface ArtManagerLocal.DexoptDoneCallback {
@@ -56,7 +58,7 @@ package com.android.server.art {
     method public void onOverrideJobInfo(@NonNull android.app.job.JobInfo.Builder);
   }
 
-  public static class ArtManagerLocal.SnapshotProfileException extends java.lang.Exception {
+  public static class ArtManagerLocal.SnapshotProfileException extends Exception {
   }
 
   public class ArtModuleServiceInitializer {
@@ -67,13 +69,13 @@ package com.android.server.art {
     method @NonNull public static com.android.server.art.DexUseManagerLocal createInstance(@NonNull android.content.Context);
     method @FlaggedApi("com.android.art.flags.package_last_used_api") public long getPackageLastUsedAtMillis(@NonNull String);
     method @NonNull public java.util.List<com.android.server.art.model.DexContainerFileUseInfo> getSecondaryDexContainerFileUseInfo(@NonNull String);
-    method public void notifyDexContainersLoaded(@NonNull com.android.server.pm.PackageManagerLocal.FilteredSnapshot, @NonNull String, @NonNull java.util.Map<java.lang.String,java.lang.String>);
+    method public void notifyDexContainersLoaded(@NonNull com.android.server.pm.PackageManagerLocal.FilteredSnapshot, @NonNull String, @NonNull java.util.Map<String, String>);
     method public void systemReady();
   }
 
   public class ReasonMapping {
-    method @FlaggedApi("com.android.art.flags.updatable_filter_and_reason") public static int getCompilationReasonValueForFrameworkStatsReporting(@NonNull String);
-    method @FlaggedApi("com.android.art.flags.updatable_filter_and_reason") public static int getCompilerFilterValueForFrameworkStatsReporting(@NonNull String);
+    method public static int getCompilationReasonValueForFrameworkStatsReporting(@NonNull String);
+    method public static int getCompilerFilterValueForFrameworkStatsReporting(@NonNull String);
     field public static final String REASON_BG_DEXOPT = "bg-dexopt";
     field public static final String REASON_BOOT_AFTER_MAINLINE_UPDATE = "boot-after-mainline-update";
     field public static final String REASON_BOOT_AFTER_OTA = "boot-after-ota";
@@ -87,6 +89,7 @@ package com.android.server.art {
     field public static final String REASON_INSTALL_BULK_SECONDARY_DOWNGRADED = "install-bulk-secondary-downgraded";
     field public static final String REASON_INSTALL_FAST = "install-fast";
     field public static final String REASON_PRE_REBOOT_DEXOPT = "ab-ota";
+    field @FlaggedApi("com.android.libcore.openjdk_25_v1_apis") public static final String REASON_PRE_REBOOT_DEXOPT_SYNC = "ab-ota-sync";
   }
 
 }
@@ -121,13 +124,13 @@ package com.android.server.art.model {
 
   public abstract class BatchDexoptParams {
     method @NonNull public abstract com.android.server.art.model.DexoptParams getDexoptParams();
-    method @NonNull public abstract java.util.List<java.lang.String> getPackages();
+    method @NonNull public abstract java.util.List<String> getPackages();
   }
 
   public static final class BatchDexoptParams.Builder {
     method @NonNull public com.android.server.art.model.BatchDexoptParams build();
     method @NonNull public com.android.server.art.model.BatchDexoptParams.Builder setDexoptParams(@NonNull com.android.server.art.model.DexoptParams);
-    method @NonNull public com.android.server.art.model.BatchDexoptParams.Builder setPackages(@NonNull java.util.List<java.lang.String>);
+    method @NonNull public com.android.server.art.model.BatchDexoptParams.Builder setPackages(@NonNull java.util.List<String>);
   }
 
   public abstract class DeleteResult {
@@ -136,7 +139,7 @@ package com.android.server.art.model {
 
   public abstract class DexContainerFileUseInfo {
     method @NonNull public abstract String getDexContainerFile();
-    method @NonNull public abstract java.util.Set<java.lang.String> getLoadingPackages();
+    method @NonNull public abstract java.util.Set<String> getLoadingPackages();
     method @NonNull public abstract android.os.UserHandle getUserHandle();
   }
 
@@ -181,7 +184,7 @@ package com.android.server.art.model {
     method public abstract long getDex2oatWallTimeMillis();
     method @NonNull public abstract String getDexContainerFile();
     method public abstract int getExtendedStatusFlags();
-    method @NonNull public abstract java.util.List<java.lang.String> getExternalProfileErrors();
+    method @NonNull public abstract java.util.List<String> getExternalProfileErrors();
     method public abstract long getSizeBeforeBytes();
     method public abstract long getSizeBytes();
     method public abstract int getStatus();
@@ -221,6 +224,10 @@ package com.android.server.art.model {
     field @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") public static final int RESULT_SHOULD_DELETE_AND_CONTINUE = 2; // 0x2
     field @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") public static final int RESULT_SHOULD_FAIL = 3; // 0x3
     field @FlaggedApi("com.android.art.flags.art_managed_install_files_validation_api") public static final int RESULT_UNRECOGNIZED = 1; // 0x1
+  }
+
+  @FlaggedApi("com.android.art.rw.flags.secure_compilation") public final class VerifyDexoptArtifactsResult {
+    method @FlaggedApi("com.android.art.rw.flags.secure_compilation") public boolean isVerified();
   }
 
 }

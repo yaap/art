@@ -257,11 +257,13 @@ TEST_F(ProfileCompilationInfoTest, AddClasses) {
   for (uint32_t type_index = 0; type_index != num_type_ids1; ++type_index) {
     ASSERT_TRUE(info.AddClass(*dex1, dex::TypeIndex(type_index)));
   }
+  EXPECT_EQ(num_type_ids1, info.GetNumberOfStartupClasses(0));
   // Add classes without `TypeId` in `dex1`.
   for (uint32_t type_index = num_type_ids1; type_index != DexFile::kDexNoIndex16; ++type_index) {
     std::string descriptor = "LX" + std::to_string(type_index) + ";";
     ASSERT_TRUE(info.AddClass(*dex1, descriptor));
   }
+  EXPECT_EQ(DexFile::kDexNoIndex16, info.GetNumberOfStartupClasses(0));
   // Fail to add another class without `TypeId` in `dex1` as we have
   // run out of available artificial type indexes.
   ASSERT_FALSE(info.AddClass(*dex1, "LCannotAddThis;"));
@@ -271,6 +273,7 @@ TEST_F(ProfileCompilationInfoTest, AddClasses) {
   for (uint32_t type_index = 0; type_index != num_type_ids2; ++type_index) {
     ASSERT_TRUE(info.AddClass(*dex2, dex::TypeIndex(type_index)));
   }
+  EXPECT_EQ(num_type_ids2, info.GetNumberOfStartupClasses(1));
   // Fail to add another class without `TypeId` in `dex2` as we have
   // run out of available artificial type indexes when adding types for `dex1`.
   ASSERT_FALSE(info.AddClass(*dex2, "LCannotAddThis;"));
@@ -280,6 +283,7 @@ TEST_F(ProfileCompilationInfoTest, AddClasses) {
     std::string descriptor = "LX" + std::to_string(type_index) + ";";
     ASSERT_TRUE(info.AddClass(*dex2, descriptor));
   }
+  EXPECT_EQ(DexFile::kDexNoIndex16, info.GetNumberOfStartupClasses(1));
 }
 
 TEST_F(ProfileCompilationInfoTest, SaveFd) {
@@ -432,6 +436,32 @@ TEST_F(ProfileCompilationInfoTest, BadVersion) {
   ASSERT_FALSE(loaded_info.Load(GetFd(profile)));
 }
 
+TEST_F(ProfileCompilationInfoTest, LoadBootProfileAsRegular) {
+  ScratchFile profile;
+
+  ProfileCompilationInfo saved_info(true /*for_boot_image*/);
+  ASSERT_TRUE(AddMethod(&saved_info, dex1, /*method_idx=*/ 0));
+  ASSERT_TRUE(saved_info.Save(GetFd(profile)));
+  ASSERT_EQ(0, profile.GetFile()->Flush());
+
+  // Loading a boot profile with a regular ProfileCompilationInfo should fail.
+  ProfileCompilationInfo loaded_info(false /*for_boot_image*/);
+  ASSERT_FALSE(loaded_info.Load(GetFd(profile)));
+}
+
+TEST_F(ProfileCompilationInfoTest, LoadRegularProfileAsBoot) {
+  ScratchFile profile;
+
+  ProfileCompilationInfo saved_info(false /*for_boot_image*/);
+  ASSERT_TRUE(AddMethod(&saved_info, dex1, /*method_idx=*/ 0));
+  ASSERT_TRUE(saved_info.Save(GetFd(profile)));
+  ASSERT_EQ(0, profile.GetFile()->Flush());
+
+  // Loading a regular profile with a boot ProfileCompilationInfo should fail.
+  ProfileCompilationInfo loaded_info(true /*for_boot_image*/);
+  ASSERT_FALSE(loaded_info.Load(GetFd(profile)));
+}
+
 TEST_F(ProfileCompilationInfoTest, Incomplete) {
   ScratchFile profile;
   ASSERT_TRUE(profile.GetFile()->WriteFully(
@@ -441,6 +471,90 @@ TEST_F(ProfileCompilationInfoTest, Incomplete) {
   // Write that we have one section info.
   const uint32_t file_section_count = 1u;
   ASSERT_TRUE(profile.GetFile()->WriteFully(&file_section_count, sizeof(file_section_count)));
+  ASSERT_EQ(0, profile.GetFile()->Flush());
+
+  ProfileCompilationInfo loaded_info;
+  ASSERT_FALSE(loaded_info.Load(GetFd(profile)));
+}
+
+TEST_F(ProfileCompilationInfoTest, CorruptProfileKey) {
+  ScratchFile profile;
+
+  // Header
+  ASSERT_TRUE(profile.GetFile()->WriteFully(ProfileCompilationInfo::kProfileMagic, kProfileMagicSize));
+  ASSERT_TRUE(profile.GetFile()->WriteFully(ProfileCompilationInfo::kProfileVersion, kProfileVersionSize));
+  uint32_t section_count = 1;
+  ASSERT_TRUE(profile.GetFile()->WriteFully(&section_count, sizeof(section_count)));
+
+  // Section info for dex files
+  uint32_t dex_files_section_offset =
+      kProfileMagicSize + kProfileVersionSize + sizeof(section_count) + sizeof(uint32_t) * 4;
+  // 5 is shorter than length (10)
+  uint32_t dex_files_section_size =
+      sizeof(ProfileIndexType) + 3 * sizeof(uint32_t) + sizeof(uint16_t) + 5;
+  uint32_t section_info[] = {
+    0,  // type = kDexFiles
+    dex_files_section_offset,
+    dex_files_section_size,
+    0  // inflated_size = 0 (not compressed)
+  };
+  ASSERT_TRUE(profile.GetFile()->WriteFully(section_info, sizeof(section_info)));
+
+  // Dex files section
+  ProfileIndexType num_dex_files = 1;
+  ASSERT_TRUE(profile.GetFile()->WriteFully(&num_dex_files, sizeof(num_dex_files)));
+  uint32_t dex_info[] = {123, 10, 20};  // checksum, num_type_ids, num_method_ids
+  ASSERT_TRUE(profile.GetFile()->WriteFully(dex_info, sizeof(dex_info)));
+  uint16_t key_length = 10;  // longer than available data
+  ASSERT_TRUE(profile.GetFile()->WriteFully(&key_length, sizeof(key_length)));
+  ASSERT_TRUE(profile.GetFile()->WriteFully("abcde", 5));  // 5 bytes of key_data
+
+  ASSERT_EQ(0, profile.GetFile()->Flush());
+
+  ProfileCompilationInfo loaded_info;
+  ASSERT_FALSE(loaded_info.Load(GetFd(profile)));
+}
+
+TEST_F(ProfileCompilationInfoTest, CorruptExtraDescriptor) {
+  ScratchFile profile;
+
+  // Header
+  ASSERT_TRUE(profile.GetFile()->WriteFully(ProfileCompilationInfo::kProfileMagic, kProfileMagicSize));
+  ASSERT_TRUE(profile.GetFile()->WriteFully(ProfileCompilationInfo::kProfileVersion, kProfileVersionSize));
+  uint32_t section_count = 2;  // Dex files and extra descriptors
+  ASSERT_TRUE(profile.GetFile()->WriteFully(&section_count, sizeof(section_count)));
+
+  // Section infos
+  uint32_t dex_files_section_offset =
+      kProfileMagicSize + kProfileVersionSize + sizeof(section_count) + sizeof(uint32_t) * 4 * 2;
+  uint32_t dex_files_section_size = sizeof(ProfileIndexType);  // no dex files
+  uint32_t extra_desc_offset = dex_files_section_offset + dex_files_section_size;
+  // 5 is shorter than length (10)
+  uint32_t extra_desc_size = sizeof(uint16_t) + sizeof(uint16_t) + 5;
+  uint32_t section_infos[] = {
+    0,  // type = kDexFiles
+    dex_files_section_offset,
+    dex_files_section_size,
+    0,  // inflated_size = 0 (not compressed)
+
+    1,  // type = kExtraDescriptors
+    extra_desc_offset,
+    extra_desc_size,
+    0  // inflated_size = 0 (not compressed)
+  };
+  ASSERT_TRUE(profile.GetFile()->WriteFully(section_infos, sizeof(section_infos)));
+
+  // Dex files section (empty)
+  ProfileIndexType num_dex_files = 0;
+  ASSERT_TRUE(profile.GetFile()->WriteFully(&num_dex_files, sizeof(num_dex_files)));
+
+  // Extra descriptors section
+  uint16_t num_extra_descriptors = 1;
+  ASSERT_TRUE(profile.GetFile()->WriteFully(&num_extra_descriptors, sizeof(num_extra_descriptors)));
+  uint16_t desc_length = 10;  // longer than available data
+  ASSERT_TRUE(profile.GetFile()->WriteFully(&desc_length, sizeof(desc_length)));
+  ASSERT_TRUE(profile.GetFile()->WriteFully("abcde", 5));  // 5 bytes of desc_data
+
   ASSERT_EQ(0, profile.GetFile()->Flush());
 
   ProfileCompilationInfo loaded_info;
@@ -825,6 +939,8 @@ TEST_F(ProfileCompilationInfoTest, SampledMethodsTest) {
     EXPECT_FALSE(info.GetMethodHotness(MethodReference(dex1, 6)).IsStartup());
     EXPECT_TRUE(info.GetMethodHotness(MethodReference(dex2, 2)).IsStartup());
     EXPECT_TRUE(info.GetMethodHotness(MethodReference(dex2, 4)).IsPostStartup());
+    EXPECT_EQ(1u, info.GetNumberOfStartupMethods(0));
+    EXPECT_EQ(1u, info.GetNumberOfStartupMethods(1));
   };
   run_test(test_info);
 
@@ -885,6 +1001,7 @@ TEST_F(ProfileCompilationInfoTest, SampledMethodsTest) {
     EXPECT_FALSE(info.GetMethodHotness(MethodReference(dex.get(), 1)).IsPostStartup());
     EXPECT_FALSE(info.GetMethodHotness(MethodReference(dex.get(), 4)).IsStartup());
     EXPECT_FALSE(info.GetMethodHotness(MethodReference(dex.get(), 6)).IsStartup());
+    EXPECT_EQ(4u, info.GetNumberOfStartupMethods(0));
   }
 }
 
@@ -1264,6 +1381,7 @@ TEST_F(ProfileCompilationInfoTest, FilteredLoadingWithClasses) {
                  checksum == dex2_1000->GetLocationChecksum();
         };
   ASSERT_TRUE(loaded_info.Load(GetFd(profile), true, filter_fn));
+  EXPECT_EQ(1000u, loaded_info.GetNumberOfStartupClasses(0));
 
   // Compute the expectation.
   ProfileCompilationInfo expected_info;
@@ -1476,6 +1594,7 @@ TEST_F(ProfileCompilationInfoTest, AddMethodsProfileMethodInfoBasic) {
       ProfileMethodInfo(hot_startup),
       static_cast<Hotness::Flag>(Hotness::kFlagHot | Hotness::kFlagStartup)));
   ASSERT_TRUE(info.AddMethod(ProfileMethodInfo(startup), Hotness::kFlagStartup));
+  EXPECT_EQ(2u, info.GetNumberOfStartupMethods(0));
 
   // Verify the profile recorded them correctly.
   EXPECT_TRUE(info.GetMethodHotness(hot).IsInProfile());
@@ -2008,6 +2127,54 @@ TEST_F(ProfileCompilationInfoTest, MergeFlattenData) {
   for (std::unique_ptr<const DexFile>& dex : dex_files) {
     UNUSED(dex.release());
   }
+}
+
+// Test addition, saving and loading of no-preload classes in the profile.
+TEST_F(ProfileCompilationInfoTest, NoPreloadClasses) {
+  ScratchFile profile;
+
+  // Add a few no-preload classes.
+  ProfileCompilationInfo info1;
+  for (uint32_t type_index = 0; type_index < 10; ++type_index) {
+    ASSERT_TRUE(info1.AddClassNoPreload(*dex1, dex::TypeIndex(type_index)));
+  }
+
+  // Save profile.
+  ASSERT_TRUE(info1.Save(profile.GetFd()));
+  ASSERT_EQ(0, profile.GetFile()->Flush());
+
+  // Load profile and ensure it's identical to the saved one.
+  ProfileCompilationInfo info2;
+  ASSERT_TRUE(info2.Load(profile.GetFd()));
+  ASSERT_TRUE(info2.Equals(info1));
+}
+
+TEST_F(ProfileCompilationInfoTest, GetLocationBasename) {
+  EXPECT_EQ("base.apk", ProfileCompilationInfo::GetLocationBasename("base.apk"));
+  EXPECT_EQ("base.apk", ProfileCompilationInfo::GetLocationBasename("/dir/base.apk"));
+  EXPECT_EQ("base.apk", ProfileCompilationInfo::GetLocationBasename("/a/b/c/base.apk"));
+}
+
+// Verify that GetProfileDexFileBaseKey correctly handles different dex location formats,
+// including the new v41 container format.
+TEST_F(ProfileCompilationInfoTest, GetProfileDexFileBaseKey) {
+  // Normal apk
+  EXPECT_EQ("base.apk", ProfileCompilationInfo::GetProfileDexFileBaseKey("base.apk", ""));
+  EXPECT_EQ("base.apk",
+            ProfileCompilationInfo::GetProfileDexFileBaseKey("base.apk", "classes.dex"));
+  EXPECT_EQ("base.apk",
+            ProfileCompilationInfo::GetProfileDexFileBaseKey("/dir/base.apk", "classes.dex"));
+
+  // Old multidex syntax
+  EXPECT_EQ("base.apk!classes2.dex",
+            ProfileCompilationInfo::GetProfileDexFileBaseKey("base.apk", "classes2.dex"));
+  EXPECT_EQ("base.apk!classes2.dex",
+            ProfileCompilationInfo::GetProfileDexFileBaseKey("/dir/base.apk", "classes2.dex"));
+
+  // New multidex syntax (v41 container)
+  EXPECT_EQ("base.apk!0", ProfileCompilationInfo::GetProfileDexFileBaseKey("base.apk", "0"));
+  EXPECT_EQ("base.apk!1", ProfileCompilationInfo::GetProfileDexFileBaseKey("/dir/base.apk", "1"));
+  EXPECT_EQ("base.apk!10", ProfileCompilationInfo::GetProfileDexFileBaseKey("base.apk", "10"));
 }
 
 }  // namespace art

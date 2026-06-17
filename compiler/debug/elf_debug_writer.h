@@ -46,8 +46,6 @@ EXPORT std::vector<uint8_t> MakeMiniDebugInfo(
     const InstructionSetFeatures* features,
     uint64_t text_section_address,
     size_t text_section_size,
-    uint64_t dex_section_address,
-    size_t dex_section_size,
     const DebugInfo& debug_info);
 
 std::vector<uint8_t> MakeElfFileForJIT(

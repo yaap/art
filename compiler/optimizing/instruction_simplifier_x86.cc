@@ -42,7 +42,9 @@ class InstructionSimplifierX86Visitor final
   }
 
  private:
+  void VisitAdd(HAdd* instruction);
   void VisitAnd(HAnd * instruction);
+  void VisitSub(HSub* instruction);
   void VisitXor(HXor* instruction);
 
   CodeGeneratorX86* codegen_;
@@ -50,6 +52,13 @@ class InstructionSimplifierX86Visitor final
 
   template <typename T> friend class art::CRTPGraphVisitor;
 };
+
+void InstructionSimplifierX86Visitor::VisitAdd(HAdd* instruction) {
+  if (instruction->GetType() == DataType::Type::kInt32 &&
+      TryLoadEffectiveAddressSimplification(instruction)) {
+    RecordSimplification();
+  }
+}
 
 void InstructionSimplifierX86Visitor::VisitAnd(HAnd* instruction) {
   if (!HasAVX2()) {
@@ -62,6 +71,13 @@ void InstructionSimplifierX86Visitor::VisitAnd(HAnd* instruction) {
     if (TryGenerateResetLeastSetBit(instruction)) {
       RecordSimplification();
     }
+  }
+}
+
+void InstructionSimplifierX86Visitor::VisitSub(HSub* instruction) {
+  if (instruction->GetType() == DataType::Type::kInt32 &&
+      TryLoadEffectiveAddressSimplification(instruction)) {
+    RecordSimplification();
   }
 }
 

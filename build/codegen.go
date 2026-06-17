@@ -23,6 +23,8 @@ import (
 	"strings"
 
 	"android/soong/android"
+
+	"github.com/google/blueprint/proptools"
 )
 
 type moduleType struct {
@@ -177,7 +179,7 @@ type CodegenSourceArchProperties struct {
 
 type CodegenCommonArchProperties struct {
 	Cflags   []string
-	Cppflags []string
+	Cppflags proptools.Configurable[[]string]
 }
 
 type CodegenLibraryArchProperties struct {

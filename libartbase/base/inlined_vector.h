@@ -30,12 +30,20 @@ namespace art HIDDEN {
 template <typename T, size_t kMaxStackEntries>
 class InlinedVector {
  public:
+  void reserve(size_t capacity) {
+    if (capacity > kMaxStackEntries) {
+      heap_entries_.reserve(capacity);
+    }
+  }
+
   void push_back(const T& value) {
     if (LIKELY(size_ < kMaxStackEntries)) {
       stack_entries_[size_] = value;
     } else {
       if (size_ == kMaxStackEntries) {
-        heap_entries_.reserve(2u * kMaxStackEntries);
+        if (heap_entries_.capacity() == 0u) {
+          heap_entries_.reserve(2u * kMaxStackEntries);
+        }
         heap_entries_.assign(stack_entries_, stack_entries_ + kMaxStackEntries);
       }
       DCHECK_EQ(heap_entries_.size(), size_);
@@ -46,6 +54,10 @@ class InlinedVector {
 
   size_t size() const {
     return size_;
+  }
+
+  ArrayRef<T> GetArray() {
+    return {size_ <= kMaxStackEntries ? stack_entries_ : heap_entries_.data(), size_};
   }
 
   ArrayRef<T const> GetArray() const {

@@ -26,9 +26,9 @@
 #include "base/arena_object.h"
 #include "base/array_ref.h"
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "base/pointer_size.h"
 #include "managed_register.h"
-#include "offsets.h"
 
 namespace art HIDDEN {
 
@@ -296,6 +296,10 @@ class JNIMacroAssemblerFwd : public JNIMacroAssembler<kPointerSize> {
 
  protected:
   explicit JNIMacroAssemblerFwd(ArenaAllocator* allocator) : asm_(allocator) {}
+
+  template <typename FeaturesT>
+  JNIMacroAssemblerFwd(ArenaAllocator* allocator, const FeaturesT* features)
+      : asm_(allocator, features) {}
 
   T asm_;
 };

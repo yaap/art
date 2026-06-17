@@ -73,6 +73,7 @@ static const char* kStubsOption = "--core-stubs=";
 static const char* kFlagsOption = "--api-flags=";
 static const char* kImprecise = "--imprecise";
 static const char* kTargetSdkVersion = "--target-sdk-version=";
+static const char* kFlaggedApisOption = "--flagged-apis=";
 static const char* kAppClassFilter = "--app-class-filter=";
 static const char* kExcludeApiListsOption = "--exclude-api-lists=";
 
@@ -80,6 +81,7 @@ struct VeridexOptions {
   const char* dex_file = nullptr;
   const char* core_stubs = nullptr;
   const char* flags_file = nullptr;
+  const char* flagged_apis_file = nullptr;
   bool precise = true;
   int target_sdk_version = 29; /* Q */
   std::vector<std::string> app_class_name_filter;
@@ -105,6 +107,8 @@ static void ParseArgs(VeridexOptions* options, int argc, char** argv) {
       options->flags_file = Substr(argv[i], strlen(kFlagsOption));
     } else if (strcmp(argv[i], kImprecise) == 0) {
       options->precise = false;
+    } else if (arg.starts_with(kFlaggedApisOption)) {
+      options->flagged_apis_file = Substr(argv[i], strlen(kFlaggedApisOption));
     } else if (arg.starts_with(kTargetSdkVersion)) {
       options->target_sdk_version = atoi(Substr(argv[i], strlen(kTargetSdkVersion)));
     } else if (arg.starts_with(kAppClassFilter)) {
@@ -174,7 +178,7 @@ class Veridex {
     // Resolve classes/methods/fields defined in each dex file.
 
     ApiListFilter api_list_filter(options.exclude_api_lists);
-    HiddenApi hidden_api(options.flags_file, api_list_filter);
+    HiddenApi hidden_api(options.flags_file, options.flagged_apis_file, api_list_filter);
 
     // Cache of types we've seen, for quick class name lookups.
     TypeMap type_map;

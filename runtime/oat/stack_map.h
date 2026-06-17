@@ -326,7 +326,7 @@ class CodeInfo {
   }
 
   BitMemoryRegion GetStackMask(size_t index) const {
-    return stack_masks_.GetBitMemoryRegion(index);
+    return stack_masks_.GetBitMemoryRegion</*kColumn=*/0>(index);
   }
 
   BitMemoryRegion GetStackMaskOf(const StackMap& stack_map) const {
@@ -348,6 +348,8 @@ class CodeInfo {
       ? DexRegisterLocation::None()
       : dex_register_catalog_.GetRow(index).GetLocation();
   }
+
+  bool IsDebuggable() const { return flags_ & kIsDebuggable; }
 
   bool HasInlineInfo() const {
     return inline_infos_.NumRows() > 0;

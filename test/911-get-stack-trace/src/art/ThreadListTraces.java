@@ -17,57 +17,57 @@
 package art;
 
 public class ThreadListTraces {
-  public static void doTest() throws Exception {
-    System.out.println("########################################");
-    System.out.println("### Other select threads (suspended) ###");
-    System.out.println("########################################");
+    public static void doTest() throws Exception {
+        System.out.println("########################################");
+        System.out.println("### Other select threads (suspended) ###");
+        System.out.println("########################################");
 
-    final int N = 10;
+        final int N = 10;
 
-    final ControlData data = new ControlData(N);
-    data.waitFor = new Object();
+        final ControlData data = new ControlData(N);
+        data.waitFor = new Object();
 
-    Thread threads[] = new Thread[N];
+        Thread threads[] = new Thread[N];
 
-    Thread list[] = new Thread[N/2 + 1];
+        Thread list[] = new Thread[N/2 + 1];
 
-    for (int i = 0; i < N; i++) {
-      Thread t = new Thread("ThreadListTraces Thread " + i) {
-        public void run() {
-          Recurse.foo(4, 0, 0, data);
+        for (int i = 0; i < N; i++) {
+            Thread t = new Thread("ThreadListTraces Thread " + i) {
+                public void run() {
+                    Recurse.foo(4, 0, 0, data);
+                }
+            };
+            t.start();
+            threads[i] = t;
+            if (i % 2 == 0) {
+                list[i/2] = t;
+            }
         }
-      };
-      t.start();
-      threads[i] = t;
-      if (i % 2 == 0) {
-        list[i/2] = t;
-      }
+        list[list.length - 1] = Thread.currentThread();
+
+        data.reached.await();
+        Thread.yield();
+        Thread.sleep(500);  // A little bit of time...
+
+        printList(list, 0);
+
+        printList(list, 7);
+
+        printList(list, 25);
+
+        // Let the thread make progress and die.
+        synchronized(data.waitFor) {
+            data.waitFor.notifyAll();
+        }
+        for (int i = 0; i < N; i++) {
+            threads[i].join();
+        }
     }
-    list[list.length - 1] = Thread.currentThread();
 
-    data.reached.await();
-    Thread.yield();
-    Thread.sleep(500);  // A little bit of time...
-
-    printList(list, 0);
-
-    printList(list, 7);
-
-    printList(list, 25);
-
-    // Let the thread make progress and die.
-    synchronized(data.waitFor) {
-      data.waitFor.notifyAll();
+    public static void printList(Thread[] threads, int max) {
+        PrintThread.printAll(getThreadListStackTraces(threads, max));
     }
-    for (int i = 0; i < N; i++) {
-      threads[i].join();
-    }
-  }
 
-  public static void printList(Thread[] threads, int max) {
-    PrintThread.printAll(getThreadListStackTraces(threads, max));
-  }
-
-  // Similar to getAllStackTraces, but restricted to the given threads.
-  public static native Object[][] getThreadListStackTraces(Thread threads[], int max);
+    // Similar to getAllStackTraces, but restricted to the given threads.
+    public static native Object[][] getThreadListStackTraces(Thread threads[], int max);
 }

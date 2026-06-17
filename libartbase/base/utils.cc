@@ -391,13 +391,11 @@ size_t GetOsThreadStat(pid_t tid, char* buf, size_t len) {
   // We don't use just /proc/<pid>/stat since, in spite of some documentation to the contrary,
   // those report utime and stime values for the whole process, not just the thread.
   snprintf(file_name_buf, NAME_BUF_SIZE, "/proc/%d/task/%d/stat", getpid(), tid);
-  int stat_fd = open(file_name_buf, O_RDONLY | O_CLOEXEC);
-  if (stat_fd >= 0) {
-    ssize_t bytes_read = TEMP_FAILURE_RETRY(read(stat_fd, buf, len));
+  android::base::unique_fd stat_fd(open(file_name_buf, O_RDONLY | O_CLOEXEC));
+  if (stat_fd.ok()) {
+    ssize_t bytes_read = TEMP_FAILURE_RETRY(read(stat_fd.get(), buf, len - 1));
     CHECK_GT(bytes_read, 0) << strerror(errno);
-    int ret = close(stat_fd);
-    CHECK_EQ(ret, 0) << strerror(errno);
-    buf[len - 1] = '\0';
+    buf[bytes_read] = '\0';
     return bytes_read;
   }
 #else
@@ -459,6 +457,7 @@ std::string GetOtherThreadOsStats() {
       result += tid == 0 ? std::string("bad tid: ") + de->d_name : GetOsThreadStatQuick(tid);
     }
   }
+  closedir(dir);
   if (errno == EBADF) {
     result += "(Bad directory)";
   }
@@ -525,20 +524,19 @@ static const char* find_nth(const char* src, const char* src_end, size_t field_n
 // Otherwise memcpy_fields and find_nth are unused.
 
 // Retrieve the first 3 fields of each of the sum and full lines, and combine them into a string.
-// Return the number of characters in the resulting buffer.
+// Return an empty string if something goes wrong, e.g. if we don't have permission to read the
+// /proc file.
 std::string GetOSPressureIOSummary() {
 #if defined(__linux__)
-  int stat_fd = open("/proc/pressure/io", O_RDONLY | O_CLOEXEC);
-  if (stat_fd < 0) {
+  android::base::unique_fd io_fd(open("/proc/pressure/io", O_RDONLY | O_CLOEXEC));
+  if (!io_fd.ok()) {
     return "";
   }
   static constexpr size_t kBufSize = 150;
   char tmp_buf[kBufSize + 1];
   // Read the entire file, typically 110 characters.
-  ssize_t bytes_read = TEMP_FAILURE_RETRY(read(stat_fd, tmp_buf, kBufSize));
+  ssize_t bytes_read = TEMP_FAILURE_RETRY(read(io_fd.get(), tmp_buf, kBufSize));
   CHECK_GT(bytes_read, 0) << strerror(errno);
-  int ret = close(stat_fd);
-  CHECK_EQ(ret, 0) << strerror(errno);
   char buf[kBufSize];
   char* out = buf;
   const char* in = tmp_buf;
@@ -568,21 +566,21 @@ std::string GetOSPressureIOSummary() {
 }
 
 size_t GetOSDiskStats(const char* disk_name, char* buf, size_t len) {
-  // This is theoretically easier to get from /disk/block/sda, but the selinux permission issues
-  // there look harder.
+  // This is theoretically easier to get from /sys/block/sda/stat, but the selinux permission
+  // issues there look harder.
 #if defined(__linux__)
-  int stat_fd = open("/proc/diskstats", O_RDONLY | O_CLOEXEC);
-  if (stat_fd < 0) {
+  android::base::unique_fd stats_fd(open("/proc/diskstats", O_RDONLY | O_CLOEXEC));
+  if (!stats_fd.ok()) {
     return 0;
   }
   static constexpr size_t kBufSize = 20'000;
   std::unique_ptr<char[]> tmp_buf_ptr(new char[kBufSize]);
   char* tmp_buf = tmp_buf_ptr.get();
   // Read the entire file, typically 10K characters.
-  ssize_t bytes_read = TEMP_FAILURE_RETRY(read(stat_fd, tmp_buf, kBufSize));
-  CHECK_GT(bytes_read, 0) << strerror(errno);
-  int ret = close(stat_fd);
-  CHECK_EQ(ret, 0) << strerror(errno);
+  ssize_t bytes_read = TEMP_FAILURE_RETRY(read(stats_fd.get(), tmp_buf, kBufSize));
+  if (bytes_read <= 0) {
+    return 0;
+  }
   const char* line_p = tmp_buf;
   const char* const tmp_buf_end = tmp_buf + bytes_read;
   const size_t disk_name_len = strlen(disk_name);

@@ -20,17 +20,30 @@
 
 namespace art {
 
-CodeSimulator* CodeSimulator::CreateCodeSimulator(InstructionSet target_isa) {
+#ifndef ART_TARGET
+BasicCodeSimulator* CreateBasicCodeSimulator(InstructionSet target_isa, size_t stack_size) {
   switch (target_isa) {
     case InstructionSet::kArm64:
-      return arm64::CodeSimulatorArm64::CreateCodeSimulatorArm64();
+      return arm64::BasicCodeSimulatorArm64::CreateBasicCodeSimulatorArm64(stack_size);
     default:
-      return nullptr;
+      LOG(FATAL) << "Target ISA not supported for simulation";
+      UNREACHABLE();
+  }
+}
+#endif
+
+#ifdef ART_USE_SIMULATOR
+
+CodeSimulator* CreateCodeSimulator(InstructionSet target_isa, size_t stack_size) {
+  switch (target_isa) {
+    case InstructionSet::kArm64:
+      return arm64::CodeSimulatorArm64::CreateCodeSimulatorArm64(stack_size);
+    default:
+      LOG(FATAL) << "Target ISA not supported for simulation";
+      UNREACHABLE();
   }
 }
 
-CodeSimulator* CreateCodeSimulator(InstructionSet target_isa) {
-  return CodeSimulator::CreateCodeSimulator(target_isa);
-}
+#endif
 
 }  // namespace art

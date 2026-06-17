@@ -27,6 +27,8 @@ import androidx.annotation.RequiresApi;
 
 import com.android.internal.annotations.Immutable;
 import com.android.server.art.model.DetailedDexInfo;
+import com.android.server.art.utils.AidlUtils;
+import com.android.server.art.utils.Utils;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.AndroidPackageSplit;
 import com.android.server.pm.pkg.PackageState;

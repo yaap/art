@@ -29,11 +29,11 @@
 #include "arch/instruction_set.h"
 #include "base/locks.h"
 #include "base/macros.h"
+#include "base/offsets.h"
 #include "base/pointer_size.h"
 #include "base/safe_map.h"
 #include "gc_root.h"
 #include "jvalue.h"
-#include "offsets.h"
 
 namespace art HIDDEN {
 namespace mirror {
@@ -200,8 +200,19 @@ class Instrumentation {
     kInstrumentWithInterpreter      // execute with interpreter
   };
 
+  enum class ListenerType {
+    // We differentiate between trace listeners and other jvmti listeners for handling method exit
+    // callbacks. Trace listeners should only receive method exit callback once per each method
+    // exit. The jvmti listeners expect to be notified multiple times to implement pop frame and
+    // force return features.
+    kRegularListener,
+    kFastTraceListener,
+    kSlowTraceListener
+  };
+
   static constexpr uint8_t kFastTraceListeners = 0b01;
   static constexpr uint8_t kSlowMethodEntryExitListeners = 0b10;
+  static constexpr uint8_t kSlowTraceListeners = 0b100;
 
   Instrumentation();
 
@@ -231,19 +242,22 @@ class Instrumentation {
     return MemberOffset(OFFSETOF_MEMBER(Instrumentation, have_method_exit_listeners_));
   }
 
+  static void ReportMethodEntryForOnStackMethods(InstrumentationListener* listener, Thread* thread)
+      REQUIRES(Locks::mutator_lock_);
+
   // Add a listener to be notified of the masked together sent of instrumentation events. This
   // suspend the runtime to install stubs. You are expected to hold the mutator lock as a proxy
   // for saying you should have suspended all threads (installing stubs while threads are running
   // will break).
   EXPORT void AddListener(InstrumentationListener* listener,
                           uint32_t events,
-                          bool is_trace_listener = false)
+                          ListenerType listener_type = ListenerType::kRegularListener)
       REQUIRES(Locks::mutator_lock_, !Locks::thread_list_lock_, !Locks::classlinker_classes_lock_);
 
   // Removes listeners for the specified events.
   EXPORT void RemoveListener(InstrumentationListener* listener,
                              uint32_t events,
-                             bool is_trace_listener = false)
+                             ListenerType listener_type = ListenerType::kRegularListener)
       REQUIRES(Locks::mutator_lock_, !Locks::thread_list_lock_, !Locks::classlinker_classes_lock_);
 
   // Calls UndeoptimizeEverything which may visit class linker classes through ConfigureStubs.
@@ -464,14 +478,15 @@ class Instrumentation {
   }
 
   // Inform listeners that a method has been exited.
-  template<typename T>
+  template <typename T>
   void MethodExitEvent(Thread* thread,
                        ArtMethod* method,
                        OptionalFrame frame,
-                       T& return_value) const
+                       T& return_value,
+                       bool skip_trace_listeners = false) const
       REQUIRES_SHARED(Locks::mutator_lock_) {
     if (UNLIKELY(HasMethodExitListeners())) {
-      MethodExitEventImpl(thread, method, frame, return_value);
+      MethodExitEventImpl(thread, method, frame, return_value, skip_trace_listeners);
     }
   }
 
@@ -655,8 +670,8 @@ class Instrumentation {
   void MethodExitEventImpl(Thread* thread,
                            ArtMethod* method,
                            OptionalFrame frame,
-                           T& return_value) const
-      REQUIRES_SHARED(Locks::mutator_lock_);
+                           T& return_value,
+                           bool skip_trace_listener) const REQUIRES_SHARED(Locks::mutator_lock_);
   void DexPcMovedEventImpl(Thread* thread,
                            ObjPtr<mirror::Object> this_object,
                            ArtMethod* method,
@@ -770,6 +785,8 @@ class Instrumentation {
       GUARDED_BY(Locks::mutator_lock_);
   std::list<InstrumentationListener*> method_exit_slow_listeners_ GUARDED_BY(Locks::mutator_lock_);
   std::list<InstrumentationListener*> method_exit_fast_trace_listeners_
+      GUARDED_BY(Locks::mutator_lock_);
+  std::list<InstrumentationListener*> method_exit_slow_trace_listeners_
       GUARDED_BY(Locks::mutator_lock_);
   std::list<InstrumentationListener*> method_unwind_listeners_ GUARDED_BY(Locks::mutator_lock_);
   std::list<InstrumentationListener*> branch_listeners_ GUARDED_BY(Locks::mutator_lock_);

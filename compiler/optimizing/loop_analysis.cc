@@ -15,6 +15,7 @@
  */
 
 #include "loop_analysis.h"
+#include <cstdint>
 
 #include "base/bit_vector-inl.h"
 #include "code_generator.h"
@@ -25,7 +26,8 @@ namespace art HIDDEN {
 
 void LoopAnalysis::CalculateLoopBasicProperties(HLoopInformation* loop_info,
                                                 LoopAnalysisInfo* analysis_results,
-                                                int64_t trip_count) {
+                                                int64_t trip_count,
+                                                const CodeGenerator& codegen) {
   analysis_results->trip_count_ = trip_count;
 
   for (HBasicBlock* block : loop_info->GetBlocks()) {
@@ -51,7 +53,7 @@ void LoopAnalysis::CalculateLoopBasicProperties(HLoopInformation* loop_info,
       if (it.Current()->GetType() == DataType::Type::kInt64) {
         analysis_results->has_long_type_instructions_ = true;
       }
-      if (MakesScalarPeelingUnrollingNonBeneficial(instruction)) {
+      if (MakesScalarPeelingUnrollingNonBeneficial(instruction, codegen)) {
         analysis_results->has_instructions_preventing_scalar_peeling_ = true;
         analysis_results->has_instructions_preventing_scalar_unrolling_ = true;
       }
@@ -68,6 +70,18 @@ int64_t LoopAnalysis::GetLoopTripCount(HLoopInformation* loop_info,
     trip_count = LoopAnalysisInfo::kUnknownTripCount;
   }
   return trip_count;
+}
+
+bool LoopAnalysis::MakesScalarPeelingUnrollingNonBeneficial(HInstruction* instruction,
+                                                            const CodeGenerator& codegen) {
+  return instruction->IsNewArray() || instruction->IsNewInstance() ||
+         instruction->IsUnresolvedInstanceFieldGet() ||
+         instruction->IsUnresolvedInstanceFieldSet() || instruction->IsUnresolvedStaticFieldGet() ||
+         instruction->IsUnresolvedStaticFieldSet() ||
+         // Support loops with intrinsified invokes. Treat non-intrinsics and unimplemented
+         // intrinsics as non-beneficial.
+         (instruction->IsInvoke() && !(instruction->AsInvoke()->IsIntrinsic() &&
+                                       codegen.IsIntrinsicCallFree(instruction->AsInvoke())));
 }
 
 // Default implementation of loop helper; used for all targets unless a custom implementation
@@ -174,7 +188,11 @@ class Arm64LoopHelper : public ArchDefaultLoopHelper {
     //  - The loop body shouldn't be "too big" (heuristic).
 
     uint32_t uf1 = kArm64SimdHeuristicMaxBodySizeInstr / instruction_count;
-    uint32_t uf2 = (trip_count - max_peel) / vector_length;
+    // Do the calculation in int64_t to get the right result, and bring it down to `UINT32_MAX` if
+    // it's bigger than that. Note that we are going to do a std::min with `unroll_cnt` below
+    // anyway (which is uint_32t).
+    int64_t unroll_factor_64 = (trip_count - max_peel) / vector_length;
+    uint32_t uf2 = (unroll_factor_64 > UINT32_MAX) ? UINT32_MAX : unroll_factor_64;
     uint32_t unroll_factor =
         TruncToPowerOfTwo(std::min({uf1, uf2, kArm64SimdMaxUnrollFactor}));
     DCHECK_GE(unroll_factor, 1u);
@@ -344,12 +362,21 @@ class X86_64LoopHelper : public ArchDefaultLoopHelper {
       // Find a beneficial unroll factor with the following restrictions:
       //  - At least one iteration of the transformed loop should be executed.
       //  - The loop body shouldn't be "too big" (heuristic).
-      uint32_t uf2 = (trip_count - max_peel) / vector_length;
-      unroll_factor = TruncToPowerOfTwo(std::min(uf2, unroll_cnt));
+      // Do the calculation in int64_t to get the right result, and bring it down to `UINT32_MAX` if
+      // it's bigger than that. Note that we are going to do a std::min with `unroll_cnt` below
+      // anyway (which is uint_32t).
+
+      int64_t unroll_factor_64 = (trip_count - max_peel) / vector_length;
+      unroll_factor = (unroll_factor_64 > UINT32_MAX) ? UINT32_MAX : unroll_factor_64;
+      unroll_factor = TruncToPowerOfTwo(std::min(unroll_factor, unroll_cnt));
       DCHECK_GE(unroll_factor, 1u);
     }
 
     return unroll_factor;
+  }
+
+  bool NeedsVectorRegisterClear() const override {
+    return codegen_.GetSIMDRegisterWidth() > (2 * codegen_.GetWordSize());
   }
 };
 

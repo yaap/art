@@ -16,11 +16,6 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.DexUseManagerLocal.SecondaryDexInfo;
-import static com.android.server.art.PrimaryDexUtils.DetailedPrimaryDexInfo;
-import static com.android.server.art.PrimaryDexUtils.PrimaryDexInfo;
-import static com.android.server.art.Utils.Abi;
-
 import android.annotation.NonNull;
 import android.content.Context;
 import android.os.Binder;
@@ -33,11 +28,18 @@ import android.util.Pair;
 
 import androidx.annotation.RequiresApi;
 
-import com.android.art.flags.Flags;
 import com.android.internal.annotations.Immutable;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalManagerRegistry;
+import com.android.server.art.DexUseManagerLocal.SecondaryDexInfo;
+import com.android.server.art.PrimaryDexUtils.DetailedPrimaryDexInfo;
+import com.android.server.art.PrimaryDexUtils.PrimaryDexInfo;
 import com.android.server.art.model.DetailedDexInfo;
+import com.android.server.art.utils.AidlUtils;
+import com.android.server.art.utils.ArtdRefCache;
+import com.android.server.art.utils.AsLog;
+import com.android.server.art.utils.Utils;
+import com.android.server.art.utils.Utils.Abi;
 import com.android.server.pm.PackageManagerLocal.FilteredSnapshot;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.PackageState;
@@ -75,13 +77,8 @@ public class ArtFileManager {
         if (options.forPrimaryDex()) {
             for (DetailedPrimaryDexInfo dexInfo :
                     PrimaryDexUtils.getDetailedDexInfo(pkgState, pkg)) {
-                List<Abi> abis;
-                if (Flags.dexoptSecondaryIsaOnlyWhenNeeded()) {
-                    abis = Utils.getUsedPrimaryDexAbis(
-                            mInjector.getDexUseManager(), snapshot, pkgState, dexInfo.dexPath());
-                } else {
-                    abis = Utils.getAllPrimaryDexAbis(pkgState);
-                }
+                List<Abi> abis = Utils.getUsedPrimaryDexAbis(
+                    mInjector.getDexUseManager(), snapshot, pkgState, dexInfo.dexPath());
                 for (Abi abi : abis) {
                     dexAndAbis.add(Pair.create(dexInfo, abi));
                 }
@@ -153,6 +150,7 @@ public class ArtFileManager {
         var options = ArtFileManager.Options.builder()
                               .setForPrimaryDex(true)
                               .setForSecondaryDex(true)
+                              .setExcludeObsoleteClcs(true)
                               .setExcludeForObsoleteDexesAndLoaders(true)
                               .build();
         for (Pair<DetailedDexInfo, Abi> pair : getDexAndAbis(snapshot, pkgState, pkg, options)) {
@@ -249,9 +247,10 @@ public class ArtFileManager {
     @NonNull
     private List<? extends SecondaryDexInfo> getSecondaryDexInfo(
             @NonNull PackageState pkgState, @NonNull Options options) {
-        return options.excludeForObsoleteDexesAndLoaders()
-                ? mInjector.getDexUseManager().getCheckedSecondaryDexInfo(
-                          pkgState.getPackageName(), true /* excludeObsoleteDexesAndLoaders */)
+        return options.excludeForObsoleteDexesAndLoaders() || options.excludeObsoleteClcs()
+                ? mInjector.getDexUseManager().getCheckedSecondaryDexInfo(pkgState.getPackageName(),
+                          options.excludeForObsoleteDexesAndLoaders(),
+                          options.excludeObsoleteClcs())
                 : mInjector.getDexUseManager().getSecondaryDexInfo(pkgState.getPackageName());
     }
 
@@ -281,6 +280,9 @@ public class ArtFileManager {
         public abstract boolean forPrimaryDex();
         // Whether to return files for secondary dex files.
         public abstract boolean forSecondaryDex();
+        // If true, excludes CLCs of the secondary dex files based on file existence. See details in
+        // {@link DexUseManagerLocal#getCheckedSecondaryDexInfo}.
+        public abstract boolean excludeObsoleteClcs();
         // If true, excludes files for secondary dex files and loaders based on file visibility. See
         // details in {@link DexUseManagerLocal#getCheckedSecondaryDexInfo}.
         public abstract boolean excludeForObsoleteDexesAndLoaders();
@@ -289,6 +291,7 @@ public class ArtFileManager {
             return new AutoValue_ArtFileManager_Options.Builder()
                     .setForPrimaryDex(false)
                     .setForSecondaryDex(false)
+                    .setExcludeObsoleteClcs(false)
                     .setExcludeForObsoleteDexesAndLoaders(false);
         }
 
@@ -296,6 +299,7 @@ public class ArtFileManager {
         public abstract static class Builder {
             public abstract @NonNull Builder setForPrimaryDex(boolean value);
             public abstract @NonNull Builder setForSecondaryDex(boolean value);
+            public abstract @NonNull Builder setExcludeObsoleteClcs(boolean value);
             public abstract @NonNull Builder setExcludeForObsoleteDexesAndLoaders(boolean value);
             public abstract @NonNull Options build();
         }

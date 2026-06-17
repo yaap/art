@@ -32,10 +32,14 @@ ASM_DEFINE(THREAD_INTERPRETER_CACHE_OFFSET,
            art::Thread::InterpreterCacheOffset<art::kRuntimePointerSize>().Int32Value())
 ASM_DEFINE(THREAD_INTERPRETER_CACHE_SIZE_LOG2,
            art::Thread::InterpreterCacheSizeLog2())
-ASM_DEFINE(THREAD_INTERPRETER_CACHE_SIZE_MASK,
-           (sizeof(art::InterpreterCache::Entry) * (art::InterpreterCache::kSize - 1)))
-ASM_DEFINE(THREAD_INTERPRETER_CACHE_SIZE_SHIFT,
-           (art::WhichPowerOf2(sizeof(art::InterpreterCache::Entry)) - 2))
+ASM_DEFINE(THREAD_INTERPRETER_CACHE_ENTRY_SIZE_LOG2,
+           art::Thread::InterpreterCacheEntrySizeLog2())
+ASM_DEFINE(THREAD_INTERPRETER_CACHE_KEY_LOW_BIT,
+           art::Thread::InterpreterCacheKeyLowBit())
+ASM_DEFINE(THREAD_INTERPRETER_CACHE_KEY_MASK,
+           (art::InterpreterCache::kSize - 1) << art::Thread::InterpreterCacheKeyLowBit())
+ASM_DEFINE(THREAD_INTERPRETER_CACHE_KEY_TO_ENTRY_SHIFT,
+           art::Thread::InterpreterCacheEntrySizeLog2() - art::Thread::InterpreterCacheKeyLowBit())
 ASM_DEFINE(THREAD_IS_GC_MARKING_OFFSET,
            art::Thread::IsGcMarkingOffset<art::kRuntimePointerSize>().Int32Value())
 ASM_DEFINE(THREAD_DEOPT_CHECK_REQUIRED_OFFSET,

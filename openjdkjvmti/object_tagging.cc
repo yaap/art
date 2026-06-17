@@ -44,8 +44,13 @@ namespace openjdkjvmti {
 template class JvmtiWeakTable<jlong>;
 
 void ObjectTagTable::Allow() {
-  JvmtiWeakTable<jlong>::Allow();
+  // Send the ObjectFree events before allowing access to ObjectTagTable. If
+  // not, the users might see that object is collected (since it is no longer
+  // there in the ObjectTable) but the ObjectFree callback is called later. It
+  // is safe for ObjectFree callbacks here since they aren't expected to use any
+  // object tag related functionality.
   SendDelayedFreeEvents();
+  JvmtiWeakTable<jlong>::Allow();
 }
 
 void ObjectTagTable::Broadcast(bool broadcast_for_checkpoint) {

@@ -16,29 +16,29 @@
 
 public class Main {
 
-  public static final String staticFinalField = null;
+    public static final String staticFinalField = null;
 
-  private static String staticPrivateField = null;
+    private static String staticPrivateField = null;
 
-  private int privateField = 0;
+    private int privateField = 0;
 
-  private void privateMethod() { }
+    private void privateMethod() { }
 
-  private static void test(String name) throws Exception {
-    try {
-      Class<?> a = Class.forName(name);
-      a.newInstance();
-    } catch (java.lang.LinkageError e) {
-      System.out.println("passed " + name);
+    private static void test(String name) throws Exception {
+        try {
+            Class<?> a = Class.forName(name);
+            a.newInstance();
+        } catch (java.lang.LinkageError e) {
+            System.out.println("passed " + name);
+        }
     }
-  }
 
-  public static void main(String[] args) throws Exception {
-    test("A");
-    test("B");
-    test("C");
-    test("D");
-    test("E");
-    test("F");
-  }
+    public static void main(String[] args) throws Exception {
+        test("A");
+        test("B");
+        test("C");
+        test("D");
+        test("E");
+        test("F");
+    }
 }

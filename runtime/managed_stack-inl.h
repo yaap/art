@@ -20,6 +20,7 @@
 #include "managed_stack.h"
 
 #include "interpreter/shadow_frame.h"
+#include "thread.h"
 
 namespace art HIDDEN {
 
@@ -38,6 +39,24 @@ inline ShadowFrame* ManagedStack::PopShadowFrame() {
   top_shadow_frame_ = frame->GetLink();
   frame->ClearLink();
   return frame;
+}
+
+inline ScopedManagedStackFragment::ScopedManagedStackFragment(Thread* self, ManagedStack* fragment)
+    : self_(self), fragment_(fragment) {
+  self_->PushManagedStackFragment(fragment_);
+}
+
+inline ScopedManagedStackFragment::~ScopedManagedStackFragment() {
+  self_->PopManagedStackFragment(*fragment_);
+}
+
+inline ScopedShadowFrame::ScopedShadowFrame(Thread* self, ShadowFrame* sf)
+    : self_(self), sf_(sf) {
+  self_->PushShadowFrame(sf_);
+}
+
+inline ScopedShadowFrame::~ScopedShadowFrame() {
+  self_->PopShadowFrame();
 }
 
 }  // namespace art

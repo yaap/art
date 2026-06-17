@@ -26,8 +26,10 @@ import com.android.server.art.PriorityClass;
 import com.android.server.art.ReasonMapping;
 import com.android.server.pm.PackageManagerLocal;
 
+import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.util.List;
 
 /** @hide */
@@ -244,6 +246,7 @@ public class ArtFlags {
     })
     // clang-format on
     @Retention(RetentionPolicy.SOURCE)
+    @Target({ElementType.METHOD, ElementType.PARAMETER, ElementType.FIELD, ElementType.TYPE_USE})
     public @interface ScheduleStatus {}
 
     /**

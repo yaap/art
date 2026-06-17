@@ -55,10 +55,10 @@ TEST_F(LoadStoreAnalysisTest, ArrayHeapLocations) {
   HInstruction* c3 = graph_->GetIntConstant(3);
 
   // main
-  HInstruction* array_get1 = MakeArrayGet(main, array, c1, DataType::Type::kInt32);
-  HInstruction* array_get2 = MakeArrayGet(main, array, c2, DataType::Type::kInt32);
-  HInstruction* array_set1 = MakeArraySet(main, array, c1, c3, DataType::Type::kInt32);
-  HInstruction* array_set2 = MakeArraySet(main, array, index, c3, DataType::Type::kInt32);
+  MakeArrayGet(main, array, c1, DataType::Type::kInt32);
+  MakeArrayGet(main, array, c2, DataType::Type::kInt32);
+  MakeArraySet(main, array, c1, c3, DataType::Type::kInt32);
+  MakeArraySet(main, array, index, c3, DataType::Type::kInt32);
 
   // Test HeapLocationCollector initialization.
   // Should be no heap locations, no operations on the heap.
@@ -116,7 +116,7 @@ TEST_F(LoadStoreAnalysisTest, FieldHeapLocations) {
   HInstruction* c1 = graph_->GetIntConstant(1);
 
   // main
-  HInstanceFieldSet* set_field10 = MakeIFieldSet(main, object, c1, MemberOffset(10));
+  MakeIFieldSet(main, object, c1, MemberOffset(10));
   HInstanceFieldGet* get_field10 =
       MakeIFieldGet(main, object, DataType::Type::kInt32, MemberOffset(10));
   HInstanceFieldGet* get_field20 =
@@ -506,13 +506,12 @@ TEST_F(LoadStoreAnalysisTest, TotalEscape) {
   HInstruction* new_inst = MakeNewInstance(if_block, cls);
   MakeIf(if_block, bool_value);
 
-  HInstruction* call_left = MakeInvokeStatic(left, DataType::Type::kVoid, {new_inst});
+  MakeInvokeStatic(left, DataType::Type::kVoid, {new_inst});
 
-  HInstruction* call_right = MakeInvokeStatic(right, DataType::Type::kVoid, {new_inst});
-  HInstruction* write_right = MakeIFieldSet(right, new_inst, c0, MemberOffset(32));
+  MakeInvokeStatic(right, DataType::Type::kVoid, {new_inst});
+  MakeIFieldSet(right, new_inst, c0, MemberOffset(32));
 
-  HInstruction* read_final =
-      MakeIFieldGet(return_block, new_inst, DataType::Type::kInt32, MemberOffset(32));
+  MakeIFieldGet(return_block, new_inst, DataType::Type::kInt32, MemberOffset(32));
 
   graph_->ComputeDominanceInformation();
   ScopedArenaAllocator allocator(graph_->GetArenaStack());
@@ -535,7 +534,7 @@ TEST_F(LoadStoreAnalysisTest, TotalEscape2) {
 
   HInstruction* cls = MakeLoadClass(main);
   HInstruction* new_inst = MakeNewInstance(main, cls);
-  HInstruction* write_start = MakeIFieldSet(main, new_inst, c0, MemberOffset(32));
+  MakeIFieldSet(main, new_inst, c0, MemberOffset(32));
   MakeReturn(main, new_inst);
 
   graph_->ComputeDominanceInformation();
@@ -582,21 +581,20 @@ TEST_F(LoadStoreAnalysisTest, DoubleDiamondEscape) {
   HInstruction* new_inst = MakeNewInstance(top, cls);
   MakeIf(top, bool_value1);
 
-  HInstruction* call_left = MakeInvokeStatic(high_left, DataType::Type::kVoid, {new_inst});
+  MakeInvokeStatic(high_left, DataType::Type::kVoid, {new_inst});
 
-  HInstruction* write_right = MakeIFieldSet(high_right, new_inst, c0, MemberOffset(32));
+  MakeIFieldSet(high_right, new_inst, c0, MemberOffset(32));
 
   HInstruction* read_mid = MakeIFieldGet(mid, new_inst, DataType::Type::kInt32, MemberOffset(32));
   HInstruction* mul_mid = MakeBinOp<HMul>(mid, DataType::Type::kInt32, read_mid, c2);
-  HInstruction* write_mid = MakeIFieldSet(mid, new_inst, mul_mid, MemberOffset(32));
+  MakeIFieldSet(mid, new_inst, mul_mid, MemberOffset(32));
   MakeIf(mid, bool_value2);
 
-  HInstruction* call_low_left = MakeInvokeStatic(low_left, DataType::Type::kVoid, {new_inst});
+  MakeInvokeStatic(low_left, DataType::Type::kVoid, {new_inst});
 
-  HInstruction* write_low_right = MakeIFieldSet(low_right, new_inst, c0, MemberOffset(32));
+  MakeIFieldSet(low_right, new_inst, c0, MemberOffset(32));
 
-  HInstruction* read_final =
-      MakeIFieldGet(bottom, new_inst, DataType::Type::kInt32, MemberOffset(32));
+  MakeIFieldGet(bottom, new_inst, DataType::Type::kInt32, MemberOffset(32));
 
   graph_->ComputeDominanceInformation();
   ScopedArenaAllocator allocator(graph_->GetArenaStack());
@@ -649,13 +647,13 @@ TEST_F(LoadStoreAnalysisTest, PartialPhiPropagation1) {
 
   HInstruction* cls = MakeLoadClass(start);
   HInstruction* new_inst = MakeNewInstance(start, cls);
-  HInstruction* store = MakeIFieldSet(start, new_inst, c12, MemberOffset(32));
+  MakeIFieldSet(start, new_inst, c12, MemberOffset(32));
   MakeIf(start, param1);
 
   MakeIf(left, param2);
 
   HPhi* left_phi = MakePhi(left_merge, {obj_param, new_inst});
-  HInstruction* call_left = MakeInvokeStatic(left_merge, DataType::Type::kVoid, {left_phi});
+  MakeInvokeStatic(left_merge, DataType::Type::kVoid, {left_phi});
   left_phi->SetCanBeNull(true);
 
   HPhi* return_phi = MakePhi(breturn, {left_phi, obj_param});

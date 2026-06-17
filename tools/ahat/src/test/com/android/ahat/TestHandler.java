@@ -24,18 +24,40 @@ import java.io.PrintStream;
  * Provide common utilities for basic handler tests.
  */
 public class TestHandler {
-  private static class NullOutputStream extends OutputStream {
-    public void write(int b) throws IOException {
-    }
-  }
-
   /**
    * Test that the given handler doesn't crash on the given query.
    */
   public static void testNoCrash(AhatHandler handler, String uri) throws IOException {
-    PrintStream ps = new PrintStream(new NullOutputStream());
+    PrintStream ps = new PrintStream(OutputStream.nullOutputStream());
     HtmlDoc doc = new HtmlDoc(ps, DocString.text("noCrash test"), DocString.uri("style.css"));
     Query query = new Query(DocString.uri(uri));
     handler.handle(doc, query);
+  }
+
+  /**
+   * Test that the given data handler doesn't crash on the given query.
+   */
+  public static void testNoCrash(AhatDataHandler handler, String uri) throws IOException {
+    Response response = new Response();
+    Query query = new Query(DocString.uri(uri));
+    handler.handle(response, query);
+  }
+
+  /**
+   * Response implementation for test purposes.
+   */
+  private static class Response implements AhatDataHandler.Response {
+    @Override
+    public void error(String message) throws IOException {}
+
+    @Override
+    public OutputStream content(String contentType) throws IOException {
+      return OutputStream.nullOutputStream();
+    }
+
+    @Override
+    public OutputStream attachment(String contentType, String filename) throws IOException {
+      return OutputStream.nullOutputStream();
+    }
   }
 }

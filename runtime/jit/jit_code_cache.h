@@ -205,10 +205,9 @@ class JitCodeCache {
                               std::string* error_msg);
   ~JitCodeCache();
 
-  bool NotifyCompilationOf(ArtMethod* method,
-                           Thread* self,
-                           CompilationKind compilation_kind,
-                           bool prejit)
+  bool HasCompiledCodeFor(ArtMethod* method,
+                          Thread* self,
+                          CompilationKind compilation_kind)
       REQUIRES_SHARED(Locks::mutator_lock_)
       REQUIRES(!Locks::jit_lock_);
 

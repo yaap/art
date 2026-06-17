@@ -236,8 +236,13 @@ enum class ProfileCompilationInfo::FileSectionType : uint32_t {
   // an optional reserved section not implemented on client yet.
   kAggregationCounts = 4,
 
+  // Classes included in the profile that should not be initialized by zygote or dex2oat
+  // (usually due to some logic in the class initializer that should not be shared between
+  // processes, e.g. initializing random seed).
+  kClassesNoPreload = 5,
+
   // The number of known sections.
-  kNumberOfSections = 5
+  kNumberOfSections = 6
 };
 
 class ProfileCompilationInfo::FileSectionInfo {
@@ -349,7 +354,7 @@ ProfileCompilationInfo::FileHeader::InvalidHeaderMessage(/*out*/ std::string* er
     return ProfileLoadStatus::kBadMagic;
   }
   if (memcmp(version_, kProfileVersion, sizeof(kProfileVersion)) != 0 &&
-      memcmp(version_, kProfileVersion, sizeof(kProfileVersionForBootImage)) != 0) {
+      memcmp(version_, kProfileVersionForBootImage, sizeof(kProfileVersionForBootImage)) != 0) {
     *error_msg = "Profile version mismatch.";
     return ProfileLoadStatus::kVersionMismatch;
   }
@@ -618,33 +623,45 @@ void ProfileCompilationInfo::DexPcData::AddClass(const dex::TypeIndex& type_idx)
 // Transform the actual dex location into a key used to index the dex file in the profile.
 // See ProfileCompilationInfo#GetProfileDexFileBaseKey as well.
 std::string ProfileCompilationInfo::GetProfileDexFileAugmentedKey(
-      const std::string& dex_location,
-      const ProfileSampleAnnotation& annotation) {
-  std::string base_key = GetProfileDexFileBaseKey(dex_location);
+    const DexFile* dex_file, const ProfileSampleAnnotation& annotation) {
+  DCHECK(dex_file != nullptr);
+  std::string base_key = GetProfileDexFileBaseKey(dex_file);
   return annotation == ProfileSampleAnnotation::kNone
       ? base_key
-      : base_key + kSampleMetadataSeparator + annotation.GetOriginPackageName();;
+      : base_key + kSampleMetadataSeparator + annotation.GetOriginPackageName();
+}
+
+// Returns the basename of the location (e.g. "base.apk" from "/dir/base.apk").
+std::string_view ProfileCompilationInfo::GetLocationBasename(std::string_view base_location) {
+  DCHECK(!DexFileLoader::IsMultiDexLocation(base_location));
+  size_t last_sep_index = base_location.find_last_of('/');
+  return base_location.substr(last_sep_index == std::string_view::npos ? 0 : last_sep_index + 1);
 }
 
 // Transform the actual dex location into a base profile key (represented as relative paths).
 // Note: this is OK because we don't store profiles of different apps into the same file.
 // Apps with split apks don't cause trouble because each split has a different name and will not
 // collide with other entries.
-std::string_view ProfileCompilationInfo::GetProfileDexFileBaseKeyView(
-    std::string_view dex_location) {
-  DCHECK(!dex_location.empty());
-  size_t last_sep_index = dex_location.find_last_of('/');
-  if (last_sep_index == std::string::npos) {
-    return dex_location;
-  } else {
-    DCHECK(last_sep_index < dex_location.size());
-    return dex_location.substr(last_sep_index + 1);
+std::string ProfileCompilationInfo::GetProfileDexFileBaseKey(std::string_view base_location,
+                                                             std::string_view entry_name) {
+  DCHECK(!DexFileLoader::IsMultiDexLocation(base_location));
+  std::string_view filename = GetLocationBasename(base_location);
+  if (entry_name.empty() || entry_name == "classes.dex") {
+    return std::string(filename);
   }
+  return std::string(filename) + DexFileLoader::kMultiDexSeparator + std::string(entry_name);
 }
 
-std::string ProfileCompilationInfo::GetProfileDexFileBaseKey(const std::string& dex_location) {
-  // Note: Conversions between std::string and std::string_view.
-  return std::string(GetProfileDexFileBaseKeyView(dex_location));
+std::string ProfileCompilationInfo::GetProfileDexFileBaseKey(const DexFile* dex_file) {
+  DCHECK(dex_file != nullptr);
+  auto [base_location, index] = DexFileLoader::SplitMultiDexLocation(dex_file->GetLocation());
+  if (dex_file->HasDexContainer()) {
+    // Use the new "!1" syntax for container dex files, since just the zip entry name isn't unique.
+    return GetProfileDexFileBaseKey(base_location, std::to_string(index));
+  } else {
+    // Use the old "!classes2.dex" syntax for backwards compatibility.
+    return GetProfileDexFileBaseKey(base_location, DexFileLoader::GetMultiDexZipEntryName(index));
+  }
 }
 
 std::string_view ProfileCompilationInfo::GetBaseKeyViewFromAugmentedKey(
@@ -982,6 +999,7 @@ static bool WriteBuffer(int fd, const void* buffer, size_t byte_count) {
  *   DexFiles - mandatory, plaintext
  *   ExtraDescriptors - optional, zipped
  *   Classes - optional, zipped
+ *   ClassesNoPreload - optional, zipped
  *   Methods - optional, zipped
  *   AggregationCounts - optional, zipped, server-side
  *
@@ -1001,6 +1019,8 @@ static bool WriteBuffer(int fd, const void* buffer, size_t byte_count) {
  *    type_index_diff[number_of_classes]
  * where instead of storing plain sorted type indexes, we store their differences
  * as smaller numbers are likely to compress better.
+ *
+ * ClassesNoPreload: the same format as 'Classes' section
  *
  * Methods contains records for any number of dex files, each consisting of:
  *    profile_index  // Index of the dex file in DexFiles section.
@@ -1040,6 +1060,7 @@ bool ProfileCompilationInfo::Save(int fd, bool flush) {
   }
   uint64_t dex_files_section_size = sizeof(ProfileIndexType);  // Number of dex files.
   uint64_t classes_section_size = 0u;
+  uint64_t classes_no_preload_section_size = 0u;
   uint64_t methods_section_size = 0u;
   DCHECK_LE(info_.size(), MaxProfileIndex());
   for (const std::unique_ptr<DexFileData>& dex_data : info_) {
@@ -1052,6 +1073,7 @@ bool ProfileCompilationInfo::Save(int fd, bool flush) {
         // Length-prefixed string, the length is `uint16_t`.
         sizeof(uint16_t) + dex_data->profile_key.size();
     classes_section_size += dex_data->ClassesDataSize();
+    classes_no_preload_section_size += dex_data->ClassesNoPreloadDataSize();
     methods_section_size += dex_data->MethodsDataSize();
   }
 
@@ -1059,18 +1081,16 @@ bool ProfileCompilationInfo::Save(int fd, bool flush) {
       /* dex files */ 1u +
       /* extra descriptors */ (extra_descriptors_section_size != 0u ? 1u : 0u) +
       /* classes */ (classes_section_size != 0u ? 1u : 0u) +
+      /* classes-no-preload */ (classes_no_preload_section_size != 0u ? 1u : 0u) +
       /* methods */ (methods_section_size != 0u ? 1u : 0u);
   uint64_t header_and_infos_size =
       sizeof(FileHeader) + file_section_count * sizeof(FileSectionInfo);
 
   // Check size limit. Allow large profiles for non target builds for the case
   // where we are merging many profiles to generate a boot image profile.
-  uint64_t total_uncompressed_size =
-      header_and_infos_size +
-      dex_files_section_size +
-      extra_descriptors_section_size +
-      classes_section_size +
-      methods_section_size;
+  uint64_t total_uncompressed_size = header_and_infos_size + dex_files_section_size +
+                                     extra_descriptors_section_size + classes_section_size +
+                                     classes_no_preload_section_size + methods_section_size;
   VLOG(profiler) << "Required capacity: " << total_uncompressed_size << " bytes.";
   if (total_uncompressed_size > GetSizeErrorThresholdBytes()) {
     LOG(WARNING) << "Profile data size exceeds "
@@ -1143,7 +1163,7 @@ bool ProfileCompilationInfo::Save(int fd, bool flush) {
   if (classes_section_size != 0u) {
     SafeBuffer buffer(classes_section_size);
     for (const std::unique_ptr<DexFileData>& dex_data : info_) {
-      dex_data->WriteClasses(buffer);
+      dex_data->WriteClasses(buffer, /*no_preload=*/false);
     }
     if (!buffer.Deflate()) {
       return false;
@@ -1152,6 +1172,22 @@ bool ProfileCompilationInfo::Save(int fd, bool flush) {
       return false;
     }
     add_section_info(FileSectionType::kClasses, buffer.Size(), classes_section_size);
+  }
+
+  // Write the classes-no-preload section.
+  if (classes_no_preload_section_size != 0u) {
+    SafeBuffer buffer(classes_no_preload_section_size);
+    for (const std::unique_ptr<DexFileData>& dex_data : info_) {
+      dex_data->WriteClasses(buffer, /*no_preload=*/true);
+    }
+    if (!buffer.Deflate()) {
+      return false;
+    }
+    if (!WriteBuffer(fd, buffer.Get(), buffer.Size())) {
+      return false;
+    }
+    add_section_info(
+        FileSectionType::kClassesNoPreload, buffer.Size(), classes_no_preload_section_size);
   }
 
   // Write the methods section.
@@ -1179,7 +1215,7 @@ bool ProfileCompilationInfo::Save(int fd, bool flush) {
   if (lseek64(fd, sizeof(FileHeader), SEEK_SET) != sizeof(FileHeader)) {
     return false;
   }
-  SafeBuffer section_infos_buffer(section_index * 4u * sizeof(uint32_t));
+  SafeBuffer section_infos_buffer(section_index * sizeof(FileSectionInfo));
   for (size_t i = 0; i != section_index; ++i) {
     const FileSectionInfo& info = section_infos[i];
     section_infos_buffer.WriteUintAndAdvance(enum_cast<uint32_t>(info.GetType()));
@@ -1302,7 +1338,7 @@ const ProfileCompilationInfo::DexFileData* ProfileCompilationInfo::FindDexDataUs
       const DexFile* dex_file,
       const ProfileSampleAnnotation& annotation) const {
   if (annotation == ProfileSampleAnnotation::kNone) {
-    std::string_view profile_key = GetProfileDexFileBaseKeyView(dex_file->GetLocation());
+    std::string profile_key = GetProfileDexFileBaseKey(dex_file);
     for (const std::unique_ptr<DexFileData>& dex_data : info_) {
       if (profile_key == GetBaseKeyViewFromAugmentedKey(dex_data->profile_key)) {
         if (!ChecksumMatch(dex_data->checksum, dex_file->GetLocationChecksum())) {
@@ -1312,7 +1348,7 @@ const ProfileCompilationInfo::DexFileData* ProfileCompilationInfo::FindDexDataUs
       }
     }
   } else {
-    std::string profile_key = GetProfileDexFileAugmentedKey(dex_file->GetLocation(), annotation);
+    std::string profile_key = GetProfileDexFileAugmentedKey(dex_file, annotation);
     return FindDexData(profile_key, dex_file->GetLocationChecksum());
   }
 
@@ -1322,7 +1358,7 @@ const ProfileCompilationInfo::DexFileData* ProfileCompilationInfo::FindDexDataUs
 void ProfileCompilationInfo::FindAllDexData(
     const DexFile* dex_file,
     /*out*/ std::vector<const ProfileCompilationInfo::DexFileData*>* result) const {
-  std::string_view profile_key = GetProfileDexFileBaseKeyView(dex_file->GetLocation());
+  std::string profile_key = GetProfileDexFileBaseKey(dex_file);
   for (const std::unique_ptr<DexFileData>& dex_data : info_) {
     if (profile_key == GetBaseKeyViewFromAugmentedKey(dex_data->profile_key)) {
       if (ChecksumMatch(dex_data->checksum, dex_file->GetLocationChecksum())) {
@@ -1441,13 +1477,14 @@ bool ProfileCompilationInfo::Load(
 }
 
 bool ProfileCompilationInfo::VerifyProfileData(const std::vector<const DexFile*>& dex_files) {
-  std::unordered_map<std::string_view, const DexFile*> key_to_dex_file;
+  std::unordered_map<std::string, const DexFile*> key_to_dex_file;
   for (const DexFile* dex_file : dex_files) {
-    key_to_dex_file.emplace(GetProfileDexFileBaseKeyView(dex_file->GetLocation()), dex_file);
+    key_to_dex_file.emplace(GetProfileDexFileBaseKey(dex_file), dex_file);
   }
   for (const std::unique_ptr<DexFileData>& dex_data : info_) {
     // We need to remove any annotation from the key during verification.
-    const auto it = key_to_dex_file.find(GetBaseKeyViewFromAugmentedKey(dex_data->profile_key));
+    std::string base_key(GetBaseKeyViewFromAugmentedKey(dex_data->profile_key));
+    const auto it = key_to_dex_file.find(base_key);
     if (it == key_to_dex_file.end()) {
       // It is okay if profile contains data for additional dex files.
       continue;
@@ -1573,6 +1610,7 @@ ProfileCompilationInfo::ProfileLoadStatus ProfileCompilationInfo::ProfileSource:
   if (IsMemMap()) {
     DCHECK_LE(mem_map_cur_, mem_map_.Size());
     if (byte_count > mem_map_.Size() - mem_map_cur_) {
+      *error += "Profile EOF reached prematurely for " + debug_stage;
       return ProfileLoadStatus::kBadData;
     }
     memcpy(buffer, mem_map_.Begin() + mem_map_cur_, byte_count);
@@ -1666,7 +1704,7 @@ ProfileCompilationInfo::ProfileLoadStatus ProfileCompilationInfo::ReadDexFilesSe
     }
     std::string_view profile_key_view;
     if (!buffer.ReadStringAndAdvance(&profile_key_view)) {
-      *error += "Missing terminating null character for profile key.";
+      *error += "Error reading profile key string.";
       return ProfileLoadStatus::kBadData;
     }
     if (profile_key_view.size() == 0u || profile_key_view.size() > kMaxDexFileKeyLength) {
@@ -1726,7 +1764,7 @@ ProfileCompilationInfo::ProfileLoadStatus ProfileCompilationInfo::ReadExtraDescr
   for (uint16_t i = 0; i != num_extra_descriptors; ++i) {
     std::string_view extra_descriptor;
     if (!buffer.ReadStringAndAdvance(&extra_descriptor)) {
-      *error += "Missing terminating null character for extra descriptor.";
+      *error += "Error reading extra descriptor string.";
       return ProfileLoadStatus::kBadData;
     }
     if (!IsValidDescriptor(std::string(extra_descriptor).c_str())) {
@@ -1756,7 +1794,8 @@ ProfileCompilationInfo::ProfileLoadStatus ProfileCompilationInfo::ReadClassesSec
     const dchecked_vector<ProfileIndexType>& dex_profile_index_remap,
     const dchecked_vector<ExtraDescriptorIndex>& extra_descriptors_remap,
     /*out*/ std::string* error) {
-  DCHECK(section_info.GetType() == FileSectionType::kClasses);
+  bool is_no_preload_section = (section_info.GetType() == FileSectionType::kClassesNoPreload);
+  DCHECK(section_info.GetType() == FileSectionType::kClasses || is_no_preload_section);
   SafeBuffer buffer;
   ProfileLoadStatus status = ReadSectionData(source, section_info, &buffer, error);
   if (status != ProfileLoadStatus::kSuccess) {
@@ -1766,18 +1805,21 @@ ProfileCompilationInfo::ProfileLoadStatus ProfileCompilationInfo::ReadClassesSec
   while (buffer.GetAvailableBytes() != 0u) {
     ProfileIndexType profile_index;
     if (!buffer.ReadUintAndAdvance(&profile_index)) {
-      *error = "Error profile index in classes section.";
+      *error = is_no_preload_section ? "Error profile index in classes-no-preload section."
+                                     : "Error profile index in classes section.";
       return ProfileLoadStatus::kBadData;
     }
     if (profile_index >= dex_profile_index_remap.size()) {
-      *error = "Invalid profile index in classes section.";
+      *error = is_no_preload_section ? "Invalid profile index in classes-no-preload section."
+                                     : "Invalid profile index in classes section.";
       return ProfileLoadStatus::kBadData;
     }
     profile_index = dex_profile_index_remap[profile_index];
     if (profile_index == MaxProfileIndex()) {
       status = DexFileData::SkipClasses(buffer, error);
     } else {
-      status = info_[profile_index]->ReadClasses(buffer, extra_descriptors_remap, error);
+      status = info_[profile_index]->ReadClasses(
+          buffer, extra_descriptors_remap, error, is_no_preload_section);
     }
     if (status != ProfileLoadStatus::kSuccess) {
       return status;
@@ -1929,6 +1971,9 @@ ProfileCompilationInfo::ProfileLoadStatus ProfileCompilationInfo::LoadInternal(
         status = ReadExtraDescriptorsSection(
             *source, section_info, &extra_descriptors_remap, error);
         break;
+      case FileSectionType::kClassesNoPreload:
+        has_no_preload_section = true;
+        FALLTHROUGH_INTENDED;
       case FileSectionType::kClasses:
         // Skip if all dex files were filtered out.
         if (!info_.empty() && merge_classes) {
@@ -2156,9 +2201,13 @@ std::string ProfileCompilationInfo::DumpInfo(const std::vector<const DexFile*>& 
       os << dex_data->profile_key;
     } else {
       // Replace the (empty) multidex suffix of the first key with a substitute for easier reading.
-      std::string multidex_suffix = DexFileLoader::GetMultiDexSuffix(
-          GetBaseKeyFromAugmentedKey(dex_data->profile_key));
-      os << (multidex_suffix.empty() ? kFirstDexFileKeySubstitute : multidex_suffix);
+      std::string base_key = GetBaseKeyFromAugmentedKey(dex_data->profile_key);
+      auto [filename, index] = DexFileLoader::SplitMultiDexLocation(base_key);
+      if (filename.size() == base_key.size()) {
+        os << kFirstDexFileKeySubstitute;
+      } else {
+        os << base_key.substr(filename.size());
+      }
     }
     os << " [index=" << static_cast<uint32_t>(dex_data->profile_index) << "]";
     os << " [checksum=" << std::hex << dex_data->checksum << "]" << std::dec;
@@ -2167,7 +2216,7 @@ std::string ProfileCompilationInfo::DumpInfo(const std::vector<const DexFile*>& 
     const DexFile* dex_file = nullptr;
     for (const DexFile* current : dex_files) {
       if (GetBaseKeyViewFromAugmentedKey(dex_data->profile_key) ==
-          GetProfileDexFileBaseKeyView(current->GetLocation()) &&
+              GetProfileDexFileBaseKey(current) &&
           ChecksumMatch(dex_data->checksum, current->GetLocationChecksum())) {
         dex_file = current;
         break;
@@ -2225,6 +2274,14 @@ std::string ProfileCompilationInfo::DumpInfo(const std::vector<const DexFile*>& 
         os << type_index.index_ << ",";
       }
     }
+    os << "\n\tclasses-no-preload: ";
+    for (dex::TypeIndex type_index : dex_data->class_set_no_preload) {
+      if (dex_file != nullptr) {
+        os << "\n\t\t" << PrettyDescriptor(GetTypeDescriptor(dex_file, type_index));
+      } else {
+        os << type_index.index_ << ",";
+      }
+    }
   }
   return os.str();
 }
@@ -2267,6 +2324,16 @@ const ArenaSet<dex::TypeIndex>* ProfileCompilationInfo::GetClasses(
     return nullptr;
   }
   return &dex_data->class_set;
+}
+
+const ArenaSet<dex::TypeIndex>* ProfileCompilationInfo::GetClassesNoPreload(
+    const DexFile& dex_file) const {
+  const DexFileData* dex_data =
+      FindDexDataUsingAnnotations(&dex_file, ProfileSampleAnnotation::kNone);
+  if (dex_data == nullptr) {
+    return nullptr;
+  }
+  return &dex_data->class_set_no_preload;
 }
 
 bool ProfileCompilationInfo::SameVersion(const ProfileCompilationInfo& other) const {
@@ -2315,8 +2382,8 @@ bool ProfileCompilationInfo::GenerateTestProfile(int fd,
   const uint16_t kFavorSplit = 2;
 
   for (uint16_t i = 0; i < number_of_dex_files; i++) {
-    std::string dex_location = DexFileLoader::GetMultiDexLocation(i, base_dex_location.c_str());
-    std::string profile_key = info.GetProfileDexFileBaseKey(dex_location);
+    std::string entry_name = DexFileLoader::GetMultiDexZipEntryName(i);
+    std::string profile_key = info.GetProfileDexFileBaseKey(base_dex_location, entry_name);
 
     DexFileData* const data =
         info.GetOrAddDexFileData(profile_key, /*checksum=*/ 0, max_classes, max_methods);
@@ -2365,15 +2432,14 @@ bool ProfileCompilationInfo::GenerateTestProfile(
     return vec;
   };
   for (std::unique_ptr<const DexFile>& dex_file : dex_files) {
-    const std::string& dex_location = dex_file->GetLocation();
-    std::string profile_key = info.GetProfileDexFileBaseKey(dex_location);
+    std::string profile_key = info.GetProfileDexFileBaseKey(dex_file.get());
     uint32_t checksum = dex_file->GetLocationChecksum();
 
     uint32_t number_of_classes = dex_file->NumClassDefs();
     uint32_t classes_required_in_profile = (number_of_classes * class_percentage) / 100;
 
     DexFileData* const data = info.GetOrAddDexFileData(
-          profile_key, checksum, dex_file->NumTypeIds(), dex_file->NumMethodIds());
+        profile_key, checksum, dex_file->NumTypeIds(), dex_file->NumMethodIds());
     for (uint32_t class_index : create_shuffled_range(classes_required_in_profile,
                                                       number_of_classes)) {
       data->class_set.insert(dex_file->GetClassDef(class_index).class_idx_);
@@ -2496,23 +2562,6 @@ ProfileCompilationInfo::FindOrAddDexPc(InlineCacheMap* inline_cache, uint32_t de
   return &(inline_cache->FindOrAdd(dex_pc, DexPcData(inline_cache->get_allocator()))->second);
 }
 
-HashSet<std::string> ProfileCompilationInfo::GetClassDescriptors(
-    const std::vector<const DexFile*>& dex_files,
-    const ProfileSampleAnnotation& annotation) {
-  HashSet<std::string> ret;
-  for (const DexFile* dex_file : dex_files) {
-    const DexFileData* data = FindDexDataUsingAnnotations(dex_file, annotation);
-    if (data != nullptr) {
-      for (dex::TypeIndex type_idx : data->class_set) {
-        ret.insert(GetTypeDescriptor(dex_file, type_idx));
-      }
-    } else {
-      VLOG(compiler) << "Failed to find profile data for " << dex_file->GetLocation();
-    }
-  }
-  return ret;
-}
-
 bool ProfileCompilationInfo::IsProfileFile(int fd) {
   // First check if it's an empty file as we allow empty profile files.
   // Profiles may be created by ActivityManager or installd before we manage to
@@ -2572,7 +2621,15 @@ bool ProfileCompilationInfo::UpdateProfileKeys(
       if (dex_data->checksum == dex_file->GetLocationChecksum() &&
           dex_data->num_type_ids == dex_file->NumTypeIds() &&
           dex_data->num_method_ids == dex_file->NumMethodIds()) {
-        std::string new_base_key = GetProfileDexFileBaseKey(dex_file->GetLocation());
+        std::string new_base_key = GetProfileDexFileBaseKey(dex_file.get());
+        if (dex_file->GetHeader().HasDexContainer()) {
+          // DEX v41 introduces dex containers, which store multipe dex files per zip entry.
+          // This means the ZIP CRC32 alone isn't unique, so also check the location suffix.
+          if (DexFileLoader::SplitMultiDexLocation(old_base_key).second !=
+              DexFileLoader::SplitMultiDexLocation(new_base_key).second) {
+            continue;
+          }
+        }
         old_key_to_new_key[old_base_key] = new_base_key;
         new_key_to_old_keys[new_base_key].insert(old_base_key);
         found = true;
@@ -2649,19 +2706,31 @@ uint32_t ProfileCompilationInfo::DexFileData::ClassesDataSize() const {
         sizeof(uint16_t) * class_set.size();  // Type index diffs.
 }
 
-void ProfileCompilationInfo::DexFileData::WriteClasses(SafeBuffer& buffer) const {
-  if (class_set.empty()) {
+uint32_t ProfileCompilationInfo::DexFileData::ClassesNoPreloadDataSize() const {
+  return class_set_no_preload.empty()
+             ? 0u
+             : sizeof(ProfileIndexType) +                           // Which dex file.
+                   sizeof(uint16_t) +                               // Number of no-preload classes.
+                   sizeof(uint16_t) * class_set_no_preload.size();  // Type index diffs.
+}
+
+void ProfileCompilationInfo::DexFileData::WriteClasses(SafeBuffer& buffer,
+                                                       bool is_no_preload_classes_section) const {
+  const ArenaSet<dex::TypeIndex>& classes =
+      is_no_preload_classes_section ? class_set_no_preload : class_set;
+  if (classes.empty()) {
     return;
   }
   buffer.WriteUintAndAdvance(profile_index);
-  buffer.WriteUintAndAdvance(dchecked_integral_cast<uint16_t>(class_set.size()));
-  WriteClassSet(buffer, class_set);
+  buffer.WriteUintAndAdvance(dchecked_integral_cast<uint16_t>(classes.size()));
+  WriteClassSet(buffer, classes);
 }
 
 ProfileCompilationInfo::ProfileLoadStatus ProfileCompilationInfo::DexFileData::ReadClasses(
     SafeBuffer& buffer,
     const dchecked_vector<ExtraDescriptorIndex>& extra_descriptors_remap,
-    std::string* error) {
+    std::string* error,
+    bool no_preload_section) {
   uint16_t classes_size;
   if (!buffer.ReadUintAndAdvance(&classes_size)) {
     *error = "Error reading classes size.";
@@ -2680,20 +2749,27 @@ ProfileCompilationInfo::ProfileLoadStatus ProfileCompilationInfo::DexFileData::R
       *error = "Duplicate type index.";
       return ProfileLoadStatus::kBadData;
     }
-    if (type_index_diff >= num_valid_type_indexes - type_index) {
-      *error = "Invalid type index.";
-      return ProfileLoadStatus::kBadData;
-    }
-    type_index += type_index_diff;
-    if (type_index >= num_type_ids) {
-      uint32_t new_extra_descriptor_index = extra_descriptors_remap[type_index - num_type_ids];
-      if (new_extra_descriptor_index >= DexFile::kDexNoIndex16 - num_type_ids) {
-        *error = "Remapped type index out of range.";
-        return ProfileLoadStatus::kMergeError;
-      }
-      class_set.insert(dex::TypeIndex(num_type_ids + new_extra_descriptor_index));
+    if (no_preload_section && classes_size == 1 &&
+        dex::TypeIndex(type_index_diff) == kNoPreloadMarker) {  // first diff is the index itself
+      // It's the no-preload marker: a phony type ID to make dex2oat rely on "classes-no-preload"
+      // section instead of the preloaded-classes file. Just skip it.
     } else {
-      class_set.insert(dex::TypeIndex(type_index));
+      if (type_index_diff >= num_valid_type_indexes - type_index) {
+        *error = "Invalid type index.";
+        return ProfileLoadStatus::kBadData;
+      }
+      type_index += type_index_diff;
+      ArenaSet<dex::TypeIndex>& classes = no_preload_section ? class_set_no_preload : class_set;
+      if (type_index >= num_type_ids) {
+        uint32_t new_extra_descriptor_index = extra_descriptors_remap[type_index - num_type_ids];
+        if (new_extra_descriptor_index >= DexFile::kDexNoIndex16 - num_type_ids) {
+          *error = "Remapped type index out of range.";
+          return ProfileLoadStatus::kMergeError;
+        }
+        classes.insert(dex::TypeIndex(num_type_ids + new_extra_descriptor_index));
+      } else {
+        classes.insert(dex::TypeIndex(type_index));
+      }
     }
   }
   return ProfileLoadStatus::kSuccess;
@@ -2714,6 +2790,10 @@ ProfileCompilationInfo::ProfileLoadStatus ProfileCompilationInfo::DexFileData::S
   }
   buffer.Advance(following_data_size);
   return ProfileLoadStatus::kSuccess;
+}
+
+uint32_t ProfileCompilationInfo::DexFileData::CountStartupClasses() const {
+  return class_set.size();
 }
 
 uint32_t ProfileCompilationInfo::DexFileData::MethodsDataSize(
@@ -3020,6 +3100,16 @@ ProfileCompilationInfo::ProfileLoadStatus ProfileCompilationInfo::DexFileData::S
   }
   buffer.Advance(following_data_size);
   return ProfileLoadStatus::kSuccess;
+}
+
+uint32_t ProfileCompilationInfo::DexFileData::CountStartupMethods() const {
+  uint32_t num_startup_methods = 0;
+  for (uint32_t method_idx = 0; method_idx < num_method_ids; ++method_idx) {
+    if (GetHotnessInfo(method_idx).IsStartup()) {
+      ++num_startup_methods;
+    }
+  }
+  return num_startup_methods;
 }
 
 void ProfileCompilationInfo::DexFileData::WriteClassSet(

@@ -17,13 +17,13 @@
 #include "jni_macro_assembler_riscv64.h"
 
 #include "base/bit_utils_iterator.h"
+#include "base/offsets.h"
 #include "dwarf/register.h"
 #include "entrypoints/quick/quick_entrypoints.h"
 #include "gc_root.h"
 #include "jni/indirect_reference_table.h"
 #include "lock_word.h"
 #include "managed_register_riscv64.h"
-#include "offsets.h"
 #include "stack_reference.h"
 #include "thread.h"
 

@@ -66,12 +66,12 @@ inline int ARTRegCodeFromVIXL(int code) {
 }
 
 inline vixl::aarch64::Register XRegisterFrom(Location location) {
-  DCHECK(location.IsRegister()) << location;
+  DCHECK(location.IsCoreRegister()) << location;
   return vixl::aarch64::XRegister(VIXLRegCodeFromART(location.reg()));
 }
 
 inline vixl::aarch64::Register WRegisterFrom(Location location) {
-  DCHECK(location.IsRegister()) << location;
+  DCHECK(location.IsCoreRegister()) << location;
   return vixl::aarch64::WRegister(VIXLRegCodeFromART(location.reg()));
 }
 
@@ -168,7 +168,7 @@ inline int64_t Int64FromLocation(Location location) {
 }
 
 inline vixl::aarch64::Operand OperandFrom(Location location, DataType::Type type) {
-  if (location.IsRegister()) {
+  if (location.IsCoreRegister()) {
     return vixl::aarch64::Operand(RegisterFrom(location, type));
   } else {
     return vixl::aarch64::Operand(Int64FromLocation(location));
@@ -214,15 +214,15 @@ inline vixl::aarch64::MemOperand HeapOperandFrom(Location location, Offset offse
 }
 
 inline Location LocationFrom(const vixl::aarch64::Register& reg) {
-  return Location::RegisterLocation(ARTRegCodeFromVIXL(reg.GetCode()));
+  return Location::CoreRegister(ARTRegCodeFromVIXL(reg.GetCode()));
 }
 
 inline Location LocationFrom(const vixl::aarch64::VRegister& fpreg) {
-  return Location::FpuRegisterLocation(fpreg.GetCode());
+  return Location::FpuRegister(fpreg.GetCode());
 }
 
 inline Location LocationFrom(const vixl::aarch64::ZRegister& zreg) {
-  return Location::FpuRegisterLocation(zreg.GetCode());
+  return Location::FpuRegister(zreg.GetCode());
 }
 
 inline vixl::aarch64::Operand OperandFromMemOperand(
@@ -317,7 +317,7 @@ inline Location ARM64EncodableConstantOrRegister(HInstruction* constant, HInstru
     return Location::ConstantLocation(constant);
   }
 
-  return Location::RequiresRegister();
+  return Location::RequiresCoreRegister();
 }
 
 // Check if registers in art register set have the same register code in vixl. If the register

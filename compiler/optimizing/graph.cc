@@ -48,6 +48,20 @@ size_t HGraph::CountNumberOfInstructions() {
   return number_of_instructions;
 }
 
+bool HGraph::HasMoreInstructionsThan(size_t limit) {
+  size_t number_of_instructions = 0;
+  for (HBasicBlock* block : GetReversePostOrderSkipEntryBlock()) {
+    for (HInstructionIteratorPrefetchNext instr_it(block->GetInstructions()); !instr_it.Done();
+         instr_it.Advance()) {
+      ++number_of_instructions;
+      if (number_of_instructions > limit) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Register a back edge; if the block was not a loop header before the call,
 // associate a newly created loop info with it.
 void AddBackEdge(HBasicBlock* block, HBasicBlock* back_edge) {
@@ -174,17 +188,18 @@ GraphAnalysisResult HGraph::BuildDominatorTree() {
   // (5) Compute the dominance information and the reverse post order.
   ComputeDominanceInformation();
 
-  // (6) Analyze loops discovered through back edge analysis, and
+  // (6) Precompute per-block try membership before AnalyzeLoops as it needs this information for
+  //     the implicit edges between try blocks and its corresponding catch blocks.
+  //     The SSA builder also needs the information to build catch block phis from values of
+  //     locals at throwing instructions inside try blocks.
+  ComputeTryBlockInformation();
+
+  // (7) Analyze loops discovered through back edge analysis, and
   //     set the loop information on each block.
   GraphAnalysisResult result = AnalyzeLoops();
   if (result != kAnalysisSuccess) {
     return result;
   }
-
-  // (7) Precompute per-block try membership before entering the SSA builder,
-  //     which needs the information to build catch block phis from values of
-  //     locals at throwing instructions inside try blocks.
-  ComputeTryBlockInformation();
 
   return kAnalysisSuccess;
 }
@@ -582,17 +597,22 @@ void HGraph::SimplifyCFG() {
 }
 
 GraphAnalysisResult HGraph::AnalyzeLoops() const {
+  // TODO: Dealing with exceptional back edges could be tricky because
+  //       they only approximate the real control flow. This breaks preconditions of HGraphs like
+  //       exception handler blocks being catch blocks. Bail out for now.
+  for (HBasicBlock* block : GetPostOrder()) {
+    if (block->IsLoopHeader() && block->IsCatchBlock()) {
+      VLOG(compiler) << "Not compiled: Exceptional back edges";
+      return kAnalysisFailThrowCatchLoop;
+    }
+  }
+
   // We iterate post order to ensure we visit inner loops before outer loops.
   // `PopulateRecursive` needs this guarantee to know whether a natural loop
   // contains an irreducible loop.
   for (HBasicBlock* block : GetPostOrder()) {
     if (block->IsLoopHeader()) {
-      if (block->IsCatchBlock()) {
-        // TODO: Dealing with exceptional back edges could be tricky because
-        //       they only approximate the real control flow. Bail out for now.
-        VLOG(compiler) << "Not compiled: Exceptional back edges";
-        return kAnalysisFailThrowCatchLoop;
-      }
+      DCHECK(!block->IsCatchBlock());
       block->GetLoopInformation()->Populate();
     }
   }
@@ -705,10 +725,14 @@ HConstant* HGraph::GetConstant(DataType::Type type, int64_t value) {
   switch (type) {
     case DataType::Type::kBool:
       DCHECK(IsUint<1>(value));
-      FALLTHROUGH_INTENDED;
+      return GetIntConstant(static_cast<int32_t>(value));
     case DataType::Type::kUint8:
-    case DataType::Type::kInt8:
+      DCHECK(IsUint<8>(value));
+      return GetIntConstant(static_cast<int32_t>(value));
     case DataType::Type::kUint16:
+      DCHECK(IsUint<16>(value));
+      return GetIntConstant(static_cast<int32_t>(value));
+    case DataType::Type::kInt8:
     case DataType::Type::kInt16:
     case DataType::Type::kInt32:
       DCHECK(IsInt(DataType::Size(type) * kBitsPerByte, value));
@@ -851,10 +875,101 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
     outer_graph->SetHasAlwaysThrowingInvokes(true);
   }
 
+  // Deal with entry block instructions before we remove the `HReturn` instruction(s) from
+  // the callee graph to avoid checking for the return value in addition to `HasUses()`.
+
+  // Replace current method if used.
+  // The `HCurrentMethod` does not hold any data, so it can be used to represent
+  // the outer method when moved from this graph to the `outer_graph`.
+  HInstruction* move_pos = outer_graph->GetEntryBlock()->GetLastInstruction();
+  DCHECK(move_pos != nullptr);
+  DCHECK(move_pos->IsGoto());
+  if (move_pos->GetPrevious() != nullptr && move_pos->GetPrevious()->IsSuspendCheck()) {
+    move_pos = move_pos->GetPrevious();
+  }
+  auto move_or_replace_cached_instruction = [&](auto* src, auto* dest) ALWAYS_INLINE {
+    static_assert(std::is_same_v<decltype(src), decltype(dest)>);
+    auto* instruction = *src;
+    if (instruction != nullptr && instruction->HasUses()) {
+      DCHECK(instruction->GetBlock() == GetEntryBlock());
+      auto* outer_instruction = *dest;
+      if (outer_instruction == nullptr || outer_instruction->GetBlock() == nullptr) {
+        *dest = instruction;
+        instruction->MoveBefore(move_pos);
+      } else {
+        DCHECK(outer_instruction->GetBlock() == outer_graph->GetEntryBlock());
+        instruction->ReplaceWith(outer_instruction);
+      }
+    }
+  };
+  move_or_replace_cached_instruction(&cached_current_method_, &outer_graph->cached_current_method_);
+
+  // Move used constants from the entry block to the `outer_graph`'s entry block,
+  // or substitute them with existing constants in the `outer_graph`.
+  move_or_replace_cached_instruction(&cached_null_constant_, &outer_graph->cached_null_constant_);
+  auto move_or_replace_constants = [&](auto* src, auto* dest) ALWAYS_INLINE {
+    static_assert(std::is_same_v<decltype(src), decltype(dest)>);
+    for (auto it = src->begin(), end = src->end(); it != end; ) {
+      auto current = it;
+      ++it;  // Advance to the next node before we remove the current node.
+      auto* instruction = current->second;
+      if (instruction->HasUses()) {
+        DCHECK(instruction->GetBlock() == GetEntryBlock());
+        auto insert_result = dest->insert(src->extract(current));
+        if (insert_result.inserted || insert_result.position->second->GetBlock() == nullptr) {
+          if (!insert_result.inserted) {
+            insert_result.position->second = instruction;
+          }
+          instruction->MoveBefore(move_pos);
+        } else {
+          DCHECK(insert_result.position->second->GetBlock() == outer_graph->GetEntryBlock());
+          instruction->ReplaceWith(insert_result.position->second);
+        }
+      }
+    }
+  };
+  move_or_replace_constants(&cached_int_constants_, &outer_graph->cached_int_constants_);
+  move_or_replace_constants(&cached_float_constants_, &outer_graph->cached_float_constants_);
+  move_or_replace_constants(&cached_long_constants_, &outer_graph->cached_long_constants_);
+  move_or_replace_constants(&cached_double_constants_, &outer_graph->cached_double_constants_);
+
+  // Replace `HParameterValue` instructions with their real values.
+  size_t parameter_index = 0u;
+  size_t parameter_vreg_index = 0u;
+  for (HInstructionIteratorPrefetchNext it(GetEntryBlock()->GetInstructions());
+       !it.Done();
+       it.Advance()) {
+    HInstruction* current = it.Current();
+    if (current->IsParameterValue()) {
+      if (kIsDebugBuild &&
+          invoke->IsInvokeStaticOrDirect() &&
+          invoke->AsInvokeStaticOrDirect()->IsStaticWithExplicitClinitCheck()) {
+        // Ensure we do not use the last input of `invoke`, as it
+        // contains a clinit check which is not an actual argument.
+        size_t last_input_index = invoke->InputCount() - 1;
+        DCHECK(parameter_index != last_input_index);
+      }
+      size_t input_vreg_index = current->AsParameterValue()->GetInputVRegIndex();
+      while (parameter_vreg_index != input_vreg_index) {
+        DCHECK_LT(parameter_vreg_index, input_vreg_index);
+        HInstruction* skipped = invoke->InputAt(parameter_index);
+        parameter_vreg_index += DataType::Is64BitType(skipped->GetType()) ? 2u : 1u;
+        parameter_index += 1u;
+      }
+      HInstruction* replacement = invoke->InputAt(parameter_index);
+      parameter_vreg_index += DataType::Is64BitType(replacement->GetType()) ? 2u : 1u;
+      parameter_index += 1u;
+      current->ReplaceWith(replacement);
+    } else {
+      // The entry block is left with some instructions without uses. We do not remove them.
+      DCHECK(current->IsCurrentMethod() || current->IsConstant() || current->IsGoto())
+          << current->DebugName();
+      DCHECK(!current->HasUses()) << current->DebugName();
+    }
+  }
+
   HInstruction* return_value = nullptr;
   if (GetBlocks().size() == 3) {
-    // Inliner already made sure we don't inline methods that always throw.
-    DCHECK(!GetBlocks()[1]->GetLastInstruction()->IsThrow());
     // Simple case of an entry block, a body block, and an exit block.
     // Put the body block's instruction into `invoke`'s block.
     HBasicBlock* body = GetBlocks()[1];
@@ -872,7 +987,8 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
     if (last->IsReturn()) {
       return_value = last->InputAt(0);
     } else {
-      DCHECK(last->IsReturnVoid());
+      // Inliner already made sure we don't inline methods that always throw.
+      DCHECK(last->IsReturnVoid()) << *last;
     }
 
     invoke->GetBlock()->RemoveInstruction(last);
@@ -948,10 +1064,7 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
       HBasicBlock* predecessor = to->GetPredecessors()[pred];
       HInstruction* last = predecessor->GetLastInstruction();
 
-      // At this point we might either have:
-      // A) Return/ReturnVoid/Throw as the last instruction, or
-      // B) `Return/ReturnVoid/Throw->TryBoundary` as the last instruction chain
-
+      // The whole method might end in a TryBoundary.
       const bool saw_try_boundary = last->IsTryBoundary();
       if (saw_try_boundary) {
         DCHECK(predecessor->IsSingleTryBoundary());
@@ -960,7 +1073,16 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
         last = predecessor->GetLastInstruction();
       }
 
-      if (last->IsThrow()) {
+      // At this point we might either have:
+      // A) Return/ReturnVoid/Throw as the last instruction, or
+      // B) AlwaysThrowingInstruction + Goto
+      if (last->IsGoto() && last->GetPrevious() != nullptr) {
+        last = last->GetPrevious();
+        DCHECK(!last->IsThrow());
+        DCHECK(last->AlwaysThrows());
+      }
+
+      if (last->AlwaysThrows()) {
         if (at->IsTryBlock()) {
           DCHECK(!saw_try_boundary) << "We don't support inlining of try blocks into try blocks.";
           // Create a TryBoundary of kind:exit and point it to the Exit block.
@@ -1003,7 +1125,7 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
           DCHECK(return_value == nullptr);
           DCHECK(return_value_phi == nullptr);
         } else {
-          DCHECK(last->IsReturn());
+          DCHECK(last->IsReturn()) << *last;
           if (return_value_phi != nullptr) {
             return_value_phi->AddInput(last->InputAt(0));
           } else if (return_value == nullptr) {
@@ -1040,56 +1162,6 @@ HInstruction* HGraph::InlineInto(HGraph* outer_graph, HInvoke* invoke) {
     } else if (rerun_dominance) {
       outer_graph->ClearDominanceInformation();
       outer_graph->ComputeDominanceInformation();
-    }
-  }
-
-  // Walk over the entry block and:
-  // - Move constants from the entry block to the outer_graph's entry block,
-  // - Replace HParameterValue instructions with their real value.
-  // - Remove suspend checks, that hold an environment.
-  // We must do this after the other blocks have been inlined, otherwise ids of
-  // constants could overlap with the inner graph.
-  size_t parameter_index = 0;
-  for (HInstructionIteratorPrefetchNext it(entry_block_->GetInstructions()); !it.Done();
-       it.Advance()) {
-    HInstruction* current = it.Current();
-    HInstruction* replacement = nullptr;
-    if (current->IsNullConstant()) {
-      replacement = outer_graph->GetNullConstant();
-    } else if (current->IsIntConstant()) {
-      replacement = outer_graph->GetIntConstant(current->AsIntConstant()->GetValue());
-    } else if (current->IsLongConstant()) {
-      replacement = outer_graph->GetLongConstant(current->AsLongConstant()->GetValue());
-    } else if (current->IsFloatConstant()) {
-      replacement = outer_graph->GetFloatConstant(current->AsFloatConstant()->GetValue());
-    } else if (current->IsDoubleConstant()) {
-      replacement = outer_graph->GetDoubleConstant(current->AsDoubleConstant()->GetValue());
-    } else if (current->IsParameterValue()) {
-      if (kIsDebugBuild &&
-          invoke->IsInvokeStaticOrDirect() &&
-          invoke->AsInvokeStaticOrDirect()->IsStaticWithExplicitClinitCheck()) {
-        // Ensure we do not use the last input of `invoke`, as it
-        // contains a clinit check which is not an actual argument.
-        size_t last_input_index = invoke->InputCount() - 1;
-        DCHECK(parameter_index != last_input_index);
-      }
-      replacement = invoke->InputAt(parameter_index++);
-    } else if (current->IsCurrentMethod()) {
-      replacement = outer_graph->GetCurrentMethod();
-    } else {
-      // It is OK to ignore MethodEntryHook for inlined functions.
-      // In debug mode we don't inline and in release mode method
-      // tracing is best effort so OK to ignore them.
-      DCHECK(current->IsGoto() || current->IsSuspendCheck() || current->IsMethodEntryHook());
-      entry_block_->RemoveInstruction(current);
-    }
-    if (replacement != nullptr) {
-      current->ReplaceWith(replacement);
-      // If the current is the return value then we need to update the latter.
-      if (current == return_value) {
-        DCHECK_EQ(entry_block_, return_value->GetBlock());
-        return_value = replacement;
-      }
     }
   }
 

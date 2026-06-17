@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "android-base/file.h"
+#include "android-base/logging.h"
 #include "android-base/no_destructor.h"
 #include "android-base/strings.h"
 #include "arch/instruction_set.h"

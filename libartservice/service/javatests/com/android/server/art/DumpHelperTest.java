@@ -16,15 +16,12 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
-import static com.android.server.art.DexUseManagerLocal.DexLoader;
-import static com.android.server.art.DexUseManagerLocal.SecondaryDexInfo;
-import static com.android.server.art.model.DexoptStatus.DexContainerFileDexoptStatus;
 import static com.android.server.art.testing.TestDataHelper.newPackageState;
 
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.argThat;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.lenient;
@@ -36,7 +33,13 @@ import android.os.SystemProperties;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.art.rw.flags.Flags;
+import com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
+import com.android.server.art.DexUseManagerLocal.DexLoader;
+import com.android.server.art.DexUseManagerLocal.SecondaryDexInfo;
 import com.android.server.art.model.DexoptStatus;
+import com.android.server.art.model.DexoptStatus.DexContainerFileDexoptStatus;
+import com.android.server.art.testing.MockClock;
 import com.android.server.art.testing.StaticMockitoRule;
 import com.android.server.pm.PackageManagerLocal;
 import com.android.server.pm.pkg.AndroidPackage;
@@ -71,11 +74,15 @@ public class DumpHelperTest {
     @Mock private ArtManagerLocal mArtManagerLocal;
     @Mock private DexUseManagerLocal mDexUseManagerLocal;
     @Mock private PackageManagerLocal.FilteredSnapshot mSnapshot;
+    private MockClock mMockClock;
 
     private DumpHelper mDumpHelper;
 
     @Before
     public void setUp() throws Exception {
+        mMockClock = new MockClock();
+        mMockClock.setCurrentTimeMillis(123456789L);
+
         lenient().when(Constants.getPreferredAbi()).thenReturn("arm64-v8a");
         lenient().when(Constants.getNative64BitAbi()).thenReturn("arm64-v8a");
         lenient().when(Constants.getNative32BitAbi()).thenReturn("armeabi-v7a");
@@ -89,6 +96,7 @@ public class DumpHelperTest {
 
         lenient().when(mInjector.getArtManagerLocal()).thenReturn(mArtManagerLocal);
         lenient().when(mInjector.getDexUseManager()).thenReturn(mDexUseManagerLocal);
+        lenient().when(mInjector.getClock()).thenReturn(mMockClock);
 
         Map<String, PackageState> pkgStates = createPackageStates();
         lenient().when(mSnapshot.getPackageStates()).thenReturn(pkgStates);
@@ -100,52 +108,77 @@ public class DumpHelperTest {
         setUpForBar();
         setUpForSdk();
 
+        lenient()
+                .when(mDexUseManagerLocal.calculateDecayedPackageScore(eq(PKG_NAME_FOO), anyLong()))
+                .thenReturn(0.999999999D);
+        lenient()
+                .when(mDexUseManagerLocal.calculateDecayedPackageScore(eq(PKG_NAME_BAR), anyLong()))
+                .thenReturn(0D);
+        lenient()
+                .when(mDexUseManagerLocal.calculateDecayedPackageScore(eq(PKG_NAME_SDK), anyLong()))
+                .thenReturn(0.5D);
+
         mDumpHelper = new DumpHelper(mInjector);
     }
 
     @Test
     public void testDump() throws Exception {
-        String expected = "[com.example1.foo]\n"
-                + "  path: /somewhere/app/foo/base.apk\n"
-                + "    arm64: [status=speed-profile] [reason=bg-dexopt] [primary-abi]\n"
-                + "      [location is /somewhere/app/foo/oat/arm64/base.odex]\n"
-                + "    arm: [status=verify] [reason=install]\n"
-                + "      [location is /somewhere/app/foo/oat/arm/base.odex]\n"
-                + "  path: /somewhere/app/foo/split_0.apk\n"
-                + "    arm64: [status=verify] [reason=vdex] [primary-abi]\n"
-                + "      [location is primary.vdex in /somewhere/app/foo/split_0.dm]\n"
-                + "    arm: [status=verify] [reason=vdex]\n"
-                + "      [location is primary.vdex in /somewhere/app/foo/split_0.dm]\n"
-                + "    used by other apps: [com.example2.bar (isa=arm)]\n"
-                + "  known secondary dex files:\n"
-                + "    /data/user_de/0/foo/1.apk (removed)\n"
-                + "      arm: [status=run-from-apk] [reason=unknown]\n"
-                + "        [location is unknown]\n"
-                + "      class loader context: =VaryingClassLoaderContexts=\n"
-                + "        com.example1.foo (isolated): CLC1\n"
-                + "        com.example3.baz: CLC2\n"
-                + "      used by other apps: [com.example1.foo (isolated) (isa=arm64), "
-                  + "com.example3.baz (removed)]\n"
-                + "    /data/user_de/0/foo/2.apk (public)\n"
-                + "      arm64: [status=speed-profile] [reason=bg-dexopt] [primary-abi]\n"
-                + "        [location is /data/user_de/0/foo/oat/arm64/2.odex]\n"
-                + "      arm: [status=verify] [reason=vdex]\n"
-                + "        [location is /data/user_de/0/foo/oat/arm/2.vdex]\n"
-                + "      class loader context: PCL[]\n"
-                + "[com.example2.bar]\n"
-                + "  path: /somewhere/app/bar/base.apk\n"
-                + "    arm: [status=verify] [reason=install] [primary-abi]\n"
-                + "      [location is /somewhere/app/bar/oat/arm/base.odex]\n"
-                + "    arm64: [status=verify] [reason=install]\n"
-                + "      [location is /somewhere/app/bar/oat/arm64/base.odex]\n"
-                + "[com.example3.sdk]\n"
-                + "  path: /somewhere/app/sdk/base.apk\n"
-                + "    arm: [status=verify] [reason=install] [primary-abi]\n"
-                + "      [location is /somewhere/app/sdk/oat/arm/base.odex]\n"
-                + "    arm64: [status=verify] [reason=install]\n"
-                + "      [location is /somewhere/app/sdk/oat/arm64/base.odex]\n"
-                + "\n"
-                + "Current GC: CollectorTypeCMC\n";
+        String expected = """
+                [com.example1.foo]
+                  path: /somewhere/app/foo/base.apk
+                    arm64: [status=speed-profile] [reason=bg-dexopt] [primary-abi]
+                      [location is /somewhere/app/foo/oat/arm64/base.odex]
+                    arm: [status=verify] [reason=install]
+                      [location is /somewhere/app/foo/oat/arm/base.odex]
+                  path: /somewhere/app/foo/split_0.apk
+                    arm64: [status=verify] [reason=vdex] [primary-abi]
+                      [location is primary.vdex in /somewhere/app/foo/split_0.dm]
+                    arm: [status=verify] [reason=vdex]
+                      [location is primary.vdex in /somewhere/app/foo/split_0.dm]
+                    used by other apps: [com.example2.bar (isa=arm)]
+                  known secondary dex files:
+                    /data/user_de/0/foo/1.apk (removed)
+                      arm: [status=run-from-apk] [reason=unknown]
+                        [location is unknown]
+                      class loader context: =VaryingClassLoaderContexts=
+                        com.example1.foo (isolated): CLC1
+                        com.example3.baz: CLC2
+                      used by other apps: [com.example1.foo (isolated) (isa=arm64), com.example3.baz (removed)]
+                    /data/user_de/0/foo/2.apk (public)
+                      arm64: [status=speed-profile] [reason=bg-dexopt] [primary-abi]
+                        [location is /data/user_de/0/foo/oat/arm64/2.odex]
+                      arm: [status=verify] [reason=vdex]
+                        [location is /data/user_de/0/foo/oat/arm/2.vdex]
+                      class loader context: PCL[]
+                [com.example2.bar]
+                  path: /somewhere/app/bar/base.apk
+                    arm: [status=verify] [reason=install] [primary-abi]
+                      [location is /somewhere/app/bar/oat/arm/base.odex]
+                    arm64: [status=verify] [reason=install]
+                      [location is /somewhere/app/bar/oat/arm64/base.odex]
+                [com.example3.sdk]
+                  path: /somewhere/app/sdk/base.apk
+                    arm: [status=verify] [reason=install] [primary-abi]
+                      [location is /somewhere/app/sdk/oat/arm/base.odex]
+                    arm64: [status=verify] [reason=install]
+                      [location is /somewhere/app/sdk/oat/arm64/base.odex]
+                """;
+
+        if (Flags.hybridPreRebootDexopt()) {
+            expected += """
+
+                    Package Usage Scores:
+                      Current Time (ms): 123456789
+                      com.example1.foo - 1.0000
+                      com.example3.sdk - 0.5000
+                      com.example2.bar - 0.0000
+                    """;
+        }
+
+        expected += """
+
+                Current GC: CollectorTypeCMC
+                """;
 
         var stringWriter = new StringWriter();
         mDumpHelper.dump(new PrintWriter(stringWriter), mSnapshot);
@@ -273,8 +306,8 @@ public class DumpHelperTest {
         lenient()
                 .doReturn(List.of(info1, info2))
                 .when(mDexUseManagerLocal)
-                .getCheckedSecondaryDexInfo(
-                        PKG_NAME_FOO, false /* excludeObsoleteDexesAndLoaders */);
+                .getCheckedSecondaryDexInfo(PKG_NAME_FOO,
+                        false /* excludeObsoleteDexesAndLoaders */, true /* excludeObsoleteClcs */);
     }
 
     private void setUpForBar() {

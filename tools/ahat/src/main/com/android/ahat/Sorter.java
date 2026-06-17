@@ -123,4 +123,4 @@ class Sorter<T> {
 
     Collections.sort(list, compare);
   }
-};
+}

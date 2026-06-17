@@ -89,10 +89,10 @@ class RegisterAllocationResolver : ValueObject {
                DataType::Type type) const;
 
   // Converts the location of the `interval` to a `Location` object.
-  static Location GetLocation(LiveInterval* interval);
+  Location GetLocation(LiveInterval* interval) const;
 
   // Returns the location of the `interval` following its siblings at `position`.
-  static Location GetLocationAt(LiveInterval* interval, size_t position);
+  Location GetLocationAt(LiveInterval* interval, size_t position);
 
   ArenaAllocator* const allocator_;
   CodeGenerator* const codegen_;

@@ -66,19 +66,19 @@ class DexFileLoader {
   static bool IsMultiDexLocation(std::string_view location);
 
   // Return the name of the index-th classes.dex in a multidex zip file. This is classes.dex for
-  // index == 0, and classes{index + 1}.dex else.
-  static std::string GetMultiDexClassesDexName(size_t index);
+  // index == 0, and classes{index + 1}.dex otherwise (i.e. classes.dex, classes2.dex, etc...).
+  static std::string GetMultiDexZipEntryName(size_t index);
 
   // Return the (possibly synthetic) dex location for a multidex entry. This is dex_location for
-  // index == 0, and dex_location + multi-dex-separator + GetMultiDexClassesDexName(index) else.
-  static std::string GetMultiDexLocation(size_t index, const char* dex_location);
+  // index == 0, and dex_location + multi-dex-separator + GetMultiDexZipEntryName(index) else.
+  static std::string GetMultiDexLocation(const char* dex_location, size_t index);
 
   // Returns the multidex location and the checksum for each dex file in a zip or a dex container.
   //
   // This uses the source path provided to DexFileLoader constructor.
   //
   // Returns false on error.
-  bool GetMultiDexChecksums(/*out*/ std::vector<std::pair<std::string, uint32_t>>* checksums,
+  bool GetMultiDexChecksums(/*out*/ std::vector<uint32_t>* checksums,
                             /*out*/ std::string* error_msg,
                             /*out*/ bool* only_contains_uncompressed_dex = nullptr);
 
@@ -111,7 +111,7 @@ class DexFileLoader {
         break;  // Found another primary dex file, terminate iteration.
       }
       if (!is_primary_dex && dex_file->GetDexVersion() >= DexFile::kDexContainerVersion) {
-        if (dex_file->GetLocationChecksum() == dex_files[*i - 1]->GetLocationChecksum() + 1) {
+        if (dex_file->GetLocationChecksum() == dex_files[*i - 1]->GetLocationChecksum()) {
           continue;
         }
       }
@@ -150,24 +150,15 @@ class DexFileLoader {
   //     the dex_location where its file name part has been made canonical.
   static std::string GetDexCanonicalLocation(const char* dex_location);
 
+  // Split the dex location into the base location (filename) and the multidex index.
+  // The index is 0-based.
+  static std::pair<std::string_view, size_t> SplitMultiDexLocation(std::string_view location);
+
   // For normal dex files, location and base location coincide. If a dex file is part of a multidex
   // archive, the base location is the name of the originating jar/apk, stripped of any internal
   // classes*.dex path.
-  static std::string GetBaseLocation(const char* location) {
-    const char* pos = strrchr(location, kMultiDexSeparator);
-    return (pos == nullptr) ? location : std::string(location, pos - location);
-  }
-
-  static std::string GetBaseLocation(const std::string& location) {
-    return GetBaseLocation(location.c_str());
-  }
-
-  // Returns the '!classes*.dex' part of the dex location. Returns an empty
-  // string if there is no multidex suffix for the given location.
-  // The kMultiDexSeparator is included in the returned suffix.
-  static std::string GetMultiDexSuffix(const std::string& location) {
-    size_t pos = location.rfind(kMultiDexSeparator);
-    return (pos == std::string::npos) ? std::string() : location.substr(pos);
+  static std::string GetBaseLocation(std::string_view location) {
+    return std::string(SplitMultiDexLocation(location).first);
   }
 
   DexFileLoader(const char* filename, const File* file, const std::string& location)
@@ -192,6 +183,9 @@ class DexFileLoader {
   DexFileLoader(const char* filename, const std::string& location)
       : DexFileLoader(filename, /*file=*/&kInvalidFile, location) {}
 
+  // This constructor uses the same path to both load the file and set the dex
+  // location, and hence it must not be used in dex2oat where they may be
+  // different (cf. DexFile.location_ comment).
   explicit DexFileLoader(const std::string& location)
       : DexFileLoader(location.c_str(), /*file=*/&kInvalidFile, location) {}
 
@@ -338,16 +332,8 @@ class DexFileLoader {
   std::optional<File> owned_file_;  // May be used as backing storage for 'file_'.
   std::shared_ptr<DexFileContainer> root_container_;
 
-  // The full absolute path to the dex file, if it was loaded from disk.
-  //
-  // Can also be a path to a multidex container (typically apk), followed by
-  // kMultiDexSeparator and the file inside the container.
-  //
-  // On host this may not be an absolute path.
-  //
-  // On device libnativeloader uses this to determine the location of the java
-  // package or shared library, which decides where to load native libraries
-  // from.
+  // The full absolute path to the dex file, if it was loaded from disk. See
+  // DexFile.location_ for details.
   const std::string location_;
 };
 

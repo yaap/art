@@ -53,7 +53,7 @@ class ZygoteSpace final : public ContinuousMemMapAllocSpace {
 
   size_t AllocationSize(mirror::Object* obj, size_t* usable_size) override;
 
-  size_t Free(Thread* self, mirror::Object* ptr) override;
+  size_t Free(Thread* self, mirror::Object* ptr) override REQUIRES_SHARED(Locks::mutator_lock_);
 
   size_t FreeList(Thread* self, size_t num_ptrs, mirror::Object** ptrs) override;
 

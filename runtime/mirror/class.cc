@@ -46,6 +46,7 @@
 #include "handle_scope-inl.h"
 #include "hidden_api.h"
 #include "jni_id_type.h"
+#include "mirror/class_flags.h"
 #include "subtype_check.h"
 #include "method.h"
 #include "object-inl.h"
@@ -173,7 +174,7 @@ static void CheckSetStatus(Thread* self, T thiz, ClassStatus new_status, ClassSt
              !Locks::mutator_lock_->IsExclusiveHeld(self)) {
     // When classes are being resolved the resolution code should hold the
     // lock or have everything else suspended
-    CHECK_EQ(thiz->GetLockOwnerThreadId(), self->GetThreadId())
+    CHECK(thiz->IsLockOwnedByMe(self))
         << "Attempt to change status of class while not holding its lock: " << thiz->PrettyClass()
         << " " << old_status << " -> " << new_status;
   }
@@ -1487,6 +1488,34 @@ const char* Class::GetDescriptor(std::string* storage) {
   return storage->c_str();
 }
 
+uint32_t Class::ComputeDescriptorHash() {
+  // No read barriers needed, we're reading a chain of constant references for comparison with null
+  // and retrieval of constant primitive data. See `ReadBarrierOption` and `Class::GetDescriptor()`.
+  ObjPtr<mirror::Class> klass = this;
+  uint32_t hash = StartModifiedUtf8Hash();
+  while (klass->IsArrayClass()) {
+    klass = klass->GetComponentType<kDefaultVerifyFlags, kWithoutReadBarrier>();
+    hash = UpdateModifiedUtf8Hash(hash, '[');
+  }
+  if (UNLIKELY(klass->IsProxyClass())) {
+    hash = UpdateHashForProxyClass(hash, klass);
+  } else if (klass->IsPrimitive()) {
+    hash = UpdateModifiedUtf8Hash(hash, Primitive::Descriptor(klass->GetPrimitiveType())[0]);
+  } else {
+    const DexFile& dex_file = klass->GetDexFile();
+    const dex::TypeId& type_id = dex_file.GetTypeId(klass->GetDexTypeIndex());
+    std::string_view descriptor = dex_file.GetTypeDescriptorView(type_id);
+    hash = UpdateModifiedUtf8Hash(hash, descriptor);
+  }
+
+  if (kIsDebugBuild) {
+    std::string temp;
+    CHECK_EQ(hash, ComputeModifiedUtf8Hash(GetDescriptor(&temp)));
+  }
+
+  return hash;
+}
+
 const dex::ClassDef* Class::GetClassDef() {
   uint16_t class_def_idx = GetDexClassDefIndex();
   if (class_def_idx == DexFile::kDexNoIndex16) {
@@ -1696,7 +1725,10 @@ void Class::PopulateReferenceOffsetBitmap() {
       ref_offsets = -overflow_bitmap_word_idx | kVisitReferencesSlowpathMask;
     }
   }
-  if ((GetClassFlags() & ~kClassFlagStaticRefInfo) == 0 && ref_offsets != 0) {
+  // Record / value class flag is set before this method call, but that should not prevent a
+  // class from being treated as normal.
+  constexpr uint32_t kIgnoredFlags = kClassFlagStaticRefInfo | kClassFlagRecord | kClassFlagValue;
+  if ((GetClassFlags() & ~kIgnoredFlags) == 0 && ref_offsets != 0) {
     AddRemoveClassFlags(kClassFlagNormal);
   }
   SetReferenceInstanceOffsets(ref_offsets);

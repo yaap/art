@@ -769,8 +769,10 @@ void Dbg::DdmSendHeapSegments(bool native) {
     }
     ReaderMutexLock mu(self, *Locks::heap_bitmap_lock_);
     // Walk the large objects, these are not in the AllocSpace.
-    context.SetChunkOverhead(0);
-    heap->GetLargeObjectsSpace()->Walk(HeapChunkContext::HeapChunkJavaCallback, &context);
+    if (heap->GetLargeObjectsSpace() != nullptr) {
+      context.SetChunkOverhead(0);
+      heap->GetLargeObjectsSpace()->Walk(HeapChunkContext::HeapChunkJavaCallback, &context);
+    }
   }
 
   // Finally, send a heap end chunk.

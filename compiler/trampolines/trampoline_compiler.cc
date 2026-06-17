@@ -92,8 +92,12 @@ static std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline(
 #ifdef ART_ENABLE_CODEGEN_arm64
 namespace arm64 {
 static std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline(
-    ArenaAllocator* allocator, EntryPointCallingConvention abi, ThreadOffset64 offset) {
-  Arm64Assembler assembler(allocator);
+    ArenaAllocator* allocator,
+    const InstructionSetFeatures* features,
+    EntryPointCallingConvention abi,
+    ThreadOffset64 offset) {
+  Arm64Assembler assembler(
+      allocator, features != nullptr ? features->AsArm64InstructionSetFeatures() : nullptr);
 
   switch (abi) {
     case kJniAbi:  // Load via Thread* held in JNIEnv* in first argument (X0).
@@ -197,35 +201,43 @@ static std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline(ArenaAllocat
 }  // namespace x86_64
 #endif  // ART_ENABLE_CODEGEN_x86_64
 
-std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline64(InstructionSet isa,
-                                                               EntryPointCallingConvention abi,
-                                                               ThreadOffset64 offset) {
+std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline64(
+    InstructionSet isa,
+    const InstructionSetFeatures* features,
+    EntryPointCallingConvention abi,
+    ThreadOffset64 offset) {
   CallocArenaPool pool;
   ArenaAllocator allocator(&pool);
   switch (isa) {
 #ifdef ART_ENABLE_CODEGEN_arm64
     case InstructionSet::kArm64:
-      return arm64::CreateTrampoline(&allocator, abi, offset);
+      return arm64::CreateTrampoline(&allocator, features, abi, offset);
 #endif
 #ifdef ART_ENABLE_CODEGEN_riscv64
     case InstructionSet::kRiscv64:
+      UNUSED(features);
       return riscv64::CreateTrampoline(&allocator, abi, offset);
 #endif
 #ifdef ART_ENABLE_CODEGEN_x86_64
     case InstructionSet::kX86_64:
+      UNUSED(features);
       return x86_64::CreateTrampoline(&allocator, offset);
 #endif
     default:
       UNUSED(abi);
+      UNUSED(features);
       UNUSED(offset);
       LOG(FATAL) << "Unexpected InstructionSet: " << isa;
       UNREACHABLE();
   }
 }
 
-std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline32(InstructionSet isa,
-                                                               EntryPointCallingConvention abi,
-                                                               ThreadOffset32 offset) {
+std::unique_ptr<const std::vector<uint8_t>> CreateTrampoline32(
+    InstructionSet isa,
+    const InstructionSetFeatures* features,
+    EntryPointCallingConvention abi,
+    ThreadOffset32 offset) {
+  UNUSED(features);
   CallocArenaPool pool;
   ArenaAllocator allocator(&pool);
   switch (isa) {

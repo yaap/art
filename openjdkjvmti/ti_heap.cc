@@ -27,6 +27,7 @@
 #include "base/logging.h"
 #include "base/macros.h"
 #include "base/mutex.h"
+#include "base/offsets.h"
 #include "base/utils.h"
 #include "class_linker.h"
 #include "deopt_manager.h"
@@ -56,7 +57,6 @@
 #include "obj_ptr-inl.h"
 #include "object_callbacks.h"
 #include "object_tagging.h"
-#include "offsets.h"
 #include "read_barrier.h"
 #include "runtime.h"
 #include "scoped_thread_state_change-inl.h"
@@ -1507,11 +1507,8 @@ static jint GetHeapId(art::ObjPtr<art::mirror::Object> obj)
       // as HPROF_HEAP_APP. b/35762934
       heap_type = kHeapIdImage;
     }
-  } else {
-    const auto* los = heap->GetLargeObjectsSpace();
-    if (los->Contains(obj.Ptr()) && los->IsZygoteLargeObject(art::Thread::Current(), obj.Ptr())) {
-      heap_type = kHeapIdZygote;
-    }
+  } else if (heap->IsZygoteLargeObject(obj.Ptr())) {
+    heap_type = kHeapIdZygote;
   }
   return heap_type;
 };
@@ -1713,7 +1710,8 @@ static void ReplaceStrongRoots(art::Thread* self, const ObjectMap& map)
     void VisitRoots(art::mirror::Object*** roots, size_t count, const art::RootInfo& info) override
         REQUIRES_SHARED(art::Locks::mutator_lock_) {
       art::mirror::Object*** end = roots + count;
-      for (art::mirror::Object** obj = *roots; roots != end; obj = *(++roots)) {
+      for (; roots != end; ++roots) {
+        art::mirror::Object** obj = *roots;
         auto it = map_.find(*obj);
         if (it != map_.end()) {
           // Java frames might have the JIT doing optimizations (for example loop-unrolling or
@@ -1739,8 +1737,8 @@ static void ReplaceStrongRoots(art::Thread* self, const ObjectMap& map)
                     size_t count,
                     const art::RootInfo& info) override REQUIRES_SHARED(art::Locks::mutator_lock_) {
       art::mirror::CompressedReference<art::mirror::Object>** end = roots + count;
-      for (art::mirror::CompressedReference<art::mirror::Object>* obj = *roots; roots != end;
-           obj = *(++roots)) {
+      for (; roots != end; ++roots) {
+        art::mirror::CompressedReference<art::mirror::Object>* obj = *roots;
         auto it = map_.find(obj->AsMirrorPtr());
         if (it != map_.end()) {
           // Java frames might have the JIT doing optimizations (for example loop-unrolling or
@@ -1861,7 +1859,7 @@ static void ReplaceWeakRoots(art::Thread* self,
   ReplaceWeaksVisitor rwv(map);
   art::Runtime* runtime = art::Runtime::Current();
   runtime->SweepSystemWeaks(&rwv);
-  runtime->GetThreadList()->SweepInterpreterCaches(&rwv);
+  runtime->GetThreadList()->ClearInterpreterCaches();
   // Re-add the object tags. At this point all weak-references to the old_obj_ptr are gone.
   event_handler->ForEachEnv(self, [&](ArtJvmTiEnv* env) {
     // Cannot have REQUIRES(art::Locks::mutator_lock_) since ForEachEnv doesn't require it.

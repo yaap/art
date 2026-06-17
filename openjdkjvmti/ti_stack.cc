@@ -1115,23 +1115,17 @@ enum class NonStandardExitType {
 template<NonStandardExitType kExitType>
 class NonStandardExitFrames {
  public:
-  NonStandardExitFrames(art::Thread* self, jvmtiEnv* env, jthread thread)
+  NonStandardExitFrames(art::ScopedObjectAccess& soa, jvmtiEnv* env, jthread thread)
+      REQUIRES(art::Locks::user_code_suspension_lock_)
+      REQUIRES_SHARED(art::Locks::mutator_lock_)
       REQUIRES(!art::Locks::thread_suspend_count_lock_)
-      ACQUIRE_SHARED(art::Locks::mutator_lock_)
-      ACQUIRE(art::Locks::thread_list_lock_, art::Locks::user_code_suspension_lock_)
-      : snucs_(self) {
-    // We keep the user-code-suspend-count lock.
+      ACQUIRE(art::Locks::thread_list_lock_) {
+    art::Thread* self = soa.Self();
     art::Locks::user_code_suspension_lock_->AssertExclusiveHeld(self);
-
-    // From now on we know we cannot get suspended by user-code.
-    // NB This does a SuspendCheck (during thread state change) so we need to make sure we don't
-    // have the 'suspend_lock' locked here.
-    old_state_ = self->TransitionFromSuspendedToRunnable();
-    art::ScopedObjectAccessUnchecked soau(self);
 
     art::Locks::thread_list_lock_->ExclusiveLock(self);
 
-    if (!ThreadUtil::GetAliveNativeThread(thread, soau, &target_, &result_)) {
+    if (!ThreadUtil::GetAliveNativeThread(thread, soa, &target_, &result_)) {
       return;
     }
     {
@@ -1198,16 +1192,30 @@ class NonStandardExitFrames {
       REQUIRES(art::Locks::thread_list_lock_, art::Locks::user_code_suspension_lock_)
       REQUIRES_SHARED(art::Locks::mutator_lock_);
 
-  ~NonStandardExitFrames() RELEASE_SHARED(art::Locks::mutator_lock_)
-      REQUIRES(!art::Locks::thread_list_lock_)
-      RELEASE(art::Locks::user_code_suspension_lock_) {
-    art::Thread* self = art::Thread::Current();
-    DCHECK_EQ(old_state_, art::ThreadState::kNative)
-        << "Unexpected thread state on entering PopFrame!";
-    self->TransitionFromRunnableToSuspended(old_state_);
+  art::ObjPtr<art::mirror::Class> ResolveFinalFrameReturnType(art::Thread* self)
+      REQUIRES(art::Locks::user_code_suspension_lock_)
+      REQUIRES_SHARED(art::Locks::mutator_lock_)
+      REQUIRES(art::Locks::thread_list_lock_)
+      REQUIRES(!art::Locks::thread_suspend_count_lock_) {
+    // Temporarily release the thread list lock to allow thread suspension and
+    // resolve the final frame's return type.
+    // Note: If the target thread is not `self`, holding the user code suspension
+    // lock prevents the suspended target thread from resuming and therefore
+    // prevents it from being unregistered, see `ThreadList::Unregister()`.
+    art::Locks::user_code_suspension_lock_->AssertExclusiveHeld(self);
+    art::Locks::thread_list_lock_->ExclusiveUnlock(self);
+    // FIXME: What if `ArtMethod::ResolveReturnType()` throws an exception?
+    art::ObjPtr<art::mirror::Class> return_type = final_frame_->GetMethod()->ResolveReturnType();
+    art::Locks::thread_list_lock_->ExclusiveLock(self);
+    return return_type;
   }
 
-  ScopedNoUserCodeSuspension snucs_;
+  ~NonStandardExitFrames()
+      REQUIRES(art::Locks::user_code_suspension_lock_)
+      REQUIRES_SHARED(art::Locks::mutator_lock_)
+      REQUIRES(!art::Locks::thread_suspend_count_lock_)
+      REQUIRES(!art::Locks::thread_list_lock_) {}
+
   art::ShadowFrame* final_frame_ GUARDED_BY(art::Locks::user_code_suspension_lock_) = nullptr;
   art::ShadowFrame* penultimate_frame_ GUARDED_BY(art::Locks::user_code_suspension_lock_) = nullptr;
   bool created_final_frame_ GUARDED_BY(art::Locks::user_code_suspension_lock_) = false;
@@ -1357,7 +1365,9 @@ bool ValidReturnType<jobject>(art::Thread* self,
 
 jvmtiError StackUtil::PopFrame(jvmtiEnv* env, jthread thread) {
   art::Thread* self = art::Thread::Current();
-  NonStandardExitFrames<NonStandardExitType::kPopFrame> frames(self, env, thread);
+  ScopedNoUserCodeSuspension snucs(self);
+  art::ScopedObjectAccess soa(self);
+  NonStandardExitFrames<NonStandardExitType::kPopFrame> frames(soa, env, thread);
   if (frames.result_ != OK) {
     art::Locks::thread_list_lock_->ExclusiveUnlock(self);
     return frames.result_;
@@ -1393,13 +1403,14 @@ StackUtil::ForceEarlyReturn(jvmtiEnv* env, EventHandler* event_handler, jthread 
   // This sets up the exit events we implement early return using before we have the locks and
   // thanks to destructor ordering will tear them down if something goes wrong.
   SetupMethodExitEvents smee(self, event_handler, thread);
-  NonStandardExitFrames<NonStandardExitType::kForceReturn> frames(self, env, thread);
+  ScopedNoUserCodeSuspension snucs(self);
+  art::ScopedObjectAccess soa(self);
+  NonStandardExitFrames<NonStandardExitType::kForceReturn> frames(soa, env, thread);
   if (frames.result_ != OK) {
     smee.NotifyFailure();
     art::Locks::thread_list_lock_->ExclusiveUnlock(self);
     return frames.result_;
-  } else if (!ValidReturnType<T>(
-                 self, frames.final_frame_->GetMethod()->ResolveReturnType(), value)) {
+  } else if (!ValidReturnType<T>(self, frames.ResolveFinalFrameReturnType(self), value)) {
     smee.NotifyFailure();
     art::Locks::thread_list_lock_->ExclusiveUnlock(self);
     return ERR(TYPE_MISMATCH);

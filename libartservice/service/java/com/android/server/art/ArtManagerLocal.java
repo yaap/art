@@ -16,32 +16,14 @@
 
 package com.android.server.art;
 
-import static android.app.ActivityManager.RunningAppProcessInfo;
-
-import static com.android.art.rw.flags.Flags.postUrJob;
-import static com.android.server.art.ArtFileManager.ProfileLists;
-import static com.android.server.art.ArtFileManager.UsableArtifactLists;
-import static com.android.server.art.ArtFileManager.WritableArtifactLists;
-import static com.android.server.art.DexMetadataHelper.DexMetadataInfo;
-import static com.android.server.art.PrimaryDexUtils.DetailedPrimaryDexInfo;
-import static com.android.server.art.PrimaryDexUtils.PrimaryDexInfo;
-import static com.android.server.art.ProfilePath.PrimaryCurProfilePath;
-import static com.android.server.art.ProfilePath.WritableProfilePath;
-import static com.android.server.art.ReasonMapping.BatchDexoptReason;
-import static com.android.server.art.ReasonMapping.BootReason;
-import static com.android.server.art.Utils.Abi;
-import static com.android.server.art.Utils.InitProfileResult;
-import static com.android.server.art.model.ArtFlags.GetStatusFlags;
-import static com.android.server.art.model.ArtFlags.ScheduleStatus;
-import static com.android.server.art.model.Config.Callback;
-import static com.android.server.art.model.DexoptStatus.DexContainerFileDexoptStatus;
-
 import android.annotation.CallbackExecutor;
+import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
 import android.app.ActivityManager;
+import android.app.ActivityManager.RunningAppProcessInfo;
 import android.app.job.JobInfo;
 import android.apphibernation.AppHibernationManager;
 import android.content.BroadcastReceiver;
@@ -67,22 +49,46 @@ import android.util.Pair;
 
 import androidx.annotation.RequiresApi;
 
+import com.android.art.rw.flags.Flags;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.server.LocalManagerRegistry;
+import com.android.server.art.ArtFileManager.ProfileLists;
+import com.android.server.art.ArtFileManager.UsableArtifactLists;
+import com.android.server.art.ArtFileManager.WritableArtifactLists;
+import com.android.server.art.DexMetadataHelper.DexMetadataInfo;
+import com.android.server.art.PreRebootDexoptJob.JobSynchronicity;
 import com.android.server.art.PreRebootDexoptJob.StagedFilesAge;
+import com.android.server.art.PrimaryDexUtils.DetailedPrimaryDexInfo;
+import com.android.server.art.PrimaryDexUtils.PrimaryDexInfo;
+import com.android.server.art.ProfilePath.PrimaryCurProfilePath;
+import com.android.server.art.ProfilePath.WritableProfilePath;
+import com.android.server.art.ReasonMapping.BatchDexoptReason;
+import com.android.server.art.ReasonMapping.BootReason;
 import com.android.server.art.model.ArtFlags;
+import com.android.server.art.model.ArtFlags.GetStatusFlags;
+import com.android.server.art.model.ArtFlags.ScheduleStatus;
 import com.android.server.art.model.ArtManagedFileStats;
 import com.android.server.art.model.BatchDexoptParams;
 import com.android.server.art.model.Config;
+import com.android.server.art.model.Config.Callback;
 import com.android.server.art.model.DeleteResult;
 import com.android.server.art.model.DetailedDexInfo;
 import com.android.server.art.model.DexoptParams;
 import com.android.server.art.model.DexoptResult;
 import com.android.server.art.model.DexoptStatus;
+import com.android.server.art.model.DexoptStatus.DexContainerFileDexoptStatus;
 import com.android.server.art.model.OperationProgress;
+import com.android.server.art.model.VerifyDexoptArtifactsResult;
 import com.android.server.art.prereboot.PreRebootStatsReporter;
+import com.android.server.art.utils.AidlUtils;
+import com.android.server.art.utils.ArtdRefCache;
+import com.android.server.art.utils.AsLog;
+import com.android.server.art.utils.Utils;
+import com.android.server.art.utils.Utils.Abi;
+import com.android.server.art.utils.Utils.Clock;
+import com.android.server.art.utils.Utils.InitProfileResult;
 import com.android.server.pm.PackageManagerLocal;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.AndroidPackageSplit;
@@ -100,7 +106,6 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -111,9 +116,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
@@ -286,6 +288,7 @@ public final class ArtManagerLocal {
                         ArtFileManager.Options.builder()
                                 .setForPrimaryDex((flags & ArtFlags.FLAG_FOR_PRIMARY_DEX) != 0)
                                 .setForSecondaryDex((flags & ArtFlags.FLAG_FOR_SECONDARY_DEX) != 0)
+                                .setExcludeObsoleteClcs(true)
                                 .build());
 
         try (var pin = mInjector.createArtdPin()) {
@@ -399,6 +402,29 @@ public final class ArtManagerLocal {
     }
 
     /**
+     * Verifies that the dexopt artifacts for packages with {@link
+     * PackageState#shouldVerifyCompilationArtifacts()} are produced by trusted environments.
+     *
+     * @param snapshot the snapshot from {@link PackageManagerLocal} to operate on
+     * @return the verification result
+     * @throws IllegalStateException if the operation encounters an error that should never happen
+     *         (e.g., an internal logic error), such as if the ART daemon is unreachable.
+     */
+    // TODO(b/419024976): when available: @RequiresApi(Build.VERSION_CODES.CINNAMON_BUN_1)
+    @RequiresApi(Build.VERSION_CODES.CUR_DEVELOPMENT)
+    @FlaggedApi(Flags.FLAG_SECURE_COMPILATION)
+    @NonNull
+    public VerifyDexoptArtifactsResult verifyDexoptArtifacts(
+            @NonNull PackageManagerLocal.FilteredSnapshot snapshot) {
+        mCleanupLock.readLock().lock();
+        try (var pin = mInjector.createArtdPin()) {
+            return mInjector.getDexoptHelper().verifyDexoptArtifacts(snapshot, Runnable::run);
+        } finally {
+            mCleanupLock.readLock().unlock();
+        }
+    }
+
+    /**
      * Resets the dexopt state of the package as if the package is newly installed, but without any
      * compilation. Clears current profiles and reference profiles. External profiles (e.g., cloud
      * profiles and embedded profiles) are kept for future dexopt, but not used this time.
@@ -505,8 +531,8 @@ public final class ArtManagerLocal {
             @NonNull PackageManagerLocal.FilteredSnapshot snapshot,
             @NonNull @BatchDexoptReason String reason,
             @NonNull CancellationSignal cancellationSignal) {
-        List<String> defaultPackages =
-                Collections.unmodifiableList(getDefaultPackages(snapshot, reason));
+        List<String> defaultPackages = Collections.unmodifiableList(
+                mInjector.getReasonMapping().getDefaultPackagesForReason(snapshot, reason));
         DexoptParams defaultDexoptParams = new DexoptParams.Builder(reason).build();
         var builder = new BatchDexoptParams.Builder(defaultPackages, defaultDexoptParams);
         Callback<BatchDexoptStartCallback, Void> callback =
@@ -978,7 +1004,8 @@ public final class ArtManagerLocal {
                             // artifacts are for an old Mainline version), we should clean them up.
                             statsAfterRebootSession.recordArtifactsEndStatus(
                                     PreRebootStatsReporter.END_STATUS_OBSOLETE,
-                                    mInjector.getCurrentTimeMillis() - status.createdAtMillis);
+                                    mInjector.getClock().currentTimeMillis()
+                                            - status.createdAtMillis);
                             AsLog.i("Staged files discarded: " + status.reason);
                             mInjector.getArtd().cleanUpPreRebootStagedFiles();
                         } else {
@@ -990,7 +1017,8 @@ public final class ArtManagerLocal {
                             // secondary dex files because they are not decrypted before then.
                             statsAfterRebootSession.recordArtifactsEndStatus(
                                     PreRebootStatsReporter.END_STATUS_COMMITTED,
-                                    mInjector.getCurrentTimeMillis() - status.createdAtMillis);
+                                    mInjector.getClock().currentTimeMillis()
+                                            - status.createdAtMillis);
                             mShouldCommitPreRebootStagedFiles = true;
                             // The stats reporting will be deferred to `systemReady`.
                             mStatsAfterRebootSession = statsAfterRebootSession;
@@ -1014,9 +1042,9 @@ public final class ArtManagerLocal {
                 }
 
                 synchronized (mShouldRunPostUnattendedRebootJobLock) {
-                    mShouldRunPostUnattendedRebootJob = postUrJob()
-                            && Arrays.stream(SystemProperties.get("sys.boot.reason").split(","))
-                                       .anyMatch(s -> s.equals("unattended"));
+                    mShouldRunPostUnattendedRebootJob =
+                            Arrays.stream(SystemProperties.get("sys.boot.reason").split(","))
+                                    .anyMatch(s -> s.equals("unattended"));
                 }
             }
             dexoptPackages(snapshot, bootReason, new CancellationSignal(), progressCallbackExecutor,
@@ -1107,7 +1135,8 @@ public final class ArtManagerLocal {
     @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
     public void onApexStaged(@NonNull String[] stagedApexModuleNames) {
         AsLog.d("onApexStaged");
-        mInjector.getPreRebootDexoptJob().onUpdateReady(null /* otaSlot */);
+        mInjector.getPreRebootDexoptJob().onUpdateReady(
+                null /* otaSlot */, false /* isUpdateEngineReady */, JobSynchronicity.ASYNC);
     }
 
     /**
@@ -1441,10 +1470,12 @@ public final class ArtManagerLocal {
             @Nullable @CallbackExecutor Executor progressCallbackExecutor,
             @Nullable Consumer<OperationProgress> progressCallback) {
         if (shouldDowngrade()) {
-            List<String> packages = getDefaultPackages(snapshot, ReasonMapping.REASON_INACTIVE)
-                                            .stream()
-                                            .filter(pkg -> !excludedPackages.contains(pkg))
-                                            .toList();
+            List<String> packages =
+                    mInjector.getReasonMapping()
+                            .getDefaultPackagesForReason(snapshot, ReasonMapping.REASON_INACTIVE)
+                            .stream()
+                            .filter(pkg -> !excludedPackages.contains(pkg))
+                            .toList();
             if (!packages.isEmpty()) {
                 AsLog.i("Storage is low. Downgrading " + packages.size() + " inactive packages");
                 DexoptParams params =
@@ -1509,67 +1540,6 @@ public final class ArtManagerLocal {
                 + " packages with reason=" + dexoptParams.getReason() + " (supplementary pass)");
         return mInjector.getDexoptHelper().dexopt(snapshot, packageNames, dexoptParams,
                 cancellationSignal, dexoptExecutor, progressCallbackExecutor, progressCallback);
-    }
-
-    /** Returns the list of packages to process for the given reason. */
-    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-    @NonNull
-    private List<String> getDefaultPackages(@NonNull PackageManagerLocal.FilteredSnapshot snapshot,
-            @NonNull /* @BatchDexoptReason|REASON_INACTIVE */ String reason) {
-        var appHibernationManager = mInjector.getAppHibernationManager();
-
-        // Filter out hibernating packages even if the reason is REASON_INACTIVE. This is because
-        // artifacts for hibernating packages are already deleted.
-        Stream<PackageState> packages = snapshot.getPackageStates().values().stream().filter(
-                pkgState -> Utils.canDexoptPackage(pkgState, appHibernationManager));
-
-        switch (reason) {
-            case ReasonMapping.REASON_BOOT_AFTER_MAINLINE_UPDATE:
-                packages = packages.filter(pkgState
-                        -> mInjector.isSystemUiPackage(pkgState.getPackageName())
-                                || mInjector.isLauncherPackage(pkgState.getPackageName()));
-                break;
-            case ReasonMapping.REASON_INACTIVE:
-                packages = filterAndSortByLastActiveTime(
-                        packages, false /* keepRecent */, false /* descending */);
-                break;
-            case ReasonMapping.REASON_FIRST_BOOT:
-                // Don't filter the default package list and no need to sort
-                // as in some cases the system time can advance during bootup
-                // after package installation and cause filtering to exclude
-                // all packages when pm.dexopt.downgrade_after_inactive_days
-                // is set. See aosp/3237478 for more details.
-                break;
-            default:
-                // Actually, the sorting is only needed for background dexopt, but we do it for all
-                // cases for simplicity.
-                packages = filterAndSortByLastActiveTime(
-                        packages, true /* keepRecent */, true /* descending */);
-        }
-
-        return packages.map(PackageState::getPackageName).toList();
-    }
-
-    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-    @NonNull
-    private Stream<PackageState> filterAndSortByLastActiveTime(
-            @NonNull Stream<PackageState> packages, boolean keepRecent, boolean descending) {
-        // "pm.dexopt.downgrade_after_inactive_days" is repurposed to also determine whether to
-        // dexopt a package.
-        long inactiveMs = TimeUnit.DAYS.toMillis(SystemProperties.getInt(
-                "pm.dexopt.downgrade_after_inactive_days", Integer.MAX_VALUE /* def */));
-        long currentTimeMs = mInjector.getCurrentTimeMillis();
-        long thresholdTimeMs = currentTimeMs - inactiveMs;
-        return packages
-                .map(pkgState
-                        -> Pair.create(pkgState,
-                                Utils.getPackageLastActiveTime(pkgState,
-                                        mInjector.getDexUseManager(), mInjector.getUserManager())))
-                .filter(keepRecent ? (pair -> pair.second > thresholdTimeMs)
-                                   : (pair -> pair.second <= thresholdTimeMs))
-                .sorted(descending ? Comparator.comparingLong(pair -> - pair.second)
-                                   : Comparator.comparingLong(pair -> pair.second))
-                .map(pair -> pair.first);
     }
 
     @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -1766,7 +1736,6 @@ public final class ArtManagerLocal {
         @Nullable private final Context mContext;
         @Nullable private final PackageManagerLocal mPackageManagerLocal;
         @Nullable private final Config mConfig;
-        @Nullable private final ThreadPoolExecutor mReporterExecutor;
         @Nullable private BackgroundDexoptJob mBgDexoptJob = null;
         @Nullable private PreRebootDexoptJob mPrDexoptJob = null;
 
@@ -1777,7 +1746,6 @@ public final class ArtManagerLocal {
             mContext = null;
             mPackageManagerLocal = null;
             mConfig = null;
-            mReporterExecutor = null;
         }
 
         @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -1788,10 +1756,6 @@ public final class ArtManagerLocal {
             mPackageManagerLocal = Objects.requireNonNull(
                     LocalManagerRegistry.getManager(PackageManagerLocal.class));
             mConfig = new Config();
-            mReporterExecutor =
-                    new ThreadPoolExecutor(1 /* corePoolSize */, 1 /* maximumPoolSize */,
-                            60 /* keepTimeAlive */, TimeUnit.SECONDS, new LinkedBlockingQueue<>());
-            mReporterExecutor.allowsCoreThreadTimeOut();
 
             // Call the getters for the dependencies that aren't optional, to ensure correct
             // initialization order.
@@ -1800,6 +1764,7 @@ public final class ArtManagerLocal {
             getDexUseManager();
             getStorageManager();
             getActivityManager();
+            getReasonMapping();
             GlobalInjector.getInstance().checkArtModuleServiceManager();
 
             // `PreRebootDexoptJob` does not depend on external dependencies, so unlike the calls
@@ -1839,19 +1804,13 @@ public final class ArtManagerLocal {
         @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
         @NonNull
         public DexoptHelper getDexoptHelper() {
-            return new DexoptHelper(getContext(), getConfig(), getReporterExecutor());
+            return new DexoptHelper(getContext(), getConfig());
         }
 
         @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
         @NonNull
         public Config getConfig() {
             return mConfig;
-        }
-
-        @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-        @NonNull
-        public Executor getReporterExecutor() {
-            return mReporterExecutor;
         }
 
         /** Returns the registered {@link AppHibernationManager} instance. */
@@ -1898,18 +1857,8 @@ public final class ArtManagerLocal {
         }
 
         @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-        public boolean isSystemUiPackage(@NonNull String packageName) {
-            return Utils.isSystemUiPackage(mContext, packageName);
-        }
-
-        @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-        public boolean isLauncherPackage(@NonNull String packageName) {
-            return Utils.isLauncherPackage(mContext, packageName);
-        }
-
-        @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-        public long getCurrentTimeMillis() {
-            return System.currentTimeMillis();
+        public Clock getClock() {
+            return Clock.DEFAULT;
         }
 
         @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -1952,6 +1901,11 @@ public final class ArtManagerLocal {
         @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
         public void kill(int pid, int signal) throws ErrnoException {
             Os.kill(pid, signal);
+        }
+
+        @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+        public ReasonMapping getReasonMapping() {
+            return new ReasonMapping(mContext);
         }
     }
 }

@@ -564,49 +564,45 @@ class CommonLocalVariableClosure : public art::Closure {
 
   void Run(art::Thread* self) override REQUIRES_SHARED(art::Locks::mutator_lock_) {
     art::Locks::mutator_lock_->AssertSharedHeld(art::Thread::Current());
-    bool needs_instrument;
-    {
-      art::ScopedAssertNoThreadSuspension sants("CommonLocalVariableClosure::Run");
-      std::unique_ptr<art::Context> context(art::Context::Create());
-      FindFrameAtDepthVisitor visitor(self, context.get(), depth_);
-      visitor.WalkStack();
-      if (!visitor.FoundFrame()) {
-        // Must have been a bad depth.
-        result_ = ERR(NO_MORE_FRAMES);
-        return;
-      }
-      art::ArtMethod* method = visitor.GetMethod();
-      // Native and 'art' proxy methods don't have registers.
-      if (method->IsNative() || method->IsProxyMethod()) {
-        // TODO It might be useful to fake up support for get at least on proxy frames.
-        result_ = ERR(OPAQUE_FRAME);
-        return;
-      } else if (slot_ >= method->DexInstructionData().RegistersSize() || slot_ < 0) {
-        result_ = ERR(INVALID_SLOT);
-        return;
-      }
-      needs_instrument = !visitor.IsShadowFrame();
-      uint32_t pc = visitor.GetDexPc(/*abort_on_failure=*/false);
-      if (pc == art::dex::kDexNoIndex) {
-        // Cannot figure out current PC.
-        result_ = ERR(OPAQUE_FRAME);
-        return;
-      }
-      std::string descriptor;
-      SlotType slot_type{ art::Primitive::kPrimVoid };
-      jvmtiError err = GetSlotType(method, pc, &descriptor, &slot_type);
-      if (err != OK) {
-        result_ = err;
-        return;
-      }
-
-      err = GetTypeError(method, slot_type, descriptor);
-      if (err != OK) {
-        result_ = err;
-        return;
-      }
-      result_ = Execute(method, visitor);
+    std::unique_ptr<art::Context> context(art::Context::Create());
+    FindFrameAtDepthVisitor visitor(self, context.get(), depth_);
+    visitor.WalkStack();
+    if (!visitor.FoundFrame()) {
+      // Must have been a bad depth.
+      result_ = ERR(NO_MORE_FRAMES);
+      return;
     }
+    art::ArtMethod* method = visitor.GetMethod();
+    // Native and 'art' proxy methods don't have registers.
+    if (method->IsNative() || method->IsProxyMethod()) {
+      // TODO It might be useful to fake up support for get at least on proxy frames.
+      result_ = ERR(OPAQUE_FRAME);
+      return;
+    } else if (slot_ >= method->DexInstructionData().RegistersSize() || slot_ < 0) {
+      result_ = ERR(INVALID_SLOT);
+      return;
+    }
+    bool needs_instrument = !visitor.IsShadowFrame();
+    uint32_t pc = visitor.GetDexPc(/*abort_on_failure=*/false);
+    if (pc == art::dex::kDexNoIndex) {
+      // Cannot figure out current PC.
+      result_ = ERR(OPAQUE_FRAME);
+      return;
+    }
+    std::string descriptor;
+    SlotType slot_type{ art::Primitive::kPrimVoid };
+    jvmtiError err = GetSlotType(method, pc, &descriptor, &slot_type);
+    if (err != OK) {
+      result_ = err;
+      return;
+    }
+
+    err = GetTypeError(method, slot_type, descriptor);
+    if (err != OK) {
+      result_ = err;
+      return;
+    }
+    result_ = Execute(method, visitor);
     if (needs_instrument) {
       DeoptManager::Get()->DeoptimizeThread(self);
     }

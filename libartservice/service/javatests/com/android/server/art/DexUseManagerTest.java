@@ -16,9 +16,7 @@
 
 package com.android.server.art;
 
-import static com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
-import static com.android.server.art.DexUseManagerLocal.DexLoader;
-import static com.android.server.art.DexUseManagerLocal.SecondaryDexInfo;
+import static com.android.server.art.DexUseManagerLocal.PACKAGE_SCORE_HALF_LIFE_MS;
 import static com.android.server.art.testing.TestDataHelper.newPackageState;
 import static com.android.server.art.testing.TestDataHelper.newSplit;
 
@@ -46,11 +44,15 @@ import android.os.storage.StorageManager;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.server.art.DexUseManagerLocal.CheckedSecondaryDexInfo;
+import com.android.server.art.DexUseManagerLocal.DexLoader;
+import com.android.server.art.DexUseManagerLocal.SecondaryDexInfo;
 import com.android.server.art.model.DexContainerFileUseInfo;
 import com.android.server.art.proto.DexUseProto;
 import com.android.server.art.testing.MockClock;
 import com.android.server.art.testing.StaticMockitoRule;
 import com.android.server.art.testing.TestDataHelper.PackageStateBuilder;
+import com.android.server.art.utils.Utils;
 import com.android.server.pm.PackageManagerLocal;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.AndroidPackageSplit;
@@ -68,6 +70,7 @@ import org.mockito.Mock;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -182,11 +185,10 @@ public class DexUseManagerTest {
                 .thenReturn(mUnfilteredSnapshot);
 
         lenient().when(mInjector.getArtd()).thenReturn(mArtd);
-        lenient().when(mInjector.getCurrentTimeMillis()).thenReturn(0l);
+        lenient().when(mInjector.getClock()).thenReturn(mMockClock);
+        mMockClock.setCurrentTimeMillis(0L);
         lenient().when(mInjector.getFilename()).thenReturn(mTempFile.getPath());
-        lenient()
-                .when(mInjector.createScheduledExecutor())
-                .thenAnswer(invocation -> mMockClock.createScheduledExecutor());
+        lenient().when(mInjector.getAsyncExecutor()).thenReturn(mMockClock.getAsyncExecutor());
         lenient().when(mInjector.getContext()).thenReturn(mContext);
         lenient().when(mInjector.getAllPackageNames()).thenReturn(mPackageStates.keySet());
         lenient().when(mInjector.isPreReboot()).thenReturn(false);
@@ -195,6 +197,7 @@ public class DexUseManagerTest {
         lenient().when(mInjector.getCallingUserHandle()).thenReturn(mUserHandle);
         lenient().when(mInjector.getCallingUid()).thenReturn(110001);
         lenient().when(mInjector.isIsolatedUid(anyInt())).thenReturn(false);
+        lenient().when(mInjector.isPrivateComputeCoreUid(anyInt())).thenReturn(false);
         lenient()
                 .when(mInjector.getMaxSecondaryDexFilesPerOwner())
                 .thenReturn(MAX_SECONDARY_DEX_FILES_PER_OWNER_FOR_TESTING);
@@ -230,6 +233,46 @@ public class DexUseManagerTest {
         assertThat(mDexUseManager.getPrimaryDexLoaders(OWNING_PKG_NAME, SPLIT_APK)).isEmpty();
         assertThat(mDexUseManager.isPrimaryDexUsedByOtherApps(OWNING_PKG_NAME, SPLIT_APK))
                 .isFalse();
+    }
+
+    @Test
+    public void testPrimaryDexPrivateCompute() {
+        // Simulate a standard UID (not isolated) but recognized as Private Compute Core
+        when(mInjector.isIsolatedUid(anyInt())).thenReturn(false);
+        when(mInjector.isPrivateComputeCoreUid(anyInt())).thenReturn(true);
+
+        mDexUseManager.notifyDexContainersLoaded(
+                mSnapshot, OWNING_PKG_NAME, Map.of(BASE_APK, "CLC"));
+
+        // Assert that the loader is recorded with isolatedProcess = true
+        assertThat(mDexUseManager.getPrimaryDexLoaders(OWNING_PKG_NAME, BASE_APK))
+                .containsExactly(DexLoader.create(OWNING_PKG_NAME, true /* isolatedProcess */));
+
+        // Assert that this counts as "Used by other apps" (which triggers specific compilation
+        // behaviors)
+        assertThat(mDexUseManager.isPrimaryDexUsedByOtherApps(OWNING_PKG_NAME, BASE_APK)).isTrue();
+    }
+
+    @Test
+    public void testSecondaryDexPrivateCompute() {
+        // Simulate a standard UID (not isolated) but recognized as Private Compute Core
+        when(mInjector.isIsolatedUid(anyInt())).thenReturn(false);
+        when(mInjector.isPrivateComputeCoreUid(anyInt())).thenReturn(true);
+
+        mDexUseManager.notifyDexContainersLoaded(
+                mSnapshot, OWNING_PKG_NAME, Map.of(mDeDir + "/foo.apk", "CLC"));
+
+        List<? extends SecondaryDexInfo> dexInfoList =
+                mDexUseManager.getSecondaryDexInfo(OWNING_PKG_NAME);
+
+        // Assert that the loader is recorded with isolatedProcess = true
+        assertThat(dexInfoList)
+                .containsExactly(CheckedSecondaryDexInfo.create(mDeDir + "/foo.apk", mUserHandle,
+                        "CLC", Set.of("arm64-v8a"),
+                        Set.of(DexLoader.create(OWNING_PKG_NAME, true /* isolatedProcess */)),
+                        true /* isUsedByOtherApps */, FileVisibility.OTHER_READABLE));
+
+        assertThat(dexInfoList.get(0).classLoaderContext()).isEqualTo("CLC");
     }
 
     @Test
@@ -302,7 +345,8 @@ public class DexUseManagerTest {
 
     private void verifyPrimaryDexMultipleEntries(
             boolean saveAndLoad, boolean shutdown, boolean cleanup) throws Exception {
-        when(mInjector.getCurrentTimeMillis()).thenReturn(1000l);
+        long now = System.currentTimeMillis();
+        mMockClock.setCurrentTimeMillis(now - 2000L);
 
         lenient()
                 .when(mArtd.getDexFileVisibility(BASE_APK))
@@ -331,7 +375,7 @@ public class DexUseManagerTest {
         when(mInjector.isIsolatedUid(anyInt())).thenReturn(true);
         mDexUseManager.notifyDexContainersLoaded(
                 mSnapshot, OWNING_PKG_NAME, Map.of(BASE_APK, "CLC"));
-        when(mInjector.getCurrentTimeMillis()).thenReturn(2000l);
+        mMockClock.setCurrentTimeMillis(now - 1000L);
         mDexUseManager.notifyDexContainersLoaded(
                 mSnapshot, OWNING_PKG_NAME, Map.of(BASE_APK, "CLC"));
 
@@ -358,7 +402,11 @@ public class DexUseManagerTest {
         assertThat(mDexUseManager.getPrimaryDexLoaders(OWNING_PKG_NAME, SPLIT_APK))
                 .containsExactly(DexLoader.create(OWNING_PKG_NAME, false /* isolatedProcess */));
 
-        assertThat(mDexUseManager.getPackageLastUsedAtMillis(OWNING_PKG_NAME)).isEqualTo(2000l);
+        assertThat(mDexUseManager.getPackageLastUsedAtMillis(OWNING_PKG_NAME))
+                .isEqualTo(now - 1000L);
+
+        assertThat(mDexUseManager.calculateDecayedPackageScore(OWNING_PKG_NAME, now))
+                .isGreaterThan(0D);
     }
 
     @Test
@@ -443,7 +491,7 @@ public class DexUseManagerTest {
 
     @Test
     public void testSecondaryDexNativeAbiSetChange() {
-        when(mInjector.getCurrentTimeMillis()).thenReturn(1000l);
+        mMockClock.setCurrentTimeMillis(1000L);
 
         mDexUseManager.notifyDexContainersLoaded(
                 mSnapshot, OWNING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
@@ -503,7 +551,7 @@ public class DexUseManagerTest {
 
     private void verifySecondaryDexMultipleEntries(
             boolean saveAndLoad, boolean shutdown, boolean cleanup) throws Exception {
-        when(mInjector.getCurrentTimeMillis()).thenReturn(1000l);
+        mMockClock.setCurrentTimeMillis(1000L);
 
         lenient()
                 .when(mArtd.getDexFileVisibility(mCeDir + "/foo.apk"))
@@ -514,6 +562,7 @@ public class DexUseManagerTest {
         lenient()
                 .when(mArtd.getDexFileVisibility(mCeDir + "/baz.apk"))
                 .thenReturn(FileVisibility.NOT_OTHER_READABLE);
+        lenient().when(mArtd.hasAllClcDexFiles(any(), any())).thenReturn(true);
 
         // These should be ignored.
         mDexUseManager.notifyDexContainersLoaded(
@@ -543,7 +592,7 @@ public class DexUseManagerTest {
         when(mInjector.isIsolatedUid(anyInt())).thenReturn(true);
         mDexUseManager.notifyDexContainersLoaded(
                 mSnapshot, OWNING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
-        when(mInjector.getCurrentTimeMillis()).thenReturn(2000l);
+        mMockClock.setCurrentTimeMillis(2000L);
         mDexUseManager.notifyDexContainersLoaded(mSnapshot, OWNING_PKG_NAME,
                 Map.of(mCeDir + "/foo.apk", SecondaryDexInfo.UNSUPPORTED_CLASS_LOADER_CONTEXT));
 
@@ -597,7 +646,7 @@ public class DexUseManagerTest {
                         DexContainerFileUseInfo.create(
                                 mCeDir + "/baz.apk", mUserHandle, Set.of(OWNING_PKG_NAME)));
 
-        assertThat(mDexUseManager.getPackageLastUsedAtMillis(OWNING_PKG_NAME)).isEqualTo(2000l);
+        assertThat(mDexUseManager.getPackageLastUsedAtMillis(OWNING_PKG_NAME)).isEqualTo(2000L);
     }
 
     @Test
@@ -605,13 +654,16 @@ public class DexUseManagerTest {
         when(mArtd.getDexFileVisibility(mCeDir + "/foo.apk"))
                 .thenReturn(FileVisibility.OTHER_READABLE);
 
+        when(mArtd.hasAllClcDexFiles(mCeDir + "/foo.apk", "CLC")).thenReturn(true);
+
         mDexUseManager.notifyDexContainersLoaded(
                 mSnapshot, OWNING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
         mDexUseManager.notifyDexContainersLoaded(
                 mSnapshot, LOADING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
 
-        assertThat(mDexUseManager.getCheckedSecondaryDexInfo(
-                           OWNING_PKG_NAME, true /* excludeObsoleteDexesAndLoaders */))
+        assertThat(
+                mDexUseManager.getCheckedSecondaryDexInfo(OWNING_PKG_NAME,
+                        true /* excludeObsoleteDexesAndLoaders */, true /* excludeObsoleteClcs */))
                 .containsExactly(CheckedSecondaryDexInfo.create(mCeDir + "/foo.apk", mUserHandle,
                         "CLC", Set.of("arm64-v8a", "armeabi-v7a"),
                         Set.of(DexLoader.create(OWNING_PKG_NAME, false /* isolatedProcess */),
@@ -624,6 +676,8 @@ public class DexUseManagerTest {
         when(mArtd.getDexFileVisibility(mCeDir + "/foo.apk"))
                 .thenReturn(FileVisibility.NOT_OTHER_READABLE);
 
+        when(mArtd.hasAllClcDexFiles(mCeDir + "/foo.apk", "CLC")).thenReturn(true);
+
         mDexUseManager.notifyDexContainersLoaded(
                 mSnapshot, OWNING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
         mDexUseManager.notifyDexContainersLoaded(
@@ -633,15 +687,17 @@ public class DexUseManagerTest {
         mDexUseManager.notifyDexContainersLoaded(
                 mSnapshot, OWNING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
 
-        assertThat(mDexUseManager.getCheckedSecondaryDexInfo(
-                           OWNING_PKG_NAME, true /* excludeObsoleteDexesAndLoaders */))
+        assertThat(
+                mDexUseManager.getCheckedSecondaryDexInfo(OWNING_PKG_NAME,
+                        true /* excludeObsoleteDexesAndLoaders */, true /* excludeObsoleteClcs */))
                 .containsExactly(CheckedSecondaryDexInfo.create(mCeDir + "/foo.apk", mUserHandle,
                         "CLC", Set.of("arm64-v8a"),
                         Set.of(DexLoader.create(OWNING_PKG_NAME, false /* isolatedProcess */)),
                         false /* isUsedByOtherApps */, FileVisibility.NOT_OTHER_READABLE));
 
-        assertThat(mDexUseManager.getCheckedSecondaryDexInfo(
-                           OWNING_PKG_NAME, false /* excludeObsoleteDexesAndLoaders */))
+        assertThat(
+                mDexUseManager.getCheckedSecondaryDexInfo(OWNING_PKG_NAME,
+                        false /* excludeObsoleteDexesAndLoaders */, true /* excludeObsoleteClcs */))
                 .containsExactly(CheckedSecondaryDexInfo.create(mCeDir + "/foo.apk", mUserHandle,
                         "CLC", Set.of("arm64-v8a", "armeabi-v7a"),
                         Set.of(DexLoader.create(OWNING_PKG_NAME, false /* isolatedProcess */),
@@ -655,14 +711,18 @@ public class DexUseManagerTest {
         mDexUseManager.notifyDexContainersLoaded(
                 mSnapshot, OWNING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
 
+        when(mArtd.hasAllClcDexFiles(mCeDir + "/foo.apk", "CLC")).thenReturn(true);
+
         when(mArtd.getDexFileVisibility(mCeDir + "/foo.apk")).thenReturn(FileVisibility.NOT_FOUND);
 
-        assertThat(mDexUseManager.getCheckedSecondaryDexInfo(
-                           OWNING_PKG_NAME, true /* excludeObsoleteDexesAndLoaders */))
+        assertThat(
+                mDexUseManager.getCheckedSecondaryDexInfo(OWNING_PKG_NAME,
+                        true /* excludeObsoleteDexesAndLoaders */, true /* excludeObsoleteClcs */))
                 .isEmpty();
 
-        assertThat(mDexUseManager.getCheckedSecondaryDexInfo(
-                           OWNING_PKG_NAME, false /* excludeObsoleteDexesAndLoaders */))
+        assertThat(
+                mDexUseManager.getCheckedSecondaryDexInfo(OWNING_PKG_NAME,
+                        false /* excludeObsoleteDexesAndLoaders */, true /* excludeObsoleteClcs */))
                 .containsExactly(CheckedSecondaryDexInfo.create(mCeDir + "/foo.apk", mUserHandle,
                         "CLC", Set.of("arm64-v8a"),
                         Set.of(DexLoader.create(OWNING_PKG_NAME, false /* isolatedProcess */)),
@@ -674,6 +734,8 @@ public class DexUseManagerTest {
         when(mArtd.getDexFileVisibility(mCeDir + "/foo.apk"))
                 .thenReturn(FileVisibility.NOT_OTHER_READABLE);
 
+        lenient().when(mArtd.hasAllClcDexFiles(mCeDir + "/foo.apk", "CLC")).thenReturn(true);
+
         mDexUseManager.notifyDexContainersLoaded(
                 mSnapshot, LOADING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
 
@@ -681,9 +743,29 @@ public class DexUseManagerTest {
         mDexUseManager.notifyDexContainersLoaded(
                 mSnapshot, OWNING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
 
-        assertThat(mDexUseManager.getCheckedSecondaryDexInfo(
-                           OWNING_PKG_NAME, true /* excludeObsoleteDexesAndLoaders */))
+        assertThat(
+                mDexUseManager.getCheckedSecondaryDexInfo(OWNING_PKG_NAME,
+                        true /* excludeObsoleteDexesAndLoaders */, true /* excludeObsoleteClcs */))
                 .isEmpty();
+    }
+
+    @Test
+    public void testCheckedSecondaryDexClcNotFound() throws Exception {
+        when(mArtd.getDexFileVisibility(mCeDir + "/foo.apk"))
+                .thenReturn(FileVisibility.NOT_OTHER_READABLE);
+
+        when(mArtd.hasAllClcDexFiles(mCeDir + "/foo.apk", "CLC")).thenReturn(false);
+
+        mDexUseManager.notifyDexContainersLoaded(
+                mSnapshot, OWNING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
+
+        assertThat(
+                mDexUseManager.getCheckedSecondaryDexInfo(OWNING_PKG_NAME,
+                        true /* excludeObsoleteDexesAndLoaders */, true /* excludeObsoleteClcs */))
+                .containsExactly(CheckedSecondaryDexInfo.create(mCeDir + "/foo.apk", mUserHandle,
+                        SecondaryDexInfo.UNSUPPORTED_CLASS_LOADER_CONTEXT, Set.of("arm64-v8a"),
+                        Set.of(DexLoader.create(OWNING_PKG_NAME, false /* isolatedProcess */)),
+                        false /* isUsedByOtherApps */, FileVisibility.NOT_OTHER_READABLE));
     }
 
     @Test
@@ -778,6 +860,8 @@ public class DexUseManagerTest {
     }
 
     private void verifyCleanup() throws Exception {
+        lenient().when(mArtd.hasAllClcDexFiles(any(), any())).thenReturn(true);
+
         // Create an entry that should be kept.
         lenient()
                 .when(mArtd.getDexFileVisibility(mCeDir + "/bar.apk"))
@@ -806,6 +890,7 @@ public class DexUseManagerTest {
         textproto = textproto.substring(textproto.indexOf('\n') + 1).trim();
         assertThat(textproto).isEqualTo("package_dex_use {\n"
                 + "  owning_package_name: \"com.example.owningpackage\"\n"
+                + "  package_score_updated_at_ms: 0\n"
                 + "  secondary_dex_use {\n"
                 + "    dex_file: \"/data/user/1/com.example.owningpackage/bar.apk\"\n"
                 + "    record {\n"
@@ -819,6 +904,42 @@ public class DexUseManagerTest {
                 + "    }\n"
                 + "  }\n"
                 + "}");
+    }
+
+    @Test
+    public void testCleanupClcs() throws Exception {
+        lenient()
+                .when(mArtd.getDexFileVisibility(mCeDir + "/foo.apk"))
+                .thenReturn(FileVisibility.OTHER_READABLE);
+
+        mDexUseManager.notifyDexContainersLoaded(
+                mSnapshot, OWNING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
+        mDexUseManager.notifyDexContainersLoaded(
+                mSnapshot, LOADING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC2"));
+
+        // Initially, there are two distinct CLCs.
+        List<? extends SecondaryDexInfo> dexInfoList =
+                mDexUseManager.getSecondaryDexInfo(OWNING_PKG_NAME);
+        assertThat(dexInfoList.get(0).displayClassLoaderContext())
+                .isEqualTo(SecondaryDexInfo.VARYING_CLASS_LOADER_CONTEXTS);
+
+        // Simulate that "CLC" is obsolete.
+        when(mArtd.hasAllClcDexFiles(mCeDir + "/foo.apk", "CLC")).thenReturn(false);
+        when(mArtd.hasAllClcDexFiles(mCeDir + "/foo.apk", "CLC2")).thenReturn(true);
+        mDexUseManager.cleanup();
+
+        // After cleanup, there should be only one CLC.
+        dexInfoList = mDexUseManager.getSecondaryDexInfo(OWNING_PKG_NAME);
+        assertThat(dexInfoList.get(0).displayClassLoaderContext()).isEqualTo("CLC2");
+
+        // Simulate that "CLC2" is obsolete.
+        when(mArtd.hasAllClcDexFiles(mCeDir + "/foo.apk", "CLC2")).thenReturn(false);
+        mDexUseManager.cleanup();
+
+        // After cleanup, there should be only none CLC.
+        dexInfoList = mDexUseManager.getSecondaryDexInfo(OWNING_PKG_NAME);
+        assertThat(dexInfoList.get(0).displayClassLoaderContext())
+                .isEqualTo(SecondaryDexInfo.UNSUPPORTED_CLASS_LOADER_CONTEXT);
     }
 
     @Test(expected = IllegalArgumentException.class)
@@ -963,6 +1084,57 @@ public class DexUseManagerTest {
         mDexUseManager.notifyDexContainersLoaded(mSnapshot, LOADING_PKG_NAME, clcByDexFile);
         assertThat(mDexUseManager.getSecondaryDexInfo(OWNING_PKG_NAME))
                 .hasSize(MAX_SECONDARY_DEX_FILES_PER_OWNER_FOR_TESTING);
+    }
+
+    @Test
+    public void testPackageScoreSingleOpen() throws Exception {
+        long now = System.currentTimeMillis();
+
+        // Only the base APK load should count into the package score.
+        mMockClock.setCurrentTimeMillis(now - 2000);
+        mDexUseManager.notifyDexContainersLoaded(mSnapshot, OWNING_PKG_NAME,
+                Map.of("/somewhere/app/" + OWNING_PKG_NAME + "/base.apk", "CLC"));
+        mDexUseManager.notifyDexContainersLoaded(mSnapshot, OWNING_PKG_NAME,
+                Map.of("/somewhere/app/" + OWNING_PKG_NAME + "/split_0.apk", "CLC"));
+        mDexUseManager.notifyDexContainersLoaded(
+                mSnapshot, OWNING_PKG_NAME, Map.of(mCeDir + "/foo.apk", "CLC"));
+
+        // Base APK loads within the 5-second cooldown period should not count.
+        mMockClock.setCurrentTimeMillis(now - 1000);
+        mDexUseManager.notifyDexContainersLoaded(mSnapshot, OWNING_PKG_NAME,
+                Map.of("/somewhere/app/" + OWNING_PKG_NAME + "/base.apk", "CLC"));
+
+        assertThat(
+                mDexUseManager.calculateDecayedPackageScore(OWNING_PKG_NAME, now /* refTimeMs */))
+                .isWithin(1.0e-10)
+                .of(1 * Math.pow(0.5, (double) 2000 / PACKAGE_SCORE_HALF_LIFE_MS)); // 0.9999977078
+    }
+
+    @Test
+    public void testPackageScoreMultipleOpens() throws Exception {
+        long now = System.currentTimeMillis();
+
+        // Simulate that the app was opened 28, 21, 14, 7 days ago.
+        mMockClock.setCurrentTimeMillis(now - PACKAGE_SCORE_HALF_LIFE_MS * 4);
+        mDexUseManager.notifyDexContainersLoaded(mSnapshot, OWNING_PKG_NAME,
+                Map.of("/somewhere/app/" + OWNING_PKG_NAME + "/base.apk", "CLC"));
+
+        mMockClock.setCurrentTimeMillis(now - PACKAGE_SCORE_HALF_LIFE_MS * 3);
+        mDexUseManager.notifyDexContainersLoaded(mSnapshot, OWNING_PKG_NAME,
+                Map.of("/somewhere/app/" + OWNING_PKG_NAME + "/base.apk", "CLC"));
+
+        mMockClock.setCurrentTimeMillis(now - PACKAGE_SCORE_HALF_LIFE_MS * 2);
+        mDexUseManager.notifyDexContainersLoaded(mSnapshot, OWNING_PKG_NAME,
+                Map.of("/somewhere/app/" + OWNING_PKG_NAME + "/base.apk", "CLC"));
+
+        mMockClock.setCurrentTimeMillis(now - PACKAGE_SCORE_HALF_LIFE_MS);
+        mDexUseManager.notifyDexContainersLoaded(mSnapshot, OWNING_PKG_NAME,
+                Map.of("/somewhere/app/" + OWNING_PKG_NAME + "/base.apk", "CLC"));
+
+        assertThat(
+                mDexUseManager.calculateDecayedPackageScore(OWNING_PKG_NAME, now /* refTimeMs */))
+                .isWithin(1.0e-10)
+                .of(0.5 + 0.25 + 0.125 + 0.0625);
     }
 
     private PackageStateBuilder newPackageStateWithDefaults(String packageName) {
