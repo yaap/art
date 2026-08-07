@@ -1664,66 +1664,41 @@ void CodeGenerator::ValidateInvokeRuntimeWithoutRecordingPcInfo(HInstruction* in
 void SlowPathCode::SaveLiveRegisters(CodeGenerator* codegen, LocationSummary* locations) {
   size_t stack_offset = codegen->GetFirstRegisterSlotInSlowPath();
 
-  // BEGIN Motorola, a5705c, 10/16/2015, IKSWM-7832
-  size_t bulk_offset = codegen->SaveBulkLiveCoreRegisters(locations, stack_offset,
-                                                          &saved_core_stack_offsets_[0]);
-  if (bulk_offset == SIZE_MAX) {
-    const RegisterSet spills = codegen->GetSlowPathSpills(locations);
-    for (uint32_t i : LowToHighBits(spills.GetCoreRegisterSet())) {
-      // If the register holds an object, update the stack mask.
-      if (locations->RegisterContainsObject(i)) {
-        locations->SetStackBit(stack_offset / kVRegSize);
-      }
-      DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
-      DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
-      saved_core_stack_offsets_[i] = stack_offset;
-      stack_offset += codegen->SaveCoreRegister(stack_offset, i);
+  const RegisterSet spills = codegen->GetSlowPathSpills(locations);
+  for (uint32_t i : LowToHighBits(spills.GetCoreRegisterSet())) {
+    // If the register holds an object, update the stack mask.
+    if (locations->RegisterContainsObject(i)) {
+      locations->SetStackBit(stack_offset / kVRegSize);
     }
-  } else {
-    stack_offset = bulk_offset;
+    DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
+    DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
+    saved_core_stack_offsets_[i] = stack_offset;
+    stack_offset += codegen->SaveCoreRegister(stack_offset, i);
   }
 
-  bulk_offset = codegen->SaveBulkLiveFpuRegisters(locations, stack_offset,
-                                                  &saved_fpu_stack_offsets_[0]);
-  if (bulk_offset == SIZE_MAX) {
-    const RegisterSet spills = codegen->GetSlowPathSpills(locations);
-    for (uint32_t i : LowToHighBits(spills.GetFpuRegisterSet())) {
-      DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
-      DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
-      saved_fpu_stack_offsets_[i] = stack_offset;
-      stack_offset += codegen->SaveFloatingPointRegister(stack_offset, i);
-    }
+  for (uint32_t i : LowToHighBits(spills.GetFpuRegisterSet())) {
+    DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
+    DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
+    saved_fpu_stack_offsets_[i] = stack_offset;
+    stack_offset += codegen->SaveFloatingPointRegister(stack_offset, i);
   }
-  // END IKSWM-7832
 }
 
 void SlowPathCode::RestoreLiveRegisters(CodeGenerator* codegen, LocationSummary* locations) {
   size_t stack_offset = codegen->GetFirstRegisterSlotInSlowPath();
 
-  // BEGIN Motorola, a5705c, 10/16/2015, IKSWM-7832
-  size_t bulk_offset = codegen->RestoreBulkLiveCoreRegisters(locations, stack_offset);
-
-  if (bulk_offset == SIZE_MAX) {
-    const RegisterSet spills = codegen->GetSlowPathSpills(locations);
-    for (uint32_t i : LowToHighBits(spills.GetCoreRegisterSet())) {
-      DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
-      DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
-      stack_offset += codegen->RestoreCoreRegister(stack_offset, i);
-    }
-  } else {
-    stack_offset = bulk_offset;
+  const RegisterSet spills = codegen->GetSlowPathSpills(locations);
+  for (uint32_t i : LowToHighBits(spills.GetCoreRegisterSet())) {
+    DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
+    DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
+    stack_offset += codegen->RestoreCoreRegister(stack_offset, i);
   }
 
-  bulk_offset = codegen->RestoreBulkLiveFpuRegisters(locations, stack_offset);
-  if (bulk_offset == SIZE_MAX) {
-    const RegisterSet spills = codegen->GetSlowPathSpills(locations);
-    for (uint32_t i : LowToHighBits(spills.GetFpuRegisterSet())) {
-      DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
-      DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
-      stack_offset += codegen->RestoreFloatingPointRegister(stack_offset, i);
-    }
+  for (uint32_t i : LowToHighBits(spills.GetFpuRegisterSet())) {
+    DCHECK_LT(stack_offset, codegen->GetFrameSize() - codegen->FrameEntrySpillSize());
+    DCHECK_LT(i, kMaximumNumberOfExpectedRegisters);
+    stack_offset += codegen->RestoreFloatingPointRegister(stack_offset, i);
   }
-  // END IKSWM-7832
 }
 
 LocationSummary* CodeGenerator::CreateSystemArrayCopyLocationSummary(
